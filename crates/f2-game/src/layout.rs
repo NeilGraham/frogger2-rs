@@ -580,10 +580,22 @@ impl Game {
         self.cam.start_cam_facing = 0;
         self.cam.start_frog_facing = 0;
         self.free_tongues();
+        self.free_spec_fx_list(); // wave E
+        self.particle.free_particle_list(); // wave E
         self.free_garib_list();
         self.level_files = LevelFiles::default();
         self.free_actor_list();
         self.models.clear(); // FreeAllObjectBanks
+
+        // wave E: FreeTextOverlayLinkedList, FreeSpriteOverlayLinkedList, FreeSpriteList,
+        // FreeProcTextures; then InitTextOverlayLinkedList(400 / 40), InitSpriteOverlayLinkedList.
+        self.textover.free_text_overlay_linked_list();
+        self.overlays.free_sprite_overlay_linked_list();
+        self.sprite.free_sprite_list();
+        self.free_proc_textures();
+        let n = if self.game_state.mode == crate::define::mode::FRONTEND_MODE { 400 } else { 40 };
+        self.textover.init_text_overlay_linked_list(n);
+        self.overlays.init_sprite_overlay_linked_list();
     }
 
     /// The data half of `InitLevel` (Common/layout.c:670): frees the previous level,
@@ -603,6 +615,7 @@ impl Game {
             self.frogger.player[0].character = FROG_FROGGER;
         }
 
+        self.load_language(data); // wave E: gameTextInit (once)
         self.layout.loading_level = true;
         self.free_all_lists();
         self.layout.loading_level = false;
@@ -612,7 +625,9 @@ impl Game {
         self.act_frame_count = 0;
         self.frame_count = 1;
         // TODO(port): InitTiming(60); StoryStartLevel() in story mode.
-        // TODO(port): InitSpriteList, InitSpriteSortArray, InitSampleList, InitAmbientSoundList.
+        // wave E: InitSpriteList
+        self.sprite.init_sprite_list();
+        // TODO(port): InitSpriteSortArray (renderer), InitSampleList, InitAmbientSoundList.
 
         // ------ Load data from disk ------------
         if let Some(f) = texture_bank_file(INGAMEGENERIC_TEX_BANK) {
@@ -638,7 +653,17 @@ impl Game {
 
         self.load_visual_banks_for_world(world, level, data, &mut out)?;
 
-        // TODO(port): InitSpecFXList, InitParticleList, PTTextureLoad.
+        // wave E: InitSpecFXList, InitParticleList, PTTextureLoad
+        self.init_spec_fx_list();
+        self.particle.init_particle_list();
+        let banks: Vec<_> = out
+            .texture_banks
+            .iter()
+            .filter_map(|f| data.read(f))
+            .filter_map(|b| f2_formats::fla::maybe_decompress(b).ok())
+            .filter_map(|b| f2_formats::texture::TexBank::parse(&b).ok())
+            .collect();
+        self.pt_texture_load(&banks);
         self.init_baby_list(true);
         self.init_enemy_linked_list();
         self.init_platform_linked_list();
@@ -689,13 +714,15 @@ impl Game {
             self.level_files.sfx_mapping = maps;
         }
 
-        // TODO(port): InitInGameTextOverlays; player[0].lives = numLives[difficulty]
+        // wave E: InitInGameTextOverlays
+        self.init_in_game_text_overlays(world, level);
+        // TODO(port): player[0].lives = numLives[difficulty]
         // (outside demo/story/frontend).
         self.frogger.player[0].spawn_timer = 0;
         self.frogger.player[0].spawn_score_level = 1;
         self.game.score_timer.init(90);
         if world == worldid::FRONTEND || self.game_state.multi != crate::define::SINGLEPLAYER {
-            // TODO(port): garibCount/creditCount/babyIcons overlays hidden, countdownTimer = 0.
+            self.hide_level_counters(); // wave E
             if world == worldid::FRONTEND && level == LEVELID_FRONTEND1 {
                 self.frogger.num_frogs = 1;
                 self.game_state.multi = crate::define::SINGLEPLAYER;

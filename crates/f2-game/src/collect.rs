@@ -392,11 +392,7 @@ impl Game {
         self.create_special_effect_direct(ty, origin, normal, size, speed, accn, lifetime)
     }
 
-    /// `CreatePickupEffect(pl, r1, g1, b1, r2, g2, b2)` (Common/specfx.c:2259).
-    // TODO(port): specfx.c - creates four FXTYPE_SPARKLYTRAIL effects with
-    // CreateSpecialEffectDirect (draws Random()); move to specfx.rs when ported.
-    #[allow(clippy::too_many_arguments)]
-    fn create_pickup_effect(&mut self, _pl: i32, _r1: u8, _g1: u8, _b1: u8, _r2: u8, _g2: u8, _b2: u8) {}
+    // wave E: `CreatePickupEffect` moved to specfx.rs.
 
     /// Port of `InitGaribList` (Common/collect.c:351): initialises the garib linked list.
     pub fn init_garib_list(&mut self) {

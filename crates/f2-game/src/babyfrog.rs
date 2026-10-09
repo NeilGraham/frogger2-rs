@@ -272,9 +272,7 @@ impl Game {
         1
     }
 
-    /// `BabyCollectEffect(baby, tile, i)` (Common/specfx.c:2323).
-    // TODO(port): specfx.c (creates effects, draws Random()); move to specfx.rs.
-    fn baby_collect_effect(&mut self, _baby: Option<ActorId>, _tile: Option<TileId>, _i: i32) {}
+    // wave E: `BabyCollectEffect` moved to specfx.rs.
 
     /// Port of `GetNearestBabyFrog` (Common/babyfrog.c:250): index of the nearest
     /// unsaved, drawn baby, or -1.
