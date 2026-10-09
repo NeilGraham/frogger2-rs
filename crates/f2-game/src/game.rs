@@ -55,7 +55,7 @@ pub const INPUT_POLLPAUSE: u8 = 10;
 impl Game {
     /// Port of `RunGameLoop` (Common/game.c:529), parts ported so far.
     pub fn run_game_loop(&mut self) {
-        // TODO(port): arcadeHud coin colours when numSpawn == 25 (overlays wave).
+        self.hud_coin_colours(); // wave E
 
         // setup for frogger point of interest
         self.frogger.p_oi_distance = 500000 << 12;
@@ -155,7 +155,7 @@ impl Game {
 
         if self.game_state.multi == SINGLEPLAYER {
             if self.game_state.mode != LEVELCOMPLETE_MODE {
-                // TODO(port): UpDateOnScreenInfo() (overlays wave).
+                self.up_date_on_screen_info(); // wave E
             }
         } else {
             self.run_multiplayer();

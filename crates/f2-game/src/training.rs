@@ -41,7 +41,14 @@ impl Game {
         self.game_state.multi = SINGLEPLAYER;
 
         self.disable_hud();
-        // TODO(merge wave E): arcadeHud.babiesBack[i]->draw = 1; babyIcons[i]->draw = 1.
+        let nb = (self.map.num_babies.max(0) as usize).min(self.hud.arcade_hud.babies_back.len());
+        for i in 0..nb {
+            let bb = self.hud.arcade_hud.babies_back[i];
+            self.overlays.enable(bb);
+            if let Some(Some(ic)) = self.babyfrog.baby_icons.get_mut(i) {
+                ic.draw = 1;
+            }
+        }
 
         let mut bg = UiOverlay::sprite(0, 4096, "SHEEN", 4096, 900, 180);
         bg.speed = 75 << 12;
@@ -94,8 +101,8 @@ impl Game {
                     let g = self.rng.random(256) as u8;
                     let b = self.rng.random(256) as u8;
                     self.set_fx_colour(fx, 255, g, b);
-                    // TODO(merge wave E): fx->rebound point/normal = currTile centre/upVec;
-                    // fx->gravity = 4100.
+                    self.set_fx_rebound(fx, &centre, Some(&UP_VEC));
+                    self.set_fx_gravity(fx, 4100);
                 }
             }
             let last = self.training.last_str.clone();

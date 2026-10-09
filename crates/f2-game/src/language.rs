@@ -52,6 +52,16 @@ pub mod str_id {
     pub const STR_RECORD: i32 = 223;
     pub const STR_CHAR_NAME_1: i32 = 236;
     pub const STR_THE_END: i32 = 250;
+    pub const STR_QUIT_TO_WINDOWS: i32 = 72;
+    pub const STR_CONTINUE: i32 = 100;
+    pub const STR_COLLECTBABIES: i32 = 146;
+    pub const STR_GO: i32 = 147;
+    pub const STR_ROUND_NUM: i32 = 148;
+    pub const STR_OUTOFTIME: i32 = 150;
+    pub const STR_X_SELECT_OPTION: i32 = 218;
+    pub const STR_PAUSE_MODE: i32 = 219;
+    pub const STR_PRESSENTER: i32 = 78;
+    pub const STR_DEMO_MODE: i32 = 247;
 }
 
 /// `gameTextStr` / `gameTextLang` (`PC/isllocal.c:19`, `Common/layout.c:98`).
@@ -61,11 +71,13 @@ pub struct LanguageState {
     pub game_text_lang: i32,
     /// `gameTextStr[]` for the current language (index = `STR_*`); empty until loaded.
     pub game_text_str: Vec<String>,
+    /// `STR_*` id names of `game_text_str` (for code that stores string ids by name).
+    pub game_text_ids: Vec<String>,
 }
 
 impl Default for LanguageState {
     fn default() -> Self {
-        LanguageState { game_text_lang: LANG_DEFAULT, game_text_str: Vec::new() }
+        LanguageState { game_text_lang: LANG_DEFAULT, game_text_str: Vec::new(), game_text_ids: Vec::new() }
     }
 }
 
@@ -87,6 +99,12 @@ impl LanguageState {
         self.game_text_lang = curr_lang;
         let lang = language_of(curr_lang);
         self.game_text_str = (0..num_strings).map(|n| table.by_index(n, lang).unwrap_or("").to_string()).collect();
+        self.game_text_ids = (0..num_strings).map(|n| table.id_by_index(n).unwrap_or("").to_string()).collect();
+    }
+
+    /// Text of the string whose `STR_*` id name is `id` (e.g. `"STR_GO"`); "" if unknown.
+    pub fn gamestring_by_id(&self, id: &str) -> &str {
+        self.game_text_ids.iter().position(|s| s == id).map_or("", |n| self.gamestring(n as i32))
     }
 
     /// `GAMESTRING(n)` (`lang.h:582`).
@@ -101,6 +119,7 @@ impl LanguageState {
     /// `gameTextDestroy()` (PC/isllocal.c:99).
     pub fn game_text_destroy(&mut self) {
         self.game_text_str.clear();
+        self.game_text_ids.clear();
     }
 }
 

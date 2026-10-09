@@ -138,9 +138,12 @@ impl Game {
             return Ok(assets);
         }
         self.levplay.cur_play_key = 0;
-        // TODO(port): CreateAndAddTextOverlay(STR_DEMO_MODE / STR_PRESSENTER) (overlays wave).
+        let s = self.gamestring(crate::language::str_id::STR_DEMO_MODE);
+        self.textover.create_and_add_text_overlay(2048, 128, &s, true, 128, crate::textover::Font::Normal, 0);
+        let s = self.gamestring(crate::language::str_id::STR_PRESSENTER);
+        self.textover.create_and_add_text_overlay(2048, 3500, &s, true, 128, crate::textover::Font::Normal, 0);
         self.levplay.demo_timeout.init(DEMO_TIMEOUT);
-        // TODO(port): DisableHUD() (overlays wave).
+        self.disable_hud();
         Ok(assets)
     }
 

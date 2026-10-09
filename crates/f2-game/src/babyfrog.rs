@@ -241,7 +241,11 @@ impl Game {
                 ic.a = 255;
             }
         }
-        // TODO(port): arcadeHud.babiesBack[n]->r = g = b = 255 (HUD).
+        if let Some(o) = self.hud.arcade_hud.babies_back.get(nu).copied().flatten().and_then(|bb| self.overlays.get_mut(Some(bb))) {
+            o.r = 255;
+            o.g = 255;
+            o.b = 255;
+        }
 
         self.babyfrog.babies_saved = self.babyfrog.babies_saved.wrapping_add(1);
 
@@ -272,9 +276,7 @@ impl Game {
         1
     }
 
-    /// `BabyCollectEffect(baby, tile, i)` (Common/specfx.c:2323).
-    // TODO(port): specfx.c (creates effects, draws Random()); move to specfx.rs.
-    fn baby_collect_effect(&mut self, _baby: Option<ActorId>, _tile: Option<TileId>, _i: i32) {}
+    // wave E: `BabyCollectEffect` moved to specfx.rs.
 
     /// Port of `GetNearestBabyFrog` (Common/babyfrog.c:250): index of the nearest
     /// unsaved, drawn baby, or -1.
@@ -403,7 +405,9 @@ impl Game {
                     let fx = self.create_special_effect_direct_pending(FXTYPE_CROAK, &pos, &up, 81920, 4096, 410, 6144);
                     if fx.is_some() {
                         let n = self.baby_icon_index(i) as usize;
-                        // TODO(port): fx->spin = 25 (specfx state).
+                        if let Some(f) = fx {
+                            self.specfx.fx_mut(f).spin = 25;
+                        }
                         // BUG(original): babyList[n] with a bad offset2 reads past the array.
                         if let Some(c) = self.babyfrog.baby_list.get(n).map(|b| b.fx_colour) {
                             self.set_fx_colour(fx, c[0], c[1], c[2]);
@@ -440,22 +444,30 @@ impl Game {
         if b.collect < 1 {
             let act_pos = self.actor2.actors[baby].actor.position;
             let colour = self.babyfrog.baby_list[bby].fx_colour;
-            // TODO(port): each fx: rebound->point = currTile[0]->centre; gravity = 2870.
+            let ct = self.frogmove.curr_tile[0].map_or(SVector::default(), |t| self.map.tiles[t.idx()].centre);
             let fx = self.create_special_effect_direct_pending(FXTYPE_SPARKLYTRAIL, &act_pos, &up, 204800, 12288, 0, 20480);
             if fx.is_some() {
                 self.set_fx_colour(fx, colour[0], colour[1], colour[2]);
+                self.set_fx_rebound(fx, &ct, None);
+                self.set_fx_gravity(fx, 2870);
             }
             let fx = self.create_special_effect_direct_pending(FXTYPE_SPARKLYTRAIL, &act_pos, &up, 163840, 1240, 0, 24576);
             if fx.is_some() {
                 self.set_fx_colour(fx, 220, 220, 220);
+                self.set_fx_rebound(fx, &ct, None);
+                self.set_fx_gravity(fx, 2870);
             }
             let fx = self.create_special_effect_direct_pending(FXTYPE_SPARKLYTRAIL, &act_pos, &up, 122880, 8192, 0, 28672);
             if fx.is_some() {
                 self.set_fx_colour(fx, colour[0], colour[1], colour[2]);
+                self.set_fx_rebound(fx, &ct, None);
+                self.set_fx_gravity(fx, 2870);
             }
             let fx = self.create_special_effect_direct_pending(FXTYPE_SPARKLYTRAIL, &act_pos, &up, 81920, 6144, 0, 32768);
             if fx.is_some() {
                 self.set_fx_colour(fx, 220, 220, 220);
+                self.set_fx_rebound(fx, &ct, None);
+                self.set_fx_gravity(fx, 2870);
             }
             self.actor2.actors[baby].draw = 0;
             self.babyfrog.baby_list[bby].collect = 0;

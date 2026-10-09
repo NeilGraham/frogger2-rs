@@ -962,6 +962,7 @@ mod tests {
     #[test]
     fn grabs_powerup_garib() {
         let mut g = game();
+        g.init_spec_fx_list();
         add_scenic(&mut g, sv(0, 0, 200));
         let gb =
             crate::collect::Garib { active: 1, garib_type: QUICKHOP_GARIB as u8, fx: Some(crate::ids::SpecFxId(0)), pos: sv(0, 0, 400), ..Default::default() };

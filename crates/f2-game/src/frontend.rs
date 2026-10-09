@@ -656,7 +656,8 @@ impl Game {
 
     /// Port of `StartLevelComplete` (Common/frontend.c:1158).
     pub fn start_level_complete(&mut self) {
-        // arcadeHud.coinZoom->draw = 0: TODO(merge wave E).
+        let cz = self.hud.arcade_hud.coin_zoom;
+        self.overlays.disable(cz);
         self.frontend.check_menu_keys = 1;
 
         if let Some(f) = self.frogger.frog[0] {
@@ -670,7 +671,9 @@ impl Game {
 
         self.frontend.coins_missed = 0;
         self.frontend.coin_counter = 0;
-        // arcadeHud.collectText->draw = 0: TODO(merge wave E).
+        self.collect.collect_text.draw = 0;
+        let ct = self.hud.arcade_hud.collect_text;
+        self.textover.disable(ct);
 
         self.free_ambient_sound_list();
         self.screen_fade(0, 255, 20);
@@ -724,7 +727,7 @@ impl Game {
         for id in self.actor2.act_list.ids(&self.actor2.actors) {
             self.actor2.actors[id].draw = 0;
         }
-        // sprList: every sprite's draw = 0. TODO(merge wave E): sprite list.
+        self.hide_all_sprites();
 
         self.frontend.create_time = self.act_frame_count.wrapping_add(CREATE_FRAMES);
         self.frontend.more_coins = 0;
@@ -1354,7 +1357,7 @@ impl Game {
         self.fadeout.fade_text = false;
 
         let mut mg = MultiGameWin::default();
-        // multiHud.centreText->yPos = 1600: TODO(merge wave E).
+        // multiHud.centreText->yPos = 1600: TODO(port hud.c multi HUD).
         match self.multi.multiplayer_mode {
             MULTIMODE_RACE => {
                 self.game_state.mode = MULTI_WINRACE_MODE;
@@ -1371,7 +1374,7 @@ impl Game {
             MULTIMODE_COLLECT | MULTIMODE_BATTLE => {
                 mg.mode = MGW_MOVING;
                 self.game.mode_timer.init(3);
-                // countdownString / multiHud.centreText: TODO(merge wave E/multi).
+                // countdownString / multiHud.centreText: TODO(port hud.c multi HUD).
                 self.game_state.mode = MULTI_WINCOLLECT_MODE;
             }
             _ => {}
@@ -1381,7 +1384,7 @@ impl Game {
         if self.multi_match_winner() != -1 {
             self.backdrop.draw_game = false;
             self.init_tiled_backdrop("LOGO");
-            // every sprite's draw = 0: TODO(merge wave E).
+            self.hide_all_sprites();
         }
     }
 
@@ -1413,7 +1416,7 @@ impl Game {
                     num_arrived += 1;
                 }
             }
-            // backChars / penaliseText slides: TODO(merge wave E).
+            // backChars / penaliseText slides: TODO(port hud.c multi HUD).
             if num_arrived == num_frogs {
                 mg.mode = MGW_COUNTING;
                 mg.countdown = 0;
@@ -1439,7 +1442,7 @@ impl Game {
                 } else if n + 1 < num_frogs {
                     self.frontend.mg_win.as_mut().expect("mgWin").current += 1;
                 } else {
-                    // trophies drawn: TODO(merge wave E).
+                    // trophies drawn: TODO(port hud.c multi HUD).
                     self.frontend.mg_win.as_mut().expect("mgWin").mode = MGW_FLASHING;
                     self.game.mode_timer.init(3);
                 }
@@ -1469,7 +1472,7 @@ impl Game {
                 self.multi_win_next_round();
             }
         }
-        self.update_multiplayer_info();
+        self.up_date_multiplayer_info();
     }
 
     /// Port of `RunMultiWinCollect` (Common/frontend.c:822): mode flow (HUD visuals wave E).
@@ -1630,18 +1633,14 @@ impl Game {
         false
     }
 
-    /// `DisableHUD()` (Common/hud.c:487). TODO(merge wave E).
-    pub fn disable_hud(&mut self) {}
-
     /// `arcadeHud.timeOutText->draw` (Common/hud.c): the hard-mode time ran out.
-    /// TODO(merge wave E).
     pub fn arcade_hud_time_out_draw(&self) -> bool {
-        false
+        self.textover.get(self.hud.arcade_hud.time_out_text).is_some_and(|t| t.draw != 0)
     }
 
-    /// `storeFrameCount` (Common/hud.c:112): frame the level clock started. TODO(merge wave E).
+    /// `storeFrameCount` (Common/hud.c:112): frame the level clock started.
     pub fn hud_store_frame_count(&self) -> u32 {
-        0
+        self.hud.store_frame_count as u32
     }
 
     /// `matchWinner` (Common/multi.c). 
@@ -1665,9 +1664,6 @@ impl Game {
         self.multi.mpl[i].penalty = penalty as u32;
         self.multi.mpl[i].timer = timer as u32;
     }
-
-    /// `UpDateMultiplayerInfo()` (Common/hud.c). TODO(merge wave E/multi).
-    pub fn update_multiplayer_info(&mut self) {}
 }
 
 /// `TEXTOVERLAY_SHADOW` (`textover.h`).

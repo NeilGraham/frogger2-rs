@@ -30,7 +30,6 @@ use crate::ids::{ActorId, EnemyId, TileId};
 use crate::layout::worldid;
 use crate::levplay::{PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_START, PAD_UP};
 use crate::map::SCALE;
-use crate::specfx::{FXTYPE_FLASH, FXTYPE_SMOKEBURST, FXTYPE_WAKE};
 use crate::timer::Timer;
 use crate::Game;
 
@@ -808,21 +807,13 @@ impl Game {
     /// `UpDateMultiplayerInfo` (Common/hud.c:581): HUD text only (countdown string, round
     /// number, wins/penalty strings); no gameplay state, no `Random()`.
     pub fn up_date_multiplayer_info(&mut self) {
-        // TODO(merge hud): port with the HUD (reads multiTimer, mpl[], gameWinner).
+        // TODO(port hud.c multi HUD): port with the HUD (reads multiTimer, mpl[], gameWinner).
     }
 
     /// `TransformPoint` (PC/pcmisc.cpp): world -> screen position of a text overlay.
     /// TODO(merge camera/hud): needs the view transform; returns the origin until then.
     pub fn transform_point(&self, _pos: &SVector) -> (i32, i32) {
         (0, 0)
-    }
-
-    /// Port of `IsPointVisible` (Common/multi.c:1741, PC branch): projects the point with
-    /// the current view and tests it against the screen rectangle.
-    /// TODO(merge camera): needs `XfmPoint` and the camera matrix; every point counts as
-    /// visible until then (so race frogs are never killed for leaving the screen).
-    pub fn is_point_visible(&self, _pos: &SVector) -> bool {
-        true
     }
 
     /// Port of `RaceRespawn` (Common/multi.c:768): teleport frog to a non-dead player.
@@ -1099,9 +1090,7 @@ impl Game {
             self.mp_sample("getbabyfrog"); // genSfx[GEN_COLLECT_BABY]
             self.play_voice(pl, "frogokay");
 
-            // TODO(merge specfx): BabyCollectEffect(baby->nmeActor, baby->inTile, n)
-            // (specfx.c:2323; draws Random()).
-            let _ = (in_tile, n);
+            self.baby_collect_effect(nme_actor, in_tile, n);
         }
     }
 
@@ -1264,7 +1253,8 @@ impl Game {
                     }
                 }
 
-                // TODO(merge specfx): FreeSpecFXList(); InitSpecFXList();
+                self.free_spec_fx_list();
+                self.init_spec_fx_list();
                 self.free_garib_list();
                 self.init_garib_list();
                 self.alloc_garib_block(MULTI_BATTLE_MAXITEMS as i32);
@@ -1494,10 +1484,10 @@ impl Game {
             m.penalty = 0;
             m.score = 0;
             m.wins = 0;
-            // TODO(merge hud): multiHud.trophies[i][0..3]->draw = 0.
+            // TODO(port hud.c multi HUD): multiHud.trophies[i][0..3]->draw = 0.
         }
         self.reset_multiplayer();
-        // TODO(merge hud): multiHud.centreText->draw = 1; EnableHUD().
+        // TODO(port hud.c multi HUD): multiHud.centreText->draw = 1; EnableHUD().
     }
 
     /// Port of `PlayerRaceWin` (Common/multi.c:1813).
@@ -1510,7 +1500,8 @@ impl Game {
             self.actor_animate(f, FROG_ANIM_HANDSPRING, false, true, 80, false);
             self.actor_animate(f, FROG_ANIM_BREATHE, true, true, 50, false);
         }
-        // TODO(merge specfx): CreatePickupEffect(pl, frogPool[c].r, .g, .b, 255, 255, 255).
+        let c = self.frogger.frog_pool(self.frogger.player[p].character as usize % crate::frogger::FROG_NUMFROGS);
+        self.create_pickup_effect(pl, c.r, c.g, c.b, 255, 255, 255);
     }
 
     /// Port of `TeleportActorToTile` (Common/actor2.c:1230).
@@ -1542,29 +1533,6 @@ impl Game {
         orientate_ss(&mut self.actor2.actors[act].actor.q_rot, &dv, &normal);
     }
 
-    /// Port of `CreateRespawnEffect` (Common/specfx.c:2405): for multiplayer and swampy.
-    /// TODO(merge specfx): move to specfx.rs (keep one copy).
-    pub fn create_respawn_effect(&mut self, tile: TileId, pl: i32) {
-        let t = self.map.tile(tile);
-        let (centre, normal) = (t.centre, t.normal);
-        let mut pos = ff_from_s(&normal);
-        scale_vector(&mut pos, 50);
-        add_to_vector_fs(&mut pos, &centre);
-        let mut tp = SVector::default();
-        set_vector_sf(&mut tp, &pos);
-        let up = ff_from_s(&normal);
-        let c = self.frogger.frog_pool(self.frogger.player[pl as usize].character as usize % crate::frogger::FROG_NUMFROGS);
-
-        let fx = self.create_special_effect_direct(FXTYPE_SMOKEBURST, &tp, &up, 262144, 8192, 410, 6963);
-        self.set_fx_colour(fx, c.r, c.g, c.b);
-        let fx = self.create_special_effect_direct(FXTYPE_SMOKEBURST, &tp, &up, 327680, 8192, 410, 6963);
-        self.set_fx_colour(fx, c.r, c.g, c.b);
-
-        let fx = self.create_special_effect_direct(FXTYPE_WAKE, &tp, &up, 81920, 410, 205, 2048);
-        self.set_fx_colour(fx, c.r, c.g, c.b);
-
-        self.create_special_effect(FXTYPE_FLASH, &tp, &up, 0, 12384, 512, 2048);
-    }
 }
 
 #[cfg(test)]

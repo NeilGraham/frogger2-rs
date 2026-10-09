@@ -28,6 +28,7 @@ pub mod frogmove;
 pub mod frontend;
 pub mod game;
 pub mod general;
+pub mod hud; // wave E
 pub mod ids;
 pub mod language;
 pub mod layout;
@@ -37,15 +38,20 @@ pub mod map;
 pub mod mdx_actor;
 pub mod memload;
 pub mod multi;
+pub mod overlays; // wave E
+pub mod particle; // wave E
 pub mod path;
 pub mod pc_actor;
 pub mod pc_banks;
 pub mod pcaudio; // ambient
 pub mod platform;
+pub mod ptexture; // wave E
 pub mod savegame;
 pub mod session;
 pub mod specfx;
+pub mod sprite; // wave E
 pub mod story;
+pub mod textover; // wave E
 pub mod timer;
 pub mod tongue;
 pub mod trace;
@@ -134,6 +140,21 @@ pub struct Game {
     pub backdrop: backdrop::BackdropState,
     /// Data source and level-load queue (host link for `InitLevel`).
     pub session: session::SessionState,
+    // wave E: visual effect state read by the renderer.
+    /// `Common/sprite.c` (`sprList`).
+    pub sprite: sprite::SpriteState,
+    /// `Common/particle.c` (`partList`).
+    pub particle: particle::ParticleState,
+    /// `Common/specfx.c` (`sfxList`, `p2List`, ...).
+    pub specfx: specfx::SpecFxState,
+    /// `Common/overlays.c` (`spriteOverlayList`).
+    pub overlays: overlays::SpriteOverlayState,
+    /// `Common/textover.c` (`textOverlayList`) and the game text table.
+    pub textover: textover::TextOverlayState,
+    /// `Common/hud.c` globals.
+    pub hud: hud::HudState,
+    /// `Common/ptexture.c` (`prcTexList`).
+    pub ptexture: ptexture::ProcTexState,
 }
 
 impl Game {
@@ -161,7 +182,9 @@ impl Game {
         if self.game_state.multi == define::SINGLEPLAYER && self.frogger.frog[0].is_some() {
             self.update_frog_tongue(0);
         }
+        self.draw_loop_3d_state(); // wave E
         self.draw_screen_transition();
+        self.draw_loop_2d_state(); // wave E
     }
 
     /// Drains platform requests produced since the last call.

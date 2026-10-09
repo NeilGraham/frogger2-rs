@@ -164,7 +164,8 @@ impl Game {
         if self.garib(id).fx.is_none() {
             return;
         }
-        // TODO(port): x->fx->sprites->draw = v; x->fx->act[0]->draw = v; (specfx state)
+        let fx = self.garib(id).fx;
+        self.set_fx_draw(fx, v);
         self.garib_mut(id).active = v;
     }
 
@@ -233,13 +234,29 @@ impl Game {
                 }
                 // (fall through to SILVERCOIN_GARIB)
                 if self.game_state.multi == SINGLEPLAYER && self.game_state.mode != DEMO_MODE {
-                    // TODO(port): arcadeHud.coinZoom (draw, xPosTo/yPosTo = coinsOver pos,
-                    // speed 4096*50, TransformPoint(frog pos) -> xPos/yPos, coinZoomX/Y): HUD.
+                    let (cz, co) = (self.hud.arcade_hud.coin_zoom, self.hud.arcade_hud.coins_over);
+                    let (ox, oy) = self.overlays.get(co).map_or((0, 0), |o| (o.x_pos, o.y_pos));
+                    let fpos = self.frogger.frog[p].map(|a| self.actor2.actors[a].actor.position).unwrap_or_default();
+                    // TransformPoint: TODO(port) needs the view transform (multi.rs transform_point).
+                    let (sx, sy) = self.transform_point(&fpos);
+                    if let Some(o) = self.overlays.get_mut(cz) {
+                        o.draw = 1;
+                        o.x_pos_to = ox;
+                        o.y_pos_to = oy;
+                        o.speed = 4096 * 50;
+                        o.x_pos = sx as _;
+                        o.y_pos = sy as _;
+                    }
+                    self.hud.coin_zoom_x = sx;
+                    self.hud.coin_zoom_y = sy;
                 }
 
                 self.frogger.player[p].num_spawn = self.frogger.player[p].num_spawn.wrapping_add(1);
                 if self.game_state.multi == SINGLEPLAYER && self.frogger.player[p].num_spawn == 25 {
-                    // TODO(port): arcadeHud.coinsOver->tex = FindTexture("COINMEDAL") (HUD).
+                    let co = self.hud.arcade_hud.coins_over;
+                    if let Some(o) = self.overlays.get_mut(co) {
+                        o.tex = crate::specfx::find_texture("COINMEDAL");
+                    }
                     self.effects.push(Effect::PlayVoice { player: pl as u8, uid: f2_formats::crc::crc("frogokay") });
                 }
 
@@ -270,8 +287,9 @@ impl Game {
                         let fx = self.create_special_effect(FXTYPE_SPARKLYTRAIL, &sprite_pos, &se_up, 204800, 16384, 0, 24576);
                         if fx.is_some() {
                             self.set_fx_colour(fx, 0, 255, 255);
-                            // TODO(port): fx->rebound->point = frog pos, normal = seUp;
-                            // fx->gravity = 6140 (specfx state).
+                            let fpos = self.frogger.frog[p].map(|a| self.actor2.actors[a].actor.position).unwrap_or_default();
+                            self.set_fx_rebound(fx, &fpos, Some(&se_up));
+                            self.set_fx_gravity(fx, 6140);
                         }
                     }
 
@@ -281,13 +299,15 @@ impl Game {
                 let fx = self.create_special_effect(FXTYPE_SPARKLYTRAIL, &sprite_pos, &se_up, 81920, 8192, 0, 8192);
                 if fx.is_some() {
                     self.set_fx_colour(fx, 255, 255, 255);
-                    // TODO(port): rebound point = sprite pos, normal = seUp; gravity = 8190.
+                    self.set_fx_rebound(fx, &sprite_pos, Some(&se_up));
+                    self.set_fx_gravity(fx, 8190);
                 }
                 let ssl = self.frogger.player[p].spawn_score_level as i32;
                 let fx = self.create_special_effect(FXTYPE_SPARKLYTRAIL, &sprite_pos, &se_up, ssl.wrapping_mul(10) << 12, ssl << 12, 0, 12288);
                 if fx.is_some() {
                     self.set_fx_colour(fx, 255, 255, 0);
-                    // TODO(port): rebound point = sprite pos, normal = seUp; gravity = 4100.
+                    self.set_fx_rebound(fx, &sprite_pos, Some(&se_up));
+                    self.set_fx_gravity(fx, 4100);
                 }
 
                 self.play_sample(gen_collect_coin(), None, 0, SAMPLE_VOLUME, -1);
@@ -302,7 +322,8 @@ impl Game {
                 self.play_sample(gen_powerup(), None, 0, SAMPLE_VOLUME, -1);
 
                 if self.garib(id).fx.is_some() {
-                    // TODO(port): DeallocateFX(garib->fx, 1) (specfx).
+                    let fx = self.garib(id).fx;
+                    self.deallocate_fx(fx, 1);
                 }
 
                 if self.game_state.multi == SINGLEPLAYER {
@@ -373,7 +394,8 @@ impl Game {
         }
 
         if self.collect_battle_mode() {
-            // TODO(port): DeallocateFX(garib->fx, 1) (specfx).
+            let fx = self.garib(id).fx;
+            self.deallocate_fx(fx, 1);
             self.sub_garib(id);
             self.multi.num_multi_items = self.multi.num_multi_items.wrapping_sub(1);
         } else if !(garib_type == AUTOHOP_GARIB || garib_type == QUICKHOP_GARIB || garib_type == SLOWHOP_GARIB || garib_type == INVULNERABILITY_GARIB) {
@@ -396,11 +418,7 @@ impl Game {
         self.create_special_effect_direct(ty, origin, normal, size, speed, accn, lifetime)
     }
 
-    /// `CreatePickupEffect(pl, r1, g1, b1, r2, g2, b2)` (Common/specfx.c:2259).
-    // TODO(port): specfx.c - creates four FXTYPE_SPARKLYTRAIL effects with
-    // CreateSpecialEffectDirect (draws Random()); move to specfx.rs when ported.
-    #[allow(clippy::too_many_arguments)]
-    fn create_pickup_effect(&mut self, _pl: i32, _r1: u8, _g1: u8, _b1: u8, _r2: u8, _g2: u8, _b2: u8) {}
+    // wave E: `CreatePickupEffect` moved to specfx.rs.
 
     /// Port of `InitGaribList` (Common/collect.c:351): initialises the garib linked list.
     pub fn init_garib_list(&mut self) {
@@ -633,10 +651,14 @@ impl Game {
                 g.drop_speed = g.drop_speed.wrapping_sub(step);
 
                 if g.drop_speed <= 0 {
-                    // TODO(port): origin = garib->fx->act[0]->actor->position, normal =
-                    // garib->fx->normal (specfx state); the garib position / upVec until then.
-                    let (pos, rgb) = (g.pos, g.fx_rgb);
-                    let fx = self.create_special_effect(FXTYPE_TWINKLE, &pos, &UP_VEC, 123840, 0, 0, 16384);
+                    let (gfx, gpos) = (g.fx.expect("garib fx"), g.pos);
+                    let (pos, normal, rgb) = {
+                        let e = self.specfx.fx(gfx);
+                        let a0 = e.act.as_ref().and_then(|v| v.first().copied()).flatten();
+                        let pos = a0.map_or(gpos, |a| self.actor2.actors[a].actor.position);
+                        (pos, e.normal, [e.r, e.g, e.b])
+                    };
+                    let fx = self.create_special_effect(FXTYPE_TWINKLE, &pos, &normal, 123840, 0, 0, 16384);
                     if fx.is_some() {
                         self.set_fx_tilt(fx, 4096);
                         self.set_fx_colour(fx, rgb[0], rgb[1], rgb[2]);

@@ -80,6 +80,11 @@ impl StringTable {
         self.rows.get(index - 1).and_then(|r| r.2.get(lang as usize)).map(|s| s.as_str())
     }
 
+    /// `STR_*` id name of enum value `index` (`None` for 0, the header row).
+    pub fn id_by_index(&self, index: usize) -> Option<&str> {
+        index.checked_sub(1).and_then(|i| self.rows.get(i)).map(|r| r.0.as_str())
+    }
+
     /// Number of `STR_*` values (`LANG_NUM_STRINGS`): data rows + the header.
     pub fn num_strings(&self) -> usize {
         self.rows.len() + 1
