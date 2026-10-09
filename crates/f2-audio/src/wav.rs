@@ -13,6 +13,7 @@ pub struct WavStream {
     pub channels: u16,
     pub sample_rate: u32,
     data_start: u64,
+    flac: Option<crate::flac::FlacDecoder>,
     /// Total frames in the data chunk.
     pub frames: u64,
     pos: u64,
@@ -25,6 +26,31 @@ fn bad(msg: &str) -> io::Error {
 impl WavStream {
     pub fn open(path: &Path) -> io::Result<WavStream> {
         Self::from_reader(Box::new(BufReader::with_capacity(64 * 1024, File::open(path)?)))
+    }
+
+    /// Opens `.wav` or `.flac` by extension.
+    pub fn open_any(path: &Path) -> io::Result<WavStream> {
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("flac")) {
+            Self::from_flac_reader(Box::new(BufReader::with_capacity(64 * 1024, File::open(path)?)))
+        } else {
+            Self::open(path)
+        }
+    }
+
+    pub fn from_flac_reader(r: Box<dyn ReadSeek>) -> io::Result<WavStream> {
+        let d = crate::flac::FlacDecoder::from_reader(r)?;
+        if d.total == 0 {
+            return Err(bad("FLAC without total sample count"));
+        }
+        Ok(WavStream {
+            reader: Box::new(io::Cursor::new(Vec::new())),
+            channels: d.channels,
+            sample_rate: d.sample_rate,
+            data_start: 0,
+            frames: d.total,
+            pos: 0,
+            flac: Some(d),
+        })
     }
 
     pub fn from_reader(mut r: Box<dyn ReadSeek>) -> io::Result<WavStream> {
@@ -64,7 +90,7 @@ impl WavStream {
                     let end = r.seek(SeekFrom::End(0))?;
                     let len = len.min(end.saturating_sub(data_start));
                     r.seek(SeekFrom::Start(data_start))?;
-                    return Ok(WavStream { reader: r, channels: chans, sample_rate: rate, data_start, frames: len / (2 * chans as u64), pos: 0 });
+                    return Ok(WavStream { reader: r, channels: chans, sample_rate: rate, data_start, flac: None, frames: len / (2 * chans as u64), pos: 0 });
                 }
                 _ => {
                     r.seek(SeekFrom::Current((len + (len & 1)) as i64))?;
@@ -78,6 +104,11 @@ impl WavStream {
     }
 
     pub fn rewind(&mut self) -> io::Result<()> {
+        if let Some(f) = &mut self.flac {
+            f.rewind()?;
+            self.pos = 0;
+            return Ok(());
+        }
         self.reader.seek(SeekFrom::Start(self.data_start))?;
         self.pos = 0;
         Ok(())
@@ -90,6 +121,11 @@ impl WavStream {
         let want = ((out.len() / 2) as u64).min(self.frames - self.pos) as usize;
         if want == 0 {
             return Ok(0);
+        }
+        if let Some(f) = &mut self.flac {
+            let n = f.read_stereo(out, want)?;
+            self.pos += n as u64;
+            return Ok(n);
         }
         let mut raw = vec![0u8; want * ch * 2];
         self.reader.read_exact(&mut raw)?;
