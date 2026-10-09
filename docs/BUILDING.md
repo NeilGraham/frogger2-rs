@@ -122,3 +122,8 @@ is in `packaging/flatpak/`. The CI `release` job (manual dispatch) runs these sc
   gives several keys/buttons/stick directions per action. Absent = the retail keymap plus the
   default pad mapping; the legacy `keymap` list still loads.
 - `hop_buffer_frames` (enhanced profile only, default 6, 0 = off), `rumble`, `rumble_scale`.
+- In game, **F10** opens the controls screen (simulation paused): Up/Down select, Enter rebinds
+  (press a key / pad button / stick direction; Esc cancels), A adds an extra binding, Backspace
+  resets the action, R resets all. Conflicts are moved to the new action and reported. Changes
+  save to `config.toml`. Pad hot-plug auto-assigns controllers; rumble follows `rumble_scale`.
+  `frogger --headless --level 0 0 --screenshot-rebind --screenshot out.png` renders the screen.

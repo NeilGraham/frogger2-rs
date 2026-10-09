@@ -1,6 +1,7 @@
 //! The game host: fixed 60 Hz simulation, effect dispatch (audio, video, saves) and
 //! interpolated rendering (`docs/architecture.md` §3).
 
+use crate::controls::{Act, ControlsUi};
 use crate::data::Data;
 use crate::overlay::{GameFonts, TileScroll};
 use crate::render::{self, FlyCam, LevelScene, Snap};
@@ -11,8 +12,7 @@ use f2_formats::objbank::ObjectBank;
 use f2_game::define::{mode, MULTILOCAL, SINGLEPLAYER};
 use f2_game::ids::ActorId;
 use f2_game::{Effect, Game, TickInput};
-use f2_platform::input::JoypadState;
-use f2_platform::{dik, DisplaySettings, InputMapper, KeyboardState, PadData, Profile, TextureFilter};
+use f2_platform::{dik, Bindings, ControllerFamily, DisplaySettings, HopBuffer, InputMapper, KeyboardState, PadData, Profile, RawEvent, RawPad, TextureFilter};
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
@@ -43,6 +43,8 @@ pub enum Step {
 pub struct Requests {
     pub quit: bool,
     pub toggle_fullscreen: bool,
+    /// Bindings were edited in the controls screen: persist them.
+    pub save_bindings: bool,
 }
 
 pub struct App {
@@ -67,6 +69,18 @@ pub struct App {
     video_queue: VecDeque<String>,
     // input
     pub mapper: InputMapper,
+    /// Multi-binding table (keys + pad inputs); keys are mirrored into `mapper`.
+    pub bindings: Bindings,
+    pub deadzone: f32,
+    /// One enhanced-profile hop buffer per player; the window applies in the enhanced profile.
+    hop: [HopBuffer; 4],
+    pub hop_frames: u32,
+    /// Controller family per player (button prompts), set by the host.
+    pub families: [ControllerFamily; 4],
+    /// The F10 rebinding screen (simulation paused while open).
+    pub controls: Option<ControlsUi>,
+    /// Rumble requests `(player, strength, frames)` for the host to route to the pads.
+    pub rumble: Vec<(u8, u8, u16)>,
     pad: PadData,
     /// Keyboard state accumulated since the last tick (key-down events must not be lost on
     /// frames without a tick).
@@ -131,6 +145,13 @@ impl App {
             video: None,
             video_queue: VecDeque::new(),
             mapper,
+            bindings: Bindings::default(),
+            deadzone: f2_platform::bindings::DEFAULT_DEADZONE,
+            hop: Default::default(),
+            hop_frames: 0,
+            families: [ControllerFamily::Generic; 4],
+            controls: None,
+            rumble: Vec::new(),
             pad: PadData::default(),
             kb: KeyboardState::default(),
             acc: Duration::ZERO,
@@ -473,10 +494,74 @@ impl App {
 
     // ------------------------------------------------------------ frame update
 
+    /// Sets the input tables from the config (`Config::bindings` etc.).
+    pub fn set_input(&mut self, bindings: Bindings, deadzone: f32, hop_frames: u32) {
+        self.bindings = bindings;
+        self.deadzone = deadzone;
+        self.hop_frames = hop_frames;
+    }
+
+    /// Re-applies the keyboard part of `bindings` to the mapper and asks the host to save.
+    fn apply_bindings(&mut self) {
+        self.mapper.keymap = self.bindings.to_keymap();
+        self.mapper.extra_keys = self.bindings.extra_keys();
+        self.requests.save_bindings = true;
+    }
+
+    /// Opens (or closes) the rebinding screen.
+    pub fn toggle_controls(&mut self) {
+        self.controls = match self.controls {
+            Some(_) => None,
+            None => Some(ControlsUi::default()),
+        };
+        self.kb.pressed.clear();
+        self.kb.down = [false; 256];
+        self.acc = Duration::ZERO;
+    }
+
+    /// A raw pad event (button / strong stick push) from the host.
+    pub fn pad_event(&mut self, ev: RawEvent) {
+        if let Some(ui) = &mut self.controls {
+            if ui.raw(&mut self.bindings, ev) == Act::Changed {
+                self.apply_bindings();
+            }
+        }
+    }
+
+    /// A key press routed to the rebinding screen.
+    pub fn controls_key(&mut self, k: u8) {
+        let Some(ui) = &mut self.controls else { return };
+        match ui.key(&mut self.bindings, k) {
+            Act::None => {}
+            Act::Changed => self.apply_bindings(),
+            Act::Close => self.toggle_controls(),
+        }
+    }
+
+    /// Whether player `i` can start a hop now (the `GameProcessController` condition:
+    /// `canJump`, no input pause, not stunned/dead, no pending hop request). Read-only.
+    fn can_accept_hop(&self, i: usize) -> bool {
+        let g = &self.game;
+        if g.game_state.mode != mode::INGAME_MODE || i as i32 >= g.frogger.num_frogs {
+            return true;
+        }
+        let p = &g.frogger.player[i];
+        p.can_jump != 0
+            && p.input_pause == 0
+            && p.stun.time == 0
+            && p.dead.time == 0
+            && p.frog_state & (f2_game::frogmove::FROGSTATUS_ISDEAD | f2_game::frogmove::FROGSTATUS_ALLHOPFLAGS) == 0
+    }
+
     /// Hotkeys handled by the host (not the game).
     fn hotkeys(&mut self, pressed: &[u8]) {
         for &k in pressed {
+            if self.controls.is_some() {
+                self.controls_key(k);
+                continue;
+            }
             match k {
+                dik::F10 if self.video.is_none() => self.toggle_controls(),
                 dik::ESCAPE if self.video.is_some() => self.end_video(),
                 dik::RETURN | dik::NUMPADENTER if self.video.is_some() => self.end_video(),
                 dik::ESCAPE => self.requests.quit = true,
@@ -494,8 +579,14 @@ impl App {
     }
 
     /// One presented frame: input, simulation ticks (fixed 60 Hz with accumulator), video.
-    pub fn update(&mut self, dt: Duration, kb: &KeyboardState, joypads: &[Option<JoypadState>], focused: bool) {
+    pub fn update(&mut self, dt: Duration, kb: &KeyboardState, joypads: &[Option<RawPad>], focused: bool) {
         self.hotkeys(&kb.pressed);
+        if self.controls.is_some() {
+            // Simulation paused while the rebinding screen is open.
+            self.kb.pressed.clear();
+            self.acc = Duration::ZERO;
+            return;
+        }
         self.kb.down = kb.down;
         self.kb.pressed.extend_from_slice(&kb.pressed);
         self.mapper.window_active = focused;
@@ -535,7 +626,7 @@ impl App {
     }
 
     /// One 60 Hz simulation step.
-    pub fn tick(&mut self, joypads: &[Option<JoypadState>]) {
+    pub fn tick(&mut self, raw: &[Option<RawPad>]) {
         self.prev = render::snapshot(&self.game);
         self.prev_cam = Some(render::game_camera(&self.game));
         let mut kb = std::mem::take(&mut self.kb);
@@ -544,7 +635,15 @@ impl App {
             kb.down = [false; 256];
             kb.pressed.clear();
         }
-        self.mapper.process(&mut self.pad, &kb, joypads);
+        let joypads = self.bindings.joypad_states(&self.mapper.controllers, raw, self.deadzone);
+        self.mapper.process(&mut self.pad, &kb, &joypads);
+        let window = if self.profile == Profile::Enhanced { self.hop_frames } else { 0 };
+        for i in 0..4 {
+            self.hop[i].window = window;
+            let can = self.can_accept_hop(i);
+            let p = self.hop[i].apply(self.pad.pad(i), can);
+            self.pad.set_pad(i, p);
+        }
         self.kb.down = kb.down;
         let mut pads = [0u16; 4];
         pads.copy_from_slice(&self.pad.digital[..4]);
@@ -637,7 +736,7 @@ impl App {
                     eprintln!("frogger: saving {}: {e}", path.display());
                 }
             }
-            Effect::Rumble { .. } => {} // TODO: gilrs force feedback.
+            Effect::Rumble { player, strength, frames } => self.rumble.push((player, strength, frames)),
             Effect::Log { text } => {
                 if std::env::var_os("F2_GAME_LOG").is_some() {
                     eprintln!("game: {text}");
@@ -726,6 +825,9 @@ impl App {
             self.audio.set_listener(Listener { cam_source: s.map(|x| (x * 10.0 * 4096.0) as i32), view: self.r.view.v_matrix });
         }
         self.draw_hud();
+        if let (Some(ui), Some(font)) = (&self.controls, self.font_id) {
+            ui.draw(&mut self.r, font, &self.bindings, self.families[0]);
+        }
     }
 
     fn draw_hud(&mut self) {

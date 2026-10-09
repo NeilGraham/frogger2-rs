@@ -10,11 +10,12 @@
 //! `--frontend` the frontend level (start screen), `--multi W L N` local multiplayer with
 //! N frogs, `--demo W L` a recorded demo, `--boot` the game's own start-up (title, logo
 //! FMVs, frontend).
-//! Keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos);
+//! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 fullscreen, Esc quit (Enter/Esc skip videos);
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
 mod app;
+mod controls;
 mod data;
 mod fx;
 mod overlay;
@@ -24,7 +25,8 @@ mod video;
 use app::{App, Step};
 use f2_audio::AudioEngine;
 use f2_engine::{GpuContext, WindowSurface};
-use f2_platform::gamepad::Gamepads;
+use f2_platform::bindings::auto_assign;
+use f2_platform::gamepad::{Gamepads, PadEvent};
 use f2_platform::window::{self, winit, Flow, WindowApp, WindowConfig};
 use f2_platform::{Config, Profile};
 use std::path::PathBuf;
@@ -48,14 +50,15 @@ struct Args {
     msaa: Option<u32>,
     render_scale: Option<f32>,
     hud_probe: bool,
+    screenshot_rebind: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: frogger [--data DIR] [--mute] [--level WORLD LEVEL | --frontend | --boot | --multi WORLD LEVEL FROGS | --demo WORLD LEVEL] [--size WxH] [--fullscreen]\n\
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
-         display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe]\n\
-         keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
+         display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
+         keys: F1 free camera, F2 tile overlay, F10 controls, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
          \x20     F9 fog, F12 draw distance"
     );
@@ -80,6 +83,7 @@ fn parse_args() -> Args {
         msaa: None,
         render_scale: None,
         hud_probe: false,
+        screenshot_rebind: false,
     };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
@@ -124,6 +128,7 @@ fn parse_args() -> Args {
             "--msaa" => a.msaa = Some(num(it.next())),
             "--render-scale" => a.render_scale = Some(it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
             "--hud-probe" => a.hud_probe = true,
+            "--screenshot-rebind" => a.screenshot_rebind = true,
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -195,6 +200,7 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     let ctx = GpuContext::new_headless().map_err(|e| e.to_string())?;
     let mut app = App::new(data, &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), cfg.input_mapper());
     app.set_display(cfg.profile, cfg.display_settings(Profile::Enhanced));
+    app.set_input(cfg.bindings(), cfg.input.deadzone, cfg.hop_buffer_frames(Profile::Enhanced));
     app.hud_probe = args.hud_probe;
     app.push_steps(steps);
     let kb = f2_platform::KeyboardState::default();
@@ -225,6 +231,15 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
         // Videos are skipped headless (the simulation would wait for them).
         while app.video.is_some() {
             app.end_video();
+        }
+    }
+    if args.screenshot_rebind {
+        // Demo of the F10 screen: rebind Down to Up's key (conflict message), then start
+        // capturing for the Cross row.
+        use f2_platform::dik;
+        app.toggle_controls();
+        for k in [dik::DOWN, dik::RETURN, dik::UP, dik::DOWN, dik::DOWN, dik::DOWN, dik::RETURN] {
+            app.controls_key(k);
         }
     }
     app.draw(w, h);
@@ -309,6 +324,14 @@ impl WindowApp for Host {
                 );
                 let mut app = App::new(self.data.take().expect("data"), &g.ctx.device, &g.ctx.queue, g.surface.config.format, audio, mapper);
                 app.set_display(self.cfg.profile, self.cfg.display_settings(Profile::Enhanced));
+                app.set_input(self.cfg.bindings(), self.cfg.input.deadzone, self.cfg.hop_buffer_frames(Profile::Enhanced));
+                if let Some(p) = &mut self.gamepads {
+                    p.rumble_scale = if self.cfg.input.rumble { self.cfg.input.rumble_scale } else { 0.0 };
+                    p.set_controllers(app.mapper.controllers);
+                    for i in 0..4 {
+                        app.families[i] = p.family_for_player(i);
+                    }
+                }
                 app.hud_probe = self.hud_probe;
                 app.push_steps(std::mem::take(&mut self.steps));
                 self.app = Some(app);
@@ -334,8 +357,46 @@ impl WindowApp for Host {
         let dt = now - self.last;
         self.last = now;
 
-        let joypads = self.gamepads.as_mut().map(|p| p.poll()).unwrap_or_default();
-        app.update(dt, frame.keyboard, &joypads, frame.focused);
+        let mut raw: [Option<f2_platform::RawPad>; 4] = Default::default();
+        if let Some(p) = &mut self.gamepads {
+            raw = p.poll_raw();
+            let mut replug = false;
+            for ev in p.take_events() {
+                match ev {
+                    PadEvent::Connected { name, .. } => {
+                        eprintln!("frogger: gamepad connected: {name}");
+                        replug = true;
+                    }
+                    PadEvent::Disconnected { slot } => {
+                        eprintln!("frogger: gamepad {slot} disconnected");
+                        replug = true;
+                    }
+                    PadEvent::Raw { event, .. } => app.pad_event(event),
+                }
+            }
+            if replug {
+                let c = auto_assign(&app.mapper.controllers, p.count());
+                app.mapper.controllers = c;
+                p.set_controllers(c);
+                for i in 0..4 {
+                    app.families[i] = p.family_for_player(i);
+                }
+            }
+        }
+        app.update(dt, frame.keyboard, &raw, frame.focused);
+        if let Some(p) = &mut self.gamepads {
+            for (player, strength, frames) in app.rumble.drain(..) {
+                p.rumble(player, strength, frames);
+            }
+        } else {
+            app.rumble.clear();
+        }
+        if std::mem::take(&mut app.requests.save_bindings) {
+            self.cfg.set_bindings(&app.bindings);
+            if let Err(e) = self.cfg.save_default() {
+                eprintln!("frogger: saving config: {e}");
+            }
+        }
         if app.requests.quit {
             return Flow::Exit;
         }
