@@ -612,12 +612,13 @@ impl Game {
         self.layout.loading_level = true;
         self.free_all_lists();
         self.layout.loading_level = false;
-        // TODO(port): restartingLevel = NO; InitLoadingScreen.
+        // FreeAllLists' story FMV, restartingLevel = NO, InitLoadingScreen, StoryStartLevel.
+        self.init_level_after_free();
 
         self.last_act_frame_count = 0;
         self.act_frame_count = 0;
         self.frame_count = 1;
-        // TODO(port): InitTiming(60); StoryStartLevel() in story mode.
+        // TODO(port): InitTiming(60) (host).
         // TODO(port): InitSpriteList, InitSpriteSortArray, InitSampleList, InitAmbientSoundList.
 
         // ------ Load data from disk ------------
@@ -704,8 +705,8 @@ impl Game {
             }
         }
 
-        // TODO(port): InitInGameTextOverlays; player[0].lives = numLives[difficulty]
-        // (outside demo/story/frontend).
+        // TODO(port): InitInGameTextOverlays (wave E).
+        self.init_level_lives();
         self.frogger.player[0].spawn_timer = 0;
         self.frogger.player[0].spawn_score_level = 1;
         self.game.score_timer.init(90);
@@ -718,10 +719,11 @@ impl Game {
         }
         // TODO(port): InitTiming(60).
         self.act_frame_count = 0;
-        // TODO(port): drawLandscape, ScreenFade, InitTrainingMode (FRONTEND4) / train = 0,
-        // LoadDemoFile, moolard cheat file, SetMusicVolume.
-        self.prepare_song(world as i16, true); // ambient: PrepareSong(worldID, 1) (useAudio)
-        self.un_pause_audio(); // ambient
+        // ambient: un_pause_audio (PrepareSong happens in init_level_finish)
+        self.un_pause_audio();
+        // drawLandscape, ScreenFade, InitTrainingMode (FRONTEND4) / train = 0, PrepareSong.
+        // TODO(port): moolard cheat file.
+        self.init_level_finish(world, level);
         self.frogger.player[0].old_lives = self.frogger.player[0].lives;
         self.game.start_cam = 1;
         self.game.end_level_timer.init(0);

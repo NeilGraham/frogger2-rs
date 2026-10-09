@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use crate::actor2::{orientate, orientate_ss};
 use crate::anim::SAMPLE_VOLUME;
 use crate::babyfrog::{BABY_ANIM_SNOOZE, NUM_BABIES};
-use crate::define::mode::{MULTI_WINCOLLECT_MODE, MULTI_WINRACE_MODE};
 use crate::define::{tilestate, DIFFICULTY_HARD};
 use crate::enemies::ENEMY_NEW_BATTLEMODE;
 use crate::frogger::{
@@ -1514,21 +1513,6 @@ impl Game {
         // TODO(merge specfx): CreatePickupEffect(pl, frogPool[c].r, .g, .b, 255, 255, 255).
     }
 
-    /// The game-state part of `StartMultiWinGame` (Common/frontend.c:510): switches to
-    /// the win screen mode. Note battle uses `MULTI_WINCOLLECT_MODE` too.
-    /// TODO(merge frontend): the frontend port owns the screen (fade, `mgWin`, texts,
-    /// match-winner backdrop); keep one copy of this function.
-    pub fn start_multi_win_game(&mut self) {
-        match self.multi.multiplayer_mode {
-            MULTIMODE_RACE => self.game_state.mode = MULTI_WINRACE_MODE,
-            MULTIMODE_COLLECT | MULTIMODE_BATTLE => {
-                self.game.mode_timer.init(3);
-                self.game_state.mode = MULTI_WINCOLLECT_MODE;
-            }
-            _ => {}
-        }
-    }
-
     /// Port of `TeleportActorToTile` (Common/actor2.c:1230).
     /// TODO(merge events): dedupe if the events/scripts port adds it to actor2.rs.
     pub fn teleport_actor_to_tile(&mut self, act: ActorId, tile: TileId, pl: i32) {
@@ -1634,7 +1618,7 @@ mod tests {
 
         // the end timer then counts down two seconds and opens the win screen
         run(&mut g, 200, |g| g.update_race());
-        assert_eq!(g.game_state.mode, MULTI_WINRACE_MODE);
+        assert_eq!(g.game_state.mode, crate::define::mode::MULTI_WINRACE_MODE);
         assert_eq!(g.multi.mpl[1].wins, 1, "round scored once");
     }
 
@@ -1797,7 +1781,7 @@ mod tests {
         g.update_collect();
         assert_eq!(g.multi.game_winner, MULTI_ROUND_DRAW);
         run(&mut g, 200, |g| g.update_collect());
-        assert_eq!(g.game_state.mode, MULTI_WINCOLLECT_MODE);
+        assert_eq!(g.game_state.mode, crate::define::mode::MULTI_WINCOLLECT_MODE);
     }
 
     #[test]

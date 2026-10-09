@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor2::orientate_ss;
 use crate::anim::SAMPLE_VOLUME;
-use crate::define::mode::{DEMO_MODE, FRONTEND_MODE, GAMEOVER_MODE, INGAME_MODE, LEVELCOMPLETE_MODE, PAUSE_MODE};
+use crate::define::mode::{FRONTEND_MODE, LEVELCOMPLETE_MODE, PAUSE_MODE};
 use crate::define::tilestate;
 use crate::define::SINGLEPLAYER;
 use crate::effects::Effect;
@@ -43,35 +43,16 @@ pub struct GameLoopState {
     pub double_queue: [i8; 4],
     /// `GameProcessController`'s `static u16 button[4]`.
     pub button: [u16; 4],
+    /// `showEndLevelScreen`.
+    pub show_end_level_screen: i16,
+    /// `currTileNum` (`SHOW_ME_THE_TILE_NUMBERS`): index of `currTile[0]` (menus use it).
+    pub curr_tile_num: u32,
 }
 
 /// `INPUT_POLLPAUSE` (`game.c:79`).
 pub const INPUT_POLLPAUSE: u8 = 10;
 
 impl Game {
-    /// Port of the per-mode dispatch of `GameLoop` (Common/frontend.c:144) for the
-    /// modes ported so far, plus its `frameCount++` / `inputPause` bookkeeping.
-    pub fn game_loop(&mut self) {
-        // TODO(port): UpdateCheatText; other modes (frontend, pause, level complete, ...).
-        match self.game_state.mode {
-            INGAME_MODE => self.run_game_loop(),
-            DEMO_MODE => self.run_demo_mode(),
-            _ => {}
-        }
-
-        self.frame_count = self.frame_count.wrapping_add(1);
-
-        // ds - what the hell?
-        let mut i = self.frogger.num_frogs;
-        while i > 0 {
-            i -= 1;
-            let p = &mut self.frogger.player[i as usize];
-            if p.input_pause > 0 {
-                p.input_pause = 0;
-            }
-        }
-    }
-
     /// Port of `RunGameLoop` (Common/game.c:529), parts ported so far.
     pub fn run_game_loop(&mut self) {
         // TODO(port): arcadeHud coin colours when numSpawn == 25 (overlays wave).
@@ -81,15 +62,17 @@ impl Game {
         self.frogger.point_of_interest = None;
 
         if self.game.end_level_timer.time != 0 {
-            // TODO(port): CheckEOLLoopTrack (audio).
+            self.check_eol_loop_track();
             let afc = self.act_frame_count;
             self.game.end_level_timer.update(-1, afc);
             if self.game.end_level_timer.time == 0 {
-                // TODO(port): cheatCombos[CHEAT_SKIP_LEVEL].state = 0; camDist (cam wave);
-                // StartLevelComplete (level-complete wave).
+                // TODO(port): cheatCombos[CHEAT_SKIP_LEVEL].state = 0 (menus.c);
+                // TODO(merge wave D): camDist = {0, 680*SCALE, 192*SCALE}.
                 self.game_state.mode = LEVELCOMPLETE_MODE;
+                //bb put this line back in
                 self.game.level_time = self.act_frame_count;
                 self.game.mode_timer.init(8);
+                self.start_level_complete();
                 return;
             }
 
@@ -102,15 +85,14 @@ impl Game {
             return;
         }
 
-        // TODO(port): cheatCombos[CHEAT_SKIP_LEVEL].state (cheats).
         let w = self.frogger.player[0].world_num as usize;
         let l = self.frogger.player[0].level_num as usize;
         let multi_part = self.layout.world_visual_data.get(w).and_then(|wv| wv.level_visual_data.get(l)).map_or(NO_MULTI_LEV, |lv| lv.multi_part_level);
         let nb = self.map.num_babies;
-        if self.babyfrog.babies_saved as i32 == nb && nb != 0 && multi_part == NO_MULTI_LEV {
+        if self.cheat_skip_level() || (self.babyfrog.babies_saved as i32 == nb && nb != 0 && multi_part == NO_MULTI_LEV) {
             self.game.end_level_timer.init(4);
-            // TODO(port): SetTimeForLevel (story/records wave).
-            self.prepare_song(crate::pcaudio::AUDIOTRK_LEVELCOMPLETE, false); // ambient
+            self.set_time_for_level();
+            self.prepare_song(crate::frontend::AUDIOTRK_LEVELCOMPLETE, false);
             if let Some(f) = self.frogger.frog[0] {
                 self.actor_animate(f, FROG_ANIM_VICTORY, false, false, 100, false);
                 self.actor_animate(f, FROG_ANIM_DANCE4, true, true, 70, false);
@@ -178,6 +160,9 @@ impl Game {
         } else {
             self.run_multiplayer();
         }
+
+        // SHOW_ME_THE_TILE_NUMBERS: currTileNum (0xffffffff when currTile[0] is not a tile).
+        self.game.curr_tile_num = self.frogmove.curr_tile[0].map_or(u32::MAX, |t| t.idx() as u32);
     }
 
     /// Port of `StartPauseMenu` (Common/menus.c:188), the game-state part.
@@ -185,13 +170,6 @@ impl Game {
         self.game_state.old_mode = self.game_state.mode;
         self.game_state.mode = PAUSE_MODE;
         // TODO(port): pause menu state, PauseAudio, text overlays (menus wave).
-    }
-
-    /// Port of `StartGameOver` (Common/frontend.c:446), the game-state part.
-    pub fn start_game_over(&mut self) {
-        self.game_state.mode = GAMEOVER_MODE;
-        self.game.mode_timer.init(9);
-        // TODO(port): game-over text overlays, music (frontend wave).
     }
 
     /// Port of `GameProcessController` (Common/game.c:115): pad input -> frog movement

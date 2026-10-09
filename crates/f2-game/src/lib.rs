@@ -13,6 +13,7 @@ pub mod actor2;
 pub mod anim;
 pub mod assets;
 pub mod babyfrog;
+pub mod backdrop;
 pub mod bank_tables;
 pub mod bbtimer;
 pub mod cam;
@@ -21,11 +22,14 @@ pub mod define;
 pub mod effects;
 pub mod enemies;
 pub mod enemy_tables;
+pub mod fadeout;
 pub mod frogger;
 pub mod frogmove;
+pub mod frontend;
 pub mod game;
 pub mod general;
 pub mod ids;
+pub mod language;
 pub mod layout;
 pub mod levplay;
 pub mod list;
@@ -38,10 +42,14 @@ pub mod pc_actor;
 pub mod pc_banks;
 pub mod pcaudio; // ambient
 pub mod platform;
+pub mod savegame;
+pub mod session;
 pub mod specfx;
+pub mod story;
 pub mod timer;
 pub mod tongue;
 pub mod trace;
+pub mod training;
 
 use f2_math::Rng;
 
@@ -111,6 +119,21 @@ pub struct Game {
     pub tongue: tongue::TongueState,
     /// `PC/pcaudio.c` simulation-side globals (samples, ambient sounds, cdTrack). // ambient
     pub pcaudio: pcaudio::PcAudioState,
+    // ---- wave F1 (frontend / story / save / language / fades) ----
+    /// `Common/frontend.c` globals.
+    pub frontend: frontend::FrontendState,
+    /// `Common/training.c` globals.
+    pub training: training::TrainingState,
+    /// `Common/savegame.c` option globals (`globalSoundVol`, `globalMusicVol`).
+    pub savegame: savegame::SaveGameState,
+    /// Game text (`PC/isllocal.c`, `gameTextLang`).
+    pub language: language::LanguageState,
+    /// `PC/fadeout.cpp` globals (fade levels; timing in `levplay`).
+    pub fadeout: fadeout::FadeoutState,
+    /// `PC/backdrop.c` / tiled backdrop / `drawGame` state for the renderer.
+    pub backdrop: backdrop::BackdropState,
+    /// Data source and level-load queue (host link for `InitLevel`).
+    pub session: session::SessionState,
 }
 
 impl Game {
@@ -118,6 +141,9 @@ impl Game {
         let mut g = Game { game_speed: 4096, ..Default::default() };
         g.rng.seed_random();
         g.enemies.load_orig_tables();
+        // gameState = {0,0,0,0,0,0,DIFFICULTY_NORMAL} (game.c:83); showEndLevelScreen = 1.
+        g.game_state.difficulty = define::DIFFICULTY_NORMAL;
+        g.game.show_end_level_screen = 1;
         g
     }
 
