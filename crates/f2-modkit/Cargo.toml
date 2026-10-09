@@ -1,0 +1,25 @@
+[package]
+name = "f2-modkit"
+description = "Mod asset pipeline: per-entry overrides (PNG/WAV/FLAC/glTF/TSV/TOML) resolved over retail banks, plus the f2-modkit pack/new CLI."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[[bin]]
+name = "f2-modkit"
+path = "src/main.rs"
+
+[dependencies]
+f2-formats = { path = "../f2-formats" }
+f2-mods = { path = "../f2-mods" }
+f2-audio = { path = "../f2-audio", default-features = false }
+png = "0.17"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha1 = { workspace = true }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+[dev-dependencies]
+f2-export = { path = "../../tools/f2-export" }
+tempfile = "3"
