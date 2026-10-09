@@ -110,8 +110,7 @@ impl Game {
         if self.babyfrog.babies_saved as i32 == nb && nb != 0 && multi_part == NO_MULTI_LEV {
             self.game.end_level_timer.init(4);
             // TODO(port): SetTimeForLevel (story/records wave).
-            // PrepareSong(AUDIOTRK_LEVELCOMPLETE, NO)
-            self.effects.push(Effect::Log { text: "TODO(port) PrepareSong(AUDIOTRK_LEVELCOMPLETE)".into() });
+            self.prepare_song(crate::pcaudio::AUDIOTRK_LEVELCOMPLETE, false); // ambient
             if let Some(f) = self.frogger.frog[0] {
                 self.actor_animate(f, FROG_ANIM_VICTORY, false, false, 100, false);
                 self.actor_animate(f, FROG_ANIM_DANCE4, true, true, 70, false);
@@ -168,7 +167,7 @@ impl Game {
         self.update_special_effects();
         // TODO(port wave D): UpdateEvents().
         if self.game_state.mode != PAUSE_MODE {
-            // TODO(port): UpdateAmbientSounds() (pcaudio.c; draws Random()).
+            self.update_ambient_sounds(); // ambient
         }
         self.process_collectables();
 
