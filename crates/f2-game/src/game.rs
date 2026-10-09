@@ -67,7 +67,7 @@ impl Game {
             self.game.end_level_timer.update(-1, afc);
             if self.game.end_level_timer.time == 0 {
                 // TODO(port): cheatCombos[CHEAT_SKIP_LEVEL].state = 0 (menus.c);
-                // TODO(merge wave D): camDist = {0, 680*SCALE, 192*SCALE}.
+                self.cam.cam_dist = f2_math::SVector { vx: 0, vy: (680 * crate::map::SCALE) as i16, vz: (192 * crate::map::SCALE) as i16, pad: 0 };
                 self.game_state.mode = LEVELCOMPLETE_MODE;
                 //bb put this line back in
                 self.game.level_time = self.act_frame_count;
@@ -101,11 +101,13 @@ impl Game {
         }
 
         if self.game.start_cam != 0 || self.frame_count < 2 {
-            // TODO(port wave D): SetVectorFF(&currCamSource,&camSource); currCamTarget.
+            // wave D
+            self.cam.curr_cam_source = self.cam.cam_source;
+            self.cam.curr_cam_target = self.cam.cam_target;
             self.game.start_cam = 0;
         }
         self.update_camera_position();
-        // TODO(port wave D): SetCamFF(currCamSource, currCamTarget).
+        // SetCamFF(currCamSource, currCamTarget): PSX only (wave D).
 
         if self.frame_count > 15 {
             for i in 0..self.frogger.num_frogs.max(0) {
@@ -147,7 +149,7 @@ impl Game {
         self.update_platforms();
         self.update_enemies();
         self.update_special_effects();
-        // TODO(port wave D): UpdateEvents().
+        self.update_events(); // wave D
         if self.game_state.mode != PAUSE_MODE {
             self.update_ambient_sounds(); // ambient
         }

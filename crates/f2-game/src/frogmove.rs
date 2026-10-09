@@ -1393,9 +1393,16 @@ impl Game {
                     let n = fv(&self.ctile(p).normal);
                     self.create_special_effect(FXTYPE_WATERRIPPLE, &tt.centre, &n, 81920, 3277, 410, 2458);
                     let fpos = self.frog_pos(p);
-                    if let Some(_fx) = self.create_special_effect(FXTYPE_SPLASH, &fpos, &n, 40960, 16384, 0, 8192) {
-                        // TODO(port specfx): fx->gravity = 8190; fx->rebound = AllocateP2()
-                        // with normal = currTile normal, point = frog position.
+                    if let Some(fx) = self.create_special_effect(FXTYPE_SPLASH, &fpos, &n, 40960, 16384, 0, 8192) {
+                        self.specfx.fx_mut(fx).gravity = 8190;
+                        if let Some(rb) = self.fx_alloc_rebound(fx) {
+                            let pl2 = self.specfx.p2_mut(rb);
+                            f2_math::set_vector_ff(&mut pl2.normal, &n);
+                            // BUG(original): SetVectorFF(&rebound->point, &frog->actor->position)
+                            // copies 12 bytes into the 8-byte SVECTOR (clobbering normal.vx);
+                            // the port copies the position only.
+                            pl2.point = fpos;
+                        }
                     }
 
                     if self.game_state.multi == SINGLEPLAYER {
@@ -1540,9 +1547,14 @@ impl Game {
                 if self.act_frame_count.is_multiple_of(5) {
                     let n = fv(&self.ctile(p).normal);
                     let fpos = self.frog_pos(p);
-                    if let Some(_fx) = self.create_special_effect(FXTYPE_BUBBLES, &fpos, &n, 32768, 3277, 0, 2458) {
-                        // TODO(port specfx): fx->rebound = AllocateP2(): normal = currTile normal,
-                        // point = frog position + normal*30.
+                    if let Some(fx) = self.create_special_effect(FXTYPE_BUBBLES, &fpos, &n, 32768, 3277, 0, 2458) {
+                        if let Some(rb) = self.fx_alloc_rebound(fx) {
+                            let mut up = n;
+                            let pl2 = self.specfx.p2_mut(rb);
+                            f2_math::set_vector_ff(&mut pl2.normal, &up);
+                            f2_math::scale_vector(&mut up, 30);
+                            f2_math::add_vector_ssf(&mut pl2.point, &fpos, &up);
+                        }
                     }
                 }
             }

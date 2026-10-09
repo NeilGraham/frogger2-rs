@@ -1706,6 +1706,14 @@ impl Game {
         }
     }
 
+    /// `fx->rebound = AllocateP2()` on a created effect (any plane it already had is
+    /// leaked, as in the original). Returns the new plane.
+    pub fn fx_alloc_rebound(&mut self, fx: SpecFxId) -> Option<Plane2Id> {
+        let p2 = self.specfx.allocate_p2();
+        self.specfx.fx_mut(fx).rebound = p2;
+        p2
+    }
+
     /// `fx->sprites->draw = v` (and `fx->act[0]->draw`), used when hiding garibs.
     pub fn set_fx_draw(&mut self, fx: Option<SpecFxId>, v: i8) {
         let Some(fx) = fx else { return };
@@ -2192,9 +2200,8 @@ impl Game {
     }
 
     /// Port of `CreateExplodeEffect` (Common/specfx.c:2371): a modest explosion of smoke,
-    /// blast and sparks. Returns `(cam_shakiness, cam_shake_falloff)` = (500, 10) for the
-    /// camera port to apply (`cam.c` globals, wave D).
-    pub fn create_explode_effect(&mut self, pos: &SVector, normal: &FVector) -> (i32, i32) {
+    /// blast and sparks, and shakes the camera.
+    pub fn create_explode_effect(&mut self, pos: &SVector, normal: &FVector) {
         let mut p = SVector::default();
         set_vector_sf(&mut p, normal);
         scale_vector_s(&mut p, 200);
@@ -2210,8 +2217,8 @@ impl Game {
             self.set_fx_colour(fx, 255, 80, 80);
             self.specfx.fx_mut(f).gravity = 2048;
         }
-        // TODO(port wave D): cam_shakiness = 500; cam_shake_falloff = 10;
-        (500, 10)
+        self.cam.cam_shakiness = 500;
+        self.cam.cam_shake_falloff = 10;
     }
 
     /// Port of `CreateRespawnEffect` (Common/specfx.c:2405): for multiplayer and swampy.

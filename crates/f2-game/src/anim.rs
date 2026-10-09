@@ -3,10 +3,8 @@
 //! `frogmove.c`).
 //!
 //! Delayed follow-ups (`MakeTrigger(OnTimeout, ...)` + `AttachEvent(..., DeathAnim, pl,
-//! DeathX)`) need the event system (wave D): they are left as `TODO(port wave D)` at
-//! the call site with an [`Effect::Log`]; [`Game::run_death_anim`] is the `DeathAnim`
-//! event's target once triggers exist. Special effects are created through the
-//! `specfx` stubs at their original positions (they will draw `Random()` numbers).
+//! DeathX)`) go through [`Game::make_timeout_event`]; [`Game::run_death_anim`] is the
+//! `DeathAnim` event's target.
 
 use f2_math::{add_to_vector_fs, new_set_vector_fs, scale_vector, set_vector_sf, FVector, SVector};
 
@@ -15,7 +13,6 @@ use crate::frogger::{
     FANIM_ALL, FROG_ANIM_ASSONFIRE, FROG_ANIM_BOWLEDOVER, FROG_ANIM_DROWN, FROG_ANIM_ELECTROCUTE, FROG_ANIM_SCREENSLIDE, FROG_ANIM_SCREENSPLAT, FROG_ANIM_STUNG,
 };
 use crate::frogmove::*;
-use crate::ids::SpecFxId;
 use crate::layout::worldid;
 use crate::specfx::{FXTYPE_DECAL, FXTYPE_SMOKEBURST, FXTYPE_SPARKBURST, FXTYPE_SPARKLYTRAIL};
 use crate::Game;
@@ -200,14 +197,9 @@ impl Game {
     }
 
     /// `t = MakeTrigger(OnTimeout, actFrameCount + delay); AttachEvent(t, TRIGGER_ONCE,
-    /// 0, DeathAnim, pl, func)`. TODO(port wave D): create the trigger.
+    /// 0, DeathAnim, pl, func)`.
     fn death_anim_trigger(&mut self, pl: i32, delay: u32, func: DeathAnim) {
-        self.effects.push(Effect::Log {
-            text: format!(
-                "TODO(port wave D): MakeTrigger(OnTimeout, actFrameCount+{delay}={}) AttachEvent(TRIGGER_ONCE, DeathAnim, {pl}, {func:?})",
-                self.act_frame_count.wrapping_add(delay)
-            ),
-        });
+        self.make_timeout_event(delay, crate::event::EventFunc::DeathAnim { pl, func });
     }
 
     /// The `SPARKBURST, SPARKBURST, DECAL` trio of `DeathSlicing`/`Explosion`/`Gibbing`.
@@ -217,18 +209,21 @@ impl Game {
         let fx = self.create_special_effect(FXTYPE_SPARKBURST, &pos, &up, 81920, 16384, 0, 20480);
         if fx.is_some() {
             self.set_fx_colour(fx, 255, 255, 0);
-            // TODO(port specfx): fx->gravity = 4100;
+            self.set_fx_gravity(fx, 4100);
         }
         let fx = self.create_special_effect(FXTYPE_SPARKBURST, &pos, &up, 81920, 12288, 0, 20480);
         if fx.is_some() {
             self.set_fx_colour(fx, 255, 255, 130);
-            // TODO(port specfx): fx->gravity = 4100;
+            self.set_fx_gravity(fx, 4100);
         }
         let fx = self.create_special_effect(FXTYPE_DECAL, &pos, &up, 163840, 0, 0, 8192);
         if fx.is_some() {
             let (r, g, b) = self.frog_colour(pl);
             self.set_fx_colour(fx, r, g, b);
-            // TODO(port specfx): fx->tex = txtrSolidRing;
+            let t = self.specfx.textures.txtr_solid_ring;
+            if let Some(f) = fx {
+                self.specfx.fx_mut(f).tex = t;
+            }
         }
     }
 
@@ -304,7 +299,7 @@ impl Game {
 
         self.frogger.player[p].dead.init(3);
 
-        // TODO(port wave D): t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 120), NULL, NULL, NULL );
+        // t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 120), NULL, NULL, NULL );
         // AttachEvent( t, TRIGGER_ONCE, 0, DeathAnim, (void *)pl, (void *)DeathNormal, NULL, NULL );
         self.death_anim_trigger(pl, 120, DeathAnim::Normal);
     }
@@ -325,7 +320,7 @@ impl Game {
         self.frog_animate(pl, FROG_ANIM_ELECTROCUTE, LOOP_ELEC_ANIM[ch] != 0, false, 128);
         self.frogger.player[p].dead.init(4);
 
-        // TODO(port wave D): t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 80), NULL, NULL, NULL );
+        // t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 80), NULL, NULL, NULL );
         // AttachEvent( t, TRIGGER_ONCE, 0, DeathAnim, (void *)pl, (void *)DeathIncinerate, NULL, NULL );
         self.death_anim_trigger(pl, 80, DeathAnim::Incinerate);
 
@@ -337,22 +332,18 @@ impl Game {
         let mut tp = SVector::default();
         set_vector_sf(&mut tp, &pos);
         let up = self.curr_tile_up(pl);
-        let _ = (tp, up);
 
-        // TODO(port specfx): fx = CreateSpecialEffectDirect( FXTYPE_SPARKLYTRAIL, &tp, &up, 163840, 8192, 0, 20480 )
-        let fx: Option<SpecFxId> = None;
+        let fx = self.create_special_effect_direct(FXTYPE_SPARKLYTRAIL, &tp, &up, 163840, 8192, 0, 20480);
         if fx.is_some() {
-            // TODO(port specfx): fx->gravity = 4096;
+            self.set_fx_gravity(fx, 4096);
             let (r, g, b) = self.frog_colour(pl);
             self.set_fx_colour(fx, r, g, b);
         }
-        // TODO(port specfx): fx = CreateSpecialEffectDirect( FXTYPE_SPARKLYTRAIL, &tp, &up, 163840, 8192, 0, 20480 )
-        let fx: Option<SpecFxId> = None;
+        let fx = self.create_special_effect_direct(FXTYPE_SPARKLYTRAIL, &tp, &up, 163840, 8192, 0, 20480);
         if fx.is_some() {
-            // TODO(port specfx): fx->gravity = 4096;
+            self.set_fx_gravity(fx, 4096);
             self.set_fx_colour(fx, 220, 60, 60);
         }
-        let _ = FXTYPE_SPARKLYTRAIL;
 
         self.death_sample(GEN_DEATHELECTRIC);
     }
@@ -377,14 +368,12 @@ impl Game {
 
         self.death_voice(pl, "frogdeath");
 
-        // TODO(port wave D): t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 40), NULL, NULL, NULL );
+        // t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 40), NULL, NULL, NULL );
         // AttachEvent( t, TRIGGER_ONCE, 0, PlaySFX, (void *)FindSample(utilStr2CRC("frogcrush")), NULL, NULL, NULL );
-        self.effects.push(Effect::Log {
-            text: format!(
-                "TODO(port wave D): MakeTrigger(OnTimeout, actFrameCount+40={}) PlaySFX(FindSample(\"frogcrush\"))",
-                self.act_frame_count.wrapping_add(40)
-            ),
-        });
+        self.make_timeout_event(
+            40,
+            crate::event::EventFunc::PlaySfx { sample: crate::event::SfxSample::Sample(f2_formats::crc::crc("frogcrush")), point: None },
+        );
     }
 
     /// Port of `DeathInflation` (Common/anim.c:205).
@@ -425,7 +414,7 @@ impl Game {
         let fx = self.create_special_effect(FXTYPE_SPARKBURST, &pos, &up, 81920, 16384, 0, 20480);
         if fx.is_some() {
             self.set_fx_colour(fx, 255, 255, 0);
-            // TODO(port specfx): fx->gravity = 4100;
+            self.set_fx_gravity(fx, 4100);
         }
 
         self.frogger.player[p].dead.init(3);
@@ -477,7 +466,7 @@ impl Game {
         self.frogger.player[p].dead.init(3);
 
         // Make invisibly after explosion
-        // TODO(port wave D): t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 25), NULL, NULL, NULL );
+        // t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 25), NULL, NULL, NULL );
         // AttachEvent( t, TRIGGER_ONCE, 0, DeathAnim, (void *)pl, (void *)DeathVanish, NULL, NULL );
         self.death_anim_trigger(pl, 25, DeathAnim::Vanish);
 
@@ -549,7 +538,7 @@ impl Game {
         self.death_inflation(pl);
         self.frogger.player[pl as usize].dead.init(4);
 
-        // TODO(port wave D): t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 120), NULL, NULL, NULL );
+        // t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 120), NULL, NULL, NULL );
         // AttachEvent( t, TRIGGER_ONCE, 0, DeathAnim, (void *)pl, (void *)DeathExplosion, NULL, NULL );
         self.death_anim_trigger(pl, 120, DeathAnim::Explosion);
     }
@@ -578,7 +567,7 @@ impl Game {
 
         self.frogger.player[p].dead.init(3);
 
-        // TODO(port wave D): t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 35), NULL, NULL, NULL );
+        // t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 35), NULL, NULL, NULL );
         // AttachEvent( t, TRIGGER_ONCE, 0, DeathAnim, (void *)pl, (void *)DeathGibbing, NULL, NULL );
         self.death_anim_trigger(pl, 35, DeathAnim::Gibbing);
     }
@@ -606,26 +595,21 @@ impl Game {
         add_to_vector_fs(&mut pos, &self.frog_position(p));
         let mut tp = SVector::default();
         set_vector_sf(&mut tp, &pos);
-        let _ = (tp, up);
 
-        // TODO(port specfx): fx = CreateSpecialEffectDirect( FXTYPE_SMOKEBURST, &tp, &up, 262144, 8192, 410, 6963 );
-        let fx: Option<SpecFxId> = None;
+        let fx = self.create_special_effect_direct(FXTYPE_SMOKEBURST, &tp, &up, 262144, 8192, 410, 6963);
         self.set_fx_colour(fx, 200, 200, 255);
-        // TODO(port specfx): fx = CreateSpecialEffectDirect( FXTYPE_SMOKEBURST, &tp, &up, 327680, 8192, 410, 6963 );
-        let fx: Option<SpecFxId> = None;
+        let fx = self.create_special_effect_direct(FXTYPE_SMOKEBURST, &tp, &up, 327680, 8192, 410, 6963);
         self.set_fx_colour(fx, 255, 255, 255);
 
-        // TODO(port specfx): fx = CreateSpecialEffectDirect( FXTYPE_SPARKBURST, &tp, &up, 72200, 8192, 0, 20480 )
-        let fx: Option<SpecFxId> = None;
+        let fx = self.create_special_effect_direct(FXTYPE_SPARKBURST, &tp, &up, 72200, 8192, 0, 20480);
         if fx.is_some() {
-            // TODO(port specfx): fx->gravity = 4096;
+            self.set_fx_gravity(fx, 4096);
             let (r, g, b) = self.frog_colour(pl);
             self.set_fx_colour(fx, r, g, b);
         }
-        // TODO(port specfx): fx = CreateSpecialEffectDirect( FXTYPE_SPARKBURST, &tp, &up, 61149, 8192, 0, 20480 )
-        let fx: Option<SpecFxId> = None;
+        let fx = self.create_special_effect_direct(FXTYPE_SPARKBURST, &tp, &up, 61149, 8192, 0, 20480);
         if fx.is_some() {
-            // TODO(port specfx): fx->gravity = 4096;
+            self.set_fx_gravity(fx, 4096);
             self.set_fx_colour(fx, 220, 60, 60);
         }
 

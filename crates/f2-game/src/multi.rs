@@ -10,8 +10,8 @@
 //! specfx stubs).
 
 use f2_math::{
-    add_to_vector_ff, add_to_vector_fs, add_vector_fff, distance_between_points_ss, dot_product_ff, magnitude_s, make_unit, scale_vector, scale_vector_ff,
-    set_vector_fs, set_vector_sf, sub_vector_fss, sub_vector_sss, FVector, Fixed, SVector,
+    add_to_vector_ff, add_to_vector_fs, add_vector_fff, distance_between_points_ss, dot_product_ff, make_unit, scale_vector, scale_vector_ff,
+    set_vector_fs, set_vector_sf, sub_vector_fss, FVector, Fixed, SVector,
 };
 use serde::{Deserialize, Serialize};
 
@@ -157,8 +157,6 @@ pub struct MultiState {
     pub node_pool: BattleNodeList,
     /// `initialCamHeight`.
     pub initial_cam_height: Fixed,
-    /// `scaleV` (`cam.c:73`). TODO(merge camera): move to `CamState` when cam.c lands.
-    pub scale_v: Fixed,
 }
 
 impl Default for MultiState {
@@ -175,7 +173,6 @@ impl Default for MultiState {
             end_timer: Timer::default(),
             node_pool: BattleNodeList::default(),
             initial_cam_height: 0,
-            scale_v: SCALE_V_INIT,
         }
     }
 }
@@ -811,7 +808,7 @@ impl Game {
     }
 
     /// `TransformPoint` (PC/pcmisc.cpp): world -> screen position of a text overlay.
-    /// TODO(merge camera/hud): needs the view transform; returns the origin until then.
+    /// TODO(port): needs the renderer view transform (specfx ViewXform has no TransformPoint yet); returns the origin.
     pub fn transform_point(&self, _pos: &SVector) -> (i32, i32) {
         (0, 0)
     }
@@ -1260,7 +1257,7 @@ impl Game {
                 self.alloc_garib_block(MULTI_BATTLE_MAXITEMS as i32);
                 // PC: InitSpriteSortArray() (renderer).
                 self.multi.num_multi_items = 0;
-                self.multi.scale_v = SCALE_V_INIT;
+                self.cam.scale_v = SCALE_V_INIT;
             }
             MULTIMODE_RACE => {
                 for i in 0..n {
@@ -1429,7 +1426,7 @@ impl Game {
             // BUG(original): camDiv has 3 initialised entries; other indices read past the
             // array or divide by zero. Leave scaleV alone there.
             if (0..4).contains(&idx) && CAM_DIV[idx as usize] != 0 {
-                self.multi.scale_v = sc / CAM_DIV[idx as usize] + CAM_PLUS[idx as usize];
+                self.cam.scale_v = sc / CAM_DIV[idx as usize] + CAM_PLUS[idx as usize];
             }
         }
 
@@ -1447,31 +1444,13 @@ impl Game {
         // Zoom in/out to keep multiplayer frogs in view
         let sc = self.find_max_inter_frog_distance();
         if sc > 0 {
-            self.multi.scale_v = sc / BATTLE_CAM_FAC + BATTLE_CAM_PLUS;
+            self.cam.scale_v = sc / BATTLE_CAM_FAC + BATTLE_CAM_PLUS;
         }
 
         if l > 0 {
             add_vector_fff(target, &min_v, &max_v);
             scale_vector_ff(target, 2048);
         }
-    }
-
-    /// Port of `FindMaxInterFrogDistance` (Common/cam.c:798).
-    /// TODO(merge camera): dedupe with the cam.c port.
-    pub fn find_max_inter_frog_distance(&self) -> Fixed {
-        let n = self.num_frogs_mp();
-        let mut best: Fixed = -100_000 << 12;
-        for i in 0..n {
-            for j in i + 1..n {
-                let mut sep = SVector::default();
-                sub_vector_sss(&mut sep, &self.frog_position(i), &self.frog_position(j));
-                let dist = magnitude_s(&sep);
-                if dist > best {
-                    best = dist;
-                }
-            }
-        }
-        best
     }
 
     /// Port of `RestartMulti` (Common/multi.c:1799): start a new match.
@@ -1503,36 +1482,6 @@ impl Game {
         let c = self.frogger.frog_pool(self.frogger.player[p].character as usize % crate::frogger::FROG_NUMFROGS);
         self.create_pickup_effect(pl, c.r, c.g, c.b, 255, 255, 255);
     }
-
-    /// Port of `TeleportActorToTile` (Common/actor2.c:1230).
-    /// TODO(merge events): dedupe if the events/scripts port adds it to actor2.rs.
-    pub fn teleport_actor_to_tile(&mut self, act: ActorId, tile: TileId, pl: i32) {
-        let p = pl as usize;
-        // make the teleport 'to' tile the current tile
-        self.frogmove.curr_tile[p] = Some(tile);
-        let (centre, normal) = (self.map.tile(tile).centre, self.map.tile(tile).normal);
-        self.actor2.actors[act].actor.position = centre;
-        let pp = &mut self.frogger.player[p];
-        pp.frog_state &= !FROGSTATUS_ISTELEPORTING;
-        pp.can_jump = 1;
-        pp.frogon = -1;
-        pp.frogunder = -1;
-
-        if let Some(cp) = self.platform.curr_platform[p] {
-            let plat = &mut self.platform.platform_list.array[cp.idx()];
-            plat.carrying = None;
-            plat.flags &= !crate::platform::PLATFORM_NEW_CARRYINGFROG;
-        }
-
-        self.frogmove.dest_tile[p] = None;
-        self.platform.curr_platform[p] = None;
-        self.platform.dest_platform[p] = None;
-
-        self.frogger.player[p].extended_hop_dir = ((self.frogmove.frog_facing[p] - self.cam.cam_facing[p]) & 3) as u8;
-        let dv = self.map.tile(tile).dir_vector[(self.frogmove.frog_facing[p] & 3) as usize];
-        orientate_ss(&mut self.actor2.actors[act].actor.q_rot, &dv, &normal);
-    }
-
 }
 
 #[cfg(test)]

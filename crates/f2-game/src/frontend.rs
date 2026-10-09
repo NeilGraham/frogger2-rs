@@ -624,7 +624,6 @@ impl Game {
     }
 
     /// The `EV_ENDLEVEL` case of `Interpret` (Common/script.c:1210): a script ends the level.
-    /// TODO(merge wave D): script.c should call this.
     pub fn script_end_level(&mut self) {
         self.game_state.mode = LEVELCOMPLETE_MODE;
         self.game_state.multi = SINGLEPLAYER;
@@ -901,8 +900,10 @@ impl Game {
 
         self.frontend.lev_complete_state = LEV_COMPLETE_DROPPING_FROGS;
 
-        // currCamSource = {0, 500<<12, 0}; currCamTarget = {0, 0, 3000<<12}; camVect = {0,4096,0};
-        // SetCamFF(currCamSource, currCamTarget). TODO(merge wave D): camera.
+        self.cam.curr_cam_source = f2_math::FVector { vx: 0, vy: 500 << 12, vz: 0 };
+        self.cam.curr_cam_target = f2_math::FVector { vx: 0, vy: 0, vz: 3000 << 12 };
+        self.cam.cam_vect = f2_math::FVector { vx: 0, vy: 4096, vz: 0 };
+        // SetCamFF(currCamSource, currCamTarget): PSX only.
 
         for i in 0..self.map.num_babies.clamp(0, crate::babyfrog::NUM_BABIES as i32) as usize {
             let Some(b) = self.babyfrog.baby_list[i].baby else { continue };

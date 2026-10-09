@@ -165,21 +165,25 @@ impl Game {
         out
     }
 
+    /// `g->fx->act[0]` (None when the effect list is not set up, e.g. in unit tests).
+    fn garib_fx_actor(&self, f: crate::ids::SpecFxId) -> Option<crate::ids::ActorId> {
+        self.specfx.array.get(f.idx())?.act.as_ref()?.first().copied().flatten()
+    }
+
     /// `(g->active, g->type, g->fx ? &g->fx->act[0]->actor->position : NULL)`.
     fn tongue_garib_info(&self, g: GaribId) -> (bool, i32, Option<SVector>) {
         let gb = &self.collect.garib_list.array[g.idx()];
-        // TODO(port specfx): read `g->fx->act[0]->actor->position`; until SPECFX state
-        // exists the effect sits where the garib was created.
-        let fx_pos = gb.fx.map(|_| gb.pos);
+        let fx_pos = gb.fx.map(|f| self.garib_fx_actor(f).map_or(gb.pos, |a| self.actor2.actors[a].actor.position));
         (gb.active != 0, gb.garib_type as i32, fx_pos)
     }
 
     /// `SetVectorSS(&g->fx->act[0]->actor->position, pos)`.
     fn tongue_set_garib_fx_pos(&mut self, g: GaribId, pos: SVector) {
-        // TODO(port specfx): write `g->fx->act[0]->actor->position` (see tongue_garib_info).
-        let gb = &mut self.collect.garib_list.array[g.idx()];
-        if gb.fx.is_some() {
-            gb.pos = pos;
+        let Some(f) = self.collect.garib_list.array[g.idx()].fx else { return };
+        if let Some(a) = self.garib_fx_actor(f) {
+            self.actor2.actors[a].actor.position = pos;
+        } else {
+            self.collect.garib_list.array[g.idx()].pos = pos;
         }
     }
 
@@ -421,15 +425,12 @@ impl Game {
                 if distance_between_points_sf(&t.source, &t.interp) < radcheck {
                     if t.flags & TONGUE_HASITEMONIT != 0 {
                         let (ty, thing) = (t.ty, t.thing);
-                        // TODO(port wave D): t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 10), NULL, NULL, NULL );
+                        // t = MakeTrigger( OnTimeout, (void *)(actFrameCount + 10), NULL, NULL, NULL );
                         // arg1 = (void *)FindVoice(utilStr2CRC("frogbelch1"),pl);
                         // AttachEvent( t, TRIGGER_ONCE, 0, PlaySFX, arg1, (void *)(&frog[pl]->actor->position), NULL, NULL );
-                        self.effects.push(Effect::Log {
-                            text: format!(
-                                "TODO(port wave D): MakeTrigger(OnTimeout, actFrameCount+10={}) PlaySFX(FindVoice(\"frogbelch1\", {pl}), &frog[{pl}]->actor->position)",
-                                self.act_frame_count.wrapping_add(10)
-                            ),
-                        });
+                        let point = self.frogger.frog[p].map(crate::event::SfxPoint::ActorPosition);
+                        let sample = crate::event::SfxSample::Voice { player: pl as u8, uid: f2_formats::crc::crc("frogbelch1") };
+                        self.make_timeout_event(10, crate::event::EventFunc::PlaySfx { sample, point });
 
                         if ty == TONGUE_GET_PICKUP {
                             if let TongueThing::Garib(g) = thing {
@@ -442,8 +443,8 @@ impl Game {
                                 if self.tongue.eat_everything_mode != 0 {
                                     let mut up = FVector::default();
                                     new_set_vector_fs(&mut up, &self.tongue_curr_normal(p));
-                                    // TODO(port specfx): CreateExplodeEffect( &frog[pl]->actor->position, &up );
-                                    let _ = up;
+                                    let fpos = self.frogger.frog[p].map(|a| self.actor2.actors[a].actor.position).unwrap_or_default();
+                                    self.create_explode_effect(&fpos, &up);
                                     self.check_for_attached_nmes(e, 0);
                                 }
                             }
