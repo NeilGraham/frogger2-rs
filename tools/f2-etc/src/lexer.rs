@@ -204,12 +204,7 @@ impl Lexer {
     pub fn error(&mut self, message: impl Into<String>) {
         let message = message.into();
         let warning = message.starts_with("Warning") || message == "fuzzy";
-        self.diagnostics.push(Diagnostic {
-            file: self.current_filename().to_string(),
-            line: self.current_line_num(),
-            message,
-            warning,
-        });
+        self.diagnostics.push(Diagnostic { file: self.current_filename().to_string(), line: self.current_line_num(), message, warning });
     }
 
     /// Number of files currently open (`currFile + 1`).

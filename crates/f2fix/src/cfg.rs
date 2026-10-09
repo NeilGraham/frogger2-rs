@@ -314,9 +314,7 @@ pub fn want_dump(c: &Cfg, frame: u32, done: u32, since_ms: u32) -> bool {
     if done >= c.dump_max {
         return false;
     }
-    (c.dump_first && frame == 1)
-        || (c.dump_every > 0 && frame.is_multiple_of(c.dump_every))
-        || (c.dump_interval_ms > 0 && since_ms >= c.dump_interval_ms)
+    (c.dump_first && frame == 1) || (c.dump_every > 0 && frame.is_multiple_of(c.dump_every)) || (c.dump_interval_ms > 0 && since_ms >= c.dump_interval_ms)
 }
 
 /// Decode an ini file's bytes: UTF-8 if valid, else Latin-1 (so `Français`
@@ -331,9 +329,7 @@ pub fn decode(bytes: &[u8]) -> String {
 /// Encode a setting as the game's ANSI (code page 1252 ≈ Latin-1) bytes.
 /// Characters outside Latin-1 become `?`.
 pub fn to_ansi(s: &str) -> Vec<u8> {
-    s.chars()
-        .map(|ch| if (ch as u32) < 256 { ch as u32 as u8 } else { b'?' })
-        .collect()
+    s.chars().map(|ch| if (ch as u32) < 256 { ch as u32 as u8 } else { b'?' }).collect()
 }
 
 #[cfg(test)]
@@ -375,8 +371,10 @@ mod tests {
 
     #[test]
     fn oracle_keys() {
-        let (c, e) = parse("time.fixed=1\nfmv.skip=1\nstart.demo=0-0\nstart.level=2,3\nstart.keys=a.key\n\
-                            trace.enable=1\ntrace.from=all\nexit.ticks=900\nexit.level_end=0\n");
+        let (c, e) = parse(
+            "time.fixed=1\nfmv.skip=1\nstart.demo=0-0\nstart.level=2,3\nstart.keys=a.key\n\
+                            trace.enable=1\ntrace.from=all\nexit.ticks=900\nexit.level_end=0\n",
+        );
         assert!(e.is_empty(), "{e:?}");
         assert!(c.time_fixed && c.fmv_skip && c.trace_enable && !c.trace_from_level && !c.exit_level_end);
         assert_eq!(c.start_demo, Some((0, 0)));

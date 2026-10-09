@@ -31,7 +31,9 @@ pub const KNOWN: &[(&str, &str, &str)] = &[
 /// EU: checked against the redump.org entry (serial 99220.DL, write offset -12).
 /// USA: computed from the owner's Redump-named dump; not yet cross-checked with redump.org.
 pub const KNOWN_TRACKS: &[(&str, [&str; 12])] = &[
-    ("eu", [
+    (
+        "eu",
+        [
             "66b2157b62bffe43d89143a26572b98f4ddbd3a3",
             "9f8a44abfd00ddee8dbd9ca560b058e0987ca109",
             "2ff6256ab13f1e6396895e57bde67342698dc9a5",
@@ -44,8 +46,11 @@ pub const KNOWN_TRACKS: &[(&str, [&str; 12])] = &[
             "cd0f1ad197d0cb8571994b7ae8ef89cabbfaacfd",
             "213935faccb0028cc614190d7ea5bdae97d3a31c",
             "212cbcadfa6ed4a1cb444a443897c8d6258cba42",
-        ]),
-    ("usa", [
+        ],
+    ),
+    (
+        "usa",
+        [
             "6cbaea5810a99483a123a7e6d10e9f3a3ebbebfd",
             "84294d22b365507444a201ed203d0d57a92b0a57",
             "0f469fb25b3ade4e0bb4fbd0c0988973359a0e78",
@@ -58,7 +63,8 @@ pub const KNOWN_TRACKS: &[(&str, [&str; 12])] = &[
             "3ff74e0578e54387dcbd6b15f48d854a91209041",
             "396d606797fbcf16cb11414fb8722a2a988b6535",
             "01ff7bf992ab69fc3a53a0bf547d75ceb31e7526",
-        ]),
+        ],
+    ),
 ];
 
 /// CD-audio track → music cue (`PC/pcaudio.c` enum).
@@ -447,10 +453,20 @@ fn list(dir: &Path, ext: &str) -> io::Result<Vec<PathBuf>> {
 pub fn validate(game: &Path) -> io::Result<Vec<String>> {
     let bad = |p: &Path, e: fmt::Error| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", p.display()));
     let mut stale = Vec::new();
-    let total: usize = [("textures", "fla"), ("sfx", "wus"), ("collision", "col"), ("scenics", "sce"), ("maps", "dat"), ("maps", "fev"), ("maps", "sam"), ("objects", "dll"), ("demos", "key")]
-        .iter()
-        .map(|(d, e)| list(&game.join(d), e).map(|v| v.len()).unwrap_or(0))
-        .sum();
+    let total: usize = [
+        ("textures", "fla"),
+        ("sfx", "wus"),
+        ("collision", "col"),
+        ("scenics", "sce"),
+        ("maps", "dat"),
+        ("maps", "fev"),
+        ("maps", "sam"),
+        ("objects", "dll"),
+        ("demos", "key"),
+    ]
+    .iter()
+    .map(|(d, e)| list(&game.join(d), e).map(|v| v.len()).unwrap_or(0))
+    .sum();
     let mut prog = Progress::new("validate", total as u64);
     for p in list(&game.join("textures"), "fla")? {
         prog.tick();
@@ -558,10 +574,13 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
 pub fn verify_installed(data_root: &Path, rendition: Option<&str>) -> io::Result<Vec<VerifyReport>> {
     let ms: Vec<Manifest> = installed(data_root).into_iter().filter(|m| rendition.is_none_or(|r| m.rendition == r)).collect();
     if ms.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, match rendition {
-            Some(r) => format!("rendition '{r}' is not installed under {}", data_root.display()),
-            None => format!("nothing installed under {}", data_root.display()),
-        }));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            match rendition {
+                Some(r) => format!("rendition '{r}' is not installed under {}", data_root.display()),
+                None => format!("nothing installed under {}", data_root.display()),
+            },
+        ));
     }
     let mut reports = Vec::new();
     for m in ms {

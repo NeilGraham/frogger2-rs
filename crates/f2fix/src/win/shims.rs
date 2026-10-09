@@ -34,10 +34,28 @@ macro_rules! origs {
     ($($n:ident),* $(,)?) => { $(static $n: AtomicUsize = AtomicUsize::new(0);)* };
 }
 origs!(
-    O_REG_OPEN, O_REG_CREATE, O_REG_QUERY, O_REG_SET, O_REG_CLOSE, O_DRIVES, O_DRIVE_TYPE, O_VOLINFO,
-    O_CREATE_FILE, O_BINK_CREATE_FILE, O_FIND_FIRST, O_MCI, O_MIXER_SET, O_REGISTER_CLASS,
-    O_CREATE_WINDOW, O_SHOW_WINDOW, O_SET_WINDOW_POS, O_MESSAGE_BOX, O_DIALOG_BOX, O_DD_CREATE_EX,
-    O_DS_CREATE, O_BINK_OPEN,
+    O_REG_OPEN,
+    O_REG_CREATE,
+    O_REG_QUERY,
+    O_REG_SET,
+    O_REG_CLOSE,
+    O_DRIVES,
+    O_DRIVE_TYPE,
+    O_VOLINFO,
+    O_CREATE_FILE,
+    O_BINK_CREATE_FILE,
+    O_FIND_FIRST,
+    O_MCI,
+    O_MIXER_SET,
+    O_REGISTER_CLASS,
+    O_CREATE_WINDOW,
+    O_SHOW_WINDOW,
+    O_SET_WINDOW_POS,
+    O_MESSAGE_BOX,
+    O_DIALOG_BOX,
+    O_DD_CREATE_EX,
+    O_DS_CREATE,
+    O_BINK_OPEN,
 );
 
 macro_rules! imp {
@@ -120,11 +138,7 @@ pub fn install_dir() -> &'static [u8] {
     static D: OnceLock<Vec<u8>> = OnceLock::new();
     D.get_or_init(|| {
         let c = cfg();
-        let mut v = if c.install_dir.is_empty() {
-            to_ansi(&super::run_dir().to_string_lossy())
-        } else {
-            to_ansi(&c.install_dir)
-        };
+        let mut v = if c.install_dir.is_empty() { to_ansi(&super::run_dir().to_string_lossy()) } else { to_ansi(&c.install_dir) };
         if v.last() != Some(&b'\\') {
             v.push(b'\\');
         }
@@ -139,9 +153,7 @@ fn primary_device_desc() -> Vec<u8> {
     type CreateEx = unsafe extern "system" fn(usize, *mut usize, *const [u8; 16], usize) -> i32;
     type GetIdent = unsafe extern "system" fn(usize, *mut u8, u32) -> i32;
     type Release = unsafe extern "system" fn(usize) -> u32;
-    const IID_IDIRECTDRAW7: [u8; 16] = [
-        0xc0, 0x5e, 0xe6, 0x15, 0x9c, 0x3b, 0xd2, 0x11, 0xb9, 0x2f, 0x00, 0x60, 0x97, 0x97, 0xea, 0x5b,
-    ];
+    const IID_IDIRECTDRAW7: [u8; 16] = [0xc0, 0x5e, 0xe6, 0x15, 0x9c, 0x3b, 0xd2, 0x11, 0xb9, 0x2f, 0x00, 0x60, 0x97, 0x97, 0xea, 0x5b];
     // SAFETY: ddraw.dll is a static import of the exe (loaded); documented
     // prototypes; the identifier buffer is larger than DDDEVICEIDENTIFIER2.
     unsafe {
@@ -167,11 +179,7 @@ fn primary_device_desc() -> Vec<u8> {
         // DDDEVICEIDENTIFIER2: szDriver[512], szDescription[512], ...
         let desc = &id[512..1024];
         let n = desc.iter().position(|&b| b == 0).unwrap_or(desc.len());
-        flog!(
-            "reg: VideoDevice auto: driver '{}' description '{}'",
-            show(cstr(id.as_ptr())),
-            show(&desc[..n])
-        );
+        flog!("reg: VideoDevice auto: driver '{}' description '{}'", show(cstr(id.as_ptr())), show(&desc[..n]));
         desc[..n].to_vec()
     }
 }
@@ -199,10 +207,7 @@ fn reg_value(name: &[u8]) -> Option<(u32, Vec<u8>)> {
         b"language" if !c.language.is_empty() => sz(&to_ansi(&c.language)),
         // controll.cpp names them "Control 1".."Control 4"; the retail exe asks
         // for "Control1".."Control4".
-        b"control1" | b"control2" | b"control3" | b"control4" | b"control 1" | b"control 2"
-        | b"control 3" | b"control 4"
-            if !c.control.is_empty() =>
-        {
+        b"control1" | b"control2" | b"control3" | b"control4" | b"control 1" | b"control 2" | b"control 3" | b"control 4" if !c.control.is_empty() => {
             sz(&to_ansi(&c.control))
         }
         _ => None,
@@ -249,14 +254,7 @@ unsafe extern "system" fn h_reg_create(
 }
 
 type RegQueryFn = unsafe extern "system" fn(usize, *const u8, *mut u32, *mut u32, *mut u8, *mut u32) -> i32;
-unsafe extern "system" fn h_reg_query(
-    hkey: usize,
-    name: *const u8,
-    r: *mut u32,
-    ty: *mut u32,
-    data: *mut u8,
-    cb: *mut u32,
-) -> i32 {
+unsafe extern "system" fn h_reg_query(hkey: usize, name: *const u8, r: *mut u32, ty: *mut u32, data: *mut u8, cb: *mut u32) -> i32 {
     if hkey != FAKE_KEY {
         return orig!(O_REG_QUERY, RegQueryFn)(hkey, name, r, ty, data, cb);
     }
@@ -266,7 +264,11 @@ unsafe extern "system" fn h_reg_query(
         return ERROR_FILE_NOT_FOUND;
     };
     let rc = if cb.is_null() {
-        if data.is_null() { 0 } else { ERROR_INVALID_PARAMETER }
+        if data.is_null() {
+            0
+        } else {
+            ERROR_INVALID_PARAMETER
+        }
     } else if data.is_null() {
         *cb = v.len() as u32;
         0
@@ -281,11 +283,7 @@ unsafe extern "system" fn h_reg_query(
     if rc == 0 && !ty.is_null() {
         *ty = t;
     }
-    let shown = if t == REG_DWORD {
-        format!("{:#x}", u32::from_le_bytes([v[0], v[1], v[2], v[3]]))
-    } else {
-        format!("'{}'", show(&v[..v.len() - 1]))
-    };
+    let shown = if t == REG_DWORD { format!("{:#x}", u32::from_le_bytes([v[0], v[1], v[2], v[3]])) } else { format!("'{}'", show(&v[..v.len() - 1])) };
     flog!("reg: query {} -> {} (rc {})", show(n), shown, rc);
     rc
 }
@@ -533,10 +531,7 @@ unsafe extern "system" fn h_create_window(
     let ex2 = (ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) & !WS_EX_TOPMOST;
     let (ox, oy) = offscreen_xy();
     let hw = real(ex2, cls, name, style, ox, oy, w, h, parent, menu, inst, param);
-    flog!(
-        "window: CreateWindowExA('{}' {}x{} style {:#x} ex {:#x}) -> {:#x} at ({}, {}), ex {:#x}",
-        show(cstr(name)), w, h, style, ex, hw, ox, oy, ex2
-    );
+    flog!("window: CreateWindowExA('{}' {}x{} style {:#x} ex {:#x}) -> {:#x} at ({}, {}), ex {:#x}", show(cstr(name)), w, h, style, ex, hw, ox, oy, ex2);
     hw
 }
 

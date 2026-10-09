@@ -22,9 +22,9 @@ pub mod define;
 pub mod effects;
 pub mod enemies;
 pub mod enemy_tables;
-pub mod fadeout;
 pub mod evenfunc; // wave D
 pub mod event; // wave D
+pub mod fadeout;
 pub mod frogger;
 pub mod frogmove;
 pub mod frontend;
@@ -49,8 +49,8 @@ pub mod pcaudio; // ambient
 pub mod platform;
 pub mod ptexture; // wave E
 pub mod savegame;
-pub mod session;
 pub mod script; // wave D
+pub mod session;
 pub mod specfx;
 pub mod sprite; // wave E
 pub mod story;

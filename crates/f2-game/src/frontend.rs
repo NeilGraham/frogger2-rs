@@ -1644,12 +1644,12 @@ impl Game {
         self.hud.store_frame_count as u32
     }
 
-    /// `matchWinner` (Common/multi.c). 
+    /// `matchWinner` (Common/multi.c).
     pub fn multi_match_winner(&self) -> i32 {
         self.multi.match_winner as i32
     }
 
-    /// `gameWinner` (Common/multi.c). 
+    /// `gameWinner` (Common/multi.c).
     pub fn multi_game_winner(&self) -> i32 {
         self.multi.game_winner as i32
     }

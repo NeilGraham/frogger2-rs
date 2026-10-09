@@ -42,15 +42,17 @@ pub fn decompile_with(c: &Compiler, data: &[u8], title: &str) -> Result<Decompil
 pub enum Roundtrip {
     Identical,
     /// Recompiled output differs; first differing offset.
-    Differs { offset: usize, original_len: usize, recompiled_len: usize },
+    Differs {
+        offset: usize,
+        original_len: usize,
+        recompiled_len: usize,
+    },
 }
 
 /// Decompiles `data`, recompiles the source and compares the bytes.
 pub fn roundtrip(data: &[u8]) -> Result<(Decompiled, Roundtrip), String> {
     let dec = decompile(data, "roundtrip")?;
-    let out = compile("roundtrip.etc", &dec.source).map_err(|d| {
-        d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n")
-    })?;
+    let out = compile("roundtrip.etc", &dec.source).map_err(|d| d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n"))?;
     let r = if out.data == data {
         Roundtrip::Identical
     } else {

@@ -293,9 +293,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<TraceFrame>, String> {
         let n = r.len()?;
         let end = r.at + n;
         let mut fr = R { b: &bytes[..end], at: r.at };
-        let f = get_frame(&mut fr)
-            .and_then(|f| if ver >= SCHEMA_V2 { get_v2(&mut fr, f) } else { Ok(f) })
-            .map_err(|e| format!("frame {}: {e}", out.len()))?;
+        let f = get_frame(&mut fr).and_then(|f| if ver >= SCHEMA_V2 { get_v2(&mut fr, f) } else { Ok(f) }).map_err(|e| format!("frame {}: {e}", out.len()))?;
         if fr.at != end {
             return Err(format!("frame {}: {} trailing bytes", out.len(), end - fr.at));
         }

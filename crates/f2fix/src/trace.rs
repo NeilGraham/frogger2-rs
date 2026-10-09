@@ -290,11 +290,7 @@ impl V2 {
         arr(s, &c.cam_dist);
         s.push_str(",\"curr_cam_offset\":");
         arr(s, &c.curr_cam_offset);
-        let _ = write!(
-            s,
-            ",\"cam_look_ofs\":{},\"trans_cam_speed_mult\":{},\"y_fov_new\":{},\"fixed\":",
-            c.cam_look_ofs, c.trans_cam_speed_mult, c.y_fov_new
-        );
+        let _ = write!(s, ",\"cam_look_ofs\":{},\"trans_cam_speed_mult\":{},\"y_fov_new\":{},\"fixed\":", c.cam_look_ofs, c.trans_cam_speed_mult, c.y_fov_new);
         arr(s, &c.fixed);
         let _ = write!(s, ",\"cam_shakiness\":{},\"trans\":{},\"trans_count\":{},\"fog\":", c.cam_shakiness, c.trans, c.trans_count);
         arr(s, &c.fog);
@@ -558,7 +554,15 @@ pub fn sample() -> Frame {
 pub fn sample_v2() -> Frame {
     let mut f = sample();
     f.v2 = Some(V2 {
-        players_ext: vec![PlayerExt { frog_facing: 2, cam_facing: -1, idle_time: 4096, jump_fwd: [0, 0, -4096], jump_origin: [1, 2, -3], slowhop_time: 7, ..Default::default() }],
+        players_ext: vec![PlayerExt {
+            frog_facing: 2,
+            cam_facing: -1,
+            idle_time: 4096,
+            jump_fwd: [0, 0, -4096],
+            jump_origin: [1, 2, -3],
+            slowhop_time: 7,
+            ..Default::default()
+        }],
         garib_ext: GaribExt { blocks: 28, max_coins: 25, pause_flag: 2, pause_timer: 1, drop_speed: vec![0, -3] },
         babies: vec![Baby { is_saved: 1, idle: 0, collect: 2, pos: Some([9, -9, 0]) }, Baby::default()],
         camera: Camera {
@@ -585,7 +589,17 @@ pub fn sample_v2() -> Frame {
         specfx: vec![SpecFx { kind: 21, origin: [1, -2, 3], lifetime: 1234, update_type: 4 }],
         sprite_count: 40,
         particle_count: 3,
-        tongue: vec![Tongue { flags: 1, radius: 0x708000, progress: 0, kind: 0, can_tongue: 1, source: [1, 2, 3], target: [0; 3], pos: [-1, -2, -3], has_thing: 0 }],
+        tongue: vec![Tongue {
+            flags: 1,
+            radius: 0x708000,
+            progress: 0,
+            kind: 0,
+            can_tongue: 1,
+            source: [1, 2, 3],
+            target: [0; 3],
+            pos: [-1, -2, -3],
+            has_thing: 0,
+        }],
         hud: Hud { score_timer: 90, mode_timer: 8, go_timer: 0, demo_timeout: 25, hand_angle: 61440, store_frame_count: 77 },
     });
     f

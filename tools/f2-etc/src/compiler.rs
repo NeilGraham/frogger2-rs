@@ -429,7 +429,7 @@ pub fn asctime_utc(secs: i64) -> String {
     let rem = secs.rem_euclid(86400);
     let (h, m, s) = (rem / 3600, rem % 3600 / 60, rem % 60);
     let wday = (days + 4).rem_euclid(7); // 1970-01-01 was a Thursday
-    // Civil-from-days (Howard Hinnant).
+                                         // Civil-from-days (Howard Hinnant).
     let z = days + 719468;
     let era = z.div_euclid(146097);
     let doe = z - era * 146097;

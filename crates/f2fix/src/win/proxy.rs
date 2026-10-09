@@ -34,17 +34,13 @@ pub fn real_module() -> usize {
         let mut buf = [0u16; 512];
         // SAFETY: valid buffer.
         let n = unsafe { ffi::GetSystemDirectoryW(buf.as_mut_ptr(), 512) } as usize;
-        let mut p = std::path::PathBuf::from(std::ffi::OsString::from(
-            String::from_utf16_lossy(&buf[..n]),
-        ));
+        let mut p = std::path::PathBuf::from(std::ffi::OsString::from(String::from_utf16_lossy(&buf[..n])));
         p.push("dinput.dll");
         let w: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
         // SAFETY: NUL-terminated path.
         let m = unsafe { ffi::LoadLibraryW(w.as_ptr()) } as usize;
         if m == 0 {
-            flog!("proxy: LoadLibrary({}) FAILED, error {}", p.display(), unsafe {
-                ffi::GetLastError()
-            });
+            flog!("proxy: LoadLibrary({}) FAILED, error {}", p.display(), unsafe { ffi::GetLastError() });
         } else {
             flog!("proxy: real {} at {:#010x}", p.display(), m);
         }
@@ -68,20 +64,13 @@ fn resolve(cache: &AtomicUsize, name: &'static [u8]) -> usize {
 }
 
 type CreateFn = unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void, *mut c_void) -> i32;
-type CreateExFn =
-    unsafe extern "system" fn(*mut c_void, u32, *const c_void, *mut *mut c_void, *mut c_void) -> i32;
-type GetClassObjectFn =
-    unsafe extern "system" fn(*const c_void, *const c_void, *mut *mut c_void) -> i32;
+type CreateExFn = unsafe extern "system" fn(*mut c_void, u32, *const c_void, *mut *mut c_void, *mut c_void) -> i32;
+type GetClassObjectFn = unsafe extern "system" fn(*const c_void, *const c_void, *mut *mut c_void) -> i32;
 
 /// # Safety
 /// DirectInputCreateA's contract.
 #[no_mangle]
-pub unsafe extern "system" fn DirectInputCreateA(
-    hinst: *mut c_void,
-    version: u32,
-    out: *mut *mut c_void,
-    outer: *mut c_void,
-) -> i32 {
+pub unsafe extern "system" fn DirectInputCreateA(hinst: *mut c_void, version: u32, out: *mut *mut c_void, outer: *mut c_void) -> i32 {
     static F: AtomicUsize = AtomicUsize::new(0);
     let p = resolve(&F, b"DirectInputCreateA\0");
     let hr = if p == 0 { E_FAIL } else { core::mem::transmute::<usize, CreateFn>(p)(hinst, version, out, outer) };
@@ -92,12 +81,7 @@ pub unsafe extern "system" fn DirectInputCreateA(
 /// # Safety
 /// DirectInputCreateW's contract.
 #[no_mangle]
-pub unsafe extern "system" fn DirectInputCreateW(
-    hinst: *mut c_void,
-    version: u32,
-    out: *mut *mut c_void,
-    outer: *mut c_void,
-) -> i32 {
+pub unsafe extern "system" fn DirectInputCreateW(hinst: *mut c_void, version: u32, out: *mut *mut c_void, outer: *mut c_void) -> i32 {
     static F: AtomicUsize = AtomicUsize::new(0);
     let p = resolve(&F, b"DirectInputCreateW\0");
     let hr = if p == 0 { E_FAIL } else { core::mem::transmute::<usize, CreateFn>(p)(hinst, version, out, outer) };
@@ -108,20 +92,10 @@ pub unsafe extern "system" fn DirectInputCreateW(
 /// # Safety
 /// DirectInputCreateEx's contract.
 #[no_mangle]
-pub unsafe extern "system" fn DirectInputCreateEx(
-    hinst: *mut c_void,
-    version: u32,
-    riid: *const c_void,
-    out: *mut *mut c_void,
-    outer: *mut c_void,
-) -> i32 {
+pub unsafe extern "system" fn DirectInputCreateEx(hinst: *mut c_void, version: u32, riid: *const c_void, out: *mut *mut c_void, outer: *mut c_void) -> i32 {
     static F: AtomicUsize = AtomicUsize::new(0);
     let p = resolve(&F, b"DirectInputCreateEx\0");
-    let hr = if p == 0 {
-        E_FAIL
-    } else {
-        core::mem::transmute::<usize, CreateExFn>(p)(hinst, version, riid, out, outer)
-    };
+    let hr = if p == 0 { E_FAIL } else { core::mem::transmute::<usize, CreateExFn>(p)(hinst, version, riid, out, outer) };
     flog!("proxy: DirectInputCreateEx({:#x}) = {:#010x}", version, hr);
     if hr >= 0 && !out.is_null() && !(*out).is_null() && cfg().input_virtual {
         hook_di(*out as usize);
@@ -132,11 +106,7 @@ pub unsafe extern "system" fn DirectInputCreateEx(
 /// # Safety
 /// COM DllGetClassObject contract.
 #[no_mangle]
-pub unsafe extern "system" fn DllGetClassObject(
-    clsid: *const c_void,
-    iid: *const c_void,
-    out: *mut *mut c_void,
-) -> i32 {
+pub unsafe extern "system" fn DllGetClassObject(clsid: *const c_void, iid: *const c_void, out: *mut *mut c_void) -> i32 {
     static F: AtomicUsize = AtomicUsize::new(0);
     let p = resolve(&F, b"DllGetClassObject\0");
     if p == 0 {
@@ -182,13 +152,7 @@ unsafe extern "system" fn h_enum_devices(this: usize, ty: u32, cb: usize, r: usi
     orig!(O_ENUM, EnumFn)(this, ty, cb, r, fl)
 }
 
-unsafe extern "system" fn h_create_device_ex(
-    this: usize,
-    guid: usize,
-    iid: usize,
-    out: *mut usize,
-    outer: usize,
-) -> i32 {
+unsafe extern "system" fn h_create_device_ex(this: usize, guid: usize, iid: usize, out: *mut usize, outer: usize) -> i32 {
     let hr = orig!(O_CREATE_EX, CreateDevExFn)(this, guid, iid, out, outer);
     if hr >= 0 && !out.is_null() && *out != 0 {
         // IDirectInputDevice7A: 9 GetDeviceState, 10 GetDeviceData, 13 SetCooperativeLevel.

@@ -82,13 +82,7 @@ fn attach() {
     let _ = CFG.set(c);
     // SAFETY: trivial.
     let pid = unsafe { ffi::GetCurrentProcessId() };
-    flog!(
-        "=== f2fix {} loaded, pid {}, run dir {} (log {}) ===",
-        env!("CARGO_PKG_VERSION"),
-        pid,
-        dir.display(),
-        if log_ok { "ok" } else { "FAILED" }
-    );
+    flog!("=== f2fix {} loaded, pid {}, run dir {} (log {}) ===", env!("CARGO_PKG_VERSION"), pid, dir.display(), if log_ok { "ok" } else { "FAILED" });
     flog!("f2fix: ini {} {}", ini.display(), if found { "read" } else { "absent (defaults)" });
     for e in &errs {
         flog!("f2fix: ini: {}", e);
@@ -98,14 +92,7 @@ fn attach() {
     oracle::install();
     // SAFETY: CreateThread with a valid start routine; the handle is closed.
     unsafe {
-        let h = ffi::CreateThread(
-            core::ptr::null_mut(),
-            0,
-            init_thread,
-            core::ptr::null_mut(),
-            0,
-            core::ptr::null_mut(),
-        );
+        let h = ffi::CreateThread(core::ptr::null_mut(), 0, init_thread, core::ptr::null_mut(), 0, core::ptr::null_mut());
         if h.is_null() {
             flog!("f2fix: CreateThread(init) FAILED");
         } else {

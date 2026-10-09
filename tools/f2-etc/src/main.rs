@@ -147,9 +147,9 @@ fn run() -> Result<bool, String> {
                         }
                         match &rt {
                             Err(e) => println!("{input}: decompile/recompile failed: {e}"),
-                            Ok((_, Roundtrip::Differs { offset, original_len, recompiled_len })) => println!(
-                                "{input}: recompiled bytes differ at 0x{offset:x} ({original_len} vs {recompiled_len} bytes)"
-                            ),
+                            Ok((_, Roundtrip::Differs { offset, original_len, recompiled_len })) => {
+                                println!("{input}: recompiled bytes differ at 0x{offset:x} ({original_len} vs {recompiled_len} bytes)")
+                            }
                             Ok(_) => {}
                         }
                     }

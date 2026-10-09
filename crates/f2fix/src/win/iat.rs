@@ -103,11 +103,7 @@ pub unsafe fn patch_imports(base: usize, table: &[Import]) -> (u32, u32) {
                     break;
                 }
                 let ord = if t & 0x8000_0000 != 0 { Some((t & 0xffff) as u16) } else { None };
-                let fname: &[u8] = if ord.is_none() && t < size_of_image {
-                    cbytes(base + t + 2)
-                } else {
-                    b""
-                };
+                let fname: &[u8] = if ord.is_none() && t < size_of_image { cbytes(base + t + 2) } else { b"" };
                 if let Some(h) = table.iter().find(|h| {
                     h.dll.eq_ignore_ascii_case(dll)
                         && match ord {

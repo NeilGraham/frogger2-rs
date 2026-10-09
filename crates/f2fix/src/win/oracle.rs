@@ -184,7 +184,14 @@ unsafe extern "C" fn h_game_loop() {
                 wr::<i32>(A::NEXT_DEMO, 0);
                 wr::<u8>(A::GOING_TO_DEMO, 1);
                 st.fired = true;
-                flog!("oracle: start demo {}-{} (loop {}, frameCount {}, rseed before InitLevel {})", w, l, st.loops, rd::<i32>(A::FRAME_COUNT), rd::<u32>(A::RSEED));
+                flog!(
+                    "oracle: start demo {}-{} (loop {}, frameCount {}, rseed before InitLevel {})",
+                    w,
+                    l,
+                    st.loops,
+                    rd::<i32>(A::FRAME_COUNT),
+                    rd::<u32>(A::RSEED)
+                );
             } else if let Some((w, l)) = c.start_level {
                 // As levplay.c InitDemoMode, but an arcade game in INGAME_MODE.
                 wr::<u8>(A::GAME_STATE + A::game_state::MULTI, 1);

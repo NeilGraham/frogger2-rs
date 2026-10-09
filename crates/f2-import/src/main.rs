@@ -38,7 +38,14 @@ fn main() {
             Ok(reports) => {
                 let mut bad = false;
                 for rep in reports {
-                    println!("{}: {} files checked, {} missing, {} modified, {} extra", rep.rendition, rep.checked, rep.missing.len(), rep.mismatched.len(), rep.extra.len());
+                    println!(
+                        "{}: {} files checked, {} missing, {} modified, {} extra",
+                        rep.rendition,
+                        rep.checked,
+                        rep.missing.len(),
+                        rep.mismatched.len(),
+                        rep.extra.len()
+                    );
                     for f in &rep.missing {
                         println!("  MISSING  {f}");
                     }

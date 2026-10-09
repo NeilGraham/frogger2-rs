@@ -20,26 +20,11 @@ pub struct Format {
 
 impl Format {
     /// 16-bpp 5-6-5.
-    pub const RGB565: Format = Format {
-        bpp: 16,
-        rmask: 0xf800,
-        gmask: 0x07e0,
-        bmask: 0x001f,
-    };
+    pub const RGB565: Format = Format { bpp: 16, rmask: 0xf800, gmask: 0x07e0, bmask: 0x001f };
     /// 16-bpp x-5-5-5.
-    pub const RGB555: Format = Format {
-        bpp: 16,
-        rmask: 0x7c00,
-        gmask: 0x03e0,
-        bmask: 0x001f,
-    };
+    pub const RGB555: Format = Format { bpp: 16, rmask: 0x7c00, gmask: 0x03e0, bmask: 0x001f };
     /// 32-bpp x8r8g8b8.
-    pub const XRGB8888: Format = Format {
-        bpp: 32,
-        rmask: 0x00ff_0000,
-        gmask: 0x0000_ff00,
-        bmask: 0x0000_00ff,
-    };
+    pub const XRGB8888: Format = Format { bpp: 32, rmask: 0x00ff_0000, gmask: 0x0000_ff00, bmask: 0x0000_00ff };
 
     /// Bytes per pixel, or `None` for an unsupported depth.
     pub fn bytes_per_pixel(&self) -> Option<usize> {
@@ -106,24 +91,14 @@ pub fn to_rgb(src: &[u8], w: usize, h: usize, pitch: usize, f: Format) -> Option
 /// Convert to packed RGBA8 (alpha 255) into `out` (cleared first; its
 /// capacity is reused). Fast path for 16-bit 565 and 32-bit XRGB/ARGB.
 /// False = bad geometry or format.
-pub fn to_rgba_into(
-    src: &[u8],
-    w: usize,
-    h: usize,
-    pitch: usize,
-    f: Format,
-    out: &mut Vec<u8>,
-) -> bool {
+pub fn to_rgba_into(src: &[u8], w: usize, h: usize, pitch: usize, f: Format, out: &mut Vec<u8>) -> bool {
     let Some(bpp) = f.bytes_per_pixel() else {
         return false;
     };
     if w == 0 || h == 0 || pitch < w * bpp {
         return false;
     }
-    let Some(need) = (h - 1)
-        .checked_mul(pitch)
-        .and_then(|n| n.checked_add(w * bpp))
-    else {
+    let Some(need) = (h - 1).checked_mul(pitch).and_then(|n| n.checked_add(w * bpp)) else {
         return false;
     };
     if src.len() < need {
@@ -139,12 +114,7 @@ pub fn to_rgba_into(
             for px in row.as_chunks::<2>().0.iter() {
                 let v = u16::from_le_bytes([px[0], px[1]]) as u32;
                 let (r, g, b) = ((v >> 11) & 31, (v >> 5) & 63, v & 31);
-                out.extend_from_slice(&[
-                    ((r << 3) | (r >> 2)) as u8,
-                    ((g << 2) | (g >> 4)) as u8,
-                    ((b << 3) | (b >> 2)) as u8,
-                    255,
-                ]);
+                out.extend_from_slice(&[((r << 3) | (r >> 2)) as u8, ((g << 2) | (g >> 4)) as u8, ((b << 3) | (b >> 2)) as u8, 255]);
             }
         } else if is8888 {
             for px in row.as_chunks::<4>().0.iter() {
@@ -157,12 +127,7 @@ pub fn to_rgba_into(
                     3 => u32::from_le_bytes([px[0], px[1], px[2], 0]),
                     _ => u32::from_le_bytes([px[0], px[1], px[2], px[3]]),
                 };
-                out.extend_from_slice(&[
-                    channel(v, f.rmask),
-                    channel(v, f.gmask),
-                    channel(v, f.bmask),
-                    255,
-                ]);
+                out.extend_from_slice(&[channel(v, f.rmask), channel(v, f.gmask), channel(v, f.bmask), 255]);
             }
         }
     }
@@ -311,25 +276,16 @@ mod tests {
     #[test]
     fn to_rgb_555_and_32() {
         let src = 0x7c00u16.to_le_bytes();
-        assert_eq!(
-            to_rgb(&src, 1, 1, 2, Format::RGB555).unwrap(),
-            vec![255, 0, 0]
-        );
+        assert_eq!(to_rgb(&src, 1, 1, 2, Format::RGB555).unwrap(), vec![255, 0, 0]);
         let src = 0x0011_2233u32.to_le_bytes();
-        assert_eq!(
-            to_rgb(&src, 1, 1, 4, Format::XRGB8888).unwrap(),
-            vec![0x11, 0x22, 0x33]
-        );
+        assert_eq!(to_rgb(&src, 1, 1, 4, Format::XRGB8888).unwrap(), vec![0x11, 0x22, 0x33]);
     }
 
     #[test]
     fn to_rgb_rejects_short_or_bad() {
         assert!(to_rgb(&[0; 3], 2, 1, 4, Format::RGB565).is_none());
         assert!(to_rgb(&[0; 8], 2, 2, 2, Format::RGB565).is_none()); // pitch < w*bpp
-        let f = Format {
-            bpp: 8,
-            ..Format::RGB565
-        };
+        let f = Format { bpp: 8, ..Format::RGB565 };
         assert!(to_rgb(&[0; 4], 2, 2, 2, f).is_none());
     }
 

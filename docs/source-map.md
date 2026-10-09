@@ -20,21 +20,21 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 | `Common/anim.c` | 511 | f2-game::anim | ported |
 | `Common/babyfrog.c` | 468 | f2-game::babyfrog | ported |
 | `Common/bbtimer.c` | 44 | f2-game::timer | ported |
-| `Common/cam.c` | 1012 | f2-game::camera | partial |
+| `Common/cam.c` | 1012 | f2-game::cam | ported |
 | `Common/collect.c` | 688 | f2-game::collect | ported |
 | `Common/crc32.c` | 106 | f2-formats::crc | ported |
 | `Common/enemies.c` | 2900 | f2-game::enemies | ported |
-| `Common/evenfunc.c` | 525 | f2-game::script::funcs | todo |
-| `Common/event.c` | 372 | f2-game::script::event | todo |
+| `Common/evenfunc.c` | 525 | f2-game::evenfunc | ported |
+| `Common/event.c` | 372 | f2-game::event | ported |
 | `Common/fixed.c` | 69 | f2-math::fixed | ported |
 | `Common/flatpack.c` | 340 | (PSX only — skip) | skip |
 | `Common/frogger.c` | 295 | f2-game::frog | ported |
 | `Common/frogmove.c` | 2190 | f2-game::frog::movement | ported |
-| `Common/frontend.c` | 2048 | f2-game::modes | todo |
+| `Common/frontend.c` | 2048 | f2-game::frontend | ported |
 | `Common/game.c` | 759 | f2-game::ingame | partial |
 | `Common/general.c` | 485 | f2-game::tiles | ported |
-| `Common/hud.c` | 1184 | f2-game::ui::hud | todo |
-| `Common/language.c` | 243 | f2-game::lang | todo |
+| `Common/hud.c` | 1184 | f2-game::hud (multi HUD todo) | ported |
+| `Common/language.c` | 243 | f2-game::language | ported |
 | `Common/layout.c` | 1329 | f2-game::level::layout | partial |
 | `Common/levplay.c` | 173 | f2-game::demo | ported |
 | `Common/map.c` | 847 | f2-game::level::map (+ f2-formats::col/sce) | ported |
@@ -44,29 +44,29 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 | `Common/multi.c` | 1821 | f2-game::multi | ported |
 | `Common/newpsx.c` | 55 | f2-math::psx | ported |
 | `Common/options.c` | 3253 | f2-game::ui::frontend | todo |
-| `Common/overlays.c` | 150 | f2-engine::overlay | todo |
-| `Common/particle.c` | 365 | f2-game::fx::particle | todo |
+| `Common/overlays.c` | 150 | f2-game::overlays | ported |
+| `Common/particle.c` | 365 | f2-game::particle | ported |
 | `Common/path.c` | 274 | f2-game::path | ported |
 | `Common/platform.c` | 1243 | f2-game::platform | ported |
-| `Common/ptexture.c` | 497 | f2-engine::proctex | todo |
-| `Common/savegame.c` | 180 | f2-game::save | todo |
-| `Common/script.c` | 1432 | f2-game::script::vm | todo |
+| `Common/ptexture.c` | 497 | f2-game::ptexture | ported |
+| `Common/savegame.c` | 180 | f2-game::savegame | ported |
+| `Common/script.c` | 1432 | f2-game::script | ported |
 | `Common/sndview.c` | 25 | (debug — skip) | skip |
-| `Common/specfx.c` | 2457 | f2-game::fx | todo |
-| `Common/sprite.c` | 502 | f2-engine::sprite | todo |
-| `Common/story.c` | 92 | f2-game::story | todo |
-| `Common/textover.c` | 453 | f2-engine::text | todo |
+| `Common/specfx.c` | 2457 | f2-game::specfx | ported |
+| `Common/sprite.c` | 502 | f2-game::sprite | ported |
+| `Common/story.c` | 92 | f2-game::story | ported |
+| `Common/textover.c` | 453 | f2-game::textover | ported |
 | `Common/tongue.c` | 822 | f2-game::frog::tongue | ported |
-| `Common/training.c` | 148 | f2-game::training | todo |
+| `Common/training.c` | 148 | f2-game::training | ported |
 | `Common/types.c` | 37 | f2-math::types | ported |
 | `PC/Main.cpp` | 1025 | frogger (bin) + f2-platform | todo |
 | `PC/actor.cpp` | 293 | f2-engine::actor | ported |
-| `PC/backdrop.c` | 192 | f2-engine::backdrop | todo |
+| `PC/backdrop.c` | 192 | f2-game::backdrop | ported |
 | `PC/banks.cpp` | 647 | f2-formats + f2-game::level::banks | ported |
 | `PC/controll.cpp` | 1464 | f2-platform::input | todo |
 | `PC/drawloop.cpp` | 408 | f2-engine::frame | todo |
 | `PC/dx_sound.cpp` | 430 | f2-audio (replaced) | replace |
-| `PC/fadeout.cpp` | 105 | f2-engine::fade | todo |
+| `PC/fadeout.cpp` | 105 | f2-game::fadeout | ported |
 | `PC/islfile.cpp` | 35 | f2-mods::vfs | todo |
 | `PC/isllocal.c` | 105 | f2-game::lang | todo |
 | `PC/isltex.cpp` | 27 | f2-engine::texture | todo |

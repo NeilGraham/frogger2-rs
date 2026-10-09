@@ -10,8 +10,8 @@
 //! specfx stubs).
 
 use f2_math::{
-    add_to_vector_ff, add_to_vector_fs, add_vector_fff, distance_between_points_ss, dot_product_ff, make_unit, scale_vector, scale_vector_ff,
-    set_vector_fs, set_vector_sf, sub_vector_fss, FVector, Fixed, SVector,
+    add_to_vector_ff, add_to_vector_fs, add_vector_fff, distance_between_points_ss, dot_product_ff, make_unit, scale_vector, scale_vector_ff, set_vector_fs,
+    set_vector_sf, sub_vector_fss, FVector, Fixed, SVector,
 };
 use serde::{Deserialize, Serialize};
 

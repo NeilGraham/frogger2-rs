@@ -13,10 +13,10 @@
 //! tests, tools and muted parity runs (time then advances only via
 //! [`AudioEngine::render_offline`] / [`AudioEngine::skip`]).
 
+pub mod flac;
 pub mod mixer;
 pub mod output;
 pub mod tables;
-pub mod flac;
 pub mod wav;
 
 pub use mixer::{Mixer, VoiceId};

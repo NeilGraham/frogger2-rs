@@ -277,7 +277,8 @@ impl WindowApp for Viewer {
 /// WSLg's Weston 9 (rdprail shell) segfaults with winit's native Wayland client, taking every
 /// GUI app down with it; under WSL prefer X11 (XWayland) unless `F2_VIEWER_WAYLAND=1`.
 fn prefer_x11_on_wsl() {
-    let wsl = std::env::var_os("WSL_DISTRO_NAME").is_some() || std::fs::read_to_string("/proc/version").is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"));
+    let wsl =
+        std::env::var_os("WSL_DISTRO_NAME").is_some() || std::fs::read_to_string("/proc/version").is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"));
     if cfg!(target_os = "linux") && wsl && std::env::var_os("DISPLAY").is_some() && std::env::var_os("F2_VIEWER_WAYLAND").is_none() {
         // Single-threaded at this point (before the event loop, audio and decoder threads).
         std::env::remove_var("WAYLAND_DISPLAY");

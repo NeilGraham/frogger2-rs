@@ -316,11 +316,7 @@ fn prepare_skinned(view: &View, obj: &Object, mesh: &Mesh, m: &Mat4, tv: &mut [T
         let p = mtx_xfm(&f, *v);
         let z = p[2] + DIST;
         // The skinned path has no `noClip` override.
-        *slot = if z > view.near_clip && z < view.far_clip {
-            Some(view.to_screen(p, view.oozd(p[2])))
-        } else {
-            None
-        };
+        *slot = if z > view.near_clip && z < view.far_clip { Some(view.to_screen(p, view.oozd(p[2]))) } else { None };
     }
 }
 

@@ -16,9 +16,9 @@
 //! run directory before the blit goes on. The window is off-screen, so the
 //! blit itself is clipped away; the source surface is the frame.
 
+use super::cfg;
 use super::iat::{self, orig};
 use super::log::flog;
-use super::cfg;
 use crate::cfg::{want_dump, WindowMode};
 use crate::fbconv::{self, Format};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -75,10 +75,7 @@ unsafe extern "system" fn h_create_surface(this: usize, ddsd: *mut u8, out: *mut
     let caps = rd(104);
     let s = if hr >= 0 && !out.is_null() { *out } else { 0 };
     if N.fetch_add(1, Ordering::Relaxed) < 48 {
-        flog!(
-            "dd: CreateSurface(flags {:#x} caps {:#x} {}x{}) = {:#010x} -> {:#x}",
-            rd(4), caps, rd(12), rd(8), hr, s
-        );
+        flog!("dd: CreateSurface(flags {:#x} caps {:#x} {}x{}) = {:#010x} -> {:#x}", rd(4), caps, rd(12), rd(8), hr, s);
     }
     if s != 0 && caps & DDSCAPS_PRIMARYSURFACE != 0 {
         PRIMARY.store(s, Ordering::Release);
@@ -202,7 +199,12 @@ unsafe fn dump(src: usize, srect: *const i32, frame: u32, name: &str) {
         "fbdump: {} {} ({}x{}, frame {}, t {} ms, digest {:08x}, mean {:.1}, non-black {:.1}%)",
         if ok { "wrote" } else { "FAILED to write" },
         path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-        w, h, frame, super::log::ms(), fbconv::digest(&rgb), sum as f64 / (n * 3) as f64,
+        w,
+        h,
+        frame,
+        super::log::ms(),
+        fbconv::digest(&rgb),
+        sum as f64 / (n * 3) as f64,
         lit as f64 * 100.0 / n as f64
     );
 }

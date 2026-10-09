@@ -647,11 +647,11 @@ impl Game {
             if let Some(s) = g.sprite.as_mut() {
                 s.scale_x = 64;
                 s.scale_y = 64;
-            } else if g.fx.is_some() {
+            } else if let Some(gfx) = g.fx {
                 g.drop_speed = g.drop_speed.wrapping_sub(step);
 
                 if g.drop_speed <= 0 {
-                    let (gfx, gpos) = (g.fx.expect("garib fx"), g.pos);
+                    let gpos = g.pos;
                     let (pos, normal, rgb) = {
                         let e = self.specfx.fx(gfx);
                         let a0 = e.act.as_ref().and_then(|v| v.first().copied()).flatten();

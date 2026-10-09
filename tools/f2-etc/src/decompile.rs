@@ -140,10 +140,7 @@ impl Decoder<'_> {
         let start = self.p;
         let events = self.block()?;
         if size < 0 || self.p - start != size as usize {
-            return Err(DecodeError {
-                offset: start - 4,
-                message: format!("block size field {size} but block is {} bytes", self.p - start),
-            });
+            return Err(DecodeError { offset: start - 4, message: format!("block size field {size} but block is {} bytes", self.p - start) });
         }
         self.depth -= 1;
         Ok(events)
@@ -207,8 +204,7 @@ pub fn float_text(raw: i32) -> Option<String> {
 }
 
 /// Named trigger flags (`TRIGGER_*`, `Common/event.h`) emitted as `Set` variables.
-pub const TRIGGER_FLAGS: [(&str, u8); 5] =
-    [("TRIGGER_ONCE", 1), ("TRIGGER_DELAY", 2), ("TRIGGER_ALWAYS", 4), ("TRIGGER_FIRED", 8), ("TRIGGER_RISING", 16)];
+pub const TRIGGER_FLAGS: [(&str, u8); 5] = [("TRIGGER_ONCE", 1), ("TRIGGER_DELAY", 2), ("TRIGGER_ALWAYS", 4), ("TRIGGER_FIRED", 8), ("TRIGGER_RISING", 16)];
 
 /// Decompiler output.
 #[derive(Clone, Debug)]

@@ -858,7 +858,8 @@ impl Renderer {
             let first = verts.len() as u32;
             verts.extend_from_slice(tri);
             if let Some(last) = cmds.last_mut() {
-                if last.blend == blend && last.depth == depth && last.tex == tex && last.wrap == wrap && last.scene == scene && last.first + last.count == first {
+                if last.blend == blend && last.depth == depth && last.tex == tex && last.wrap == wrap && last.scene == scene && last.first + last.count == first
+                {
                     last.count += tri.len() as u32;
                     return;
                 }
@@ -947,8 +948,13 @@ impl Renderer {
             self.internal = Some((self.colour_texture("internal", w, h, 1, usage), w, h));
         }
         if scaled && self.blit.is_none() {
-            let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blit"), source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()) });
-            let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("blit"), bind_group_layouts: &[Some(&self.tex_layout)], immediate_size: 0 });
+            let shader =
+                self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blit"), source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()) });
+            let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("blit"),
+                bind_group_layouts: &[Some(&self.tex_layout)],
+                immediate_size: 0,
+            });
             let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("blit"),
                 layout: Some(&layout),

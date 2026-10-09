@@ -24,14 +24,7 @@ extern "system" {
     pub fn LoadLibraryA(name: *const u8) -> HMODULE;
     pub fn GetSystemDirectoryW(buf: *mut u16, len: u32) -> u32;
     pub fn DisableThreadLibraryCalls(m: HMODULE) -> BOOL;
-    pub fn CreateThread(
-        sa: *mut c_void,
-        stack: usize,
-        start: ThreadStart,
-        param: *mut c_void,
-        flags: u32,
-        tid: *mut u32,
-    ) -> HANDLE;
+    pub fn CreateThread(sa: *mut c_void, stack: usize, start: ThreadStart, param: *mut c_void, flags: u32, tid: *mut u32) -> HANDLE;
     pub fn CloseHandle(h: HANDLE) -> BOOL;
     pub fn VirtualProtect(addr: *mut c_void, size: usize, new: u32, old: *mut u32) -> BOOL;
     pub fn GetCurrentProcess() -> HANDLE;

@@ -206,7 +206,12 @@ impl Default for Config {
             profile: Profile::default(),
             video: Video::default(),
             display: Display::default(),
-            audio: Audio::default(), language: "us".into(), data_root: None, rendition: None, input: Input::default() }
+            audio: Audio::default(),
+            language: "us".into(),
+            data_root: None,
+            rendition: None,
+            input: Input::default(),
+        }
     }
 }
 
