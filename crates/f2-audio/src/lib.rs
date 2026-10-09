@@ -16,6 +16,7 @@
 pub mod mixer;
 pub mod output;
 pub mod tables;
+pub mod flac;
 pub mod wav;
 
 pub use mixer::{Mixer, VoiceId};
@@ -477,7 +478,14 @@ impl AudioEngine {
     }
 
     pub fn music_path(&self, track: u32) -> Option<PathBuf> {
-        self.music_dir.as_ref().map(|d| d.join(format!("track{track:02}.wav")))
+        let d = self.music_dir.as_ref()?;
+        // Prefer WAV, then FLAC; fall back to the WAV name when neither exists.
+        let wav = d.join(format!("track{track:02}.wav"));
+        if wav.exists() {
+            return Some(wav);
+        }
+        let flac = d.join(format!("track{track:02}.flac"));
+        Some(if flac.exists() { flac } else { wav })
     }
 
     /// Port of `PrepareSong` (pcaudio.c:949): picks the world's track and plays it.
@@ -491,7 +499,7 @@ impl AudioEngine {
     /// behaves like a failed MCI play (silence) but still sets `cdTrack`, as the original
     /// ignores `playCDTrack`'s result.
     pub fn play_music(&mut self, track: u32, looped: bool) {
-        let stream = self.music_path(track).and_then(|p| match wav::WavStream::open(&p) {
+        let stream = self.music_path(track).and_then(|p| match wav::WavStream::open_any(&p) {
             Ok(s) => Some(s),
             Err(e) => {
                 eprintln!("f2-audio: couldn't play cd track {track} ({}): {e}", p.display());
