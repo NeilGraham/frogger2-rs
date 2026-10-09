@@ -194,13 +194,14 @@
         "crates/f2-import"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T15:59:29-06:00 done: FLAC import + playback (sample-exact), progress, --verify-installed"
       ]
     },
     {
