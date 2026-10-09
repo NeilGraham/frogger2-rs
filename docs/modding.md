@@ -10,7 +10,7 @@ mods/
     mod.toml              # id, name, version, authors, engine version range, load order hints, profile flags
     game/                 # overrides/additions mirroring the imported tree (case-insensitive)
       textures/Garden/00wate04.png      # loose replacement for one texture in a bank (by name/CRC)
-      sfx/garden/hopongrass.ogg         # loose replacement for one sample (by name/CRC)
+      sfx/garden/hopongrass.wav         # loose replacement for one sample (by name/CRC)
       objects/garden1/jetty.gltf        # replacement model
       maps/script-1-0.fes               # script source, compiled at load by f2-etc
     music/track02.ogg
@@ -31,14 +31,15 @@ entries without rebuilding containers. Supported loose formats:
 | Kind | Original | Mod formats |
 |---|---|---|
 | Textures | X1R5G5B5 in `.fla` banks | PNG (any size, RGBA) |
-| Sounds | PCM in `.wus` | WAV, OGG, FLAC |
+| Sounds | PCM in `.wus` | WAV, FLAC (OGG planned) |
 | Models | MDX structs in PE `.dll` | glTF 2.0 (meshes, hierarchy, keyframe anims) |
-| Music | CD-DA | OGG/FLAC with loop points |
+| Music | CD-DA | WAV/FLAC (OGG + loop points planned) |
 | Text | `language.fla` TSV | TSV/TOML string tables (new languages possible) |
 | Levels | `.col` `.sce` `entity.dat` `.fev` | same binary formats **or** text equivalents (TOML/RON) + script source |
 | FMV | Bink 1 | Bink 1, or WebM (if a decoder is enabled) |
 
-Exporters in `f2-viewer` (PNG/WAV/glTF/TOML) give modders editable starting points.
+Exporters in `f2-export` (PNG/WAV/glTF/TSV) give modders editable starting points; the
+importers in `f2-modkit` are their inverse (see §6).
 
 ## 3. Levels
 
@@ -67,3 +68,85 @@ deterministic tick (no wall-clock, seeded RNG only) so replays/netplay remain va
 - Mods must not contain original game assets (enforced socially + by a hash denylist warning in
   the packer tool).
 - Gameplay-affecting mods are flagged so speedrun/online modes can require vanilla.
+
+## 6. Asset overrides — what works now (`crates/f2-modkit`, P7-1)
+
+`f2-modkit` turns a `Vfs` (retail rendition + enabled mods) into the *effective* containers the
+engine should use. Every function parses the retail container through `f2-formats`, then applies
+loose per-entry files from all layers (topmost layer wins per entry). Broken override files are
+skipped and listed in `Loaded::warnings` — they never abort a game load.
+
+| API | Base container | Override files (virtual paths under `game/`) |
+|---|---|---|
+| `tex_bank(&vfs, "garden")` | `textures/garden.fla` | `textures/garden/<name>.png` |
+| `sound_bank(&vfs, "garden")` | `sfx/garden.wus` | `sfx/garden/<name>.wav` / `.flac` |
+| `object_bank(&vfs, "garden1")` | `objects/garden1.dll` | `objects/garden1/<model>.gltf` / `.glb` (+ `.bin`) |
+| `string_table(&vfs)` | `maps/language.fla` | `text/language.tsv`, `text/<lang>.toml` |
+| `music_track(&vfs, n)` | `music/trackNN.wav` | `music/trackNN.wav` / `.flac` (mod root, not `game/`) |
+
+A missing base container yields an empty one, so mods can add **new banks**. Whole-file
+replacement (`game/textures/garden.fla`, etc.) also still works through the VFS.
+
+### File conventions
+
+- **Textures** (`textures/<bank>/<name>.png`, any PNG colour type): replaces the retail texture
+  whose exported stem is `<name>` (keeps its CRC — retail names are truncated to 11 chars), or a
+  raw CRC when `<name>` is 8 hex digits, else adds `crc("<name>.bmp")`. Converted to X1R5G5B5:
+  alpha < 128 → magenta key `0x7c1f` (opaque magenta is nudged to `0x7c1e`). Type from the name
+  prefix like the original bank tool: `ai_` alpha-intensity (PNG alpha, or luminance if opaque),
+  `ac_` alpha-colour, `prc` procedural, else normal (non power-of-two → plain surface); replacing a
+  retail `ai_`/`ac_`/`prc` entry keeps its type. Texture animations stay as in the base bank.
+  Full-screen backdrops (`title`, `loading`, `artworkNN`) are not banks — replace the whole `.fla`.
+- **Sounds** (`sfx/<bank>/<name>.wav|.flac`): uid = 8 hex digits as written by `f2-export`
+  (`sfx/<bank>/<uid>.wav`), else `crc(lowercase name)` like `soundbanker`. Any PCM WAV
+  (8/16/24/32-bit int, float, extensible) or FLAC, any channels/rate → 16-bit mono. Native rates
+  (11025/11050/22050/44100) are kept; others are resampled to the replaced sample's rate (pitch
+  shifts set absolute frequencies) or 22050 for new samples. Looping: a WAV `smpl` loop sets it,
+  else the replaced sample's flag. `.ogg` is reported as unsupported.
+- **Models** (`objects/<bank>/<model>.gltf|.glb`): `<model>` is the `f2-export` name (sanitized
+  lowercase root name, `_<id>` suffix for duplicates) — replaces that model and keeps its id;
+  otherwise adds a model with id `crc("<model>.obe")` (the `FindObject` key, verified against all
+  retail banks). Importer conventions are exactly the exporter's: raw left-handed coordinates,
+  UV = value × 0.000975, key times in seconds × 60 game frames offset by the clip's
+  `extras.start`; animations with `extras.speed` (or no extras: laid out back to back, speed 1,
+  loop 1) become `MDX_ANIMATION` clips; scene roots → root + `root_siblings`; a node with a `skin`
+  is the skin mesh (vertices go to their highest-weight joint's `effectedVerts`, moved into joint
+  space by the inverse bind matrix). Per-face texture CRC from material `extras.textureCrc`,
+  material name `tex_XXXXXXXX`, or the base-colour image name/URI stem → `crc("<stem>.bmp")`.
+  Triangles only, no sparse accessors, external buffers must be relative paths without `..`.
+  Not carried by glTF (defaults): `faceFlags` (0, unused by MDX rendering; honoured from
+  primitive/material `extras.faceFlags`), `LOCMesh` (none), `bBox` (AABB of the mesh),
+  `numVtx` (skin vertex count; unused by MDX), `objectSize` (0, as in every retail model).
+- **Text**: `text/language.tsv` has retail/exported columns `id, comment, <language>…`; columns
+  match base languages by name, unknown names add a language; rows match by `STR_*` id; empty
+  cells keep the base text; unknown ids are appended (existing indices never shift).
+  `text/<lang>.toml` = optional `name = "Español"` + `[strings] STR_ID = "text"`; `<lang>` is a
+  base name or alias (`uk`/`en`, `fr`, `de`, `it`, `us`) or a new language. Text files **merge
+  across mods** (each layer bottom→top, TSV then TOMLs). New-language cells left empty fall back
+  to the UK column. The game font is Latin-1 (`pack` warns otherwise).
+- **Music**: `music/trackNN.wav` (16-bit PCM) or `.flac` in the mod root already resolve through
+  the VFS; `music_track` picks the topmost layer's file (WAV preferred within a layer).
+
+### Tooling: `f2-modkit` CLI
+
+```
+f2-modkit new <id> [--dir mods]                       # scaffold mods/<id>/ with mod.toml + dirs
+f2-modkit pack <mod dir> [--rendition game-data/usa]  # validate; exit 1 on errors
+```
+
+`pack` checks the manifest (parse + engine compatibility), decodes every override through the same
+resolver the engine uses (errors for unreadable files), and with a rendition warns when a file is
+byte-identical to a retail file (sha1 list in `<rendition>/manifest.json`) or an override decodes
+to exactly the retail entry it replaces. Validation only — it does not build an archive yet.
+
+### Host wiring (not done yet — owned by the engine/game agents)
+
+1. `frogger` builds the `Vfs` with `f2_mods::load_enabled_mods(rendition, mods_dir, &ids)`.
+2. Wherever `f2-engine`/`f2-game` currently read and parse a bank file (texture bank load,
+   `LoadSfxSet`, `LoadObjBank`, `gameTextInit`), call `f2_modkit::{tex_bank, sound_bank,
+   object_bank, string_table}(&vfs, name)` instead and use `.value`; log `.warnings`.
+   The returned types are the same `f2-formats` structs, so nothing downstream changes.
+3. Music: replace `AudioEngine::set_music_dir` lookups with `f2_modkit::music_track(&vfs, n)` and
+   `play_music_stream(WavStream::open_any(&path).ok(), n, looped)`.
+4. Optional cache: the effective banks are deterministic in the enabled-mod list, so the host may
+   memoise them per bank name for a session.
