@@ -42,6 +42,7 @@ extern "system" {
     pub fn SetLastError(e: u32);
     pub fn GetTickCount() -> u32;
     pub fn FlushInstructionCache(h: HANDLE, addr: *const c_void, size: usize) -> BOOL;
+    pub fn IsBadReadPtr(p: *const c_void, size: usize) -> BOOL;
 }
 
 #[link(name = "user32")]

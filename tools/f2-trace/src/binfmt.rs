@@ -5,8 +5,14 @@
 //! Unsigned integers are LEB128, signed ones zigzag + LEB128; `Option` is a
 //! tag byte (0/1) followed by the value; `Vec` is a LEB128 count followed by
 //! the elements; fixed arrays have no count.
+//!
+//! Header version 2 (written by [`encode`]) adds one tail per frame after the
+//! v1 fields: a tag byte, 0 = no v2 section, 1 = a LEB128 length and the
+//! canonical JSON object of the frame's v2 sections (`{"players_ext":..,..}`).
+//! Version-1 files (no tail) are still decoded.
 
-use crate::{EnemyState, GaribState, PlatformState, PlayerState, TraceFrame, SCHEMA_VERSION};
+use crate::diff::OPTIONAL;
+use crate::{EnemyState, GaribState, PlatformState, PlayerState, TraceFrame, SCHEMA_V1, SCHEMA_V2};
 
 pub const MAGIC: &[u8; 8] = b"F2TRACE\0";
 
@@ -160,6 +166,39 @@ fn put_frame(w: &mut W, f: &TraceFrame) {
     f.cam_source.iter().chain(&f.cam_target).for_each(|&c| w.i(c as i64));
 }
 
+fn put_v2(w: &mut W, f: &TraceFrame) {
+    if !f.has_v2() {
+        w.0.push(0);
+        return;
+    }
+    let mut v = serde_json::to_value(f).expect("serialisable");
+    let m = v.as_object_mut().expect("object");
+    m.retain(|k, _| OPTIONAL.contains(&k.as_str()));
+    let j = serde_json::to_vec(&v).expect("serialisable");
+    w.0.push(1);
+    w.u(j.len() as u64);
+    w.0.extend_from_slice(&j);
+}
+
+fn get_v2(r: &mut R, f: TraceFrame) -> Result<TraceFrame, String> {
+    if r.byte()? == 0 {
+        return Ok(f);
+    }
+    let n = r.len()?;
+    let j = r.b.get(r.at..r.at + n).ok_or("truncated")?;
+    r.at += n;
+    let ext: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(j).map_err(|e| e.to_string())?;
+    let mut v = serde_json::to_value(&f).map_err(|e| e.to_string())?;
+    let m = v.as_object_mut().ok_or("frame is not an object")?;
+    for (k, x) in ext {
+        if !OPTIONAL.contains(&k.as_str()) {
+            return Err(format!("unknown v2 section {k}"));
+        }
+        m.insert(k, x);
+    }
+    serde_json::from_value(v).map_err(|e| e.to_string())
+}
+
 fn get_frame(r: &mut R) -> Result<TraceFrame, String> {
     let mut f = TraceFrame {
         v: r.u32()?,
@@ -228,10 +267,11 @@ fn get_frame(r: &mut R) -> Result<TraceFrame, String> {
 /// Encode a whole trace.
 pub fn encode(frames: &[TraceFrame]) -> Vec<u8> {
     let mut out = W(MAGIC.to_vec());
-    out.0.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    out.0.extend_from_slice(&SCHEMA_V2.to_le_bytes());
     for f in frames {
         let mut w = W::default();
         put_frame(&mut w, f);
+        put_v2(&mut w, f);
         out.u(w.0.len() as u64);
         out.0.extend_from_slice(&w.0);
     }
@@ -244,8 +284,8 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<TraceFrame>, String> {
         return Err("not an f2-trace binary file".into());
     }
     let ver = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    if ver != SCHEMA_VERSION {
-        return Err(format!("schema version {ver}, expected {SCHEMA_VERSION}"));
+    if ver != SCHEMA_V1 && ver != SCHEMA_V2 {
+        return Err(format!("schema version {ver}, expected {SCHEMA_V1} or {SCHEMA_V2}"));
     }
     let mut r = R { b: bytes, at: 12 };
     let mut out = Vec::new();
@@ -253,7 +293,9 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<TraceFrame>, String> {
         let n = r.len()?;
         let end = r.at + n;
         let mut fr = R { b: &bytes[..end], at: r.at };
-        let f = get_frame(&mut fr).map_err(|e| format!("frame {}: {e}", out.len()))?;
+        let f = get_frame(&mut fr)
+            .and_then(|f| if ver >= SCHEMA_V2 { get_v2(&mut fr, f) } else { Ok(f) })
+            .map_err(|e| format!("frame {}: {e}", out.len()))?;
         if fr.at != end {
             return Err(format!("frame {}: {} trailing bytes", out.len(), end - fr.at));
         }
@@ -278,6 +320,27 @@ mod tests {
     }
 
     #[test]
+    fn v2_round_trip_and_v1_files() {
+        let mut frames: Vec<_> = (0..20).map(crate::sample_v2).collect();
+        frames[3] = sample(3);
+        let b = encode(&frames);
+        assert_eq!(decode(&b).unwrap(), frames);
+        // A version-1 file: v1 fields only, no tail.
+        let v1: Vec<_> = (0..5).map(sample).collect();
+        let mut old = MAGIC.to_vec();
+        old.extend_from_slice(&SCHEMA_V1.to_le_bytes());
+        for f in &v1 {
+            let mut w = W::default();
+            put_frame(&mut w, f);
+            let mut o = W(old);
+            o.u(w.0.len() as u64);
+            old = o.0;
+            old.extend_from_slice(&w.0);
+        }
+        assert_eq!(decode(&old).unwrap(), v1);
+    }
+
+    #[test]
     fn extremes_and_errors() {
         let mut f = sample(0);
         f.rseed = u32::MAX;
@@ -286,7 +349,7 @@ mod tests {
         let b = encode(std::slice::from_ref(&f));
         assert_eq!(decode(&b).unwrap(), vec![f]);
         assert!(decode(&b[..b.len() - 1]).is_err());
-        assert!(decode(b"F2TRACE\0\x02\0\0\0").is_err());
+        assert!(decode(b"F2TRACE\0\x03\0\0\0").is_err());
         assert!(decode(b"{}").is_err());
     }
 }

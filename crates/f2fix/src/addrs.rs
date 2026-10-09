@@ -156,6 +156,125 @@ pub const QUITTING_DEMO: u32 = 0x0048_9974;
 /// `TIMER endLevelTimer` (Common/game.c): `.time` (u16).
 pub const END_LEVEL_TIMER: u32 = 0x036c_1c68;
 
+// ---- schema v2 (trace.version=2); layouts in symbols/frogger2_structs.md ----
+
+/// More `PLAYER` offsets (Common/frogger.h).
+pub mod player_ext {
+    pub const FROGON: u32 = 10;
+    pub const FROGUNDER: u32 = 12;
+    pub const OLD_LIVES: u32 = 18;
+    pub const INPUT_PAUSE: u32 = 22;
+    pub const SPAWN_TIMER: u32 = 24;
+    pub const SPAWN_SCORE_LEVEL: u32 = 26;
+    pub const IDLE_TIME: u32 = 36;
+    pub const IDLE_ENABLE: u32 = 40;
+    pub const HAS_DOUBLE_JUMPED: u32 = 43;
+    pub const EXTENDED_HOP_DIR: u32 = 46;
+    pub const STUN_TIME: u32 = 56;
+    pub const CROAK_TIME: u32 = 72;
+    pub const AUTOHOP_TIME: u32 = 80;
+    pub const QUICKHOP_TIME: u32 = 88;
+    pub const SLOWHOP_TIME: u32 = 96;
+    pub const JUMP_START_FRAME: u32 = 104;
+    pub const JUMP_SPEED: u32 = 112;
+    pub const JUMP_MULTIPLIER: u32 = 116;
+    pub const JUMP_FWD: u32 = 120;
+    pub const JUMP_UP: u32 = 132;
+    pub const JUMP_ORIGIN: u32 = 144;
+}
+/// `GARIB.dropSpeed` (short); `garibList.blocks` at +36.
+pub const GARIB_DROP_SPEED: u32 = 28;
+pub const GARIB_LIST_BLOCKS: u32 = 36;
+/// collect.c `int pauseFlag` / `TIMER pauseTimer`.
+pub const GARIB_PAUSE_FLAG: u32 = 0x036c_2440;
+pub const GARIB_PAUSE_TIMER: u32 = 0x036c_2448;
+/// `BABY babyList[NUM_BABIES]` (Common/babyfrog.c), `sizeof(BABY) == 24`.
+pub const BABY_LIST: u32 = 0x036c_24e0;
+pub const BABY_SIZE: u32 = 24;
+pub const NUM_BABIES_MAX: u32 = 5;
+pub mod baby {
+    pub const IS_SAVED: u32 = 0;
+    pub const IDLE: u32 = 8;
+    pub const COLLECT: u32 = 12;
+    pub const BABY: u32 = 16;
+}
+/// `unsigned char scriptFlags[8]` / `short scriptCounters[16]` (Common/script.c).
+pub const SCRIPT_FLAGS: u32 = 0x0048_a238;
+pub const SCRIPT_COUNTERS: u32 = 0x0048_a240;
+/// `TRIGGERLIST triggerList` (Common/event.c): `head` at 0 (a TRIGGER), `count` (short) at 0x80.
+pub const TRIGGER_LIST: u32 = 0x036c_22e0;
+pub const TRIGGER_LIST_COUNT: u32 = 0x80;
+/// Offsets in `TRIGGER` (`sizeof == 60`).
+pub mod trigger {
+    pub const NEXT: u32 = 0;
+    pub const FLAGS: u32 = 0x30;
+    pub const COUNT: u32 = 0x34;
+    pub const DELAY: u32 = 0x38;
+}
+/// `SPECFXLIST sfxList` (Common/specfx.c): `count` (short) at 4, `head` (a SPECFX) at 0x14.
+pub const SFX_LIST: u32 = 0x036b_b9c0;
+pub const SFX_LIST_COUNT: u32 = 4;
+pub const SFX_LIST_HEAD: u32 = 0x14;
+/// Offsets in `SPECFX` (`sizeof == 136`).
+pub mod specfx {
+    pub const NEXT: u32 = 0;
+    pub const ORIGIN: u32 = 0x2c;
+    pub const TYPE: u32 = 0x4c;
+    pub const LIFETIME: u32 = 0x68;
+    pub const UPDATE_TYPE: u32 = 0x7c;
+}
+/// `SPRITELIST sprList` / `PARTICLELIST partList`: `count` (short) at 4.
+pub const SPR_LIST: u32 = 0x036c_1ea0;
+pub const PART_LIST: u32 = 0x036c_2280;
+pub const POOL_COUNT: u32 = 4;
+/// `TONGUE tongue[4]` (Common/tongue.c), `sizeof(TONGUE) == 76`.
+pub const TONGUE: u32 = 0x036b_b880;
+pub const TONGUE_SIZE: u32 = 76;
+pub mod tongue {
+    pub const SOURCE: u32 = 0;
+    pub const TARGET: u32 = 8;
+    pub const POS: u32 = 0x10;
+    pub const FLAGS: u32 = 0x30;
+    pub const RADIUS: u32 = 0x34;
+    pub const PROGRESS: u32 = 0x38;
+    pub const TYPE: u32 = 0x3c;
+    pub const CAN_TONGUE: u32 = 0x3d;
+    pub const THING: u32 = 0x48;
+}
+/// `TIMER scoreTimer` / `modeTimer` (Common/game.c), `goTimer` (hud.c), `demoTimeout` (levplay.c): `.time` (u16) at 0.
+pub const SCORE_TIMER: u32 = 0x036c_1c40;
+pub const MODE_TIMER: u32 = 0x036c_1c60;
+pub const GO_TIMER: u32 = 0x036c_1908;
+pub const DEMO_TIMEOUT: u32 = 0x036b_c680;
+/// Camera globals (Common/cam.c): `camVect`, `currCamDist`, `camDist` (SVECTOR),
+/// `currCamOffset`, `camLookOfs`, `transCamSpeedMult`, `yFOVNew`, `fixedDir`/`fixedPos`/`fixedUp` (char),
+/// `cam_shakiness`, `int camFacing[4]`.
+pub const CAM_SOURCE: u32 = 0x0047_1180;
+pub const CAM_TARGET: u32 = 0x036c_24a0;
+pub const CAM_VECT: u32 = 0x036c_24d0;
+pub const CURR_CAM_DIST: u32 = 0x0047_1170;
+pub const CAM_DIST: u32 = 0x0047_11b8;
+pub const CURR_CAM_OFFSET: u32 = 0x036c_24b0;
+pub const CAM_LOOK_OFS: u32 = 0x0047_11b0;
+pub const TRANS_CAM_SPEED_MULT: u32 = 0x0047_11d0;
+pub const Y_FOV_NEW: u32 = 0x0047_11a0;
+pub const FIXED_DIR: u32 = 0x0048_91d1;
+pub const FIXED_POS: u32 = 0x0048_91d2;
+pub const FIXED_UP: u32 = 0x0048_91d4;
+pub const CAM_SHAKINESS: u32 = 0x0048_91fc;
+pub const CAM_FACING: u32 = 0x0048_91bc;
+/// `TRANSCAMERALIST tcList` (cam.c): `{TRANSCAMERA *array; short count, blocks;}`; `TRANSCAMERA.tile` at 0, sizeof 36.
+pub const TC_LIST: u32 = 0x036c_24c0;
+pub const TC_LIST_COUNT: u32 = 4;
+pub const TRANSCAMERA_SIZE: u32 = 36;
+/// `int frogFacing[4]` (Common/frogmove.c).
+pub const FROG_FACING: u32 = 0x0048_96f0;
+/// `FOG fog` (Common/frogger.c): `{u8 r,g,b,mode; short min,max;}`.
+pub const FOG: u32 = 0x0047_1b50;
+/// hud.c `handAngle` / `storeFrameCount`.
+pub const HAND_ANGLE: u32 = 0x036c_1ab0;
+pub const STORE_FRAME_COUNT: u32 = 0x0048_994c;
+
 /// `gameState.mode` values (Common/define.h).
 pub mod mode {
     pub const FRONTEND: u32 = 0;

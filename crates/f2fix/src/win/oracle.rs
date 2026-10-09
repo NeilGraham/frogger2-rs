@@ -34,6 +34,8 @@ struct Oracle {
     loops: u64,
     /// Demo key list copy with two defined words in front (see [`fix_demo_keys`]).
     demo_keys: Option<(Vec<u32>, u32)>,
+    /// `act_frame_count` values already snapshotted.
+    snapped: Vec<u32>,
 }
 
 static STATE: Mutex<Option<Oracle>> = Mutex::new(None);
@@ -97,11 +99,11 @@ unsafe fn patch_entry_jmp(func: u32, expect: &[u8], to: usize, what: &str) -> bo
 /// mapped and no game code has run yet).
 pub fn install() {
     let c = cfg();
-    let want_loop = c.trace_enable || c.start_demo.is_some() || c.start_level.is_some();
+    let want_loop = c.trace_enable || !c.snap_ticks.is_empty() || c.start_demo.is_some() || c.start_level.is_some();
     if !c.time_fixed && !want_loop {
         return;
     }
-    let mut st = Oracle { trace: None, seq: 0, fired: false, in_level: false, keys: None, loops: 0, demo_keys: None };
+    let mut st = Oracle { trace: None, seq: 0, fired: false, in_level: false, keys: None, loops: 0, demo_keys: None, snapped: Vec::new() };
     if c.trace_enable {
         let path = run_dir().join(&c.trace_file);
         match File::create(&path) {
@@ -232,8 +234,18 @@ unsafe extern "C" fn h_game_loop() {
             if c.exit_level_end {
                 end = Some("level end (back in the frontend)");
             }
-        } else if st.trace.is_some() && (st.in_level || !c.trace_from_level) {
+        } else if st.in_level || !c.trace_from_level {
+            let afc: u32 = rd(A::ACT_FRAME_COUNT);
+            if c.snap_ticks.contains(&afc) && !st.snapped.contains(&afc) {
+                st.snapped.push(afc);
+                write_snapshot(&c.snap_regions, st.seq, afc, after);
+            }
+        }
+        if st.trace.is_some() && (st.in_level || !c.trace_from_level) && !(st.in_level && after == A::mode::FRONTEND) {
             let mut f = read_frame();
+            if c.trace_version >= 2 {
+                f.v2 = Some(read_v2(&f));
+            }
             f.seq = st.seq;
             st.seq += 1;
             if let Some(t) = st.trace.as_mut() {
@@ -282,6 +294,31 @@ unsafe fn fix_demo_keys(st: &mut Oracle, mode: u32) {
             st.demo_keys = None;
         }
         _ => {}
+    }
+}
+
+/// Can `len` bytes at `addr` be read?
+unsafe fn readable(addr: u32, len: u32) -> bool {
+    addr != 0 && ffi::IsBadReadPtr(addr as usize as *const c_void, len as usize) == 0
+}
+
+/// Breakpoint snapshot: raw bytes of `snap.regions` -> `f2-snap-<tick>.json`.
+unsafe fn write_snapshot(regions: &[crate::cfg::SnapRegion], seq: u32, afc: u32, mode: u32) {
+    let mut out = Vec::with_capacity(regions.len());
+    for r in regions {
+        let (ptr, base) = if r.deref {
+            let p = if readable(r.addr, 4) { Some(rd::<u32>(r.addr)) } else { None };
+            (p, p.unwrap_or(0))
+        } else {
+            (None, r.addr)
+        };
+        let bytes = readable(base, r.len).then(|| core::slice::from_raw_parts(base as usize as *const u8, r.len as usize).to_vec());
+        out.push(trace::SnapRegion { name: r.name.clone(), addr: r.addr, len: r.len, deref: r.deref, ptr, bytes });
+    }
+    let path = run_dir().join(format!("f2-snap-{afc}.json"));
+    match std::fs::write(&path, trace::snapshot_json(seq, afc, mode, &out)) {
+        Ok(()) => flog!("oracle: snapshot {} ({} regions, line {})", path.display(), out.len(), seq),
+        Err(e) => flog!("oracle: snapshot {}: {}", path.display(), e),
     }
 }
 
@@ -387,4 +424,139 @@ unsafe fn read_frame() -> Frame {
         f.garibs.push(trace::Garib { kind: rd(g + A::garib::TYPE), active: rd(g + A::garib::ACTIVE), pos: [rd(p), rd(p + 2), rd(p + 4)] });
     }
     f
+}
+
+unsafe fn svec(p: u32) -> [i16; 3] {
+    [rd(p), rd(p + 2), rd(p + 4)]
+}
+
+unsafe fn fvec(p: u32) -> [i32; 3] {
+    [rd(p), rd(p + 4), rd(p + 8)]
+}
+
+unsafe fn read_camera() -> trace::Camera {
+    let tcs: u32 = rd(A::TC_LIST);
+    let n = rd::<i16>(A::TC_LIST + A::TC_LIST_COUNT).clamp(0, 4096) as u32;
+    let tile: u32 = rd(A::CURR_TILE);
+    let mut trans = -1;
+    if tcs != 0 && tile != 0 && readable(tcs, n * A::TRANSCAMERA_SIZE) {
+        // cam.c CheckForDynamicCameraChange: for(i=count; i; i--) cur=&array[i-1] -> highest index first.
+        if let Some(i) = (0..n).rev().find(|&i| rd::<u32>(tcs + i * A::TRANSCAMERA_SIZE) == tile) {
+            trans = i as i32;
+        }
+    }
+    trace::Camera {
+        source: fvec(A::CAM_SOURCE),
+        target: fvec(A::CAM_TARGET),
+        cam_vect: fvec(A::CAM_VECT),
+        curr_cam_dist: fvec(A::CURR_CAM_DIST),
+        cam_dist: svec(A::CAM_DIST),
+        curr_cam_offset: fvec(A::CURR_CAM_OFFSET),
+        cam_look_ofs: rd(A::CAM_LOOK_OFS),
+        trans_cam_speed_mult: rd(A::TRANS_CAM_SPEED_MULT),
+        y_fov_new: rd(A::Y_FOV_NEW),
+        fixed: [rd(A::FIXED_DIR), rd(A::FIXED_POS), rd(A::FIXED_UP)],
+        cam_shakiness: rd(A::CAM_SHAKINESS),
+        trans,
+        trans_count: rd(A::TC_LIST + A::TC_LIST_COUNT),
+        fog: [
+            rd::<u8>(A::FOG) as i32,
+            rd::<u8>(A::FOG + 1) as i32,
+            rd::<u8>(A::FOG + 2) as i32,
+            rd::<u8>(A::FOG + 3) as i32,
+            rd::<i16>(A::FOG + 4) as i32,
+            rd::<i16>(A::FOG + 6) as i32,
+        ],
+    }
+}
+
+/// Schema v2 sections (`trace.version=2`); `f` is this tick's v1 frame.
+unsafe fn read_v2(f: &Frame) -> trace::V2 {
+    let mut v = trace::V2::default();
+    for i in 0..f.players.len() as u32 {
+        let p = A::PLAYER + i * A::PLAYER_SIZE;
+        use A::player_ext as P;
+        v.players_ext.push(trace::PlayerExt {
+            frog_facing: rd(A::FROG_FACING + 4 * i),
+            cam_facing: rd(A::CAM_FACING + 4 * i),
+            frogon: rd(p + P::FROGON),
+            frogunder: rd(p + P::FROGUNDER),
+            old_lives: rd(p + P::OLD_LIVES),
+            input_pause: rd(p + P::INPUT_PAUSE),
+            spawn_timer: rd(p + P::SPAWN_TIMER),
+            spawn_score_level: rd(p + P::SPAWN_SCORE_LEVEL),
+            idle_time: rd(p + P::IDLE_TIME),
+            idle_enable: rd(p + P::IDLE_ENABLE),
+            has_double_jumped: rd(p + P::HAS_DOUBLE_JUMPED),
+            extended_hop_dir: rd(p + P::EXTENDED_HOP_DIR),
+            stun_time: rd(p + P::STUN_TIME),
+            croak_time: rd(p + P::CROAK_TIME),
+            autohop_time: rd(p + P::AUTOHOP_TIME),
+            quickhop_time: rd(p + P::QUICKHOP_TIME),
+            slowhop_time: rd(p + P::SLOWHOP_TIME),
+            jump_start_frame: rd(p + P::JUMP_START_FRAME),
+            jump_speed: rd(p + P::JUMP_SPEED),
+            jump_multiplier: rd(p + P::JUMP_MULTIPLIER),
+            jump_fwd: fvec(p + P::JUMP_FWD),
+            jump_up: fvec(p + P::JUMP_UP),
+            jump_origin: svec(p + P::JUMP_ORIGIN),
+        });
+        let t = A::TONGUE + i * A::TONGUE_SIZE;
+        use A::tongue as T;
+        v.tongue.push(trace::Tongue {
+            flags: rd(t + T::FLAGS),
+            radius: rd(t + T::RADIUS),
+            progress: rd(t + T::PROGRESS),
+            kind: rd(t + T::TYPE),
+            can_tongue: rd(t + T::CAN_TONGUE),
+            source: svec(t + T::SOURCE),
+            target: svec(t + T::TARGET),
+            pos: svec(t + T::POS),
+            has_thing: (rd::<u32>(t + T::THING) != 0) as u8,
+        });
+    }
+    v.garib_ext = trace::GaribExt {
+        blocks: rd(A::GARIB_LIST + A::GARIB_LIST_BLOCKS),
+        max_coins: rd(A::GARIB_LIST + A::garib_list::MAX_COINS),
+        pause_flag: rd(A::GARIB_PAUSE_FLAG),
+        pause_timer: rd(A::GARIB_PAUSE_TIMER),
+        drop_speed: walk(A::GARIB_LIST + A::garib_list::HEAD, A::garib::NEXT).into_iter().map(|g| rd(g + A::GARIB_DROP_SPEED)).collect(),
+    };
+    let nb = rd::<i32>(A::NUM_BABIES).clamp(0, A::NUM_BABIES_MAX as i32) as u32;
+    for i in 0..nb {
+        let b = A::BABY_LIST + i * A::BABY_SIZE;
+        v.babies.push(trace::Baby {
+            is_saved: rd(b + A::baby::IS_SAVED),
+            idle: rd(b + A::baby::IDLE),
+            collect: rd(b + A::baby::COLLECT),
+            pos: actor_pos(rd(b + A::baby::BABY)),
+        });
+    }
+    v.camera = read_camera();
+    for i in 0..8u32 {
+        v.script_flags[i as usize] = rd(A::SCRIPT_FLAGS + i);
+    }
+    for i in 0..16u32 {
+        v.script_counters[i as usize] = rd(A::SCRIPT_COUNTERS + 2 * i);
+    }
+    v.trigger_count = rd(A::TRIGGER_LIST + A::TRIGGER_LIST_COUNT);
+    for t in walk(A::TRIGGER_LIST, A::trigger::NEXT) {
+        v.triggers.push(trace::Trigger { flags: rd(t + A::trigger::FLAGS), count: rd(t + A::trigger::COUNT), delay: rd(t + A::trigger::DELAY) });
+    }
+    v.specfx_count = rd(A::SFX_LIST + A::SFX_LIST_COUNT);
+    for x in walk(A::SFX_LIST + A::SFX_LIST_HEAD, A::specfx::NEXT) {
+        use A::specfx as S;
+        v.specfx.push(trace::SpecFx { kind: rd(x + S::TYPE), origin: svec(x + S::ORIGIN), lifetime: rd(x + S::LIFETIME), update_type: rd(x + S::UPDATE_TYPE) });
+    }
+    v.sprite_count = rd(A::SPR_LIST + A::POOL_COUNT);
+    v.particle_count = rd(A::PART_LIST + A::POOL_COUNT);
+    v.hud = trace::Hud {
+        score_timer: rd(A::SCORE_TIMER),
+        mode_timer: rd(A::MODE_TIMER),
+        go_timer: rd(A::GO_TIMER),
+        demo_timeout: rd(A::DEMO_TIMEOUT),
+        hand_angle: rd(A::HAND_ANGLE),
+        store_frame_count: rd(A::STORE_FRAME_COUNT),
+    };
+    v
 }

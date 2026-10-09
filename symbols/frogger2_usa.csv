@@ -99,3 +99,123 @@ address,name,kind,size,confidence,evidence
 0x004150e0,gstrlwr,function,37,medium,"called on reactiveAnims names and lookup name in CreateAndAddEnemy (GetReactiveAnimNumber inlined)"
 0x004150a0,gstrcmp,function,54,medium,"compare in inlined GetReactiveAnimNumber loop (CreateAndAddEnemy 0x40a5b0), ==0 -> return index"
 0x00415170,stringChangePSIToOBE,function,83,medium,"called once on lowercased name before reactiveAnims loop in CreateAndAddEnemy (only caller)"
+0x036c22e0,triggerList,global,136,high,"event.c TRIGGERLIST: InitTriggerList 0x40ba40 sets head.next=head.prev=&0x36c22e0 and avail at +0x3c (0x36c231c); count +0x80 (0x36c2360), alloced +0x82 =0x40, blocks +0x84, garbage +0x86, base +0x78 =MALLOC(0xf00,event.c,0x71), extra +0x7c"
+0x0040b9a0,MakeTrigger,function,53,high,"event.c MakeTrigger: t=AllocateTrigger(); t+0x2c=func, t+8..+0x14=arg1..4, flags(+0x30,short)=0, delay(+0x38)=0, count(+0x34)=0"
+0x0040b9e0,AttachEvent,function,89,high,event.c AttachEvent: flags|=p2; if(p2&2) delay(+0x38)=time; event.func/data at +0x18..+0x28; links to front of triggerList.head
+0x0040ba40,InitTriggerList,function,177,high,"event.c InitTriggerList: circular heads at 0x36c22e0/0x36c231c, alloced=0x40, MALLOC0(0xf00) event.c line 0x71, loop step 0x3c sets flags|=0x8000 (TRIGGER_FREE); called by InitLevel"
+0x0040bb00,FreeTriggerList,function,143,high,event.c FreeTriggerList: KillAllTriggers(); FREE extra blocks (line 0x93) and base (line 0x98)
+0x0040bb90,KillAllTriggers,function,157,high,event.c KillAllTriggers: while head.next && head.next!=&head inlined DeallocateTrigger; triggersReset=1
+0x0040bc30,AllocateTrigger,function,67,high,event.c AllocateTrigger: if count>=alloced AllocTriggerBlock(); pop avail.next; next=prev=0; count++; flags&=0x7fff
+0x0040bc80,DeallocateTrigger,function,114,high,"event.c DeallocateTrigger: unlink, push to avail (0x36c231c), flags|=0x8000, count--, recurse on data[0]/data[1] if flags&0x100/0x200"
+0x0040bd00,AllocTriggerBlock,function,120,high,"event.c AllocTriggerBlock: MALLOC(0x3c8,event.c,0x107); blocks++, alloced+=0x10; 16 triggers at block+8 stride 0x3c"
+0x00489630,triggersReset,global,4,high,event.c triggersReset: UpdateEvents sets 0 and returns early if nonzero after event.func; KillAllTriggers sets 1
+0x0040bea0,FMul,function,61,high,"fixed.c FMul: split operands into >>12 and &0xfff parts, sum of partial products; FMul(gameSpeed,k) widely"
+0x0048a238,scriptFlags,global,8,high,"script.c unsigned char scriptFlags[8]: ExecuteCommand case 0x18 (EV_SETFLAG) [f>>3]|=1<<(f&7), case 0x19 (EV_RESETFLAG) &=~"
+0x0048a240,scriptCounters,global,32,high,"script.c short scriptCounters[16]: ExecuteCommand cases 0x20/0x21/0x22 (EV_INC/DEC/SET_COUNTER) at +c*2, guarded by c<0x11"
+0x0048a260,lineNumber,global,4,high,script.c lineNumber: inlined PrintScriptDebugMessage '(script) %s (%d)' in LoadTrigger/ExecuteCommand
+0x036bba60,scriptBuffer,global,4,high,script.c UBYTE* scriptBuffer: FreeLevelScript FREEs (script.c line 0x51c) and NULLs it; version byte 3; EV_RESETSCRIPT reinterprets scriptBuffer+5
+0x036bba5c,scriptFile,global,4,high,script.c void* scriptFile: LoadLevelScript stores fileLoad('MAPS\SCRIPT-%d-%d.FEV')
+0x0042e280,FreeLevelScript,function,44,high,script.c FreeLevelScript: if(scriptBuffer){FREE(line 0x51c);scriptBuffer=0} return 1
+0x0042e2b0,LoadLevelScript,function,230,high,"script.c LoadLevelScript(world,level), InitLevelScript+Interpret inlined: sprintf 'MAPS\SCRIPT-%d-%d.FEV', KillAllTriggers, version==3, ExecuteCommand loop; called by InitLevel"
+0x0042d050,ExecuteCommand,function,4405,high,"script.c ExecuteCommand(UBYTE**): opcode switch incl. EV_SETFLAG/RESETFLAG/counter ops, EV_RESETSCRIPT"
+0x0042cb80,LoadTrigger,function,1095,high,"script.c LoadTrigger: switch TR_* codes; 0x40/0x41 MakeTrigger(AND/OR)+flags|=0x300, 0x42 NOT |=0x100; recursive"
+0x0042c670,OnFlagSet,function,,medium,LoadTrigger case 0xb (TR_FLAGSET) MakeTrigger func with one byte arg
+0x0042c6a0,OnCounterEquals,function,,medium,"LoadTrigger case 0xc (TR_COUNTEREQUALS): MakeTrigger(0x42c6a0, byte, MEMGETWORD)"
+0x0041a430,MEMGETWORD,function,,medium,"script.c MEMGETWORD(UBYTE**): short; event count in LoadLevelScript, word args in LoadTrigger"
+0x036c1c40,scoreTimer,global,8,high,"game.c TIMER scoreTimer: InitLevel time=0x5a (GTInit 90), lastCount=0 after player[0].spawnTimer=0/spawnScoreLevel=1; no reads found in retail"
+0x00416a10,UpDateOnScreenInfo,function,2877,high,"hud.c UpDateOnScreenInfo: called by RunGameLoop; parTime*6-actFrameCount, goTimer GTUpdate2, 'racehorn'/'racehorngo', handAngle+=gameSpeed wrap 0x3c000"
+0x036c1908,goTimer,global,8,high,hud.c TIMER goTimer: UpDateOnScreenInfo GTUpdate2 (lastCount+30 < actFrameCount -> time--); time==1 sets player[0].canJump=1
+0x0048994c,storeFrameCount,global,4,high,hud.c storeFrameCount: =actFrameCount while goTimer.time>1
+0x036c1ab0,handAngle,global,4,high,"hud.c handAngle: +=gameSpeed, -=0x3c000 (4096*60) when exceeded"
+0x00416650,UpDateMultiplayerInfo,function,959,medium,hud.c multiplayer HUD: loops numPlayers sprintf wins/penalty strings '%02i:'
+0x036bb9c0,sfxList,global,156,high,"specfx.c SPECFXLIST {array+0,count+4,stack+8,stackPtr+0xc,lastAdded+0x10,head(SPECFX)+0x14}: InitSpecFXList head.next=head.prev=0x36bb9d4; MALLOC(maxSpecfx*0x88)->+0"
+0x004306c0,InitSpecFXList,function,,high,specfx.c strings line 0x5ea/0x5ec; FindTexture AI_RIPPLE..AI_WARPFLASH sequence
+0x004308f0,FreeSpecFXList,function,,high,"DeallocateFX(sfxList.head.next,count) then FREE array/stack/lastAdded"
+0x004309e0,AllocateFX,function,174,high,specfx.c AllocateFX: stackPtr/maxSpecfx check; updateMapping[type]; lastAdded[update]; s->updateType(+0x7c)=update
+0x00430ad0,DeallocateFX,function,,high,"lastAdded[fx->updateType +0x7c] fixup; unlink; DeallocateSprites(+0x3c,numP +0x6c); DeallocateParticles(+0x38); act +0x48"
+0x0042e3e0,CreateSpecialEffectDirect,function,3987,high,"AllocateFX(1,type); type->+0x4c, origin->+0x2c, normal->+8, scale +0x20, speed +0x58, accn +0x5c, lifetime=actFrameCount+life +0x68, rgba +0x78"
+0x0042e3a0,CreateSpecialEffect,function,63,high,if(!IsPointVisible(origin)) return 0; else CreateSpecialEffectDirect(...)
+0x00432b50,PrepForPriorityEffect,function,105,high,"if sfxList.stackPtr==1 walk list, DeallocateFX(fx,1) on first matching type"
+0x0047aed8,maxSpecfx,global,4,high,InitSpecFXList array size multiplier *0x88
+0x036bb9b0,p2List,global,16,high,"PLANE2LIST {array,count+4,stack+8,stackPtr+0xc}; sizeof(PLANE2)=0x1c"
+0x036c1ea0,sprList,global,68,high,"sprite.c SPRITELIST {array+0,count+4,stack+8,stackPtr+0xc,head+0x10}: InitSpriteList head=0x36c1eb0, MALLOC(maxSprites*0x34)"
+0x0047afec,maxSprites,global,4,high,InitSpriteList/AllocateSprites bound (PC 512)
+0x00432bc0,AllocateSprites,function,137,high,"insert at sprList.head, draw(+0x20)=1, count++"
+0x00432c50,DeallocateSprites,function,113,high,"unlink, next=prev=0, draw(+0x20)=0, count--, stack[++stackPtr]=s"
+0x00432d80,InitSpriteList,function,150,high,sprite.c lines 0xa2/0xa3 allocs; head self-link
+0x036c2280,partList,global,68,high,"particle.c PARTICLELIST {array,count+4,stack+8,stackPtr+0xc,head+0x10}: InitParticleList MALLOC(0x6800)=512*0x34"
+0x00429ba0,InitParticleList,function,120,high,"particle.c alloc strings, head 0x36c2290 self-link, stride 0x34"
+0x036c2440,pauseFlag,global,4,high,collect.c UpdateGaribs: pauseFlag==2 / =0 / =1 / =2 state machine around arcadeHud.collectText
+0x036c2448,pauseTimer,global,8,high,"collect.c TIMER: GTInit(&pauseTimer,2); GTUpdate lastCount+0x3c<actFrameCount in UpdateGaribs"
+0x00405d50,InitGaribList,function,47,high,"count/total/maxCoins/blocks=0, array=0, head.next=head.prev=&head"
+0x00405e70,AllocGaribBlock,function,88,high,MALLOC(num<<5) collect.c line 0x1d3; count=0; blocks=num
+0x00405ed0,CreateNewGarib,function,713,high,"pos +0x14, type +9, active +8, AllocateSprites -> +0xc, fx +0x10 via CreateSpecialEffectDirect(0x15); inlined AddGarib prev +0 next +4"
+0x00405500,PickupCollectable,function,,high,switch garib->type(+9); numSpawn++ ==0x19 -> COINMEDAL
+0x036c24e0,babyList,global,120,high,"babyfrog.c BABY[5] stride 0x18: InitBabyList isSaved +0, fxColour +4, idle +8, collect +0xc, baby +0x10; PickupBabyFrog enemy +0x14"
+0x00471108,lastBabySaved,global,4,high,babyfrog.c int =-1 in InitBabyList/ResetBabies
+0x036c2558,babyFlashFrame,global,4,high,InitBabyList =-1; PickupBabyFrog =actFrameCount; UpdateBabies actFrameCount-babyFlashFrame<0x46
+0x036c2560,babyIcons,global,20,high,SPRITEOVERLAY*[5]: InitBabyList loop sets r/g/b from fxColour
+0x00403170,InitBabyList,function,485,high,"babiesSaved=0, lastBabySaved=-1, fxColour switch, overlays"
+0x004033b0,PickupBabyFrog,function,558,high,search babyList[i].baby==param; isSaved check; babyFlashFrame=actFrameCount
+0x00403650,UpdateBabies,function,1248,high,babyFlash (actFrameCount-babyFlashFrame<70); called from RunGameLoop
+0x036bb880,tongue,global,304,high,"tongue.c TONGUE[4] stride 0x4c: InitTongues 0x433480 flags(+0x30)=1, radius(+0x34)=0x708000, thing +0x48, segment +0x44, type +0x3c, canTongue +0x3d=1; loop ends 0x36bb9f8-0x48"
+0x00433480,InitTongues,function,47,high,tongue.c InitTongues: 4x stride 0x4c init
+0x00433500,StartTongue,function,717,high,"source(+0)=frog pos+fwd*150, pos(+0x10)=source, target(+8); segment MALLOC(0x90) line 0xc0; flags=6; 'tongue' sfx"
+0x004337d0,UpdateFrogTongue,function,2014,high,"calls CalcTongueSource, CalculateTongue, RemoveFrogTongue, StartTongue"
+0x004342b0,RemoveFrogTongue,function,188,high,flags=1; radius=0x708000; frogState&=~0x1000
+0x0048a2b4,eatEverythingMode,global,1,high,tongue.c unsigned char; RemoveFrogTongue test
+0x00404080,CheckForDynamicCameraChange,function,767,high,"cam.c: walks tcList.array backwards (stride 0x24) matching cur->tile==tile; switch(flags) cases 0-5 set camSource/camDist/fixedDir/fixedPos/fixedUp; dirCamMustFace-1 -> camFacing[pl], player[pl].extendedHopDir=(frogFacing-camFacing)&3; speed==0 -> 0x1000"
+0x00403fb0,CreateAndAddTransCamera,function,109,high,"cam.c: if(count<blocks) &array[count++] (0x24 stride); sets tile,dirCamMustFace,camOffset,flags, FOV=0x2d000, speed=0x1000"
+0x00404020,AllocCamBlock,function,84,high,"cam.c: if(!tcList.array) MALLOC0(num*0x24, cam.c line 0xf7); count=0; blocks=num"
+0x004043a0,FreeTransCameraList,function,109,high,"cam.c: FREE(tcList.array, cam.c line 0x17e); array=count=blocks=0; lastTile[0..3]=0; fixedDir=fixedPos=firstPerson=0; startCamFacing=startFrogFacing=0"
+0x00404410,CameraLookAtFrog,function,111,high,"cam.c: if(!camControlMode && frog[0] && !fixedDir && !controlCamera): multi!=2 -> CalcSPCamera(&t), camTarget=t; else CalcMPCamera(&camTarget)"
+0x00404480,CalcSPCamera,function,214,high,"cam.c: player[0].jumpTime (+0x6c) in (0,0x1000) -> jumpOrigin<<12 + FMul(jumpFwdVector,t); else frog[0]->actor->position<<12"
+0x00404560,CameraSetOffset,function,741,high,cam.c: nC=(camFacing[0]+1)&3; camOffset=camVect*currCamDist.vy - dirVector[camFacing]*currCamDist.vz + dirVector[nC]*camSideOfs
+0x00404850,SlurpCamPosition,function,1439,high,"cam.c: s1..s3=min(4096,(gameSpeed<<12)/FMul(camSpeedN,transCamSpeedMult)); currCamDist=scaleV*camDist; camVect slurp+MakeUnit; camLookOfs-=FMul(s1,camLookOfs-camLookOfsNew)"
+0x00403ea0,GetCamLimitVector,function,270,medium,"cam.c: called by SlurpCamPosition as (&v,&currCamTarget,currCamBox,cam_edge_spacing)"
+0x00405100,ResetCamera,function,273,high,"cam.c: camSource=frog pos+(0,569,-200)<<12; currCamSource=+(0,100,100); camOffset=currCamOffset={0,0x64000,0x64000}; camDist={0,0x1a90,0x780}; scaleV=0x119a"
+0x00405220,InitCamera,function,326,high,cam.c: currCamBox=0; CheckForDynamicCameraChange per frog; currCamOffset=camTarget-camSource; camVect=currTile[0]->normal; SlurpCamPosition; 50x UpdateCameraPosition
+0x00405370,FindMaxInterFrogDistance,function,180,high,cam.c: max=-100000<<12; pairwise frog[i]/frog[j] position deltas over NUM_FROGS
+0x0040dcb0,GetTilesMatchingDirection,function,141,medium,"UpdateCameraPosition: camFacing[i]=f(lastTile[i],camFacing[i],currTile[i])"
+0x004891a8,camControlMode,global,4,high,cam.c int: early return in UpdateCameraPosition/CheckForDynamicCameraChange/SlurpCamPosition/CameraLookAtFrog
+0x00471150,cameraUpVect,global,12,high,"cam.c .data {0,4096,0}; ResetCamera copies upVec (0x471b78) into it"
+0x036c24d0,camVect,global,12,high,cam.c FVECTOR: InitCamera camVect=currTile[0]->normal; SlurpCamPosition slurps toward tile normal then MakeUnit(&camVect)
+0x00471170,currCamDist,global,12,high,"cam.c .data {0,0,0xa000}; SlurpCamPosition currCamDist=scaleV*camDist; CameraSetOffset uses .vy/.vz"
+0x00471190,camOffset,global,12,high,"cam.c .data {0,0x64000,0x64000}; written by CameraSetOffset"
+0x036c24b0,currCamOffset,global,12,high,"cam.c: SlurpCamPosition currCamOffset+=FMul(camOffset-currCamOffset,s3); currCamSource=currCamTarget+currCamOffset"
+0x004711a0,yFOVNew,global,4,high,cam.c .data 184320; CheckForDynamicCameraChange yFOVNew=cur->FOV (+0x1c)
+0x004711b0,camLookOfs,global,4,high,"cam.c .data 0x32000 (50<<12); SlurpCamPosition camLookOfs-=FMul(s1,camLookOfs-camLookOfsNew)"
+0x004711b4,camLookOfsNew,global,4,high,cam.c .data 0x32000; SlurpCamPosition operand
+0x004711b8,camDist,global,8,high,"cam.c .data SVECTOR {0,6800,1920}={0,680*SCALE,192*SCALE}; ResetCamera writes 0x1a90/0x780; LOOK_AT_FROG sets from cur->camOffset"
+0x004711c0,camSpeed,global,4,high,cam.c .data 0xf000 (15<<12); SlurpCamPosition s1 divisor
+0x004711c4,camSpeed2,global,4,high,cam.c .data 0x14000; SlurpCamPosition s2 divisor
+0x004711c8,camSpeed3,global,4,high,cam.c .data 0x14000; SlurpCamPosition s3 divisor
+0x004711d0,transCamSpeedMult,global,4,high,cam.c .data 4096; CheckForDynamicCameraChange =cur->speed or 0x1000; SlurpCamPosition FMul operand
+0x004711d4,scaleV,global,4,high,cam.c .data 4506; ResetCamera scaleV=0x119a; currCamDist=camDist*scaleV
+0x004711f4,cam_edge_spacing,global,4,high,"cam.c .data 0x64000; UpdateCameraPosition writes FMul(dist,0xc00); passed to GetCamLimitVector"
+0x004711f8,cam_shake_falloff,global,4,high,"cam.c .data 410; cam_shakiness-=FMul(cam_shake_falloff,gameSpeed)"
+0x004891fc,cam_shakiness,global,4,high,cam.c: UpdateCameraPosition if>0 Random(cam_shakiness)-(cam_shakiness>>1) on currCamTarget/Source; InitCamera =0
+0x004891bc,camFacing,global,16,high,cam.c int camFacing[4]: UpdateCameraPosition (&0x4891bc)[i]; CameraSetOffset dirVector[camFacing[0]]; =dirCamMustFace-1
+0x004891ec,prevCamFacing,global,16,high,cam.c: UpdateCameraPosition if camFacing[i]==prevCamFacing[i]...; prevCamFacing[i]=camFacing[i]
+0x004891dc,lastTile,global,16,high,cam.c GAMETILE*[4]: currTile[i]!=lastTile[i]; lastTile[i]=currTile[i]; cleared by FreeTransCameraList
+0x004891cc,startCamFacing,global,2,high,cam.c short; FreeTransCameraList startCamFacing=startFrogFacing=0
+0x004891ce,startFrogFacing,global,2,high,cam.c short; FreeTransCameraList
+0x004891d0,controlCamera,global,1,high,cam.c char; UpdateCameraPosition/CameraLookAtFrog early-out; InitCamera =0
+0x004891d1,fixedDir,global,1,high,cam.c char; =1 in STATIC_CAMERA/LOOK_AT_TILE/LOOK_IN_DIR cases; SlurpCamPosition !fixedDir gate
+0x004891d2,fixedPos,global,1,high,cam.c char; if(fixedPos) currCamOffset=currCamSource-currCamTarget in LOOK_AT_FROG; SlurpCamPosition branch
+0x004891d3,firstPerson,global,1,high,cam.c char; cleared in FreeTransCameraList
+0x004891d4,fixedUp,global,1,high,cam.c char; =1 only in LOOK_AT_FROG_NOTILT(3) and LOOK_IN_DIR(5); gates camVect slurp
+0x004891d8,camSideOfs,global,4,high,"cam.c: CameraSetOffset FMul(dirVector[(camFacing+1)&3],camSideOfs)"
+0x00489200,playerFocus,global,1,high,UpdateCameraPosition: frog[playerFocus] && currTile[playerFocus]
+0x036c248c,currCamBox,global,4,high,cam.c CAM_BOX*; InitCamera =0; GetCamLimitVector arg; inlined CheckCameraBoxes plane test
+0x036c2490,cameraBoxes,global,16,high,"cam.c CAM_BOX_LIST {numBoxes +0, numPlanes +4, boxes +8, planes +12}; inlined CheckCameraBoxes, plane stride 0x14"
+0x036c24c0,tcList,global,8,high,"cam.c TRANSCAMERALIST {array +0, short count +4, short blocks +6} (the source's transCameraList); AllocCamBlock/CreateAndAddTransCamera/FreeTransCameraList; TRANSCAMERA stride 0x24"
+0x004896cc,destTile,global,16,high,frogmove.c GAMETILE*[4]; UpdateEnemies destTile[0]=prevTile (enemies.c:425 pattern)
+0x004896ec,prevTile,global,4,high,"frogmove.c; UpdateEnemies frog[0] position=prevTile->centre(+0x14), destTile[0]=prevTile"
+0x004896f0,frogFacing,global,16,high,frogmove.c int frogFacing[4]; CheckForDynamicCameraChange extendedHopDir=(frogFacing[pl]-camFacing[pl])&3
+0x00489700,oldFrogFacing,global,16,high,frogmove.c int[4]; GameProcessController oldFrogFacing[pl]=frogFacing[pl] (game.c:210/236/262/288)
+0x00489710,nextFrogFacing,global,16,high,frogmove.c int[4]; 0x4216e0 nextFrogFacing[pl]=frogFacing[pl] (multi.c:940)
+0x00471e08,standardHopFrames,data,40,high,".data 7,15,24,32,32,44,4,14,30,15 = standard/battle/quickSuper/superHop/quickDouble/doubleHop/quickHop/slowHop/float/iceFrames"
+0x00471e64,hopHeight,data,4,high,".data 0x12c000=(30*SCALE)<<12; superhopHeight 0x471e68=0x1f4000, doublehopHeight 0x471e6c=0x2ee000"
+0x00471b50,fog,global,8,high,"frogger.c FOG fog={120,120,160,FOG_OFF,995,5000}: .data bytes 78 78 a0 00 e3 03 88 13; InitLevel sets r/g/b,min,max from level table"
+0x00471b78,upVec,data,12,high,"frogger.c {0,4096,0}; ResetCamera cameraUpVect=upVec"
