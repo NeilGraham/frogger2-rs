@@ -288,6 +288,8 @@ pub fn joypad_bits(j: &JoypadState) -> u16 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputMapper {
     pub keymap: Keymap,
+    /// Additional keys beyond the one-per-action `keymap` (multiple bindings per action).
+    pub extra_keys: Vec<KeyEntry>,
     pub controllers: [Controller; 4],
     /// `checkMenuKeys`: set by the game on menu screens.
     pub check_menu_keys: bool,
@@ -299,7 +301,14 @@ pub struct InputMapper {
 
 impl Default for InputMapper {
     fn default() -> Self {
-        InputMapper { keymap: Keymap::default(), controllers: [Controller::Keyboard; 4], check_menu_keys: false, keys_enabled: true, window_active: true }
+        InputMapper {
+            keymap: Keymap::default(),
+            extra_keys: Vec::new(),
+            controllers: [Controller::Keyboard; 4],
+            check_menu_keys: false,
+            keys_enabled: true,
+            window_active: true,
+        }
     }
 }
 
@@ -327,13 +336,13 @@ impl InputMapper {
         if self.window_active {
             // Buffered key-down events -> joypadDebounce.
             for &key in &kb.pressed {
-                for e in self.keymap.0.iter().take(4 * KEYS_PER_PLAYER) {
+                for e in self.keymap.0.iter().take(4 * KEYS_PER_PLAYER).chain(&self.extra_keys) {
                     if e.key == key {
                         joypad_debounce[(e.player & 3) as usize] |= e.button;
                     }
                 }
             }
-            for e in self.keymap.0.iter().take(4 * KEYS_PER_PLAYER) {
+            for e in self.keymap.0.iter().take(4 * KEYS_PER_PLAYER).chain(&self.extra_keys) {
                 if e.key > 0 && kb.is_down(e.key) {
                     pad.digital[(e.player & 7) as usize] |= e.button;
                 }

@@ -112,3 +112,13 @@ is in `packaging/flatpak/`. The CI `release` job (manual dispatch) runs these sc
 
   Set `PULSE_SERVER=unix:/mnt/wslg/PulseServer` if it is not already exported.
 - Keep the checkout on the Linux filesystem; builds on `/mnt/c` are slow.
+
+## Input configuration
+
+`config.toml` `[input]` (see `crates/f2-platform/src/bindings.rs`):
+
+- `controllers = ["joypad0", ...]` per-player device (default keyboard); `deadzone` (0.5 = retail).
+- `[[input.bindings]]` (`player` 1-4, `button` e.g. `CROSS`, `inputs = ["key:RETURN", "pad:SOUTH", "axis:LEFTY+"]`)
+  gives several keys/buttons/stick directions per action. Absent = the retail keymap plus the
+  default pad mapping; the legacy `keymap` list still loads.
+- `hop_buffer_frames` (enhanced profile only, default 6, 0 = off), `rumble`, `rumble_scale`.

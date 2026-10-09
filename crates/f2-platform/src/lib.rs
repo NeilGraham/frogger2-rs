@@ -6,6 +6,7 @@
 //! - [`gamepad`] (feature `gamepad`): gilrs pads as `DIJOYSTATE`-like joypads.
 //! - [`window`] (feature `window`): winit event-loop wrapper with DirectInput key codes.
 
+pub mod bindings;
 pub mod config;
 pub mod dik;
 #[cfg(feature = "gamepad")]
@@ -15,5 +16,6 @@ pub mod paths;
 #[cfg(feature = "window")]
 pub mod window;
 
+pub use bindings::{Binding, Bindings, ControllerFamily, HopBuffer, PadAxis, PadButton, RawEvent, RawPad, Rebind, RebindStatus};
 pub use config::{Config, DisplaySettings, Profile, TextureFilter};
 pub use input::{Controller, InputMapper, JoypadState, KeyboardState, Keymap, PadData, PadState};
