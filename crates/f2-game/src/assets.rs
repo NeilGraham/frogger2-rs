@@ -77,6 +77,8 @@ pub struct ModelInfo {
     pub actor_radius: f32,
     /// `(textureID, obj->xlu)` of every object sprite, in `AddObjectsSpritesToSpriteList` order.
     pub obj_sprites: Vec<(u32, u8)>,
+    /// Object tree with keys (root + `next` siblings) for sub-object transforms.
+    pub xform_tree: Vec<crate::view::XNode>,
 }
 
 /// Port of `FindObj` (`MDX Library/mdxActor.cpp:978`) on a sibling chain starting at
@@ -163,6 +165,7 @@ impl ModelTable {
                     true_centre,
                     actor_radius,
                     obj_sprites,
+                    xform_tree: std::iter::once(&m.root).chain(m.root_siblings.iter()).map(crate::view::XNode::from_object).collect(),
                 })
             });
         }

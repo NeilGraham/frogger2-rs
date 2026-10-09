@@ -64,6 +64,11 @@ fn main() -> Result<(), String> {
         if g.game_state.mode != DEMO_MODE || g.levplay.demo_finished {
             break;
         }
+        if let Ok(t) = std::env::var("F2_HEAD_DBG") {
+            if t.split(',').any(|x| x.parse::<u32>().ok() == Some(n + 1)) {
+                eprintln!("tick {} head {:?}", n + 1, g.tongue.head_matrix);
+            }
+        }
         let mut f = g.trace_frame();
         f.seq = n;
         writeln!(w, "{}", f.to_json_line()).map_err(|e| e.to_string())?;

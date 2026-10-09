@@ -577,6 +577,9 @@ impl Game {
         self.free_trans_camera_list(); // wave D
         self.free_level_script(); // wave D
         self.free_tongues();
+        // headMatrix = NULL (layout.c:1201, PC)
+        self.tongue.head_matrix = None;
+        self.tongue.head_object = None;
         self.free_spec_fx_list(); // wave E
         self.particle.free_particle_list(); // wave E
         if self.game_state.multi != crate::define::SINGLEPLAYER {

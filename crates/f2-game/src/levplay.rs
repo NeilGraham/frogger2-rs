@@ -163,7 +163,8 @@ impl Game {
                     self.frogger.player[0].idle_enable = 1;
                 }
             }
-            // gameState.difficulty = oldDiffMode (frontend state, not modelled).
+            self.game_state.difficulty = self.menus.old_diff_mode as u8;
+            self.menus.old_diff_mode = self.game_state.difficulty as i32;
             self.game_state.mode = FRONTEND_MODE;
             self.frogger.player[0].character = crate::frogger::FROG_FROGGER;
             self.levplay.demo_finished = true;
