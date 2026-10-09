@@ -264,7 +264,7 @@ impl Vfs {
                         Some((n, e)) if !n.is_empty() => (n.to_ascii_lowercase(), e.to_ascii_lowercase()),
                         _ => (fname.to_ascii_lowercase(), String::new()),
                     };
-                    map.entry((bank.clone(), name.clone())).or_insert(EntryOverride { bank: bank.clone(), name, ext, path, layer: l.name.clone() });
+                    map.entry((bank.clone(), name.clone(), ext.clone())).or_insert(EntryOverride { bank: bank.clone(), name, ext, path, layer: l.name.clone() });
                 }
             }
         }

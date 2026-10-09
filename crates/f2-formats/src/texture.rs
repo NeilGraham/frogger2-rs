@@ -106,6 +106,9 @@ impl TexBank {
             textures.push(read_texture(&mut r)?);
         }
         let na = r.u32()?;
+        if na as usize > r.remaining() / 8 {
+            return Err(r.err(format!("implausible animation count {na}")));
+        }
         let mut anims = Vec::with_capacity(na as usize);
         for _ in 0..na {
             let nf = r.u32()?;

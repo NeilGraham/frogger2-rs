@@ -77,7 +77,16 @@ pub fn compress_store(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() * 9 / 8 + 16);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    for chunk in data.chunks(8) {
+    let mut chunks = data.chunks(8).peekable();
+    while let Some(chunk) = chunks.next() {
+        if chunks.peek().is_none() && chunk.len() < 8 {
+            // Last partial group: literals, then the terminating reference (c == 0)
+            // in the same tag byte.
+            out.push(0x80 >> chunk.len());
+            out.extend_from_slice(chunk);
+            out.push(0);
+            return out;
+        }
         out.push(0);
         out.extend_from_slice(chunk);
     }
@@ -94,6 +103,10 @@ mod tests {
     fn round_trip_store() {
         let d: Vec<u8> = (0..1000u32).map(|x| (x * 7) as u8).collect();
         assert_eq!(decompress(&compress_store(&d)).unwrap(), d);
+        for n in 0..20usize {
+            let v: Vec<u8> = (0..n as u8).collect();
+            assert_eq!(decompress(&compress_store(&v)).unwrap(), v, "len {n}");
+        }
         assert_eq!(decompress(&compress_store(&[])).unwrap(), Vec::<u8>::new());
     }
     #[test]
