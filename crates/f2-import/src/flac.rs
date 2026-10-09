@@ -506,7 +506,7 @@ mod tests {
                 out.extend_from_slice(&(l[i] as i16).to_le_bytes());
                 out.extend_from_slice(&(rr[i] as i16).to_le_bytes());
             }
-            let end = (r.pos + 7) / 8;
+            let end = r.pos.div_ceil(8);
             assert_eq!(u16::from_be_bytes([f[end], f[end + 1]]), crc16(&f[start..end]), "frame crc16");
             pos = end + 2;
             got += n as u64;
@@ -537,7 +537,7 @@ mod tests {
             pcm.extend_from_slice(&a.to_le_bytes());
             pcm.extend_from_slice(&b.to_le_bytes());
         }
-        pcm.extend(std::iter::repeat(0u8).take(4 * 5000));
+        pcm.extend(std::iter::repeat_n(0u8, 4 * 5000));
         // Extremes.
         for v in [i16::MIN, i16::MAX, i16::MIN, 0, i16::MAX, i16::MAX] {
             pcm.extend_from_slice(&v.to_le_bytes());
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn chunked_input_matches_whole() {
-        let pcm: Vec<u8> = (0..4 * 9_999u32).map(|i| (i * 7 >> 3) as u8).collect();
+        let pcm: Vec<u8> = (0..4 * 9_999u32).map(|i| ((i * 7) >> 3) as u8).collect();
         let whole = encode(&pcm).unwrap();
         let mut w = FlacWriter::new(Vec::new(), 9_999).unwrap();
         for c in pcm.chunks(2352) {

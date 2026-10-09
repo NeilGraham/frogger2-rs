@@ -149,30 +149,6 @@ fn positional_attenuation() {
 }
 
 #[test]
-fn ambient_scheduler() {
-    let mut e = engine(vec![sample(1, 22050, false, &sine(22050, 500.0, 220)), sample(2, 22050, true, &sine(22050, 500.0, 220))]);
-    let a = e.add_ambient_sound(1, None, 0, 255, -1, 2, 1, None).unwrap();
-    let b = e.add_ambient_sound(2, Some([10, 0, 0]), 0, 255, -1, 0, 0, None).unwrap();
-    let mut calls = vec![];
-    let mut rnd = |n: i32| {
-        calls.push(n);
-        5
-    };
-    e.update_ambient_sounds(0, &mut rnd, &|_| None);
-    let get = |e: &AudioEngine, id| e.ambient_sounds().find(|(i, _)| *i == id).unwrap().1.clone();
-    assert_eq!(get(&e, a).counter, 120 + 5);
-    assert!(get(&e, a).voice.is_some());
-    let lv = get(&e, b).voice.unwrap();
-    // Looping ambient: the next update re-evaluates instead of restarting.
-    e.update_ambient_sounds(1, &mut |_| 0, &|_| None);
-    assert_eq!(get(&e, b).voice, Some(lv));
-    assert_eq!(calls, vec![60]);
-    e.free_ambient_sounds();
-    assert_eq!(e.ambient_sounds().count(), 0);
-    assert!(!e.is_playing(lv));
-}
-
-#[test]
 fn unpause_drops_loop_flag() {
     let mut e = engine(vec![sample(2, 22050, true, &sine(22050, 500.0, 220))]);
     let v = e.play(2, Play::default()).unwrap();

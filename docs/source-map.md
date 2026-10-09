@@ -12,6 +12,8 @@ Conventions for function-level tracking: each ported Rust function gets a doc co
 `/// Port of `funcName` (Common/file.c:LINE).` so `grep "Port of"` produces the function-level map.
 Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 
+**Status summary (game-side, 68 units):** ported 41, partial 2, todo 15, replace 1, deferred 6, skip 3. Last regenerated 2026-10-09 (LOC via `wc -l`).
+
 | C/C++ file | LOC | Rust target | Status |
 |---|---:|---|---|
 | `Common/DefData.c` | 41 | f2-game::defaults | todo |
