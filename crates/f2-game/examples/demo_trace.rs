@@ -56,7 +56,8 @@ fn main() -> Result<(), String> {
                 eprintln!("--- tick {}", n + 1);
             }
         }
-        g.tick(TickInput::default());
+        // The oracle writes its line right after GameLoop, before CopyActorList/DrawLoop.
+        g.tick_game_loop(TickInput::default());
         if g.game_state.mode != DEMO_MODE || g.levplay.demo_finished {
             break;
         }
@@ -64,6 +65,7 @@ fn main() -> Result<(), String> {
         f.seq = n;
         writeln!(w, "{}", f.to_json_line()).map_err(|e| e.to_string())?;
         n += 1;
+        g.after_game_loop();
         g.take_effects();
     }
     w.flush().map_err(|e| e.to_string())?;

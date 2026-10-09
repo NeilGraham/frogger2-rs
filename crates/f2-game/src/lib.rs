@@ -181,12 +181,19 @@ impl Game {
     /// Advances one logical frame: the timer update, `GameLoop` (for `INGAME_MODE`:
     /// `RunGameLoop`), then the animation step the original performs while drawing.
     pub fn tick(&mut self, input: TickInput) {
+        self.tick_game_loop(input);
+        self.after_game_loop();
+    }
+
+    /// The first half of [`Game::tick`]: the timer update, `ProcessUserInput` and
+    /// `GameLoop`. The oracle records its trace line here (`h_game_loop`), i.e. *before*
+    /// this tick's `CopyActorList`/`DrawLoop` ([`Game::after_game_loop`]).
+    pub fn tick_game_loop(&mut self, input: TickInput) {
         self.last_act_frame_count = self.act_frame_count;
         self.act_frame_count = self.act_frame_count.wrapping_add(1);
         // LoopFunc (PC/Main.cpp): ProcessUserInput, then GameLoop, then DrawLoop.
         self.process_user_input(input.pads);
         self.game_loop();
-        self.after_game_loop();
     }
 
     /// The rest of `LoopFunc` (PC/Main.cpp:686) after `GameLoop`: `CopyActorList`, then
