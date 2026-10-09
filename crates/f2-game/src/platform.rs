@@ -365,7 +365,7 @@ impl Game {
     }
 
     /// `cur->Update(cur)`.
-    fn call_platform_update(&mut self, id: PlatformId) {
+    pub(crate) fn call_platform_update(&mut self, id: PlatformId) {
         match self.plt(id).update {
             Some(PlatformUpdate::Path) => self.update_path_platform(id),
             Some(PlatformUpdate::UpDown) => self.update_up_down_platform(id),

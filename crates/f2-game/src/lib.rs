@@ -21,6 +21,8 @@ pub mod define;
 pub mod effects;
 pub mod enemies;
 pub mod enemy_tables;
+pub mod evenfunc; // wave D
+pub mod event; // wave D
 pub mod frogger;
 pub mod frogmove;
 pub mod game;
@@ -37,6 +39,7 @@ pub mod path;
 pub mod pc_actor;
 pub mod pc_banks;
 pub mod platform;
+pub mod script; // wave D
 pub mod specfx;
 pub mod timer;
 pub mod tongue;
@@ -108,6 +111,10 @@ pub struct Game {
     pub levplay: levplay::LevPlayState,
     /// `Common/tongue.c` globals.
     pub tongue: tongue::TongueState,
+    /// `Common/event.c` globals (wave D: `triggerList`, `triggersReset`).
+    pub event: event::EventState,
+    /// `Common/script.c` globals (wave D: script flags/counters, `scriptBuffer`).
+    pub script: script::ScriptState,
 }
 
 impl Game {

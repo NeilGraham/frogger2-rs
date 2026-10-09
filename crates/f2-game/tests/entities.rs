@@ -36,14 +36,15 @@ fn movers(g: &Game) -> Vec<ActorId> {
     for id in el.head.ids(&el.array) {
         let e = &el.array[id.idx()];
         let moving = matches!(e.update[0], Some(EnemyUpdate::Path | EnemyUpdate::SlerpPath | EnemyUpdate::MoveVertical | EnemyUpdate::RotatePath));
-        if moving && e.active != 0 && e.path.num_nodes >= 2 {
+        // wave D: entities the level script stopped (isWaiting == -1) wait for a trigger.
+        if moving && e.active != 0 && e.is_waiting != -1 && e.path.num_nodes >= 2 {
             v.extend(e.nme_actor);
         }
     }
     let pl = &g.platform.platform_list;
     for id in pl.head.ids(&pl.array) {
         let p = &pl.array[id.idx()];
-        if p.update == Some(PlatformUpdate::Path) && p.active != 0 && p.path.num_nodes >= 2 {
+        if p.update == Some(PlatformUpdate::Path) && p.active != 0 && p.is_waiting != -1 && p.path.num_nodes >= 2 {
             v.extend(p.plt_actor);
         }
     }

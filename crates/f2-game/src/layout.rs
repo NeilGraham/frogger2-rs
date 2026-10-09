@@ -559,8 +559,8 @@ impl Game {
 
     /// Port of `FreeAllLists` (Common/layout.c:1034) for the state ported so far.
     pub fn free_all_lists(&mut self) {
-        // TODO(port): StopSong, FreeAmbientSoundList (audio), FreeTriggerList,
-        // FreeLevelScript, FreeSpecFXList, FreeMultiplayer, FreeParticleList,
+        // TODO(port): StopSong, FreeAmbientSoundList (audio),
+        // FreeSpecFXList, FreeMultiplayer, FreeParticleList,
         // overlay/sprite lists (later waves).
         // ResetBabies runs after FreeMap in the original; `numBabies` (kept in `map` here)
         // is not cleared by FreeMap, so reset with the old count first.
@@ -568,17 +568,12 @@ impl Game {
         self.map = Default::default(); // FreeMap, FreeEntityBank, FreeScenic
         self.general.sfx_anim_map.clear(); // FreeSampleList
         self.general.ambient_tile_sfx.clear();
+        self.free_trigger_list(); // wave D
         self.free_enemy_linked_list();
         self.free_platform_linked_list();
         self.path.free_path_list();
-        // FreeTransCameraList (Common/cam.c:381)
-        self.cam.trans_camera_defs.clear();
-        self.cam.cam_blocks = 0;
-        self.cam.last_tile = [None; 4];
-        self.cam.fixed_dir = 0;
-        self.cam.fixed_pos = 0;
-        self.cam.start_cam_facing = 0;
-        self.cam.start_frog_facing = 0;
+        self.free_trans_camera_list(); // wave D
+        self.free_level_script(); // wave D
         self.free_tongues();
         self.free_garib_list();
         self.level_files = LevelFiles::default();
@@ -643,7 +638,7 @@ impl Game {
         self.init_enemy_linked_list();
         self.init_platform_linked_list();
         self.init_garib_list();
-        // TODO(port wave D): InitTriggerList.
+        self.init_trigger_list(); // wave D
 
         self.create_frogger(true, true);
         self.create_level_objects(world, level);
@@ -678,7 +673,10 @@ impl Game {
             },
             None => self.effects.push(Effect::Log { text: format!("error loading file {scr}") }),
         }
-        // TODO(port): InitLevelScript execution (wave D).
+        // wave D: LoadLevelScript -> InitLevelScript
+        if let Some(s) = self.level_files.script.clone() {
+            self.init_level_script(s);
+        }
 
         // LoadSfxMapping(worldID, levelID) - note: index ids, and after all actors of
         // InitLevel exist, so none of them get a mapping (sfx_anim_map was NULL).
@@ -709,13 +707,14 @@ impl Game {
         self.frogger.player[0].old_lives = self.frogger.player[0].lives;
         self.game.start_cam = 1;
         self.game.end_level_timer.init(0);
-        // TODO(port): ReinitialiseMultiplayer/ResetMultiplayer (multi), ResetCamera (wave D).
+        // TODO(port): ReinitialiseMultiplayer/ResetMultiplayer (multi).
+        self.reset_camera(); // wave D
         self.init_camera();
 
         self.update_enemies();
         self.update_platforms();
 
-        // TODO(port wave D): UpdateEvents().
+        self.update_events(); // wave D
 
         Ok(out)
     }
