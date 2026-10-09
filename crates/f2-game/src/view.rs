@@ -334,6 +334,16 @@ fn actor_top(pos: Vec3, q_rot: &Quat) -> Mat4 {
     mtx_cat(&quaternion_to_matrix(q_rot), &top)
 }
 
+fn flatten(m: &Mat4) -> [f32; 16] {
+    let mut o = [0f32; 16];
+    for i in 0..4 {
+        for j in 0..4 {
+            o[i * 4 + j] = m[i][j];
+        }
+    }
+    o
+}
+
 /// `FindActorCentre` (mdxActor.cpp:896) as `CreateActor` runs it: the whole hierarchy is
 /// transformed at the origin (scale 1, identity rotation, `animTime` 0) and the bounds of
 /// every object's mesh give `trueCentre` and `radius` (× `RADIUS_SCALE` 0.95). A model
@@ -369,6 +379,56 @@ pub fn find_actor_centre(model: &Model, animated: bool) -> (Vec3, f32) {
     let r = [mx[0] - c[0], mx[1] - c[1], mx[2] - c[2]];
     let mag = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
     (c, (mag as f64 * 0.95) as f32)
+}
+
+/// A model object's name and keys (`MDX_OBJECT`), for transforming sub-objects.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct XNode {
+    pub name: String,
+    pub keys: RootObject,
+    pub children: Vec<XNode>,
+}
+
+impl XNode {
+    pub fn from_object(o: &Object) -> XNode {
+        XNode { name: o.name.clone(), keys: RootObject::from_object(o), children: o.children.iter().map(XNode::from_object).collect() }
+    }
+}
+
+/// `objMatrix` of the first object named `name` (case-insensitive, `FindObj` order:
+/// the object, its `next` siblings, then its children) after `XformActor` with the
+/// given placement; the object's `postMatrix` is the identity (`headPostMatrix`).
+pub fn sub_object_matrix(chain: &[XNode], name: &str, p: &MdxPlacement, animated: bool, time: f32) -> Option<Mat4> {
+    // FindObj order: chain[i], then chain[i+1..] (recursively), then chain[i].children.
+    fn find(chain: &[XNode], i: usize, name: &str, top: &Mat4, ps: Vec3, a: &Ctx) -> Option<Mat4> {
+        let me = &chain[i];
+        let mut last = [0i16; 3];
+        let (rotmat, scale) = object_local(&me.keys.move_keys, &me.keys.scale_keys, &me.keys.rotate_keys, a.animated, a.time, &mut last, a.scale, ps);
+        let m1 = mtx_cat(&rotmat, top);
+        if me.name.eq_ignore_ascii_case(name) {
+            let s = gu_scale(scale[0] * a.scale[0], scale[1] * a.scale[1], scale[2] * a.scale[2]);
+            return Some(mtx_cat(&IDENTITY, &mtx_cat(&s, &m1)));
+        }
+        if i + 1 < chain.len() {
+            if let Some(m) = find(chain, i + 1, name, top, ps, a) {
+                return Some(m);
+            }
+        }
+        if !me.children.is_empty() {
+            return find(&me.children, 0, name, &m1, scale, a);
+        }
+        None
+    }
+    struct Ctx {
+        animated: bool,
+        time: f32,
+        scale: Vec3,
+    }
+    if chain.is_empty() {
+        return None;
+    }
+    let top = actor_top(p.pos, &p.q_rot);
+    find(chain, 0, name, &top, [1.0; 3], &Ctx { animated, time, scale: p.scale })
 }
 
 // ---- mdxRender.cpp / mdxActor.cpp: projection and clipping --------------------------
@@ -553,6 +613,44 @@ impl Game {
         }
         self.update_actor_anim(id);
         self.transform_root_object(id, no_clip);
+        // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
+        if let Some(name) = self.tongue.head_object.clone() {
+            if self.frogger.frog[0] == Some(id) {
+                if let Some(m) = self.actor_sub_object_matrix(id, &name) {
+                    self.tongue.head_matrix = Some(flatten(&m));
+                }
+            }
+        }
+    }
+
+    /// The `objMatrix` a sub-object of `id` gets from `XformActor` now.
+    pub fn actor_sub_object_matrix(&self, id: ActorId, name: &str) -> Option<Mat4> {
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let model = a.object_controller.and_then(|m| self.models.get(m))?;
+        let animated = a.animation.is_some();
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        sub_object_matrix(&model.xform_tree, name, &a.placement, animated, time)
+    }
+
+    /// Port of `FindFrogSubObjects` (PC/actor.cpp:129), head part: `headMatrix` =
+    /// `&FindActorSubObject(frog[0], headNames[character])->objMatrix` (its current value is
+    /// the pose of `CreateActor`'s transform at the origin until the frog is drawn).
+    pub fn find_frog_sub_objects(&mut self, p: usize) {
+        if self.tongue.head_object.is_some() {
+            return;
+        }
+        let Some(f0) = self.frogger.frog[0] else { return };
+        let ch = self.frogger.player[p].character as usize;
+        let name = crate::frogmove::HEAD_NAMES[ch.min(7)];
+        let a = &self.actor2.actors[f0].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return };
+        if model.find_sub_object(name).is_none() {
+            return;
+        }
+        let animated = a.animation.is_some();
+        let m = sub_object_matrix(&model.xform_tree, name, &MdxPlacement::default(), animated, 0.0);
+        self.tongue.head_object = Some(name.to_string());
+        self.tongue.head_matrix = m.map(|m| flatten(&m));
     }
 
     /// `CreateActor`'s `XformActor(t, 1)` at the origin (mdxActor.cpp:953): sets the

@@ -131,10 +131,11 @@ pub struct TongueState {
     pub eat_everything_mode: u8,
     /// `headMatrix` (`frogmove.h:126`, PC): the frog head sub-object's `objMatrix`
     /// (`float[16]`), found by `FindFrogSubObjects` (PC/actor.cpp:141) and recomputed
-    /// by the renderer's `XformActor` every frame. The headless simulation has no
-    /// MDX transform yet, so this is `None` and `CalcTongueSource` takes its fallback
-    /// branch. DEVIATION: the retail PC game uses the head-bone branch.
+    /// by `XformActor` whenever frog[0] is drawn (`view.rs`); `CalcTongueSource`
+    /// zeroes its translation in place.
     pub head_matrix: Option<[f32; 16]>,
+    /// Name of the head sub-object `headMatrix` points into (set by `FindFrogSubObjects`).
+    pub head_object: Option<String>,
 }
 
 impl Game {
@@ -744,11 +745,11 @@ impl Game {
             fwd.iter_mut().for_each(|v| *v *= 12.0);
             up.iter_mut().for_each(|v| *v *= 5.0);
 
-            // Actual front of head position
+            // Actual front of head position.
+            // RETAIL: the shipped exe evaluates (up*5 + pos + fwd*12) * SCALE in that order
+            // (FUN_00434370), not fwd += pos; fwd += up.
             for i in 0..3 {
-                fwd[i] += pos[i];
-                fwd[i] += up[i];
-                fwd[i] *= SCALE as f32;
+                fwd[i] = ((up[i] + pos[i]) + fwd[i]) * SCALE as f32;
             }
             // Which is our source (SetVectorSR)
             t.source = SVector { vx: ftol32(fwd[0] as f64) as i16, vy: ftol32(fwd[1] as f64) as i16, vz: ftol32(fwd[2] as f64) as i16, pad: t.source.pad };

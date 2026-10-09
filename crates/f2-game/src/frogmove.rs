@@ -360,7 +360,9 @@ impl Game {
         self.frogger.player[pu].extended_hop_dir = ((self.cam.start_frog_facing as i32 - self.cam.start_cam_facing as i32) & 3) as u8;
         self.orientate_frog_to_curr_tile(pu);
 
-        // FindFrogSubObjects(p): head/breast matrices for rendering (PC/actor.cpp), not ported.
+        // FindFrogSubObjects(p) (PC/actor.cpp:129): the head matrix CalcTongueSource uses
+        // (breast post-matrix: rendering only).
+        self.find_frog_sub_objects(pu);
 
         if !(self.game_state.multi != SINGLEPLAYER && self.multi.multiplayer_mode == MULTIMODE_BATTLE) {
             self.reactivate_powerups();
