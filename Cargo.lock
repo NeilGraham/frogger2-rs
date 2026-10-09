@@ -721,6 +721,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "f2-net"
+version = "0.1.0"
+
+[[package]]
 name = "f2-platform"
 version = "0.1.0"
 dependencies = [
