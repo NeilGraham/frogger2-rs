@@ -241,6 +241,9 @@ pub struct Renderer {
     pub textures: TextureRegistry,
     pub view: View,
     pub options: RenderOptions,
+    /// `SPRITECLIPLEFT/TOP/RIGHT/BOTTOM` (internal pixels) applied to unrotated sprite
+    /// overlays (`DrawSpriteOverlay`); `None` = no clipping. Set per frame by the host.
+    pub sprite_clip: Option<[f32; 4]>,
     frames: Frames,
     backdrops: Vec<Quad2D>,
     overlays: Vec<Quad2D>,
@@ -410,6 +413,7 @@ impl Renderer {
             vbuf: None,
             output: (640, 480),
             gpu_mips: false,
+            sprite_clip: None,
         };
         r.white = r.textures.add_image(1, 1, vec![255; 4]);
         r
@@ -736,6 +740,18 @@ impl Renderer {
         self.backdrops.push(Quad2D::rect(x, 0.0, w, h, [0.0, 0.0, 1.0, 1.0], Some(tex), [255; 4], Blend::Semi));
     }
 
+    /// A 2D quad in output pixels drawn with the backdrops, before the 3D frames
+    /// (`DrawTiledBackdrop`'s rectangles).
+    pub fn draw_backdrop_quad(&mut self, mut q: Quad2D) {
+        let s = self.ui_scale();
+        if s != 1.0 {
+            for p in &mut q.pos {
+                *p = [p[0] * s, p[1] * s];
+            }
+        }
+        self.backdrops.push(q);
+    }
+
     /// A 2D quad in output pixels (the `begin_frame` size), drawn after the 3D frames in
     /// submission order.
     pub fn draw_quad(&mut self, mut q: Quad2D) {
@@ -755,7 +771,45 @@ impl Renderer {
     pub fn draw_sprite_overlay(&mut self, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], tex: Option<TexHandle>, color: [u8; 4], blend: Blend, angle: f32) {
         let (ox, sx) = self.overlay_x_map(x, w);
         let (oy, sy) = self.overlay_y_map();
-        let (x, y, w, h) = (ox + x * sx, oy + y * sy, w * sx, h * sy);
+        let (mut x, mut y, mut w, mut h) = (ox + x * sx, oy + y * sy, w * sx, h * sy);
+        let mut uv = uv;
+        if let (Some([cl, ct, cr, cb]), true) = (self.sprite_clip, angle == 0.0) {
+            // DrawSpriteOverlay (pcsprite.c:228): clip to SPRITECLIP* with u/v adjusted.
+            // `xs`/`ys` are only used for the u/v maths (with the original's bookkeeping).
+            let (mut x2, mut y2, mut xs, mut ys) = (x + w, y + h, w, h);
+            if x < cl {
+                if x2 < cl {
+                    return;
+                }
+                uv[0] += (uv[2] - uv[0]) * (cl - x) / xs;
+                xs += x - cl;
+                x = cl;
+            }
+            if x2 > cr {
+                if x > cr {
+                    return;
+                }
+                uv[2] += (uv[2] - uv[0]) * (cr - x2) / xs;
+                x2 = cr;
+            }
+            if y < ct {
+                if y2 < ct {
+                    return;
+                }
+                uv[1] += (uv[3] - uv[1]) * (ct - y) / ys;
+                ys += y - ct;
+                y = ct;
+            }
+            if y2 > cb {
+                if y > cb {
+                    return;
+                }
+                uv[3] += (uv[3] - uv[1]) * (cb - y2) / ys;
+                y2 = cb;
+            }
+            w = x2 - x;
+            h = y2 - y;
+        }
         let mut q = Quad2D::rect(x, y, w, h, uv, tex, color, blend);
         if blend == Blend::Subtractive {
             // pcsprite.c: colour pre-multiplied by alpha for xluSubRS.
@@ -832,18 +886,37 @@ impl Renderer {
     /// `scale` is the font scale in internal pixels, like the original's
     /// resolution-independent font scale.
     pub fn draw_text_overlay(&mut self, font: FontId, x: f32, y: f32, text: &str, color: [u8; 4], scale: f32) -> f32 {
+        self.draw_text_overlay_ex(font, x, y, text, color, scale, false, 0.0)
+    }
+
+    /// [`draw_text_overlay`](Self::draw_text_overlay) with the options of
+    /// `PrintText` (textover.c:174): `centred` centres the string on `x`
+    /// (`DrawFontStringAtLoc(..., centre = xPos)`), `dy_px` is a vertical offset in
+    /// internal pixels added after the overlay mapping (the drop shadow's `+6`/`+4`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text_overlay_ex(&mut self, font: FontId, x: f32, y: f32, text: &str, color: [u8; 4], scale: f32, centred: bool, dy_px: f32) -> f32 {
         let (oy, sy) = self.overlay_y_map();
         if !self.options.hud_anchor && self.view.viewport.is_none() {
             // Original mapping (bit-exact authentic path).
             let sx = self.view.width / OVERLAY_SPACE;
-            return self.draw_text_px(font, x * sx, y * sy, text, color, scale, None) / sx;
+            let px = x * sx;
+            return self.draw_text_px(font, px, y * sy + dy_px, text, color, scale, centred.then_some(px)) / sx;
         }
         // Anchor by the string's extent in overlay units.
         let (_, k) = self.overlay_x_map(0.0, 0.0);
         let px_w = self.fonts[font.0].0.string_width(&Self::text_bytes(text), scale) as f32;
-        let (ox, sx) = self.overlay_x_map(x, px_w / k);
-        let end = self.draw_text_px(font, ox + x * sx, oy + y * sy, text, color, scale, None);
+        let left = if centred { x - px_w / k / 2.0 } else { x };
+        let (ox, sx) = self.overlay_x_map(left, px_w / k);
+        let px = ox + x * sx;
+        let end = self.draw_text_px(font, px, oy + y * sy + dy_px, text, color, scale, centred.then_some(px));
         (end - ox) / sx
+    }
+
+    /// Pixels per overlay unit horizontally and vertically for an element at `x..x + w`
+    /// (internal pixels): what `OVERLAY_X`/`OVERLAY_Y` are in the original, after the
+    /// enhanced re-anchoring.
+    pub fn overlay_scale(&self, x: f32, w: f32) -> (f32, f32) {
+        (self.overlay_x_map(x, w).1, self.overlay_y_map().1)
     }
 
     // ---------------------------------------------------------------- submission
