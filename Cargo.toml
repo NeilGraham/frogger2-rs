@@ -13,6 +13,7 @@ members = [
     "crates/f2-platform",
     "crates/f2-bink",
     "crates/f2-mods",
+    "crates/f2-net",
     "crates/frogger",
     "tools/f2-export",
     "tools/f2-viewer",
