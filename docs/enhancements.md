@@ -18,12 +18,28 @@ profiles:
 
 ## Display
 
-- [ ] Arbitrary resolution, 32-bit colour, borderless/fullscreen/windowed, vsync / frame cap
-- [ ] Widescreen: Hor+ FOV, HUD anchored to screen edges, backdrops/FMVs pillarboxed
-- [ ] High refresh (interpolated rendering)
-- [ ] MSAA, anisotropic filtering, optional nearest-neighbour "PSX look"
+All options: `docs/BUILDING.md` § Configuration (`profile`, `[video]`, `[display]`). Authentic
+display = retail and pixel-identical to the pre-enhancement renderer; `[display]` overrides
+apply to the enhanced profile only. F-keys for quick A/B: F5 profile, F3 perspective-correct,
+F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
+
+- [x] Arbitrary resolution, 32-bit colour, borderless/fullscreen/windowed, vsync / frame cap
+  (`video.width/height/fullscreen/vsync/frame_cap`)
+- [x] Widescreen: Hor+ FOV (`display.hor_plus`: projection scale `min(w/640, h/480)` instead of
+  `w/640`), HUD re-anchoring (`display.hud_anchor`: 4096-space overlays scaled to a centred
+  4:3 area; elements centred in the left/right third stick to the screen edges, centred and
+  full-screen ones stay centred, i.e. backdrops pillarboxed), FMVs pillarboxed (aspect kept),
+  ultrawide clamp (`display.max_aspect`: pillarboxed 3D viewport, HUD anchored to it)
+- [x] High refresh (interpolated rendering; follow camera derives from the interpolated frog
+  position, free camera moves per frame; `video.frame_cap`)
+- [x] MSAA (`display.msaa`, 4×), supersampling (`display.render_scale`), anisotropic/trilinear
+  filtering with generated mipmaps (`display.filter`, `display.anisotropy`), nearest-neighbour
+  "PSX look" (`filter = "nearest"`), perspective-correct texturing (`display.perspective_correct`)
 - [ ] Integer-scaled or high-res UI fonts
-- [ ] Draw distance / fog options
+- [x] Draw distance (`display.draw_distance`, far-clip multiplier) / fog (`display.fog`, linear
+  to the clear colour ending at the far clip; never on the sky backdrop)
+- [ ] HUD anchoring of the real game HUD/menus once overlays are ported (the renderer rules
+  apply automatically to `draw_sprite_overlay`/`draw_text_overlay`; verify per screen)
 
 ## Input
 

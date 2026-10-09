@@ -15,5 +15,5 @@ pub mod paths;
 #[cfg(feature = "window")]
 pub mod window;
 
-pub use config::Config;
+pub use config::{Config, DisplaySettings, Profile, TextureFilter};
 pub use input::{Controller, InputMapper, JoypadState, KeyboardState, Keymap, PadData, PadState};

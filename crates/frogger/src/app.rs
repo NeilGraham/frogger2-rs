@@ -11,7 +11,7 @@ use f2_game::define::{mode, SINGLEPLAYER};
 use f2_game::ids::ActorId;
 use f2_game::{Effect, Game, TickInput};
 use f2_platform::input::JoypadState;
-use f2_platform::{dik, InputMapper, KeyboardState, PadData};
+use f2_platform::{dik, DisplaySettings, InputMapper, KeyboardState, PadData, Profile, TextureFilter};
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
@@ -69,6 +69,15 @@ pub struct App {
     pub status: String,
     width: u32,
     height: u32,
+    // display
+    /// Active profile (F5 toggles).
+    pub profile: Profile,
+    /// Settings used in the enhanced profile (config + F-key changes).
+    pub enhanced: DisplaySettings,
+    /// On-screen message after a display hotkey, and its remaining time.
+    osd: Option<(String, f32)>,
+    /// Draw sample overlays in the 4096 space to check anchoring (`--hud-probe`).
+    pub hud_probe: bool,
 }
 
 impl App {
@@ -104,9 +113,103 @@ impl App {
             status: String::new(),
             width: 640,
             height: 480,
+            profile: Profile::Enhanced,
+            enhanced: DisplaySettings::ENHANCED,
+            osd: None,
+            hud_probe: false,
         };
         app.rebuild_renderer();
         app
+    }
+
+    /// Selects the profile and the enhanced-profile settings (from `config.toml`).
+    pub fn set_display(&mut self, profile: Profile, enhanced: DisplaySettings) {
+        self.profile = profile;
+        self.enhanced = enhanced;
+        self.apply_display();
+    }
+
+    /// The settings in effect.
+    pub fn display(&self) -> DisplaySettings {
+        match self.profile {
+            Profile::Authentic => DisplaySettings::AUTHENTIC,
+            Profile::Enhanced => self.enhanced,
+        }
+    }
+
+    /// Pushes the display settings into the renderer options (fog and far clip are set
+    /// per frame from the level).
+    fn apply_display(&mut self) {
+        let d = self.display();
+        let o = &mut self.r.options;
+        o.perspective_correct = d.perspective_correct;
+        o.linear_filter = d.filter != TextureFilter::Nearest;
+        o.anisotropy = if d.filter == TextureFilter::Anisotropic { d.anisotropy.max(1) } else { 0 };
+        o.hor_plus = d.hor_plus;
+        o.hud_anchor = d.hud_anchor;
+        o.max_aspect = d.max_aspect;
+        o.render_scale = d.render_scale;
+        o.msaa = d.msaa;
+    }
+
+    /// F-key display toggles (quick A/B). Changing an enhanced option switches to the
+    /// enhanced profile (authentic is fixed).
+    fn display_hotkey(&mut self, k: u8) {
+        let e = &mut self.enhanced;
+        let msg = match k {
+            dik::F5 => {
+                self.profile = self.profile.toggled();
+                format!("profile: {}", self.profile.name())
+            }
+            dik::F3 => {
+                e.perspective_correct = !e.perspective_correct;
+                format!("perspective-correct textures: {}", on_off(e.perspective_correct))
+            }
+            dik::F4 => {
+                e.render_scale = match e.render_scale {
+                    s if s < 1.5 => 1.5,
+                    s if s < 2.0 => 2.0,
+                    _ => 1.0,
+                };
+                format!("render scale: {}x", e.render_scale)
+            }
+            dik::F6 => {
+                e.msaa = if e.msaa > 1 { 1 } else { 4 };
+                format!("MSAA: {}x", e.msaa)
+            }
+            dik::F7 => {
+                e.filter = match e.filter {
+                    TextureFilter::Nearest => TextureFilter::Linear,
+                    TextureFilter::Linear => TextureFilter::Anisotropic,
+                    TextureFilter::Anisotropic => TextureFilter::Nearest,
+                };
+                format!("texture filter: {:?}", e.filter).to_lowercase()
+            }
+            dik::F8 => {
+                let on = !(e.hor_plus && e.hud_anchor);
+                (e.hor_plus, e.hud_anchor) = (on, on);
+                format!("widescreen (Hor+ FOV, anchored HUD): {}", on_off(on))
+            }
+            dik::F9 => {
+                e.fog = !e.fog;
+                format!("fog: {}", on_off(e.fog))
+            }
+            dik::F12 => {
+                e.draw_distance = match e.draw_distance {
+                    d if d < 2.0 => 2.0,
+                    d if d < 4.0 => 4.0,
+                    _ => 1.0,
+                };
+                format!("draw distance: {}x", e.draw_distance)
+            }
+            _ => return,
+        };
+        if k != dik::F5 {
+            self.profile = Profile::Enhanced;
+        }
+        self.apply_display();
+        eprintln!("frogger: {msg}");
+        self.osd = Some((msg, 2.5));
     }
 
     /// Queues the startup / dev sequence.
@@ -118,6 +221,7 @@ impl App {
     /// level's texture banks.
     fn rebuild_renderer(&mut self) {
         self.r = Renderer::new(&self.device, &self.queue, self.format);
+        self.apply_display();
         self.font_id = self.font.clone().map(|f| self.r.add_font(f));
         if let Some(v) = &mut self.video {
             v.forget_image();
@@ -258,7 +362,7 @@ impl App {
                 }
                 dik::F2 => self.show_tiles = !self.show_tiles,
                 dik::F11 => self.requests.toggle_fullscreen = true,
-                _ => {}
+                k => self.display_hotkey(k),
             }
         }
     }
@@ -269,6 +373,12 @@ impl App {
         self.kb.down = kb.down;
         self.kb.pressed.extend_from_slice(&kb.pressed);
         self.mapper.window_active = focused;
+        if let Some((_, t)) = &mut self.osd {
+            *t -= dt.as_secs_f32();
+            if *t <= 0.0 {
+                self.osd = None;
+            }
+        }
 
         if let Some(v) = &mut self.video {
             v.update(dt.as_secs_f64(), &mut self.audio);
@@ -425,7 +535,20 @@ impl App {
                 None => render::follow_camera(&self.game, scene, frog),
             };
             self.last_cam = Some(cam);
-            render::draw_level(&mut self.r, scene, &self.game, &self.prev, alpha, &cam, self.show_tiles);
+            let d = match self.profile {
+                Profile::Authentic => DisplaySettings::AUTHENTIC,
+                Profile::Enhanced => self.enhanced,
+            };
+            let far = scene.far_clip * d.draw_distance;
+            // Enhanced fog: linear to the level's clear colour, ending at the far clip so
+            // geometry fades in instead of popping (retail: fog disabled).
+            self.r.options.fog = if d.fog {
+                let c = scene.clear;
+                f2_engine::Fog { enabled: true, start: far * 0.5, end: far, color: [c[0] as f32, c[1] as f32, c[2] as f32] }
+            } else {
+                f2_engine::Fog::default()
+            };
+            render::draw_level(&mut self.r, scene, &self.game, &self.prev, alpha, &cam, far, self.show_tiles);
             // Listener = camera (`currCamSource` 20.12 game units, `vMatrix`).
             let s = cam.source;
             self.audio.set_listener(Listener { cam_source: s.map(|x| (x * 10.0 * 4096.0) as i32), view: self.r.view.v_matrix });
@@ -450,11 +573,37 @@ impl App {
         if !self.status.is_empty() {
             lines.push(self.status.clone());
         }
+        if let Some((m, _)) = &self.osd {
+            lines.push(m.clone());
+        }
+        if self.hud_probe {
+            self.draw_hud_probe(font);
+        }
         let mut y = 4.0;
         for l in lines {
             self.r.draw_text(font, 6.0, y, &l, [255, 255, 255, 255], 1.0, None);
             y += 14.0;
         }
+    }
+
+    /// Sample overlays in the 4096×4096 space (`--hud-probe`): corner boxes and labels
+    /// left/centre/right plus a centred banner, to check widescreen re-anchoring.
+    fn draw_hud_probe(&mut self, font: FontId) {
+        use f2_engine::Blend;
+        let boxes: [(f32, f32, f32, f32, [u8; 4]); 5] = [
+            (96.0, 96.0, 900.0, 300.0, [255, 60, 60, 160]),
+            (3100.0, 96.0, 900.0, 300.0, [60, 120, 255, 160]),
+            (1548.0, 3500.0, 1000.0, 400.0, [255, 220, 60, 160]),
+            (96.0, 3600.0, 600.0, 300.0, [60, 255, 60, 160]),
+            (3400.0, 3600.0, 600.0, 300.0, [255, 60, 255, 160]),
+        ];
+        for (x, y, w, h, c) in boxes {
+            self.r.draw_sprite_overlay(x, y, w, h, [0.0, 0.0, 1.0, 1.0], None, c, Blend::Semi, 0.0);
+        }
+        let white = [255, 255, 255, 255];
+        self.r.draw_text_overlay(font, 160.0, 200.0, "LIVES 3", white, 1.0);
+        self.r.draw_text_overlay(font, 3200.0, 200.0, "SCORE 0", white, 1.0);
+        self.r.draw_text_overlay(font, 1800.0, 3650.0, "CENTRE", white, 1.0);
     }
 
     pub fn clear_color(&self) -> [f64; 4] {
@@ -467,5 +616,13 @@ impl App {
     /// Whether there is anything left to do (videos/levels).
     pub fn idle(&self) -> bool {
         self.video.is_none() && self.scene.is_none() && self.steps.is_empty()
+    }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b {
+        "on"
+    } else {
+        "off"
     }
 }

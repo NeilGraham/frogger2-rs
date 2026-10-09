@@ -152,8 +152,53 @@ struct DrawCmd {
     depth: DepthMode,
     tex: TexHandle,
     wrap: bool,
+    /// 3D frame triangle (scissored to the viewport when it is clamped).
+    scene: bool,
     first: u32,
     count: u32,
+}
+
+/// Sampler variant: (wrap, linear, anisotropy).
+type SamplerKey = (bool, bool, u16);
+
+/// Largest texture that gets a mip chain when anisotropic filtering is on (bank textures
+/// are <= 256; screen-sized backdrops and video frames are drawn ~1:1 and skip it).
+const MIP_MAX_SIZE: u32 = 512;
+
+/// Box-filtered mip chain (alpha-weighted colour, so colour-keyed texels do not bleed
+/// black into their neighbours). Returns levels 1.. (level 0 is the image itself).
+fn build_mips(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut out = Vec::new();
+    let (mut pw, mut ph) = (w, h);
+    let mut prev = rgba.to_vec();
+    while pw > 1 || ph > 1 {
+        let (nw, nh) = ((pw / 2).max(1), (ph / 2).max(1));
+        let mut next = vec![0u8; (nw * nh * 4) as usize];
+        for y in 0..nh {
+            for x in 0..nw {
+                let mut acc = [0u32; 4];
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let sx = (x * 2 + dx).min(pw - 1);
+                    let sy = (y * 2 + dy).min(ph - 1);
+                    let i = ((sy * pw + sx) * 4) as usize;
+                    let a = prev[i + 3] as u32;
+                    for c in 0..3 {
+                        acc[c] += prev[i + c] as u32 * a;
+                    }
+                    acc[3] += a;
+                }
+                let o = ((y * nw + x) * 4) as usize;
+                for c in 0..3 {
+                    next[o + c] = (acc[c] + acc[3] / 2).checked_div(acc[3]).unwrap_or(0) as u8;
+                }
+                next[o + 3] = ((acc[3] + 2) / 4) as u8;
+            }
+        }
+        out.push((nw, nh, next.clone()));
+        prev = next;
+        (pw, ph) = (nw, nh);
+    }
+    out
 }
 
 /// An RGBA8 frame read back from the GPU.
@@ -202,16 +247,27 @@ pub struct Renderer {
     fonts: Vec<(Font, TexHandle)>,
     white: TexHandle,
     gpu_images: Vec<GpuImage>,
-    bind_groups: HashMap<(u32, bool, bool), wgpu::BindGroup>,
+    bind_groups: HashMap<(u32, SamplerKey), wgpu::BindGroup>,
     tex_layout: wgpu::BindGroupLayout,
     uniform_buf: wgpu::Buffer,
     uniform_bg: wgpu::BindGroup,
     pipeline_layout: wgpu::PipelineLayout,
     shader: wgpu::ShaderModule,
-    pipelines: HashMap<(Blend, DepthMode), wgpu::RenderPipeline>,
-    samplers: [wgpu::Sampler; 4],
-    depth: Option<(wgpu::TextureView, u32, u32)>,
+    pipelines: HashMap<(Blend, DepthMode, u32), wgpu::RenderPipeline>,
+    samplers: HashMap<SamplerKey, wgpu::Sampler>,
+    /// Depth buffer (view, width, height, samples).
+    depth: Option<(wgpu::TextureView, u32, u32, u32)>,
+    /// Internal colour target for supersampling (view, width, height).
+    internal: Option<(wgpu::TextureView, u32, u32)>,
+    /// MSAA colour target (view, width, height, samples).
+    msaa_target: Option<(wgpu::TextureView, u32, u32, u32)>,
+    blit: Option<(wgpu::RenderPipeline, wgpu::Sampler)>,
     vbuf: Option<wgpu::Buffer>,
+    /// Size passed to [`begin_frame`](Self::begin_frame) (the target); `view` holds the
+    /// internal (render-scaled) size.
+    output: (u32, u32),
+    /// Whether the GPU images were uploaded with mip chains.
+    gpu_mips: bool,
 }
 
 const SHADER: &str = r#"
@@ -254,6 +310,24 @@ struct VOut {
     if (floor(c.a * 255.0 + 0.5) <= i.aref) { discard; }
     if (u.fog_on > 0.5) { c = vec4<f32>(mix(u.fog_color.rgb, c.rgb, i.fog), c.a); }
     return c;
+}
+"#;
+
+/// Supersampling resolve: draws the internal target over the output with bilinear
+/// filtering (a 2x2 box filter at render scale 2).
+const BLIT_SHADER: &str = r#"
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var s: sampler;
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VOut {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var o: VOut;
+    o.pos = vec4<f32>(p * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+    o.uv = p;
+    return o;
+}
+@fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
+    return textureSampleLevel(t, s, i.uv, 0.0);
 }
 "#;
 
@@ -308,20 +382,6 @@ impl Renderer {
             bind_group_layouts: &[Some(&ulayout), Some(&tex_layout)],
             immediate_size: 0,
         });
-        let sampler = |wrap: bool, linear: bool| {
-            let am = if wrap { wgpu::AddressMode::Repeat } else { wgpu::AddressMode::ClampToEdge };
-            let f = if linear { wgpu::FilterMode::Linear } else { wgpu::FilterMode::Nearest };
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: None,
-                address_mode_u: am,
-                address_mode_v: am,
-                address_mode_w: am,
-                mag_filter: f,
-                min_filter: f,
-                ..Default::default()
-            })
-        };
-        let samplers = [sampler(false, false), sampler(false, true), sampler(true, false), sampler(true, true)];
         let mut r = Renderer {
             device,
             queue,
@@ -342,9 +402,14 @@ impl Renderer {
             pipeline_layout,
             shader,
             pipelines: HashMap::new(),
-            samplers,
+            samplers: HashMap::new(),
             depth: None,
+            internal: None,
+            msaa_target: None,
+            blit: None,
             vbuf: None,
+            output: (640, 480),
+            gpu_mips: false,
         };
         r.white = r.textures.add_image(1, 1, vec![255; 4]);
         r
@@ -374,13 +439,24 @@ impl Renderer {
     }
 
     fn upload_dirty(&mut self) {
+        let mips = self.options.linear_filter && self.options.anisotropy > 0;
+        if mips != self.gpu_mips {
+            // Re-upload everything with (or without) mip chains, in slot order.
+            self.gpu_mips = mips;
+            self.textures.dirty = (0..self.textures.images.len() as u32).collect();
+        }
         for i in std::mem::take(&mut self.textures.dirty) {
             let img = &self.textures.images[i as usize];
             let size = wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 };
+            let chain = if mips && img.width.max(img.height) <= MIP_MAX_SIZE && img.rgba.len() as u32 == img.width * img.height * 4 {
+                build_mips(img.width, img.height, &img.rgba)
+            } else {
+                Vec::new()
+            };
             let tex = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size,
-                mip_level_count: 1,
+                mip_level_count: 1 + chain.len() as u32,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
@@ -393,6 +469,14 @@ impl Renderer {
                 wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(img.width * 4), rows_per_image: Some(img.height) },
                 size,
             );
+            for (level, (w, h, data)) in chain.iter().enumerate() {
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: level as u32 + 1, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    data,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(*h) },
+                    wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
+                );
+            }
             let view = tex.create_view(&Default::default());
             let gi = GpuImage { view };
             let idx = i as usize;
@@ -407,11 +491,41 @@ impl Renderer {
         }
     }
 
-    fn bind_group(&mut self, tex: TexHandle, wrap: bool) -> &wgpu::BindGroup {
+    fn sampler_key(&self, wrap: bool) -> SamplerKey {
         let linear = self.options.linear_filter;
-        let key = (tex.0, wrap, linear);
+        (wrap, linear, if linear { self.options.anisotropy.min(16) } else { 0 })
+    }
+
+    fn sampler(&mut self, key: SamplerKey) -> &wgpu::Sampler {
+        let device = &self.device;
+        self.samplers.entry(key).or_insert_with(|| {
+            let (wrap, linear, aniso) = key;
+            let am = if wrap { wgpu::AddressMode::Repeat } else { wgpu::AddressMode::ClampToEdge };
+            let f = if linear { wgpu::FilterMode::Linear } else { wgpu::FilterMode::Nearest };
+            let mut d = wgpu::SamplerDescriptor {
+                label: None,
+                address_mode_u: am,
+                address_mode_v: am,
+                address_mode_w: am,
+                mag_filter: f,
+                min_filter: f,
+                ..Default::default()
+            };
+            if aniso > 0 {
+                // Trilinear (+ anisotropic); retail has no mipmaps (`aniso == 0`).
+                d.mipmap_filter = wgpu::MipmapFilterMode::Linear;
+                d.anisotropy_clamp = aniso.max(1);
+            }
+            device.create_sampler(&d)
+        })
+    }
+
+    fn bind_group(&mut self, tex: TexHandle, wrap: bool) -> &wgpu::BindGroup {
+        let skey = self.sampler_key(wrap);
+        let key = (tex.0, skey);
         if !self.bind_groups.contains_key(&key) {
-            let s = &self.samplers[(wrap as usize) * 2 + linear as usize];
+            self.sampler(skey);
+            let s = &self.samplers[&skey];
             let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: &self.tex_layout,
@@ -425,8 +539,8 @@ impl Renderer {
         &self.bind_groups[&key]
     }
 
-    fn pipeline(&mut self, blend: Blend, depth: DepthMode) -> &wgpu::RenderPipeline {
-        let key = (blend, depth);
+    fn pipeline(&mut self, blend: Blend, depth: DepthMode, samples: u32) -> &wgpu::RenderPipeline {
+        let key = (blend, depth, samples);
         if !self.pipelines.contains_key(&key) {
             let comp = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
             use wgpu::BlendFactor as F;
@@ -462,7 +576,7 @@ impl Renderer {
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
-                multisample: Default::default(),
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
                 fragment: Some(wgpu::FragmentState {
                     module: &self.shader,
                     entry_point: Some("fs"),
@@ -481,12 +595,100 @@ impl Renderer {
 
     /// Starts a frame of `width`×`height` pixels: clears all poly lists
     /// (`BlankAllFrames`) and sets the viewport (`InitOneOverTable`).
+    ///
+    /// Applies the frame-level [`RenderOptions`]: the internal size is
+    /// `width`×`height` × `render_scale`, Hor+ and the ultrawide clamp set up
+    /// [`View::hor_plus`] / [`View::viewport`]. 2D positions passed to
+    /// [`draw_quad`](Self::draw_quad) / [`draw_text`](Self::draw_text) stay in
+    /// `width`×`height` pixels.
     pub fn begin_frame(&mut self, width: u32, height: u32) {
-        self.view.width = width.max(1) as f32;
-        self.view.height = height.max(1) as f32;
+        let (w, h) = (width.max(1), height.max(1));
+        self.output = (w, h);
+        let s = self.render_scale();
+        let (iw, ih) = if s == 1.0 { (w, h) } else { (((w as f32 * s).round() as u32).max(1), ((h as f32 * s).round() as u32).max(1)) };
+        self.view.width = iw as f32;
+        self.view.height = ih as f32;
+        self.view.hor_plus = self.options.hor_plus;
+        self.view.viewport = None;
+        let max_aspect = self.options.max_aspect;
+        if max_aspect > 0.0 && iw as f32 > ih as f32 * max_aspect {
+            let vw = (ih as f32 * max_aspect).round();
+            let vx = ((iw as f32 - vw) / 2.0).floor();
+            self.view.viewport = Some([vx, 0.0, vw, ih as f32]);
+        }
         self.frames.clear();
         self.backdrops.clear();
         self.overlays.clear();
+    }
+
+    /// Effective supersampling factor (clamped to 0.25..=4).
+    fn render_scale(&self) -> f32 {
+        let s = self.options.render_scale;
+        if s.is_finite() && s > 0.0 {
+            s.clamp(0.25, 4.0)
+        } else {
+            1.0
+        }
+    }
+
+    /// Effective MSAA sample count: 1 or 4 (the counts every backend supports for the
+    /// colour and depth formats without adapter-specific features).
+    fn samples(&self) -> u32 {
+        if self.options.msaa > 1 {
+            4
+        } else {
+            1
+        }
+    }
+
+    /// Output-pixel to internal-pixel factor (render scale actually applied).
+    pub fn ui_scale(&self) -> f32 {
+        self.view.width / self.output.0 as f32
+    }
+
+    /// The size passed to [`begin_frame`](Self::begin_frame).
+    pub fn output_size(&self) -> (u32, u32) {
+        self.output
+    }
+
+    /// The centred 4:3 area of the 3D viewport `(x, width)` used for re-anchored overlays
+    /// and pillarboxed backdrops (the whole viewport when it is not wider than 4:3).
+    fn safe_area(&self) -> (f32, f32) {
+        let [vx, _, vw, vh] = self.view.vp();
+        let sw = vw.min(vh * 4.0 / 3.0);
+        (vx + ((vw - sw) / 2.0).floor(), sw)
+    }
+
+    /// Maps an element spanning `x..x + w` of the 4096 overlay space horizontally:
+    /// returns `(pixel x of overlay x = 0, pixels per overlay unit)`.
+    ///
+    /// Authentic: stretched over the whole screen like `OVERLAY_X = rXRes/4096`.
+    /// With `hud_anchor`: scaled to the 4:3 safe area; elements centred in the left
+    /// third stick to the left edge of the viewport, the right third to the right edge,
+    /// everything else (centred text, full-screen backdrops) stays in the centred 4:3
+    /// area, i.e. full-screen elements are pillarboxed.
+    pub fn overlay_x_map(&self, x: f32, w: f32) -> (f32, f32) {
+        let [vx, _, vw, _] = self.view.vp();
+        if !self.options.hud_anchor {
+            return (vx, vw / OVERLAY_SPACE);
+        }
+        let (sx0, sw) = self.safe_area();
+        let k = sw / OVERLAY_SPACE;
+        let c = x + w / 2.0;
+        let origin = if w < OVERLAY_SPACE * 0.75 && c < OVERLAY_SPACE / 3.0 {
+            vx
+        } else if w < OVERLAY_SPACE * 0.75 && c > OVERLAY_SPACE * 2.0 / 3.0 {
+            vx + vw - sw
+        } else {
+            sx0
+        };
+        (origin, k)
+    }
+
+    /// Vertical overlay mapping `(pixel y of overlay y = 0, pixels per unit)`.
+    fn overlay_y_map(&self) -> (f32, f32) {
+        let [_, vy, _, vh] = self.view.vp();
+        (vy, vh / OVERLAY_SPACE)
     }
 
     pub fn set_camera(&mut self, cam: &Camera) {
@@ -527,13 +729,22 @@ impl Renderer {
     }
 
     /// Full-screen backdrop (`mdxDrawBackdrop`), drawn before everything else.
+    /// With `hud_anchor` (enhanced) it is pillarboxed to the centred 4:3 area.
     pub fn draw_backdrop(&mut self, tex: TexHandle) {
-        let (w, h) = (self.view.width, self.view.height);
-        self.backdrops.push(Quad2D::rect(0.0, 0.0, w, h, [0.0, 0.0, 1.0, 1.0], Some(tex), [255; 4], Blend::Semi));
+        let (x, w) = if self.options.hud_anchor { self.safe_area() } else { (0.0, self.view.width) };
+        let h = self.view.height;
+        self.backdrops.push(Quad2D::rect(x, 0.0, w, h, [0.0, 0.0, 1.0, 1.0], Some(tex), [255; 4], Blend::Semi));
     }
 
-    /// A 2D quad in screen pixels, drawn after the 3D frames in submission order.
-    pub fn draw_quad(&mut self, q: Quad2D) {
+    /// A 2D quad in output pixels (the `begin_frame` size), drawn after the 3D frames in
+    /// submission order.
+    pub fn draw_quad(&mut self, mut q: Quad2D) {
+        let s = self.ui_scale();
+        if s != 1.0 {
+            for p in &mut q.pos {
+                *p = [p[0] * s, p[1] * s];
+            }
+        }
         self.overlays.push(q);
     }
 
@@ -542,8 +753,9 @@ impl Renderer {
     /// `angle` in radians (the caller converts from game angle units).
     #[allow(clippy::too_many_arguments)]
     pub fn draw_sprite_overlay(&mut self, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], tex: Option<TexHandle>, color: [u8; 4], blend: Blend, angle: f32) {
-        let (sx, sy) = (self.view.width / OVERLAY_SPACE, self.view.height / OVERLAY_SPACE);
-        let (x, y, w, h) = (x * sx, y * sy, w * sx, h * sy);
+        let (ox, sx) = self.overlay_x_map(x, w);
+        let (oy, sy) = self.overlay_y_map();
+        let (x, y, w, h) = (ox + x * sx, oy + y * sy, w * sx, h * sy);
         let mut q = Quad2D::rect(x, y, w, h, uv, tex, color, blend);
         if blend == Blend::Subtractive {
             // pcsprite.c: colour pre-multiplied by alpha for xluSubRS.
@@ -575,12 +787,26 @@ impl Renderer {
         self.frames.push(Frame::Xlu, Tri { v: [q[2], q[3], q[0]], tex });
     }
 
-    /// Port of `DrawFontStringAtLoc` (mdxFont.cpp) at pixel position `(x, y)`.
+    /// Port of `DrawFontStringAtLoc` (mdxFont.cpp) at output-pixel position `(x, y)`.
     /// `text` is Latin-1 (chars above U+00FF draw nothing). With `centred_x`,
     /// the string is centred on that x. Returns the end x.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_text(&mut self, font: FontId, x: f32, y: f32, text: &str, color: [u8; 4], scale: f32, centred_x: Option<f32>) -> f32 {
-        let bytes: Vec<u8> = text.chars().map(|c| if (c as u32) < 256 { c as u8 } else { 0 }).collect();
+        let s = self.ui_scale();
+        if s == 1.0 {
+            return self.draw_text_px(font, x, y, text, color, scale, centred_x);
+        }
+        self.draw_text_px(font, x * s, y * s, text, color, scale * s, centred_x.map(|c| c * s)) / s
+    }
+
+    fn text_bytes(text: &str) -> Vec<u8> {
+        text.chars().map(|c| if (c as u32) < 256 { c as u8 } else { 0 }).collect()
+    }
+
+    /// [`draw_text`](Self::draw_text) in internal pixels.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_px(&mut self, font: FontId, x: f32, y: f32, text: &str, color: [u8; 4], scale: f32, centred_x: Option<f32>) -> f32 {
+        let bytes = Self::text_bytes(text);
         let (f, tex) = (&self.fonts[font.0].0, self.fonts[font.0].1);
         let mut cx = match centred_x {
             Some(c) => c - (f.string_width(&bytes, scale) / 2) as f32,
@@ -603,28 +829,41 @@ impl Renderer {
     }
 
     /// [`draw_text`](Self::draw_text) with coordinates in the 4096 overlay space.
+    /// `scale` is the font scale in internal pixels, like the original's
+    /// resolution-independent font scale.
     pub fn draw_text_overlay(&mut self, font: FontId, x: f32, y: f32, text: &str, color: [u8; 4], scale: f32) -> f32 {
-        let (sx, sy) = (self.view.width / OVERLAY_SPACE, self.view.height / OVERLAY_SPACE);
-        self.draw_text(font, x * sx, y * sy, text, color, scale, None) / sx
+        let (oy, sy) = self.overlay_y_map();
+        if !self.options.hud_anchor && self.view.viewport.is_none() {
+            // Original mapping (bit-exact authentic path).
+            let sx = self.view.width / OVERLAY_SPACE;
+            return self.draw_text_px(font, x * sx, y * sy, text, color, scale, None) / sx;
+        }
+        // Anchor by the string's extent in overlay units.
+        let (_, k) = self.overlay_x_map(0.0, 0.0);
+        let px_w = self.fonts[font.0].0.string_width(&Self::text_bytes(text), scale) as f32;
+        let (ox, sx) = self.overlay_x_map(x, px_w / k);
+        let end = self.draw_text_px(font, ox + x * sx, oy + y * sy, text, color, scale, None);
+        (end - ox) / sx
     }
 
     // ---------------------------------------------------------------- submission
 
-    fn build(&mut self) -> (Vec<TlVertex>, Vec<DrawCmd>) {
-        let mut verts: Vec<TlVertex> = Vec::with_capacity(self.frames.total() * 3 + 6 * (self.backdrops.len() + self.overlays.len()));
+    fn build(&mut self, clear: [f64; 4]) -> (Vec<TlVertex>, Vec<DrawCmd>) {
+        let mut verts: Vec<TlVertex> = Vec::with_capacity(self.frames.total() * 3 + 6 * (self.backdrops.len() + self.overlays.len() + 1));
         let mut cmds: Vec<DrawCmd> = Vec::new();
         let white = self.white;
-        let push = |verts: &mut Vec<TlVertex>, cmds: &mut Vec<DrawCmd>, blend, depth, wrap, tex: Option<TexHandle>, tri: &[TlVertex]| {
+        #[allow(clippy::too_many_arguments)]
+        let push = |verts: &mut Vec<TlVertex>, cmds: &mut Vec<DrawCmd>, blend, depth, wrap, scene: bool, tex: Option<TexHandle>, tri: &[TlVertex]| {
             let tex = tex.unwrap_or(white);
             let first = verts.len() as u32;
             verts.extend_from_slice(tri);
             if let Some(last) = cmds.last_mut() {
-                if last.blend == blend && last.depth == depth && last.tex == tex && last.wrap == wrap && last.first + last.count == first {
+                if last.blend == blend && last.depth == depth && last.tex == tex && last.wrap == wrap && last.scene == scene && last.first + last.count == first {
                     last.count += tri.len() as u32;
                     return;
                 }
             }
-            cmds.push(DrawCmd { blend, depth, tex, wrap, first, count: tri.len() as u32 });
+            cmds.push(DrawCmd { blend, depth, tex, wrap, scene, first, count: tri.len() as u32 });
         };
         let quad_tris = |q: &Quad2D| -> [TlVertex; 6] {
             let col = q.color.map(|c| c as f32 / 255.0);
@@ -632,8 +871,15 @@ impl Renderer {
             let v = |i: usize| TlVertex { sx: q.pos[i][0], sy: q.pos[i][1], sz: 0.0, rhw: 1.0, color: col, uv: uvs[i], fog: 1.0, alpha_ref: ALPHA_NONZERO };
             [v(0), v(1), v(2), v(2), v(3), v(0)]
         };
+        if let Some([x, y, w, h]) = self.view.viewport {
+            // Ultrawide clamp: the target is cleared black (pillars), the viewport gets the
+            // scene's clear colour.
+            let c = clear.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+            let q = Quad2D::rect(x, y, w, h, [0.0; 4], None, [c[0], c[1], c[2], 255], Blend::Semi);
+            push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(&q));
+        }
         for q in &self.backdrops {
-            push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, q.tex, &quad_tris(q));
+            push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q));
         }
         let sort = self.options.xlu_sort;
         // DrawAllFrames order and states.
@@ -655,37 +901,93 @@ impl Renderer {
                 for x in &mut v {
                     x.alpha_ref = aref;
                 }
-                push(&mut verts, &mut cmds, blend, depth, wrap, t.tex, &v);
+                push(&mut verts, &mut cmds, blend, depth, wrap, true, t.tex, &v);
             }
         }
         for q in &self.overlays {
-            push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, q.tex, &quad_tris(q));
+            push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q));
         }
         (verts, cmds)
     }
 
-    fn ensure_depth(&mut self, w: u32, h: u32) {
-        if matches!(self.depth, Some((_, dw, dh)) if dw == w && dh == h) {
-            return;
+    fn colour_texture(&self, label: &str, w: u32, h: u32, samples: u32, usage: wgpu::TextureUsages) -> wgpu::TextureView {
+        self.device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage,
+                view_formats: &[],
+            })
+            .create_view(&Default::default())
+    }
+
+    fn ensure_targets(&mut self, w: u32, h: u32, samples: u32, scaled: bool) {
+        if !matches!(self.depth, Some((_, dw, dh, ds)) if dw == w && dh == h && ds == samples) {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("depth"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            self.depth = Some((tex.create_view(&Default::default()), w, h, samples));
         }
-        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("depth"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        self.depth = Some((tex.create_view(&Default::default()), w, h));
+        if samples > 1 && !matches!(self.msaa_target, Some((_, mw, mh, ms)) if mw == w && mh == h && ms == samples) {
+            self.msaa_target = Some((self.colour_texture("msaa", w, h, samples, wgpu::TextureUsages::RENDER_ATTACHMENT), w, h, samples));
+        }
+        if scaled && !matches!(self.internal, Some((_, iw, ih)) if iw == w && ih == h) {
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            self.internal = Some((self.colour_texture("internal", w, h, 1, usage), w, h));
+        }
+        if scaled && self.blit.is_none() {
+            let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blit"), source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()) });
+            let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("blit"), bind_group_layouts: &[Some(&self.tex_layout)], immediate_size: 0 });
+            let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("blit"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            let s = self.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("blit"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+            self.blit = Some((p, s));
+        }
     }
 
     /// Encodes the queued frame into `encoder`, targeting `target`
-    /// (`width`×`height`, format `self.format`). `clear` = background colour.
+    /// (`width`×`height` = the `begin_frame` size, format `self.format`).
+    /// `clear` = background colour.
+    ///
+    /// With the default (authentic) options this is a single pass straight into
+    /// `target`. Enhanced options add an MSAA target (resolved into `target`) and/or an
+    /// internal render-scaled target that is then filtered down to `target`.
     pub fn encode(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, width: u32, height: u32, clear: [f64; 4]) {
         self.upload_dirty();
-        self.ensure_depth(width, height);
+        let (iw, ih) = (self.view.width as u32, self.view.height as u32);
+        let samples = self.samples();
+        let scaled = (iw, ih) != (width, height);
+        self.ensure_targets(iw, ih, samples, scaled);
         let fog = self.options.fog;
         let uni: [f32; 8] = [
             self.view.width,
@@ -698,7 +1000,8 @@ impl Renderer {
             1.0,
         ];
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(&uni));
-        let (verts, cmds) = self.build();
+        let (verts, cmds) = self.build(clear);
+        let clear = if self.view.viewport.is_some() { [0.0, 0.0, 0.0, 1.0] } else { clear };
         if !verts.is_empty() {
             let bytes: &[u8] = bytemuck::cast_slice(&verts);
             if self.vbuf.as_ref().is_none_or(|b| b.size() < bytes.len() as u64) {
@@ -712,21 +1015,24 @@ impl Renderer {
             self.queue.write_buffer(self.vbuf.as_ref().unwrap(), 0, bytes);
         }
         // Create pipelines and bind groups before the pass borrows them.
+        let mut keys = Vec::with_capacity(cmds.len());
         for c in &cmds {
-            self.pipeline(c.blend, c.depth);
+            self.pipeline(c.blend, c.depth, samples);
             self.bind_group(c.tex, c.wrap);
+            keys.push((c.tex.0, self.sampler_key(c.wrap)));
         }
-        let linear = self.options.linear_filter;
         let depth_view = &self.depth.as_ref().unwrap().0;
+        let main_target = if scaled { &self.internal.as_ref().unwrap().0 } else { target };
+        let (view, resolve) = if samples > 1 { (&self.msaa_target.as_ref().unwrap().0, Some(main_target)) } else { (main_target, None) };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("mdx frame"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: resolve,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
-                    store: wgpu::StoreOp::Store,
+                    store: if samples > 1 { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -742,10 +1048,54 @@ impl Renderer {
             pass.set_vertex_buffer(0, vb.slice(..));
         }
         pass.set_bind_group(0, &self.uniform_bg, &[]);
-        for c in &cmds {
-            pass.set_pipeline(&self.pipelines[&(c.blend, c.depth)]);
-            pass.set_bind_group(1, &self.bind_groups[&(c.tex.0, c.wrap, linear)], &[]);
+        // Ultrawide clamp: 3D frames are scissored to the viewport.
+        let scissor = self.view.viewport.map(|[x, y, w, h]| {
+            let (x, y) = ((x as u32).min(iw - 1), (y as u32).min(ih - 1));
+            [x, y, (w as u32).min(iw - x).max(1), (h as u32).min(ih - y).max(1)]
+        });
+        let mut scissored = false;
+        for (c, key) in cmds.iter().zip(&keys) {
+            if let Some([x, y, w, h]) = scissor {
+                if c.scene != scissored {
+                    scissored = c.scene;
+                    if scissored {
+                        pass.set_scissor_rect(x, y, w, h);
+                    } else {
+                        pass.set_scissor_rect(0, 0, iw, ih);
+                    }
+                }
+            }
+            pass.set_pipeline(&self.pipelines[&(c.blend, c.depth, samples)]);
+            pass.set_bind_group(1, &self.bind_groups[key], &[]);
             pass.draw(c.first..c.first + c.count, 0..1);
+        }
+        drop(pass);
+        if scaled {
+            let (pipeline, sampler) = self.blit.as_ref().unwrap();
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("blit"),
+                layout: &self.tex_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.internal.as_ref().unwrap().0) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                ],
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("resolve scale"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
         }
     }
 
@@ -758,7 +1108,7 @@ impl Renderer {
 
     /// Renders the queued frame offscreen (size = `begin_frame` size) and reads it back.
     pub fn render_to_image(&mut self, clear: [f64; 4]) -> Result<RgbaImage, EngineError> {
-        let (w, h) = (self.view.width as u32, self.view.height as u32);
+        let (w, h) = self.output;
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },

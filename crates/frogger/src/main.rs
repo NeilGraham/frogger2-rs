@@ -1,12 +1,15 @@
 //! `frogger`: the Frogger 2 port executable.
 //!
 //! ```text
-//! frogger [--data DIR] [--mute] [--level W L] [--size WxH] [--fullscreen]
-//! frogger --headless --frames N [--level W L] --screenshot out.png
+//! frogger [--data DIR] [--mute] [--level W L] [--size WxH] [--fullscreen] [display options]
+//! frogger --headless --frames N [--level W L] [--size WxH] --screenshot out.png [display options]
+//! display options: --profile authentic|enhanced, --msaa N, --render-scale S, --hud-probe
 //! ```
 //! Until the frontend is ported: no arguments plays the startup FMVs (HASBROS, BLITZS)
 //! and loads Garden 1; `--level W L` starts `INGAME_MODE` directly on that level.
-//! Keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos).
+//! Keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos);
+//! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
+//! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
 mod app;
 mod data;
@@ -18,7 +21,7 @@ use f2_audio::AudioEngine;
 use f2_engine::{GpuContext, WindowSurface};
 use f2_platform::gamepad::Gamepads;
 use f2_platform::window::{self, winit, Flow, WindowApp, WindowConfig};
-use f2_platform::Config;
+use f2_platform::{Config, Profile};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,19 +35,39 @@ struct Args {
     screenshot: Option<PathBuf>,
     size: Option<(u32, u32)>,
     fullscreen: bool,
+    profile: Option<Profile>,
+    msaa: Option<u32>,
+    render_scale: Option<f32>,
+    hud_probe: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: frogger [--data DIR] [--mute] [--level WORLD LEVEL] [--size WxH] [--fullscreen]\n\
          \x20      frogger --headless --frames N [--level WORLD LEVEL] [--screenshot out.png] [--size WxH]\n\
-         keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos)"
+         display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe]\n\
+         keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
+         \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
+         \x20     F9 fog, F12 draw distance"
     );
     std::process::exit(2);
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { data: None, mute: false, level: None, headless: false, frames: 120, screenshot: None, size: None, fullscreen: false };
+    let mut a = Args {
+        data: None,
+        mute: false,
+        level: None,
+        headless: false,
+        frames: 120,
+        screenshot: None,
+        size: None,
+        fullscreen: false,
+        profile: None,
+        msaa: None,
+        render_scale: None,
+        hud_probe: false,
+    };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
     while let Some(arg) = it.next() {
@@ -65,6 +88,16 @@ fn parse_args() -> Args {
                 a.size = Some((w.parse().unwrap_or_else(|_| usage()), h.parse().unwrap_or_else(|_| usage())));
             }
             "--fullscreen" => a.fullscreen = true,
+            "--profile" => {
+                a.profile = Some(match it.next().as_deref() {
+                    Some("authentic") => Profile::Authentic,
+                    Some("enhanced") => Profile::Enhanced,
+                    _ => usage(),
+                })
+            }
+            "--msaa" => a.msaa = Some(num(it.next())),
+            "--render-scale" => a.render_scale = Some(it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
+            "--hud-probe" => a.hud_probe = true,
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -74,10 +107,20 @@ fn parse_args() -> Args {
 
 fn main() {
     let args = parse_args();
-    let cfg = Config::load_default().unwrap_or_else(|e| {
+    let mut cfg = Config::load_default().unwrap_or_else(|e| {
         eprintln!("frogger: config: {e} (using defaults)");
         Config::default()
     });
+    // Command-line display overrides.
+    if let Some(p) = args.profile {
+        cfg.profile = p;
+    }
+    if let Some(m) = args.msaa {
+        cfg.display.msaa = Some(m);
+    }
+    if let Some(s) = args.render_scale {
+        cfg.display.render_scale = Some(s);
+    }
     let data = match data::Data::locate(&cfg, args.data.clone()) {
         Ok(d) => d,
         Err(e) => {
@@ -115,6 +158,8 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     let (w, h) = args.size.unwrap_or((640, 480));
     let ctx = GpuContext::new_headless().map_err(|e| e.to_string())?;
     let mut app = App::new(data, &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), cfg.input_mapper());
+    app.set_display(cfg.profile, cfg.display_settings(Profile::Enhanced));
+    app.hud_probe = args.hud_probe;
     app.push_steps(steps);
     let kb = f2_platform::KeyboardState::default();
     // First update loads the level (no time passes), then exactly N ticks.
@@ -127,7 +172,7 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     }
     app.draw(w, h);
     let tris = app.r.queued_tris();
-    eprintln!("frogger: {} ticks, act_frame_count {}, {tris} triangles", app.ticks, app.game.act_frame_count);
+    eprintln!("frogger: {} ticks, act_frame_count {}, {tris} triangles, profile {}", app.ticks, app.game.act_frame_count, app.profile.name());
     if let Some(out) = &args.screenshot {
         let img = app.r.render_to_image(app.clear_color()).map_err(|e| e.to_string())?;
         img.write_png(out).map_err(|e| e.to_string())?;
@@ -147,6 +192,7 @@ struct Host {
     data: Option<data::Data>,
     cfg: Config,
     mute: bool,
+    hud_probe: bool,
     steps: Vec<Step>,
     app: Option<App>,
     gfx: Option<Gfx>,
@@ -191,6 +237,8 @@ impl WindowApp for Host {
                     if audio.is_realtime() { "on" } else { "muted" }
                 );
                 let mut app = App::new(self.data.take().expect("data"), &g.ctx.device, &g.ctx.queue, g.surface.config.format, audio, mapper);
+                app.set_display(self.cfg.profile, self.cfg.display_settings(Profile::Enhanced));
+                app.hud_probe = self.hud_probe;
                 app.push_steps(std::mem::take(&mut self.steps));
                 self.app = Some(app);
                 self.gfx = Some(g);
@@ -247,6 +295,16 @@ impl WindowApp for Host {
         app.r.render(&view, w, h, clear);
         frame.window.pre_present_notify();
         g.ctx.queue.present(tex);
+        // Frame cap (`video.frame_cap`): the simulation is fixed 60 Hz and rendering is
+        // interpolated, so any cap/refresh rate is smooth.
+        let cap = self.cfg.video.frame_cap;
+        if cap > 0 {
+            let period = Duration::from_secs_f64(1.0 / cap as f64);
+            let spent = now.elapsed();
+            if spent < period {
+                std::thread::sleep(period - spent);
+            }
+        }
         Flow::Continue
     }
 }
@@ -262,6 +320,7 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>) -> R
     let host = Host {
         data: Some(data),
         mute: args.mute,
+        hud_probe: args.hud_probe,
         fullscreen: wc.fullscreen,
         cfg,
         steps,
@@ -275,5 +334,92 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>) -> R
     match host.error {
         Some(e) => Err(e),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use f2_platform::DisplaySettings;
+
+    fn rendition() -> Option<PathBuf> {
+        let base = std::env::var("F2_GAME_DIR").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../game-data/usa").into());
+        let p = PathBuf::from(base);
+        // Accept either the rendition root or its `game/` directory.
+        let root = if p.file_name().is_some_and(|n| n == "game") { p.parent()?.to_path_buf() } else { p };
+        root.join("game").is_dir().then_some(root)
+    }
+
+    /// Garden 1 after 120 ticks, rendered headless at `w`×`h`. `options = None` applies
+    /// `profile` through the host; `Some` sets the renderer options directly.
+    fn garden1(ctx: &GpuContext, root: &std::path::Path, w: u32, h: u32, profile: Profile, options: Option<f2_engine::RenderOptions>) -> f2_engine::RgbaImage {
+        let data = data::Data::locate(&Config::default(), Some(root.to_path_buf())).expect("data");
+        let mut app = App::new(data, &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
+        app.set_display(profile, DisplaySettings::ENHANCED);
+        app.push_steps([Step::Level(0, 0)]);
+        app.update(Duration::ZERO, &f2_platform::KeyboardState::default(), &[], true);
+        assert!(app.scene.is_some(), "Garden 1 failed to load");
+        for _ in 0..120 {
+            app.tick(&[]);
+        }
+        if let Some(o) = options {
+            app.r.options = o;
+        }
+        app.draw(w, h);
+        app.r.render_to_image(app.clear_color()).expect("render")
+    }
+
+    /// The authentic profile must stay pixel-identical to the pre-enhancement renderer:
+    /// it must equal a render with the retail-default `RenderOptions` (the original
+    /// single-pass path). With `F2_AUTHENTIC_BASELINE=<png>` (a 640×480 screenshot from a
+    /// pre-change build: `frogger --headless --frames 120 --level 0 0 --screenshot ...`)
+    /// the PNG bytes are compared too.
+    #[test]
+    fn authentic_profile_is_pixel_identical() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let auth = garden1(&ctx, &root, 640, 480, Profile::Authentic, None);
+        let legacy = garden1(&ctx, &root, 640, 480, Profile::Authentic, Some(f2_engine::RenderOptions::default()));
+        assert!(auth.pixels == legacy.pixels, "authentic profile differs from the retail-default renderer");
+        let enh = garden1(&ctx, &root, 640, 480, Profile::Enhanced, None);
+        assert!(enh.pixels != auth.pixels, "enhanced profile should differ (MSAA, filtering)");
+        if let Some(base) = std::env::var_os("F2_AUTHENTIC_BASELINE") {
+            let out = std::env::temp_dir().join(format!("f2-authentic-{}.png", std::process::id()));
+            auth.write_png(&out).unwrap();
+            let (a, b) = (std::fs::read(&out).unwrap(), std::fs::read(&base).unwrap());
+            let _ = std::fs::remove_file(&out);
+            assert!(a == b, "authentic render differs from baseline {}", PathBuf::from(base).display());
+        }
+    }
+
+    /// Enhanced widescreen keeps the image unstretched: with Hor+ the centred 1440×1080
+    /// of a 2560×1080 frame is the 1440×1080 (4:3) frame — same vertical FOV, same scale.
+    #[test]
+    fn enhanced_widescreen_is_hor_plus() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let wide = garden1(&ctx, &root, 2560, 1080, Profile::Enhanced, None);
+        let narrow = garden1(&ctx, &root, 1440, 1080, Profile::Enhanced, None);
+        assert_eq!((wide.width, wide.height), (2560, 1080));
+        let (mut same, mut total) = (0usize, 0usize);
+        for y in (0..1080).step_by(3) {
+            for x in (0..1440).step_by(3) {
+                total += 1;
+                // Small tolerance: edge antialiasing and faces rejected at the 4:3 border.
+                let (a, b) = (wide.pixel(x + 560, y), narrow.pixel(x, y));
+                if a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 8) {
+                    same += 1;
+                }
+            }
+        }
+        assert!(same * 100 >= total * 97, "centre crop matches 4:3 render: {same}/{total}");
+        let auth = garden1(&ctx, &root, 2560, 1080, Profile::Authentic, None);
+        assert!(auth.pixels != wide.pixels);
     }
 }
