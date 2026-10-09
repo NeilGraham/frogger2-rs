@@ -4,6 +4,7 @@ use crate::read::{Reader, Result};
 
 /// One record of `Demos/record-<w>-<l>.key` (`Common/levplay.c`):
 /// from `frame` on, `player`'s pad reads `buttons`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyRecord {
     pub frame: u32,
@@ -37,6 +38,7 @@ pub const SAVE_SIZE: usize = 2112;
 pub const SAVE_LEVELS: usize = 64;
 
 /// `SAVEGAME_LEVELINFO` (32 bytes).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct LevelInfo {
     pub flags: u8,
@@ -47,8 +49,25 @@ pub struct LevelInfo {
     pub res2: [u8; 16],
 }
 
+/// serde support for arrays longer than 32 (serialised as sequences).
+#[cfg(feature = "serde")]
+mod big_array {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(a: &[T; N], s: S) -> Result<S::Ok, S::Error> {
+        a.as_slice().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(d: D) -> Result<[T; N], D::Error> {
+        let v = Vec::<T>::deserialize(d)?;
+        let n = v.len();
+        v.try_into().map_err(|_| serde::de::Error::invalid_length(n, &"fixed-size array"))
+    }
+}
+
 /// `savedata/savegame.dat` (`Common/savegame.h`). Kept byte-exact for
 /// round-tripping; unknown/reserved bytes are preserved.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveGame {
     pub version: u8,
@@ -65,6 +84,7 @@ pub struct SaveGame {
     pub res: [u8; 2],
     pub flags: [u8; 32],
     pub res2: [u8; 12],
+    #[cfg_attr(feature = "serde", serde(with = "big_array"))]
     pub levels: [LevelInfo; SAVE_LEVELS],
 }
 

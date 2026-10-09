@@ -181,12 +181,14 @@ pub type Vec3 = [f32; 3];
 pub type Quat = [f32; 4];
 pub type Mat4 = [[f32; 4]; 4];
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct VKey {
     pub v: Vec3,
     pub time: i32,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct QKey {
     pub q: Quat,
@@ -195,6 +197,7 @@ pub struct QKey {
 
 /// `MDX_MESH`. Per-face data is stored in the original (unsorted) order; the
 /// game sorts faces by texture at load time, which only affects draw order.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mesh {
     pub vertices: Vec<Vec3>,
@@ -210,6 +213,7 @@ pub struct Mesh {
     pub textures: Vec<u32>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjSprite {
     pub texture: u32,
@@ -220,6 +224,7 @@ pub struct ObjSprite {
 }
 
 /// `MDX_OBJECT`: a node of the model hierarchy.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Object {
     pub id: u32,
@@ -239,6 +244,7 @@ pub struct Object {
     pub children: Vec<Object>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Animation {
     pub start: i16,
@@ -248,6 +254,7 @@ pub struct Animation {
 }
 
 /// `MDX_OBJECT_CONTROLLER` plus its root object.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Model {
     pub id: u32,
@@ -271,6 +278,7 @@ impl Model {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct ObjectBank {
     pub models: Vec<Model>,

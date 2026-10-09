@@ -83,9 +83,27 @@ fn all_formats_parse() {
         n += 1;
     }
     assert!(models > 500, "{models} models");
-    for f in files(&d.join("Demos"), "key") {
+    for f in files(&d.join("demos"), "key") {
         misc::parse_key_file(&std::fs::read(&f).unwrap()).unwrap();
         n += 1;
     }
     eprintln!("parsed {n} files, {models} models, {tiles_total} tiles");
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn serde_roundtrip_real_data() {
+    let Some(d) = data_dir() else { return };
+    let f = files(&d.join("collision"), "col").remove(0);
+    let c = level::Collision::parse(&std::fs::read(&f).unwrap()).unwrap();
+    let j = serde_json::to_string(&c).unwrap();
+    let back: level::Collision = serde_json::from_str(&j).unwrap();
+    assert_eq!(back.tiles, c.tiles);
+    let f = files(&d.join("maps"), "fev").remove(0);
+    let s = fev::Script::parse(&std::fs::read(&f).unwrap()).unwrap();
+    let back: fev::Script = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+    assert_eq!(back.write(), std::fs::read(&f).unwrap());
+    let f = files(&d.join("objects"), "dll").remove(0);
+    let b = objbank::ObjectBank::parse(&std::fs::read(&f).unwrap()).unwrap();
+    serde_json::to_string(&b).unwrap();
 }

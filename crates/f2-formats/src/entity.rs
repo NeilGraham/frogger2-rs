@@ -11,6 +11,7 @@ pub const ENTITY_VERSION: u8 = 16;
 
 /// Where a path node / garib / camera node lies: a tile index ("fast" files)
 /// or a raw position to snap to the nearest tile.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
     Tile(i32),
@@ -18,6 +19,7 @@ pub enum Place {
     Pos([i32; 3]),
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PathNode {
     pub place: Place,
@@ -29,11 +31,13 @@ pub struct PathNode {
     pub sample_uid: u32,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Path {
     pub nodes: Vec<PathNode>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActorKind {
     Enemy,
@@ -42,6 +46,7 @@ pub enum ActorKind {
 }
 
 /// Enemy / platform / placeholder record.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActorDef {
     pub kind: ActorKind,
@@ -62,6 +67,7 @@ pub struct ActorDef {
     pub path_index: i16,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GaribDef {
     pub garib_type: u8,
@@ -69,6 +75,7 @@ pub struct GaribDef {
     pub height_offset: i32,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CameraCaseDef {
     pub flags: i32,
@@ -81,6 +88,7 @@ pub struct CameraCaseDef {
     pub nodes: Vec<Place>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
     Actor(ActorDef),
@@ -88,6 +96,7 @@ pub enum Item {
     CameraCase(CameraCaseDef),
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct Entities {
     pub fast: bool,

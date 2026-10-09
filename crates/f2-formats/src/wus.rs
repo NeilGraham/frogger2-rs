@@ -8,6 +8,7 @@
 
 use crate::read::{Reader, Result};
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct Sample {
     pub uid: u32,
@@ -50,6 +51,7 @@ impl Sample {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct SoundBank {
     pub samples: Vec<Sample>,

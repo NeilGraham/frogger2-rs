@@ -5,9 +5,11 @@
 //! manifest.json            identification + per-file SHA-1
 //! game/                    DATA1.CAB "Data files" (lowercase paths)
 //! video/*.bik              Bink FMVs from the disc
-//! music/trackNN.wav        Red Book tracks 2–12 (INDEX 01 → end)
+//! music/trackNN.wav        Red Book tracks 2–12 (INDEX 01 → end); `trackNN.flac` instead with `--flac`
 //! oracle/                  (opt-in) retail exe + binkw32.dll for parity testing only
 //! ```
+
+pub mod flac;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -82,6 +84,8 @@ pub struct Options {
     pub skip_music: bool,
     /// Compute the Redump track-1 hash (reads the whole data track once more).
     pub verify_track_hash: bool,
+    /// Write music as lossless `trackNN.flac` instead of `trackNN.wav`.
+    pub flac: bool,
     /// Override the rendition id (e.g. for unknown discs).
     pub rendition: Option<String>,
 }
@@ -126,6 +130,54 @@ pub fn default_data_root() -> PathBuf {
 
 fn log(msg: impl AsRef<str>) {
     eprintln!("{}", msg.as_ref());
+}
+
+/// Prints `  <stage>: NN%` lines (every 10%) to stderr.
+struct Progress {
+    stage: String,
+    total: u64,
+    last: u64,
+    n: u64,
+}
+
+impl Progress {
+    fn new(stage: impl Into<String>, total: u64) -> Self {
+        Progress { stage: stage.into(), total: total.max(1), last: 0, n: 0 }
+    }
+    fn set(&mut self, done: u64) {
+        let pct = (done.min(self.total) * 100 / self.total) / 10 * 10;
+        if pct > self.last {
+            self.last = pct;
+            log(format!("  {}: {pct}%", self.stage));
+        }
+    }
+    fn tick(&mut self) {
+        self.n += 1;
+        self.set(self.n);
+    }
+    fn done(&mut self) {
+        if self.last < 100 {
+            self.last = 100;
+            log(format!("  {}: 100%", self.stage));
+        }
+    }
+}
+
+/// Writer that SHA-1s everything passing through.
+struct HashWrite<W: Write> {
+    inner: W,
+    sha: Sha1,
+}
+
+impl<W: Write> Write for HashWrite<W> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(b)?;
+        self.sha.update(&b[..n]);
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn write_file(root: &Path, rel: &str, data: &[u8], files: &mut BTreeMap<String, String>) -> io::Result<()> {
@@ -250,7 +302,10 @@ pub fn import(source: &Path, data_root: &Path, opts: &Options) -> io::Result<Man
             m.cab_sha1 = Some(cab_sha);
             let cab = IsCab::parse(cab_bytes)?;
             let mut n = 0;
-            for f in &cab.files {
+            let total_files = cab.files.len() as u64;
+            let mut prog = Progress::new("extract DATA1.CAB", total_files);
+            for (fi, f) in cab.files.iter().enumerate() {
+                prog.set(fi as u64);
                 if !IsCab::is_valid(f) {
                     continue;
                 }
@@ -272,16 +327,23 @@ pub fn import(source: &Path, data_root: &Path, opts: &Options) -> io::Result<Man
                 write_file(&tmp_root, &rel, &data, &mut files)?;
                 n += 1;
             }
+            prog.done();
             log(format!("Extracted {n} files from DATA1.CAB"));
             let entries = fs_.entries().to_vec();
+            let nvid = entries.iter().filter(|e| e.path.to_lowercase().starts_with("video/")).count() as u64;
+            let mut vprog = Progress::new("copy videos", nvid);
+            let mut vdone = 0;
             for (i, e) in entries.iter().enumerate() {
                 let lower = e.path.to_lowercase();
                 if lower.starts_with("video/") && lower.ends_with(".bik") {
                     let data = fs_.read_file(i)?;
                     write_file(&tmp_root, &lower, &data, &mut files)?;
                     m.videos.push(lower);
+                    vdone += 1;
+                    vprog.set(vdone);
                 }
             }
+            vprog.done();
             log(format!("Copied {} videos", m.videos.len()));
         }
     }
@@ -309,28 +371,45 @@ pub fn import(source: &Path, data_root: &Path, opts: &Options) -> io::Result<Man
             }
         }
         if !opts.skip_music {
-            for t in d.audio_tracks() {
+            let tracks: Vec<_> = d.audio_tracks().filter(|t| MUSIC_TRACKS.iter().any(|x| x.0 == t.number)).collect();
+            let total_bytes: u64 = tracks.iter().map(|t| t.sectors as u64 * f2_media::disc::RAW).sum();
+            let mut prog = Progress::new(if opts.flac { "rip music (FLAC)" } else { "rip music" }, total_bytes);
+            let mut done_bytes = 0u64;
+            for t in tracks {
                 let Some((_, cue)) = MUSIC_TRACKS.iter().find(|x| x.0 == t.number) else { continue };
-                let rel = format!("music/track{:02}.wav", t.number);
+                let ext = if opts.flac { "flac" } else { "wav" };
+                let rel = format!("music/track{:02}.{ext}", t.number);
                 let p = tmp_root.join(&rel);
                 fs::create_dir_all(p.parent().unwrap())?;
-                let mut out = io::BufWriter::new(fs::File::create(&p)?);
+                let mut out = HashWrite { inner: io::BufWriter::new(fs::File::create(&p)?), sha: Sha1::new() };
                 let len = t.sectors as u64 * f2_media::disc::RAW;
-                out.write_all(&f2_media::disc::cd_wav_header(len as u32))?;
-                let mut h = Sha1::new();
-                d.stream_audio(t, &mut |b| {
-                    h.update(b);
-                    out.write_all(b)
-                })?;
+                if opts.flac {
+                    let mut fw = flac::FlacWriter::new(&mut out, len / 4)?;
+                    d.stream_audio(t, &mut |b| {
+                        done_bytes += b.len() as u64;
+                        prog.set(done_bytes);
+                        fw.write_pcm(b)
+                    })?;
+                    fw.finish()?;
+                } else {
+                    out.write_all(&f2_media::disc::cd_wav_header(len as u32))?;
+                    d.stream_audio(t, &mut |b| {
+                        done_bytes += b.len() as u64;
+                        prog.set(done_bytes);
+                        out.write_all(b)
+                    })?;
+                }
                 out.flush()?;
-                files.insert(rel.clone(), f2_media::vfs::hex(&h.finalize()));
+                let sz = fs::metadata(&p)?.len();
+                files.insert(rel.clone(), f2_media::vfs::hex(&out.sha.finalize()));
                 m.music_tracks.push(rel);
-                log(format!("Ripped track {:02} ({cue}, {:.1}s)", t.number, len as f64 / 176_400.0));
+                log(format!("Ripped track {:02} ({cue}, {:.1}s, {:.1} MB)", t.number, len as f64 / 176_400.0, sz as f64 / 1e6));
             }
+            prog.done();
         }
     }
     if m.music_tracks.is_empty() {
-        log("Note: no CD-audio tracks in this source; music will be silent unless you add music/trackNN.wav");
+        log("Note: no CD-audio tracks in this source; music will be silent unless you add music/trackNN.wav or .flac");
     }
 
     m.stale_files = validate(&tmp_root.join("game"))?;
@@ -368,7 +447,13 @@ fn list(dir: &Path, ext: &str) -> io::Result<Vec<PathBuf>> {
 pub fn validate(game: &Path) -> io::Result<Vec<String>> {
     let bad = |p: &Path, e: fmt::Error| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", p.display()));
     let mut stale = Vec::new();
+    let total: usize = [("textures", "fla"), ("sfx", "wus"), ("collision", "col"), ("scenics", "sce"), ("maps", "dat"), ("maps", "fev"), ("maps", "sam"), ("objects", "dll"), ("demos", "key")]
+        .iter()
+        .map(|(d, e)| list(&game.join(d), e).map(|v| v.len()).unwrap_or(0))
+        .sum();
+    let mut prog = Progress::new("validate", total as u64);
     for p in list(&game.join("textures"), "fla")? {
+        prog.tick();
         let raw = fmt::fla::decompress(&fs::read(&p)?).map_err(|e| bad(&p, e))?;
         let name = p.file_name().unwrap().to_string_lossy().to_lowercase();
         if name.starts_with("artwork") || name == "title.fla" || name == "loading.fla" {
@@ -378,15 +463,19 @@ pub fn validate(game: &Path) -> io::Result<Vec<String>> {
         }
     }
     for p in list(&game.join("sfx"), "wus")? {
+        prog.tick();
         fmt::wus::SoundBank::parse(&fs::read(&p)?).map_err(|e| bad(&p, e))?;
     }
     for p in list(&game.join("collision"), "col")? {
+        prog.tick();
         fmt::level::Collision::parse(&fs::read(&p)?).map_err(|e| bad(&p, e))?;
     }
     for p in list(&game.join("scenics"), "sce")? {
+        prog.tick();
         fmt::level::parse_scenics(&fs::read(&p)?).map_err(|e| bad(&p, e))?;
     }
     for p in list(&game.join("maps"), "dat")? {
+        prog.tick();
         let raw = fs::read(&p)?;
         if fmt::entity::Entities::version(&raw) != Some(fmt::entity::ENTITY_VERSION) {
             stale.push(p.file_name().unwrap().to_string_lossy().into_owned());
@@ -395,9 +484,11 @@ pub fn validate(game: &Path) -> io::Result<Vec<String>> {
         fmt::entity::Entities::parse(&raw).map_err(|e| bad(&p, e))?;
     }
     for p in list(&game.join("maps"), "fev")? {
+        prog.tick();
         fmt::fev::Script::parse(&fs::read(&p)?).map_err(|e| bad(&p, e))?;
     }
     for p in list(&game.join("maps"), "sam")? {
+        prog.tick();
         fmt::level::parse_sfx_mapping(&fs::read(&p)?, 0).map_err(|e| bad(&p, e))?;
     }
     let lang = game.join("maps/language.fla");
@@ -405,11 +496,14 @@ pub fn validate(game: &Path) -> io::Result<Vec<String>> {
         fmt::lang::StringTable::parse(&fmt::fla::decompress(&fs::read(&lang)?).map_err(|e| bad(&lang, e))?).map_err(|e| bad(&lang, e))?;
     }
     for p in list(&game.join("objects"), "dll")? {
+        prog.tick();
         fmt::objbank::ObjectBank::parse(&fs::read(&p)?).map_err(|e| bad(&p, e))?;
     }
     for p in list(&game.join("demos"), "key")? {
+        prog.tick();
         fmt::misc::parse_key_file(&fs::read(&p)?).map_err(|e| bad(&p, e))?;
     }
+    prog.done();
     Ok(stale)
 }
 
@@ -427,4 +521,71 @@ pub fn installed(data_root: &Path) -> Vec<Manifest> {
     }
     v.sort_by(|a, b| a.rendition.cmp(&b.rendition));
     v
+}
+
+/// Result of re-hashing one installed rendition.
+#[derive(Clone, Debug)]
+pub struct VerifyReport {
+    pub rendition: String,
+    pub checked: usize,
+    pub missing: Vec<String>,
+    pub mismatched: Vec<String>,
+    /// Files present under the rendition directory but absent from the manifest.
+    pub extra: Vec<String>,
+}
+
+impl VerifyReport {
+    pub fn ok(&self) -> bool {
+        self.missing.is_empty() && self.mismatched.is_empty()
+    }
+}
+
+fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, base, out);
+            } else if let Ok(r) = p.strip_prefix(base) {
+                out.push(r.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+}
+
+/// Re-hashes installed files against `manifest.json`. `rendition` = `None` verifies every
+/// installed rendition. Prints percent progress per rendition to stderr.
+pub fn verify_installed(data_root: &Path, rendition: Option<&str>) -> io::Result<Vec<VerifyReport>> {
+    let ms: Vec<Manifest> = installed(data_root).into_iter().filter(|m| rendition.is_none_or(|r| m.rendition == r)).collect();
+    if ms.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, match rendition {
+            Some(r) => format!("rendition '{r}' is not installed under {}", data_root.display()),
+            None => format!("nothing installed under {}", data_root.display()),
+        }));
+    }
+    let mut reports = Vec::new();
+    for m in ms {
+        let dir = data_root.join(&m.rendition);
+        let mut rep = VerifyReport { rendition: m.rendition.clone(), checked: 0, missing: vec![], mismatched: vec![], extra: vec![] };
+        let mut prog = Progress::new(format!("verify {}", m.rendition), m.files.len() as u64);
+        for (i, (rel, want)) in m.files.iter().enumerate() {
+            prog.set(i as u64);
+            match fs::read(dir.join(rel)) {
+                Ok(b) => {
+                    rep.checked += 1;
+                    if sha1_hex(&b) != *want {
+                        rep.mismatched.push(rel.clone());
+                    }
+                }
+                Err(_) => rep.missing.push(rel.clone()),
+            }
+        }
+        prog.done();
+        let mut all = Vec::new();
+        walk(&dir, &dir, &mut all);
+        rep.extra = all.into_iter().filter(|r| r != "manifest.json" && !m.files.contains_key(r)).collect();
+        rep.extra.sort();
+        reports.push(rep);
+    }
+    Ok(reports)
 }
