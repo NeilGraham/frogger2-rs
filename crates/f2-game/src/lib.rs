@@ -86,7 +86,7 @@ pub struct Game {
     pub level_files: layout::LevelFiles,
     /// `Common/frogger.c` globals (`player[]`, `frog[]`, `NUM_FROGS`, `fog`, ...).
     pub frogger: frogger::FroggerState,
-    /// `Common/frogmove.c` globals (wave C; `currTile[]`, `destTile[]`, ...).
+    /// `Common/frogmove.c` globals (`currTile[]`, `destTile[]`, ...).
     pub frogmove: frogmove::FrogMoveState,
     /// `Common/platform.c` (+ `platformList`/`currPlatform` from frogger.c).
     pub platform: platform::PlatformState,
@@ -94,11 +94,11 @@ pub struct Game {
     pub enemies: enemies::EnemiesState,
     /// `Common/memload.c` globals.
     pub memload: memload::MemLoadState,
-    /// `Common/babyfrog.c` globals (list only).
+    /// `Common/babyfrog.c` globals.
     pub babyfrog: babyfrog::BabyFrogState,
-    /// `Common/collect.c` (wave C; garib definitions from memload).
+    /// `Common/collect.c` globals (`garibList`, ...).
     pub collect: collect::CollectState,
-    /// `Common/cam.c` (wave D; trans camera definitions from memload).
+    /// `Common/cam.c` globals (gameplay part; camera vectors are wave D).
     pub cam: cam::CamState,
     /// `Common/game.c` globals.
     pub game: game::GameLoopState,

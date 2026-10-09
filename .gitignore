@@ -20,3 +20,6 @@
 # Rust
 /target/
 **/*.rs.bk
+
+# Claude Code worktrees/settings
+/.claude/

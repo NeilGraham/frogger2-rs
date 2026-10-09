@@ -3,22 +3,22 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::define::mode::{DEMO_MODE, FRONTEND_MODE, GAMEOVER_MODE, INGAME_MODE, LEVELCOMPLETE_MODE, PAUSE_MODE};
-use crate::define::SINGLEPLAYER;
-use crate::effects::Effect;
 use crate::actor2::orientate_ss;
 use crate::anim::SAMPLE_VOLUME;
+use crate::define::mode::{DEMO_MODE, FRONTEND_MODE, GAMEOVER_MODE, INGAME_MODE, LEVELCOMPLETE_MODE, PAUSE_MODE};
 use crate::define::tilestate;
+use crate::define::SINGLEPLAYER;
+use crate::effects::Effect;
 use crate::frogger::{
     FROG_ANIM_BIGHEAD, FROG_ANIM_BREATHE, FROG_ANIM_DANCE4, FROG_ANIM_FALL, FROG_ANIM_FALLLAND, FROG_ANIM_SOMERSAULT, FROG_ANIM_VICTORY, FROG_BREATHE_SPEED,
     FROG_HOPPER, MAX_IDLE_TIME,
 };
 use crate::frogmove::*;
+use crate::layout::worldid;
 use crate::levplay::*;
 use crate::multi::MULTIMODE_BATTLE;
-use crate::tongue::{TONGUE_IDLE, TONGUE_NONE, TONGUE_SEARCHING};
-use crate::layout::worldid;
 use crate::timer::Timer;
+use crate::tongue::{TONGUE_IDLE, TONGUE_NONE, TONGUE_SEARCHING};
 use crate::Game;
 
 /// `LEVELID_SPACE2` (`layout.h:275`).
@@ -306,10 +306,7 @@ impl Game {
             // ------------------- DOUBLE JUMP -------------------------
             let pp = &self.frogger.player[p];
             let dest_state = self.frogmove.dest_tile[p].map(|t| self.map.tile(t).state);
-            if pp.is_super_hopping != 0
-                && pp.has_double_jumped == 0
-                && dest_state.is_some_and(|s| s != tilestate::NOSUPER && s != tilestate::NOSUPERHOT)
-            {
+            if pp.is_super_hopping != 0 && pp.has_double_jumped == 0 && dest_state.is_some_and(|s| s != tilestate::NOSUPER && s != tilestate::NOSUPERHOT) {
                 if self.game.double_queue[p] == 0 && pp.jump_time < pp.jump_multiplier {
                     self.game.double_queue[p] = 1;
                     return;

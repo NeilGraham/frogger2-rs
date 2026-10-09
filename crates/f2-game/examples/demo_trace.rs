@@ -40,15 +40,6 @@ fn main() -> Result<(), String> {
     g.init_demo_level(world, level, &data)?;
     // InitDemoMode ran inside the frontend's GameLoop, which then does frameCount++.
     g.frame_count += 1;
-    if let Ok(t) = std::env::var("F2_DEBUG_TILE") {
-        let t: usize = t.parse().unwrap();
-        let tile = &g.map.tiles[t];
-        eprintln!("tile {t}: {:?}", tile);
-        for p in tile.tile_ptrs.iter().flatten() {
-            eprintln!("  -> {} centre {:?}", p.0, g.map.tiles[p.idx()].centre);
-        }
-        eprintln!("cam_facing {:?} frog_facing {:?}", g.cam.cam_facing, g.frogmove.frog_facing);
-    }
 
     let mut w = std::io::BufWriter::new(std::fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?);
     let mut n = 0u32;

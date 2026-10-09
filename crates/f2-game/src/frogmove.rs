@@ -7,9 +7,9 @@
 
 use f2_math::{
     add_to_vector_ff, add_to_vector_fs, add_to_vector_sf, add_vector_sfs, add_vector_ssf, cross_product_fff, distance_between_points_fs,
-    distance_between_points_sqr_ss, distance_between_points_ss, dot_product_ff, dot_product_ss, fdiv, fmul, fsqrt_f, magnitude_f, make_unit,
-    new_set_vector_fs, rotate_vector_by_quaternion_ff, scale_vector, scale_vector_ff, set_vector_sf, sub_from_vector_fs, sub_from_vector_sf,
-    sub_vector_fff, sub_vector_fss, sub_vector_sss, FVector, Fixed, SVector,
+    distance_between_points_sqr_ss, distance_between_points_ss, dot_product_ff, dot_product_ss, fdiv, fmul, fsqrt_f, magnitude_f, make_unit, new_set_vector_fs,
+    rotate_vector_by_quaternion_ff, scale_vector, scale_vector_ff, set_vector_sf, sub_from_vector_fs, sub_from_vector_sf, sub_vector_fff, sub_vector_fss,
+    sub_vector_sss, FVector, Fixed, SVector,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1010,8 +1010,7 @@ impl Game {
             self.platform.curr_platform[p] = None;
         }
 
-        self.frogger.player[p].frog_state |=
-            if self.platform.dest_platform[p].is_some() { FROGSTATUS_ISJUMPINGTOPLATFORM } else { FROGSTATUS_ISJUMPINGTOTILE };
+        self.frogger.player[p].frog_state |= if self.platform.dest_platform[p].is_some() { FROGSTATUS_ISJUMPINGTOPLATFORM } else { FROGSTATUS_ISJUMPINGTOTILE };
 
         let from_tile = self.tile_or_default(from);
         self.frogmove.next_frog_facing[p] = get_tiles_matching_direction(&from_tile, self.frogmove.frog_facing[p], &dest_tile);
@@ -1117,9 +1116,8 @@ impl Game {
         }
 
         // Finish anims when floating
-        let cur_anim = self.frogger.frog[p]
-            .and_then(|f| self.actor2.actors[f].actor.actual_actor.animation.as_ref().map(|a| a.current_animation as i32))
-            .unwrap_or(-1);
+        let cur_anim =
+            self.frogger.frog[p].and_then(|f| self.actor2.actors[f].actor.actual_actor.animation.as_ref().map(|a| a.current_animation as i32)).unwrap_or(-1);
         if self.frogger.player[p].frog_state & FROGSTATUS_ISFLOATING != 0 || (self.game_state.multi != SINGLEPLAYER && cur_anim == FROG_ANIM_FALL) {
             if self.frogger.frog_pool(self.frogger.player[p].character as usize % FROG_NUMFROGS).anim != 0 && self.game_state.multi == SINGLEPLAYER {
                 frog_anim!(self, 0, FROG_ANIM_FALLLAND, false, false, 128);
@@ -1539,7 +1537,7 @@ impl Game {
 
         match self.frogger.player[p].death_by as i32 {
             DEATHBY_DROWNING => {
-                if self.act_frame_count % 5 == 0 {
+                if self.act_frame_count.is_multiple_of(5) {
                     let n = fv(&self.ctile(p).normal);
                     let fpos = self.frog_pos(p);
                     if let Some(_fx) = self.create_special_effect(FXTYPE_BUBBLES, &fpos, &n, 32768, 3277, 0, 2458) {
@@ -1549,7 +1547,7 @@ impl Game {
                 }
             }
             DEATHBY_FIRE => {
-                if self.act_frame_count % 2 == 0 {
+                if self.act_frame_count.is_multiple_of(2) {
                     let n = fv(&self.ctile(p).normal);
                     let fpos = self.frog_pos(p);
                     self.create_special_effect(FXTYPE_FIERYSMOKE, &fpos, &n, 204800, 2048, 0, 6144);
@@ -1814,12 +1812,7 @@ mod tests {
         let n = states.len();
         g.map.tiles = (0..n)
             .map(|i| GameTile {
-                tile_ptrs: [
-                    (i + 1 < n).then(|| TileId((i + 1) as u32)),
-                    None,
-                    (i > 0).then(|| TileId((i - 1) as u32)),
-                    None,
-                ],
+                tile_ptrs: [(i + 1 < n).then(|| TileId((i + 1) as u32)), None, (i > 0).then(|| TileId((i - 1) as u32)), None],
                 state: states[i],
                 centre: SVector { vx: 0, vy: 0, vz: (i as i16) * 500, pad: 0 },
                 normal: SVector { vx: 0, vy: 4096, vz: 0, pad: 0 },

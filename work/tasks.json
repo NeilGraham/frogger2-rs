@@ -508,13 +508,14 @@
         "crates/f2-game"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T15:47:25-06:00 done: wave C: demos 0-0 and 1-0 player/garib/baby state identical to oracle for 1556 ticks"
       ]
     },
     {
@@ -528,13 +529,14 @@
         "crates/f2-game"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T15:47:26-06:00 done: wave C: demos 0-0 and 1-0 player/garib/baby state identical to oracle for 1556 ticks"
       ]
     },
     {
@@ -648,13 +650,14 @@
         "crates/f2-game"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T15:47:26-06:00 done: wave C: demos 0-0 and 1-0 player/garib/baby state identical to oracle for 1556 ticks"
       ]
     },
     {

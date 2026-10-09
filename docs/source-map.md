@@ -17,11 +17,11 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 | `Common/DefData.c` | 41 | f2-game::defaults | todo |
 | `Common/E3_Demo.c` | 255 | (skip — E3 build) | skip |
 | `Common/actor2.c` | 1254 | f2-engine::actor | ported |
-| `Common/anim.c` | 511 | f2-game::anim | partial |
-| `Common/babyfrog.c` | 468 | f2-game::babyfrog | partial |
+| `Common/anim.c` | 511 | f2-game::anim | ported |
+| `Common/babyfrog.c` | 468 | f2-game::babyfrog | ported |
 | `Common/bbtimer.c` | 44 | f2-game::timer | ported |
-| `Common/cam.c` | 1012 | f2-game::camera | todo |
-| `Common/collect.c` | 688 | f2-game::collect | todo |
+| `Common/cam.c` | 1012 | f2-game::camera | partial |
+| `Common/collect.c` | 688 | f2-game::collect | ported |
 | `Common/crc32.c` | 106 | f2-formats::crc | ported |
 | `Common/enemies.c` | 2900 | f2-game::enemies | ported |
 | `Common/evenfunc.c` | 525 | f2-game::script::funcs | todo |
@@ -29,14 +29,14 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 | `Common/fixed.c` | 69 | f2-math::fixed | ported |
 | `Common/flatpack.c` | 340 | (PSX only — skip) | skip |
 | `Common/frogger.c` | 295 | f2-game::frog | ported |
-| `Common/frogmove.c` | 2190 | f2-game::frog::movement | todo |
+| `Common/frogmove.c` | 2190 | f2-game::frog::movement | ported |
 | `Common/frontend.c` | 2048 | f2-game::modes | todo |
 | `Common/game.c` | 759 | f2-game::ingame | partial |
 | `Common/general.c` | 485 | f2-game::tiles | ported |
 | `Common/hud.c` | 1184 | f2-game::ui::hud | todo |
 | `Common/language.c` | 243 | f2-game::lang | todo |
 | `Common/layout.c` | 1329 | f2-game::level::layout | partial |
-| `Common/levplay.c` | 173 | f2-game::demo | todo |
+| `Common/levplay.c` | 173 | f2-game::demo | ported |
 | `Common/map.c` | 847 | f2-game::level::map (+ f2-formats::col/sce) | ported |
 | `Common/maths.c` | 1848 | f2-math::maths | ported |
 | `Common/memload.c` | 504 | f2-formats::entity | ported |
@@ -56,7 +56,7 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 | `Common/sprite.c` | 502 | f2-engine::sprite | todo |
 | `Common/story.c` | 92 | f2-game::story | todo |
 | `Common/textover.c` | 453 | f2-engine::text | todo |
-| `Common/tongue.c` | 822 | f2-game::frog::tongue | todo |
+| `Common/tongue.c` | 822 | f2-game::frog::tongue | ported |
 | `Common/training.c` | 148 | f2-game::training | todo |
 | `Common/types.c` | 37 | f2-math::types | ported |
 | `PC/Main.cpp` | 1025 | frogger (bin) + f2-platform | todo |

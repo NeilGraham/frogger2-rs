@@ -38,3 +38,8 @@ original), authentic-vs-fixed decision, test (demo/trace) that pins it.
 | 18 | Volume 238 plays at full volume | typo in the original volume table (`PC/pcaudio.c`) | reproduced, `BUG(original)` |
 | 19 | Looping sounds resumed after unpause play once | `UnPauseAudio` | reproduced in authentic profile |
 | 20 | Music never loops on PC even pre-Vista; end-of-level loop handoff never fires | retail never calls `LoopSong` | port loops (intended behaviour) |
+| 21 | Demo pad-clear loop clears pad 0 four times | `levplay.c` loop uses index 0 | reproduced |
+| 22 | Uninitialised `dirNumber`/`res` in `GetTilesMatchingDirection`/`PushFrog` | `frogmove.c` | deterministic value reproduced (see BUG(original)) |
+| 23 | `FroggerHop` indexes `inTile[]` by player number | `frogmove.c` | reproduced |
+| 24 | `AddEnemy` compares array addresses → every enemy inserted at list head | `enemies.c` | reproduced |
+| 25 | `CreateFrogger` checks `> FROG_NUMFROGS` instead of `>=` | `frogger.c` | reproduced |
