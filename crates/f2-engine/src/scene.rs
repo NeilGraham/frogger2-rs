@@ -131,6 +131,13 @@ pub struct View {
     pub no_clip: bool,
     /// Camera position/target kept for glow maths (`curEye`/`curAt`).
     pub camera: Option<Camera>,
+    /// Enhanced: Hor+ projection. The original scales by `rXRes/640` only, so wider
+    /// screens lose vertical view (Vert-); Hor+ keeps the 4:3 vertical FOV and widens
+    /// the horizontal one (`min(w/640, h/480)`). Identical at 4:3.
+    pub hor_plus: bool,
+    /// 3D viewport `[x, y, w, h]` in pixels (`None` = the whole `width`×`height`); used for
+    /// the ultrawide clamp (pillarboxed 3D view).
+    pub viewport: Option<[f32; 4]>,
 }
 
 impl View {
@@ -146,6 +153,8 @@ impl View {
             vert_clip: 2500.0,
             no_clip: false,
             camera: None,
+            hor_plus: false,
+            viewport: None,
         }
     }
 
@@ -154,11 +163,33 @@ impl View {
         self.camera = Some(*cam);
     }
 
+    /// The 3D viewport `[x, y, w, h]`.
+    pub fn vp(&self) -> [f32; 4] {
+        self.viewport.unwrap_or([0.0, 0.0, self.width, self.height])
+    }
+
+    /// `rXRes/640` of `InitOneOverTable`; with [`hor_plus`](Self::hor_plus), the
+    /// smaller of the width and height ratios so the 4:3 FOV is kept on the narrow axis.
+    pub fn proj_scale(&self) -> f32 {
+        let [_, _, w, h] = self.vp();
+        if self.hor_plus {
+            (w / 640.0).min(h / 480.0)
+        } else {
+            w / 640.0
+        }
+    }
+
     /// `-FOV * oneOver[(long)vz + DIST]` with `oneOver[i] = (rXRes/640)/i`
     /// (`InitOneOverTable`, mdxRender.cpp:362). The depth is truncated to an integer.
     fn oozd(&self, vz: f32) -> f32 {
         let i = ((vz as i64) + DIST as i64).clamp(1, 65534) as f32;
-        -self.fov * ((self.width / 640.0) / i)
+        -self.fov * (self.proj_scale() / i)
+    }
+
+    /// Screen position of view-space `p` with depth reciprocal `o`.
+    fn to_screen(&self, p: Vec3, o: f32) -> [f32; 3] {
+        let [x, y, w, h] = self.vp();
+        [x + w / 2.0 + p[0] * o, y + h / 2.0 + p[1] * o, p[2]]
     }
 
     /// Projects a view-space point like `PCPrepareObject`: returns `(sx, sy, vz)`,
@@ -166,8 +197,7 @@ impl View {
     pub fn project(&self, p: Vec3) -> Option<[f32; 3]> {
         let z = p[2] + DIST;
         if z > self.near_clip && (z < self.far_clip || self.no_clip) {
-            let o = self.oozd(p[2]);
-            Some([self.width / 2.0 + p[0] * o, self.height / 2.0 + p[1] * o, p[2]])
+            Some(self.to_screen(p, self.oozd(p[2])))
         } else {
             None
         }
@@ -195,7 +225,9 @@ pub enum XluSort {
     Submission,
 }
 
-/// Rendering options; defaults are the authentic retail behaviour.
+/// Rendering options; defaults are the authentic retail behaviour (the
+/// enhanced options below are all off/1 by default, which keeps the original
+/// single-pass render path bit-for-bit).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderOptions {
     /// Perspective-correct texturing. Retail submits `rhw = 1` with
@@ -208,11 +240,40 @@ pub struct RenderOptions {
     pub linear_filter: bool,
     pub xlu_sort: XluSort,
     pub fog: Fog,
+    /// Enhanced: anisotropic filtering level (needs `linear_filter`); `0` = off (no
+    /// mipmaps, as retail), `1` = trilinear mipmaps, `2..=16` = anisotropic.
+    pub anisotropy: u16,
+    /// Enhanced: Hor+ widescreen projection (see [`View::hor_plus`]).
+    pub hor_plus: bool,
+    /// Enhanced: widest 3D aspect ratio (e.g. `21.0 / 9.0`); wider screens are
+    /// pillarboxed. `0` = no clamp.
+    pub max_aspect: f32,
+    /// Enhanced: re-anchor 4096×4096 overlays for wide screens (left/right thirds to the
+    /// edges, centre and full-screen elements kept in a centred 4:3 area). Off = the
+    /// original stretch over the whole screen.
+    pub hud_anchor: bool,
+    /// Enhanced: internal render resolution multiplier (supersampling > 1). `1` = native.
+    pub render_scale: f32,
+    /// Enhanced: MSAA sample count (1 or 4; other values are rounded to what every
+    /// wgpu backend supports for the swapchain formats).
+    pub msaa: u32,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        RenderOptions { perspective_correct: false, screen_reject: true, linear_filter: true, xlu_sort: XluSort::BackToFront, fog: Fog::default() }
+        RenderOptions {
+            perspective_correct: false,
+            screen_reject: true,
+            linear_filter: true,
+            xlu_sort: XluSort::BackToFront,
+            fog: Fog::default(),
+            anisotropy: 0,
+            hor_plus: false,
+            max_aspect: 0.0,
+            hud_anchor: false,
+            render_scale: 1.0,
+            msaa: 1,
+        }
     }
 }
 
@@ -256,8 +317,7 @@ fn prepare_skinned(view: &View, obj: &Object, mesh: &Mesh, m: &Mat4, tv: &mut [T
         let z = p[2] + DIST;
         // The skinned path has no `noClip` override.
         *slot = if z > view.near_clip && z < view.far_clip {
-            let o = view.oozd(p[2]);
-            Some([view.width / 2.0 + p[0] * o, view.height / 2.0 + p[1] * o, p[2]])
+            Some(view.to_screen(p, view.oozd(p[2])))
         } else {
             None
         };
@@ -282,9 +342,12 @@ pub(crate) struct EmitCtx<'a> {
 /// the landscape path fogs per vertex.
 pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, per_object_fog: bool, out: &mut Frames) {
     let view = cx.view;
-    let (clx0, cly0, clx1, cly1) = (0.0, 0.0, view.width - 1.0, view.height - 1.0);
+    let [vx, vy, vw, vh] = view.vp();
+    let (clx0, cly0, clx1, cly1) = (vx, vy, vx + vw - 1.0, vy + vh - 1.0);
     let fog = &cx.opts.fog;
-    let c_fog = mesh.faces.first().and_then(|f| tv.get(f[0] as usize).copied().flatten()).map_or(1.0, |v| fog.factor(v[2]));
+    // Enhanced fog never applies to the unclipped sky backdrop.
+    let fog_factor = |vz: f32| if view.no_clip && fog.enabled { 1.0 } else { fog.factor(vz) };
+    let c_fog = mesh.faces.first().and_then(|f| tv.get(f[0] as usize).copied().flatten()).map_or(1.0, |v| fog_factor(v[2]));
     for (fi, face) in mesh.faces.iter().enumerate() {
         let crc = mesh.textures.get(fi).copied().unwrap_or(0);
         // Faces whose texture is not loaded are skipped (`tex` NULL).
@@ -317,7 +380,7 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, pe
                 // D3DRGBA clamps to bytes.
                 color: [col[0].clamp(0.0, 1.0), col[1].clamp(0.0, 1.0), col[2].clamp(0.0, 1.0), (col[3] * cx.alpha_mul).clamp(0.0, 1.0)],
                 uv: [uv[0] as f32 * UV_SCALE, uv[1] as f32 * UV_SCALE],
-                fog: if per_object_fog { c_fog } else { fog.factor(vz) },
+                fog: if per_object_fog { c_fog } else { fog_factor(vz) },
                 alpha_ref: 0.0,
             };
         }
@@ -394,5 +457,24 @@ mod tests {
         assert_eq!(p, [320.0 - 45.0, 240.0 - 90.0, 110.0]);
         assert!(v.project([0.0, 0.0, 15.0]).is_none());
         assert!(v.project([0.0, 0.0, 5000.0]).is_none());
+    }
+
+    #[test]
+    fn hor_plus_keeps_vertical_fov() {
+        // At 4:3 Hor+ is the original formula.
+        let mut a = View::new(1280, 960);
+        let b = View { hor_plus: true, ..View::new(1280, 960) };
+        assert_eq!(a.project([10.0, 20.0, 110.0]), b.project([10.0, 20.0, 110.0]));
+        // 2560×1080: the original scales by width (Vert-), Hor+ by height.
+        a = View::new(2560, 1080);
+        let h = View { hor_plus: true, ..View::new(2560, 1080) };
+        assert_eq!(a.proj_scale(), 4.0);
+        assert_eq!(h.proj_scale(), 2.25);
+        // A point at the 4:3 vertical edge (|y| = 240/4.5 at vz 110) lands on the screen edge (y flips).
+        let p = h.project([0.0, -240.0 / 4.5, 110.0]).unwrap();
+        assert!((p[1] - (540.0 + 240.0 * 2.25)).abs() < 1e-3);
+        // Pillarboxed viewport: centred on the viewport.
+        let v = View { hor_plus: true, viewport: Some([100.0, 0.0, 640.0, 480.0]), ..View::new(840, 480) };
+        assert_eq!(v.project([0.0, 0.0, 110.0]).unwrap(), [420.0, 240.0, 110.0]);
     }
 }

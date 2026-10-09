@@ -72,3 +72,62 @@ fn renders_synthetic_scene_headless() {
     let p = px(sx, 120);
     assert!(p[0] == 255 && (110..=145).contains(&p[1]) && p[1] == p[2], "xlu blend {p:?} at {sx}");
 }
+
+/// Enhanced display options: Hor+, overlay re-anchoring, ultrawide clamp, MSAA and
+/// supersampling.
+#[test]
+fn enhanced_options_render() {
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let white = f2_formats::crc("white.bmp");
+    r.textures.add_rgba(white, "white.bmp", TexType::Normal, 2, 2, vec![255; 16]);
+    let root = object("root", quad(0.0, 20.0, [1.0, 0.0, 0.0, 1.0], white, true), 0);
+    let model = Model { id: 1, radius: 30.0, object_size: 0, root, root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
+    let cam = Camera { source: [0.0, 0.0, -100.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] };
+    let frame = |r: &mut Renderer, w: u32, h: u32| {
+        r.begin_frame(w, h);
+        r.set_camera(&cam);
+        r.draw_actor(&model, &mut Actor::default());
+        // Left-anchored, centred and right-anchored 256×256 boxes.
+        for x in [0.0, 1920.0, 3840.0] {
+            r.draw_sprite_overlay(x, 0.0, 256.0, 256.0, [0.0, 0.0, 1.0, 1.0], None, [0, 0, 255, 255], Blend::Semi, 0.0);
+        }
+        r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap()
+    };
+    let red_w = |img: &f2_engine::RgbaImage| (0..img.width).filter(|&x| img.pixel(x, img.height / 2)[0] == 255).count();
+
+    // Authentic at 16:9: overlays stretched over the whole width, Vert- projection.
+    let a = frame(&mut r, 640, 360);
+    assert_eq!(a.pixel(639, 2), [0, 0, 255, 255]);
+    assert_eq!(a.pixel(2, 2), [0, 0, 255, 255]);
+
+    // Hor+ and anchoring: boxes keep their 4:3 size (safe width 480 → 30 px), the left and
+    // right ones at the screen edges, the centre one centred.
+    r.options.hor_plus = true;
+    r.options.hud_anchor = true;
+    let e = frame(&mut r, 640, 360);
+    assert_eq!(e.pixel(2, 2), [0, 0, 255, 255]);
+    assert_eq!(e.pixel(637, 2), [0, 0, 255, 255]);
+    assert_eq!(e.pixel(605, 2), [0, 0, 0, 255], "right box is 30 px wide");
+    assert_eq!(e.pixel(320, 2), [0, 0, 255, 255], "centred box");
+    // Hor+ scale 360/480 vs Vert- 640/640: the red quad is narrower.
+    assert!(red_w(&e) < red_w(&a), "Hor+ {} vs Vert- {}", red_w(&e), red_w(&a));
+
+    // Ultrawide clamp to 4:3: black pillars, scene in the middle.
+    r.options.max_aspect = 4.0 / 3.0;
+    let u = frame(&mut r, 640, 360);
+    assert_eq!(u.pixel(20, 200), [0, 0, 0, 255]);
+    assert_eq!(u.pixel(320, 180)[0], 255);
+
+    // MSAA + 2× supersampling + anisotropic: output-sized image, same layout, smooth edges.
+    r.options.max_aspect = 0.0;
+    r.options.msaa = 4;
+    r.options.render_scale = 2.0;
+    r.options.anisotropy = 16;
+    let m = frame(&mut r, 640, 360);
+    assert_eq!((m.width, m.height), (640, 360));
+    assert_eq!(m.pixel(320, 180), [255, 0, 0, 255]);
+    assert_eq!(m.pixel(2, 2), [0, 0, 255, 255]);
+    let edge = (0..640).map(|x| m.pixel(x, 180)[0]).filter(|&c| c > 0 && c < 255).count();
+    assert!(edge > 0, "antialiased edges expected");
+}

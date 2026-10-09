@@ -219,10 +219,12 @@ pub fn follow_camera(game: &Game, scene: &LevelScene, frog_pos: Option<V3>) -> C
 
 /// Queues the level for one rendered frame. `prev` is the snapshot before the last tick,
 /// `alpha` the fraction of a tick elapsed since it.
-pub fn draw_level(r: &mut Renderer, scene: &mut LevelScene, game: &Game, prev: &[Option<Snap>], alpha: f32, cam: &Camera, show_tiles: bool) {
+/// `far_clip` is the level's far plane times the draw-distance option.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_level(r: &mut Renderer, scene: &mut LevelScene, game: &Game, prev: &[Option<Snap>], alpha: f32, cam: &Camera, far_clip: f32, show_tiles: bool) {
     r.set_camera(cam);
     r.view.near_clip = 10.0;
-    r.view.far_clip = scene.far_clip;
+    r.view.far_clip = far_clip;
     r.update_animating_textures(game.act_frame_count);
 
     // DrawBackground (drawloop.cpp:85): the backdrop follows the camera, no clipping.
