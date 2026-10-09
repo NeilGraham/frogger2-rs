@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Frogger 2 (Rust port)
+Comment=Rust port of Frogger 2: Swampy's Revenge; requires your own imported game data
+Exec=frogger
+Icon=frogger2-rs
+Categories=Game;ArcadeGame;
+Terminal=false

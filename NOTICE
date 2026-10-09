@@ -1,0 +1,32 @@
+frogger2-rs (working title) - a Rust port of Frogger 2: Swampy's Revenge
+
+NO GAME DATA IS INCLUDED
+------------------------
+This package contains only the engine/port code. It does not contain any
+assets (models, textures, levels, audio, music, videos) from Frogger 2:
+Swampy's Revenge. You must supply your own legitimately obtained copy
+(disc image, disc folder or install folder) and import it once:
+
+    f2-import "/path/to/your/Frogger 2 disc image, disc folder or install folder"
+    f2-import --list            # show detected/imported renditions
+
+Imported data is written to $F2_DATA_ROOT, or the platform data directory
+(Linux ~/.local/share/frogger2-rs/data, Windows %APPDATA%\frogger2-rs\data,
+macOS ~/Library/Application Support/frogger2-rs/data). Then run `frogger`.
+
+Licenses
+--------
+Crates are licensed individually; the full texts are in the licenses/ folder
+(LICENSE-GPL-3.0, LICENSE-MIT, LICENSE-APACHE, LICENSE-LGPL-2.1):
+
+  frogger, f2-game, f2-math, f2-etc ... GPL-3.0-or-later
+  f2-bink (Bink video decoder) ........ LGPL-2.1-or-later
+  f2-media, f2-formats, f2-import, f2-engine, f2-audio, f2-platform,
+  f2-mods, f2-export, f2-trace, f2-viewer ... MIT OR Apache-2.0
+
+The combined executables are distributed under GPL-3.0-or-later. Third-party
+Rust dependencies keep their own licenses (see `cargo tree` / Cargo.lock).
+
+Frogger is a trademark of Konami. This is an unaffiliated, non-commercial
+fan preservation project. The original source code is preserved by Highway
+Frogs and carries no license; see research/community-and-legal.md.
