@@ -43,10 +43,10 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
 
 ## Input
 
-- [ ] Native gamepad support (Xbox/PS/Switch via gilrs) with button prompts
-- [ ] Full rebinding UI, multiple bindings per action
-- [ ] Rumble (events already exist for PSX vibration — check `#ifdef PSX_VERSION` code)
-- [ ] Input buffering option for hops
+- [x] Native gamepad support (Xbox/PS/Switch via gilrs) with button prompts (f2-platform: per-player assignment, hot-plug, deadzone, `ControllerFamily` glyph labels; host UI pending)
+- [~] Full rebinding UI, multiple bindings per action (f2-platform `Bindings`/`Rebind` API + config done; in-game UI is host work)
+- [~] Rumble (`Gamepads::rumble` done; host must call it for `Effect::Rumble`) (events already exist for PSX vibration — check `#ifdef PSX_VERSION` code)
+- [~] Input buffering option for hops (`HopBuffer`, enhanced default 6 frames; host must apply it)
 
 ## Audio
 

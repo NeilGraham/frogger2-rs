@@ -1,5 +1,6 @@
 //! `config.toml`: replaces the registry settings and the launcher config dialog.
 
+use crate::bindings::{BindingEntry, Bindings, DEFAULT_DEADZONE};
 use crate::input::{Controller, InputMapper, KeyBinding, Keymap};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -180,7 +181,23 @@ pub struct Input {
     pub controllers: [Controller; 4],
     /// The 56-entry keymap, in original order.
     pub keymap: Vec<KeyBinding>,
+    /// Multiple bindings per action (`[[input.bindings]]`: keys, pad buttons, stick
+    /// directions). Empty = derive from `keymap` + the retail pad mapping, so old configs
+    /// load unchanged. When present it wins over `keymap` (which is kept in sync with the
+    /// first key of each action on save).
+    pub bindings: Vec<BindingEntry>,
+    /// Stick dead zone, 0..1 (retail: 0.5).
+    pub deadzone: f32,
+    /// Hop input buffer in frames (enhanced profile only): `None` = profile default
+    /// ([`Config::hop_buffer_frames`]), `Some(0)` = off.
+    pub hop_buffer_frames: Option<u32>,
+    /// Pad rumble on/off and intensity (0..1).
+    pub rumble: bool,
+    pub rumble_scale: f32,
 }
+
+/// Hop buffer window of the enhanced profile when not overridden.
+pub const ENHANCED_HOP_BUFFER_FRAMES: u32 = 6;
 
 impl Default for Video {
     fn default() -> Self {
@@ -196,7 +213,15 @@ impl Default for Audio {
 
 impl Default for Input {
     fn default() -> Self {
-        Input { controllers: [Controller::Keyboard; 4], keymap: Keymap::default().to_bindings() }
+        Input {
+            controllers: [Controller::Keyboard; 4],
+            keymap: Keymap::default().to_bindings(),
+            bindings: Vec::new(),
+            deadzone: DEFAULT_DEADZONE,
+            hop_buffer_frames: None,
+            rumble: true,
+            rumble_scale: 1.0,
+        }
     }
 }
 
@@ -271,8 +296,31 @@ impl Config {
         }
     }
 
+    /// All bindings: `[[input.bindings]]` if present and valid, else the legacy `keymap`
+    /// with the default pad mapping.
+    pub fn bindings(&self) -> Bindings {
+        if self.input.bindings.is_empty() {
+            return Bindings::from_keymap(&self.keymap());
+        }
+        Bindings::from_entries(&self.input.bindings).unwrap_or_else(|_| Bindings::from_keymap(&self.keymap()))
+    }
+
+    pub fn set_bindings(&mut self, b: &Bindings) {
+        self.input.bindings = b.to_entries();
+        self.input.keymap = b.to_keymap().to_bindings();
+    }
+
+    /// Hop buffer window for `profile`: always off in authentic.
+    pub fn hop_buffer_frames(&self, profile: Profile) -> u32 {
+        match profile {
+            Profile::Authentic => 0,
+            Profile::Enhanced => self.input.hop_buffer_frames.unwrap_or(ENHANCED_HOP_BUFFER_FRAMES),
+        }
+    }
+
     pub fn input_mapper(&self) -> InputMapper {
-        InputMapper { keymap: self.keymap(), controllers: self.input.controllers, ..InputMapper::default() }
+        let b = self.bindings();
+        InputMapper { keymap: b.to_keymap(), extra_keys: b.extra_keys(), controllers: self.input.controllers, ..InputMapper::default() }
     }
 }
 
@@ -291,5 +339,28 @@ mod tests {
         assert_eq!(Config::default().profile, Profile::Enhanced);
         let back = Config::from_toml(&c.to_toml()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn bindings_config_compat() {
+        // Legacy config (no [[input.bindings]]) loads as the authentic defaults.
+        let c = Config::default();
+        assert_eq!(c.bindings(), Bindings::default());
+        assert_eq!(c.input_mapper().keymap, Keymap::default());
+        assert_eq!(c.hop_buffer_frames(Profile::Authentic), 0);
+        assert_eq!(c.hop_buffer_frames(Profile::Enhanced), ENHANCED_HOP_BUFFER_FRAMES);
+        // Round trip with extra bindings.
+        let mut c = Config::default();
+        let mut b = c.bindings();
+        b.add(0, crate::input::PAD_UP, crate::bindings::Binding::Key(crate::dik::W));
+        c.set_bindings(&b);
+        c.input.deadzone = 0.25;
+        let back = Config::from_toml(&c.to_toml()).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(back.bindings(), b);
+        assert_eq!(back.input_mapper().extra_keys.len(), 1);
+        // A file with only the old fields parses.
+        let old = Config::from_toml("[input]\ncontrollers = [\"keyboard\", \"keyboard\", \"keyboard\", \"keyboard\"]\n").unwrap();
+        assert_eq!(old.bindings(), Bindings::default());
     }
 }
