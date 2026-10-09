@@ -1,9 +1,13 @@
 # CI never has game data: tests that need it skip themselves when
 # F2_GAME_DIR / F2_DATA_DIR are unset.
 name: ci
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 jobs:
   test:
+    if: github.event_name != 'workflow_dispatch'
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
@@ -18,3 +22,36 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # Manual dispatch only: builds release archives with tools/package (no game data included).
+  release:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        include:
+          - {os: ubuntu-latest, target: linux}
+          - {os: windows-latest, target: windows}
+          - {os: macos-latest, target: macos}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+      # Windows: build natively, then package the exes without the WSL cross-build.
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release -p frogger -p f2-import -p f2-viewer
+          mkdir -p target/package/win-bin
+          cp target/release/frogger.exe target/release/f2-import.exe target/release/f2-viewer.exe target/package/win-bin/
+          F2_SKIP_BUILD=1 tools/package/package.sh windows
+      - if: runner.os != 'Windows'
+        run: tools/package/package.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frogger2-rs-${{ matrix.target }}
+          path: |
+            target/package/*.tar.gz
+            target/package/*.zip
+            target/package/*.AppImage

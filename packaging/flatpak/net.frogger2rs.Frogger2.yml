@@ -1,0 +1,40 @@
+# DRAFT Flatpak manifest (untested). Build:
+#   flatpak-builder --user --install --force-clean build-dir packaging/flatpak/net.frogger2rs.Frogger2.yml
+# Offline cargo builds need vendored crates: generate cargo-sources.json with
+# flatpak-cargo-generator.py (flatpak-builder-tools) from Cargo.lock and list it under sources.
+# App id is a placeholder; pick a real reverse-DNS id before publishing.
+app-id: net.frogger2rs.Frogger2
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: frogger
+finish-args:
+  - --share=ipc
+  - --socket=x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  # Imported game data lives in the sandboxed XDG data dir; the user's disc image folder is
+  # passed to f2-import with --filesystem=... at run time (e.g. flatpak run --filesystem=~/isos:ro ...).
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/frogger2/cargo
+modules:
+  - name: frogger2
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release -p frogger -p f2-import
+      - install -Dm755 target/release/frogger /app/bin/frogger
+      - install -Dm755 target/release/f2-import /app/bin/f2-import
+      - install -Dm644 packaging/frogger2-rs.desktop /app/share/applications/net.frogger2rs.Frogger2.desktop
+      - install -Dm644 packaging/frogger2-rs.svg /app/share/icons/hicolor/scalable/apps/net.frogger2rs.Frogger2.svg
+      - sed -i 's/^Icon=.*/Icon=net.frogger2rs.Frogger2/' /app/share/applications/net.frogger2rs.Frogger2.desktop
+      - install -Dm644 NOTICE /app/share/licenses/net.frogger2rs.Frogger2/NOTICE
+      - install -Dm644 LICENSE-GPL-3.0 LICENSE-MIT LICENSE-APACHE LICENSE-LGPL-2.1 -t /app/share/licenses/net.frogger2rs.Frogger2/
+    sources:
+      - type: dir
+        path: ../..
+      # - cargo-sources.json   # generated, see header
