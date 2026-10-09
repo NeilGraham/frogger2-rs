@@ -243,7 +243,7 @@ impl Vfs {
     /// keyed by (bank, name) case-insensitively; the topmost layer wins.
     /// Sorted by (bank, name).
     pub fn entry_overrides(&self, kind: &str) -> Vec<EntryOverride> {
-        let mut map: BTreeMap<(String, String), EntryOverride> = BTreeMap::new();
+        let mut map: BTreeMap<(String, String, String), EntryOverride> = BTreeMap::new();
         let Some(kcomps) = normalize(kind) else { return Vec::new() };
         for l in self.layers.iter().rev() {
             let Some(kdir) = l.resolve(&kcomps, false) else { continue };

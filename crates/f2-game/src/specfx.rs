@@ -25,8 +25,8 @@
 use f2_math::{
     add_to_vector_ff, add_to_vector_fs, add_to_vector_sf, add_to_vector_ss, add_vector_sfs, add_vector_ssf, add_vector_sss, arccos, cross_product_fff,
     distance_between_points_sf, distance_between_points_ss, dot_product_ff, fdiv, fixed_get_quaternion_from_rotation, fmul, iquat_slerp, magnitude_f,
-    make_unit, rcos, rsin, scale_vector, scale_vector_ff, scale_vector_s, set_quaternion, set_vector_ff, set_vector_fs, set_vector_sf, set_vector_ss,
-    sub_from_vector_ff, sub_vector_fsf, sub_vector_fss, sub_vector_ssf, FVector, Fixed, IQuaternion, SVector,
+    make_unit, new_set_vector_fs, rcos, rsin, scale_vector, scale_vector_ff, scale_vector_s, set_quaternion, set_vector_ff, set_vector_fs, set_vector_sf,
+    set_vector_ss, sub_from_vector_ff, sub_vector_fsf, sub_vector_fss, sub_vector_ssf, FVector, Fixed, IQuaternion, SVector,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1764,7 +1764,7 @@ impl Game {
             (t.normal, t.centre)
         };
         let mut normal = FVector::default();
-        set_vector_fs(&mut normal, &tnormal);
+        new_set_vector_fs(&mut normal, &tnormal);
 
         let node = |g: &Game, i: i32| g.path.nodes.get(path.node_index(i)).cloned().unwrap_or_default();
         let gs_of = |g: &Game| {
@@ -1849,7 +1849,7 @@ impl Game {
                     if let Some(rb) = self.specfx.fx(f).rebound {
                         let pl = self.specfx.p2_mut(rb);
                         pl.point = tcentre;
-                        set_vector_fs(&mut pl.normal, &tnormal);
+                        new_set_vector_fs(&mut pl.normal, &tnormal);
                     }
                     self.specfx.fx_mut(f).gravity = radius.wrapping_mul(SCALE);
                     self.set_attached_fx_colour(fx, effects);
@@ -2013,7 +2013,7 @@ impl Game {
         let wt = self.path.nodes.get(path.node_index(0)).and_then(|n| n.world_tile);
         let mut up = FVector::default();
         if let Some(t) = wt {
-            set_vector_fs(&mut up, &self.map.tile(t).normal);
+            new_set_vector_fs(&mut up, &self.map.tile(t).normal);
         }
         if let Some(p2) = self.specfx.allocate_p2() {
             self.specfx.fx_mut(f).rebound = Some(p2);
@@ -2129,12 +2129,12 @@ impl Game {
         let (Some(t), Some(f)) = (self.frogmove.curr_tile[p], self.frogger.frog[p]) else { return };
         let tn = self.map.tile(t).normal;
         let mut se_up = FVector::default();
-        set_vector_fs(&mut se_up, &tn);
+        new_set_vector_fs(&mut se_up, &tn);
         scale_vector(&mut se_up, 200);
         let mut pos = SVector::default();
         add_vector_sfs(&mut pos, &se_up, &self.actor2.actors[f].actor.position);
         let mut up = FVector::default();
-        set_vector_fs(&mut up, &tn);
+        new_set_vector_fs(&mut up, &tn);
         for (size, speed, life, c) in [
             (204800, 12288, 20480, (r1, g1, b1)),
             (163480, 10240, 24576, (r2, g2, b2)),
@@ -2156,12 +2156,12 @@ impl Game {
         let (Some(t), Some(f)) = (self.frogmove.curr_tile[p], self.frogger.frog[p]) else { return };
         let tn = self.map.tile(t).normal;
         let mut up = FVector::default();
-        set_vector_fs(&mut up, &tn);
+        new_set_vector_fs(&mut up, &tn);
         scale_vector(&mut up, (rsin((self.act_frame_count << 6) as i32) >> 4) + 250);
         let mut pos = SVector::default();
         set_vector_sf(&mut pos, &up);
         add_to_vector_ss(&mut pos, &self.actor2.actors[f].actor.position);
-        set_vector_fs(&mut up, &tn);
+        new_set_vector_fs(&mut up, &tn);
         let fx = self.create_special_effect_direct(FXTYPE_WAKE, &pos, &up, 123840, 1024, 0, 1024);
         let c = self.frogger.frog_pool((self.frogger.player[p].character as usize).min(crate::frogger::FROG_NUMFROGS - 1));
         self.set_fx_colour(fx, c.r, c.g, c.b);
@@ -2176,12 +2176,12 @@ impl Game {
         }
         let tn = self.map.tile(tile).normal;
         let mut up = FVector::default();
-        set_vector_fs(&mut up, &tn);
+        new_set_vector_fs(&mut up, &tn);
         scale_vector(&mut up, 200);
         let mut pos = SVector::default();
         add_vector_sfs(&mut pos, &up, &self.actor2.actors[baby].actor.position);
         let mut normal = FVector::default();
-        set_vector_fs(&mut normal, &tn);
+        new_set_vector_fs(&mut normal, &tn);
         let c = self.babyfrog.baby_list.get(i as usize).map(|b| b.fx_colour).unwrap_or_default();
         let rings = [(65536, 4096, 4096), (32768, 2048, 4915), (16384, 1229, 5734), (8192, 409, 6554), (4096, 205, 7373)];
         for (k, (size, speed, life)) in rings.into_iter().enumerate() {
@@ -2228,13 +2228,13 @@ impl Game {
             (t.normal, t.centre)
         };
         let mut pos = FVector::default();
-        set_vector_fs(&mut pos, &tn);
+        new_set_vector_fs(&mut pos, &tn);
         scale_vector(&mut pos, 50);
         add_to_vector_fs(&mut pos, &tc);
         let mut tp = SVector::default();
         set_vector_sf(&mut tp, &pos);
         let mut up = FVector::default();
-        set_vector_fs(&mut up, &tn);
+        new_set_vector_fs(&mut up, &tn);
         let c = self.frogger.frog_pool((self.frogger.player[pl as usize].character as usize).min(crate::frogger::FROG_NUMFROGS - 1));
         let fx = self.create_special_effect_direct(FXTYPE_SMOKEBURST, &tp, &up, 262144, 8192, 410, 6963);
         self.set_fx_colour(fx, c.r, c.g, c.b);
