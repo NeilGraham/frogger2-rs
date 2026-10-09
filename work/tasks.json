@@ -1,0 +1,830 @@
+{
+  "schema": 1,
+  "project": "frogger2-rs",
+  "tasks": [
+    {
+      "id": "P0-1",
+      "title": "Cargo workspace + task tooling + CI config",
+      "stage": "P0",
+      "deps": [],
+      "files": [
+        "Cargo.toml",
+        "tools/",
+        "work/",
+        ".github/"
+      ],
+      "accept": [
+        "cargo test --workspace passes",
+        "tools/tasks.py status works",
+        ".github/workflows/ci.yml runs fmt/clippy/test"
+      ],
+      "status": "in_progress",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P0-2",
+      "title": "Owner decisions recorded (defaults applied until answered)",
+      "stage": "P0",
+      "deps": [],
+      "files": [
+        "docs/DECISIONS.md"
+      ],
+      "accept": [
+        "docs/DECISIONS.md lists each PLAN \u00a79 item with chosen default"
+      ],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": true,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P0-3",
+      "title": "Oracle spike: f2fix.dll proxy runs retail Frogger2.exe headless+muted, dumps one PNG",
+      "stage": "P0",
+      "deps": [
+        "P1-3"
+      ],
+      "files": [
+        "crates/f2fix",
+        "tools/run/"
+      ],
+      "accept": [
+        "run script reaches frontend without focus steal",
+        "framebuffer PNG written"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:57:40-06:00 done: f2fix dinput proxy: headless+muted retail run reaches frontend + attract demo; docs/ORACLE.md"
+      ]
+    },
+    {
+      "id": "P1-1",
+      "title": "f2-media: cue/bin/zip/iso, ISO9660, CD-DA, InstallShield 5 cab",
+      "stage": "P1",
+      "deps": [],
+      "files": [
+        "crates/f2-media"
+      ],
+      "accept": [
+        "probe example extracts USA+EU DATA1.CAB byte-identical to unshield -O"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P1-2",
+      "title": "f2-formats: all retail formats parse",
+      "stage": "P1",
+      "deps": [
+        "P1-1"
+      ],
+      "files": [
+        "crates/f2-formats"
+      ],
+      "accept": [
+        "F2_DATA_DIR=... cargo test -p f2-formats --test real_data passes for USA and EU"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P1-3",
+      "title": "f2-import CLI: detect, extract, rip, validate, manifest",
+      "stage": "P1",
+      "deps": [
+        "P1-2"
+      ],
+      "files": [
+        "crates/f2-import"
+      ],
+      "accept": [
+        "f2-import <USA zip> installs to data root in < 30 s",
+        "single-bin MyAbandonware image imports"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P1-4",
+      "title": "Exporters: textures->PNG, samples->WAV, models->glTF, levels->JSON",
+      "stage": "P1",
+      "deps": [
+        "P1-2"
+      ],
+      "files": [
+        "tools/f2-export"
+      ],
+      "accept": [
+        "f2-export dumps every bank of an imported data set without error"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:42:49-06:00 done: f2-export: 1500 textures, 443 samples, 757 glTF models (Khronos validator 0 errors), levels JSON, text"
+      ]
+    },
+    {
+      "id": "P1-5",
+      "title": "f2-viewer: browse banks, render models/anims, tile graph",
+      "stage": "P1",
+      "deps": [
+        "P2-2"
+      ],
+      "files": [
+        "tools/f2-viewer"
+      ],
+      "accept": [
+        "viewer opens every object bank; screenshot of garden1 world"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T15:08:29-06:00 done: f2-viewer: models/levels+tile overlay/textures/sounds/videos; headless screenshots"
+      ]
+    },
+    {
+      "id": "P1-6",
+      "title": "FLAC music (optional) + import UX polish (progress, --list)",
+      "stage": "P1",
+      "deps": [
+        "P1-3"
+      ],
+      "files": [
+        "crates/f2-import"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P2-1",
+      "title": "f2-math: fixed.c/maths.c/types bit-exact + difftests vs C",
+      "stage": "P2",
+      "deps": [],
+      "files": [
+        "crates/f2-math"
+      ],
+      "accept": [
+        "proptest difftests vs compiled original C pass"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:47:23-06:00 done: f2-math bit-exact; difftests vs compiled original C (20k-100k cases/fn)"
+      ]
+    },
+    {
+      "id": "P2-2",
+      "title": "f2-engine renderer core (wgpu): meshes, textures, blend modes, sprites, overlays, fonts, headless PNG",
+      "stage": "P2",
+      "deps": [
+        "P1-2"
+      ],
+      "files": [
+        "crates/f2-engine"
+      ],
+      "accept": [
+        "headless render of garden1 world to PNG in CI (llvmpipe)"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:49:19-06:00 done: wgpu renderer, CPU MDX transform/projection, headless PNG; garden1 + frog verified visually"
+      ]
+    },
+    {
+      "id": "P2-3",
+      "title": "f2-engine actors: MDX keyframe animation + skinning",
+      "stage": "P2",
+      "deps": [
+        "P2-2"
+      ],
+      "files": [
+        "crates/f2-engine"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:49:19-06:00 done: keyframes/slerp/skinning in f2-engine"
+      ]
+    },
+    {
+      "id": "P2-4",
+      "title": "f2-audio: sample banks, 3D voices, music streaming",
+      "stage": "P2",
+      "deps": [
+        "P1-2"
+      ],
+      "files": [
+        "crates/f2-audio"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:46:43-06:00 done: f2-audio: mixer, DS pan law, positional, ambient, music loop; cpal + null output"
+      ]
+    },
+    {
+      "id": "P2-5",
+      "title": "f2-platform: window, input (PSX pad abstraction, keyboard map, gamepads), config",
+      "stage": "P2",
+      "deps": [],
+      "files": [
+        "crates/f2-platform"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:46:43-06:00 done: f2-platform: PSX pad bits, original keymap, gilrs, winit window, TOML config"
+      ]
+    },
+    {
+      "id": "P2-6",
+      "title": "f2-bink: Bink 1 (BIKi) video + audio decoder",
+      "stage": "P2",
+      "deps": [],
+      "files": [
+        "crates/f2-bink"
+      ],
+      "accept": [
+        "decodes all 14 retail videos; frame checksums vs ffmpeg within tolerance"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:41:19-06:00 done: pure-Rust Bink 1 + RDFT audio; all 14 videos decode; YUV identical to ffmpeg on sampled frames; audio SNR ~139 dB; crate LGPL-2.1-or-later (FFmpeg-derived)"
+      ]
+    },
+    {
+      "id": "P2-7",
+      "title": "f2-mods: case-insensitive layered VFS",
+      "stage": "P2",
+      "deps": [],
+      "files": [
+        "crates/f2-mods"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T14:42:49-06:00 done: f2-mods layered case-insensitive VFS + mod.toml"
+      ]
+    },
+    {
+      "id": "P2-8",
+      "title": "frogger binary: main loop (fixed 60 Hz + interpolation), mode state machine skeleton",
+      "stage": "P2",
+      "deps": [
+        "P2-2",
+        "P2-4",
+        "P2-5"
+      ],
+      "files": [
+        "crates/frogger"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T15:13:20-06:00 done: frogger binary: fixed 60Hz loop, interpolation, effects->audio/video, headless screenshot; stand-in frog/camera until waves C/D"
+      ]
+    },
+    {
+      "id": "P3-0",
+      "title": "f2-game skeleton: GameState, types from define.h/types.h, module layout, event queue",
+      "stage": "P3",
+      "deps": [
+        "P2-1"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T15:00:47-06:00 done: skeleton + wave A"
+      ]
+    },
+    {
+      "id": "P3-1",
+      "title": "Port map+general (tiles)",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T15:00:47-06:00 done: map/general done in wave A"
+      ]
+    },
+    {
+      "id": "P3-2",
+      "title": "Port path",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T15:00:47-06:00 done: path done in wave A"
+      ]
+    },
+    {
+      "id": "P3-3",
+      "title": "Port actor2+anim",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T15:00:47-06:00 done: actor2 + anim timing done in wave A"
+      ]
+    },
+    {
+      "id": "P3-4",
+      "title": "Port platform",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T15:24:46-06:00 done: wave B"
+      ]
+    },
+    {
+      "id": "P3-5",
+      "title": "Port enemies",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created",
+        "2026-10-09T15:24:46-06:00 done: wave B"
+      ]
+    },
+    {
+      "id": "P3-6",
+      "title": "Port frogmove+frogger+tongue",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P3-7",
+      "title": "Port collect+babyfrog",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P3-8",
+      "title": "Port script+event+evenfunc",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P3-9",
+      "title": "Port cam",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P3-10",
+      "title": "Port hud+overlays+textover",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P3-11",
+      "title": "Port specfx+particle",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P3-12",
+      "title": "Port game.c ingame loop",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P3-13",
+      "title": "Port levplay demo playback",
+      "stage": "P3",
+      "deps": [
+        "P3-0"
+      ],
+      "files": [
+        "crates/f2-game"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P3-T",
+      "title": "Trace harness: f2fix state dump + f2-trace diff; demos replay with zero divergence",
+      "stage": "P3",
+      "deps": [
+        "P0-3",
+        "P3-13"
+      ],
+      "files": [
+        "tools/f2-trace",
+        "crates/f2fix"
+      ],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P4-1",
+      "title": "Frontend/menus/charsel/options",
+      "stage": "P4",
+      "deps": [
+        "P3-12"
+      ],
+      "files": [],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P4-2",
+      "title": "Story flow + FMV playback",
+      "stage": "P4",
+      "deps": [
+        "P2-6",
+        "P3-12"
+      ],
+      "files": [],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P4-3",
+      "title": "Saves, language switching, cheats, extras, training",
+      "stage": "P4",
+      "deps": [
+        "P3-12"
+      ],
+      "files": [],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P5-1",
+      "title": "Local multiplayer (multi.c) + split-screen",
+      "stage": "P5",
+      "deps": [
+        "P4-1"
+      ],
+      "files": [],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P5-2",
+      "title": "Parity hardening across all levels; packaging",
+      "stage": "P5",
+      "deps": [
+        "P3-T",
+        "P4-3"
+      ],
+      "files": [],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P6-1",
+      "title": "Enhancements per docs/enhancements.md",
+      "stage": "P6",
+      "deps": [
+        "P5-2"
+      ],
+      "files": [],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P6-2",
+      "title": "Online multiplayer (rollback)",
+      "stage": "P6",
+      "deps": [
+        "P5-1"
+      ],
+      "files": [],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    },
+    {
+      "id": "P7-1",
+      "title": "Modding: overlays, glTF/PNG/WAV replacement, f2-etc script compiler, level manifests",
+      "stage": "P7",
+      "deps": [
+        "P2-7",
+        "P1-4"
+      ],
+      "files": [],
+      "accept": [],
+      "status": "todo",
+      "owner": null,
+      "needs_owner": false,
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09 created"
+      ]
+    }
+  ]
+}

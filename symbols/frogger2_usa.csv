@@ -1,0 +1,101 @@
+address,name,kind,size,confidence,evidence
+0x00410ae0,GameLoop,function,368,high,"frontend.c GameLoop: switch on gameState.mode (0x47210c) with cases matching define.h mode enum; called from LoopFunc after StartTimer(4,""Gameloop"") string 0x47c30c; ends frameCount++ and player[i].inputPause loop (stride 0x9c)"
+0x0043cc90,LoopFunc,function,370,high,"Main.cpp LoopFunc: cmp gameState.mode,9 (PAUSE_MODE); actFrameCount=(timeInfo.frameCount-pFrameModifier)*turbo; calls ProcessUserInput, StartTimer strings ""Network""/""Gameloop""/""UpdateStuff"", CopyActorList, DrawLoop; stored in AppLoop 0x35f2dac"
+0x0043cdd0,LoopFunc_call_GameLoop,callsite,5,high,e8 rel32 -> 0x410ae0 in LoopFunc non-network branch; patched by f2fix oracle (trace/start control)
+0x00414b60,RunGameLoop,function,1344,high,"game.c RunGameLoop: player[0].numSpawn==25 (0x36c1f0e) coin colour rsin/rcos; endLevelTimer; SHOW_ME_THE_TILE_NUMBERS loop &firstTile[i]==currTile[0]; called by GameLoop case INGAME_MODE, RunDemoMode, RunTrainingMode"
+0x0044b430,UpdateTiming,function,144,high,"mdxTiming.cpp UpdateTiming: timeGetTime()+tickModifier-firstTicks, maxTickIncrement clamp, speed=interval*frameSpeed/1000, frameCount=ftol; callers RunWindowsLoop, InitBackdrop, InitCDBackdrop"
+0x0044b3f0,InitTiming,function,49,high,"mdxTiming.cpp InitTiming: firstTicks=timeGetTime, tickCount=frameCount=tickModifier=0, maxTickIncrement=500 (0x1f4); callers GameStartup 0x43ce10 and InitLevel"
+0x00455b00,RunWindowsLoop,function,127,high,"mdxWindows.cpp RunWindowsLoop: PeekMessage/WM_QUIT(0x12) loop, calls AppLoop (0x35f2dac) then UpdateTiming"
+0x00455b6e,RunWindowsLoop_call_UpdateTiming,callsite,5,high,e8 rel32 -> 0x44b430 after AppLoop; patched by f2fix time.fixed
+0x0048c148,timeInfo,global,28,high,"MDX_TIMING_VAL: firstTicks +0, tickCount +4 (0x48c14c), frameCount +8 (0x48c150), tickModifier +12, maxTickIncrement +16 (=500), frameSpeed +20, speed +24 (0x48c160); written by InitTiming/UpdateTiming"
+0x00489954,actFrameCount,global,4,high,LoopFunc stores ftol((timeInfo.frameCount-pFrameModifier)*turbo); GameLoop STARTUP case sets 0; RunDemoMode compares playKeyList[i*3] < actFrameCount
+0x00489958,lastActFrameCount,global,4,high,LoopFunc: lastActFrameCount = actFrameCount before update
+0x00474070,gameSpeed,global,4,high,LoopFunc: gameSpeed=ftol(4096*timeInfo.speed*turbo); =0 when paused; used as idleTime-=gameSpeed in RunGameLoop
+0x0047c288,turbo,global,4,high,Main.cpp long turbo=4096; LoopFunc (turbo/4096) via cdq/and 0xfff/sar 0xc
+0x0048acf8,pFrameModifier,global,4,high,LoopFunc beenPaused branch: pFrameModifier += actFrameCount-lastActFrameCount
+0x0048acfc,beenPaused,global,4,high,"LoopFunc: set 1 in pause branch, tested/cleared in run branch"
+0x036bc608,pauseGameSpeed,global,4,high,LoopFunc: pauseGameSpeed = gameSpeed; gameSpeed = pauseGameSpeed when beenPaused
+0x00489734,frameCount,global,4,high,frontend.c int frameCount: GameLoop epilogue increment; RunGameLoop frameCount<2 / >15 tests; RunDemoMode sets 0 on exit
+0x00472108,gameState,global,24,high,"struct gameStateStruct: multi +0 (0x472108), single +1, mode +4 (0x47210c), oldMode +8, menuMode +12, storySequenceLevel +16, difficulty +20 (0x47211c); InitDemoMode writes multi=1,single=1,mode=10"
+0x0047210c,gameState.mode,global,4,high,GameLoop switch value; LoopFunc cmp 9 (PAUSE_MODE)
+0x00419180,Random,function,365,high,maths.c Random(lim): rseed=rseed^(rseed<<1); +1 if top bit clear; 0x80000000->0; return rseed%lim; RunGameLoop Random(300)/Random(4) idle anim
+0x00479d70,rseed,global,4,high,.data initial value 398623 (0x6151f) = maths.c ULONG rseed=398623; only global touched by Random
+0x036c1f00,player,global,624,high,"PLAYER player[4], sizeof 156 (0x9c): numSpawn +14 (0x36c1f0e, RunGameLoop ==25), inputPause +22 (0x36c1f16, GameLoop epilogue stride 0x9c), worldNum/levelNum +28/+29 (0x36c1f1c, InitLevel args in GameLoop STARTUP), frogState +32 (0x36c1f20), safe +48 (0x36c1f30 TIMER)"
+0x00489698,frog,global,16,high,ACTOR2 *frog[4]: RunGameLoop loop with player stride (psVar6+=0x4e shorts) sets frog[i]->draw (+0xc)=1; actorAnimate(*frog[0]) in RunDemoMode exit
+0x004896dc,currTile,global,16,high,GAMETILE *currTile[4]: RunGameLoop SHOW_ME_THE_TILE_NUMBERS compares firstTile+i*0x44 with currTile[0]
+0x036bc650,firstTile,global,4,high,"GAMETILE *firstTile (map.c): RunGameLoop tile-number loop base, stride 0x44 = sizeof(GAMETILE)=68"
+0x0048997c,tileCount,global,4,high,int tileCount (map.c): RunGameLoop tile-number loop count (i=tileCount; while(i--))
+0x00489808,currTileNum,global,4,medium,"RunGameLoop: result of the tile-number loop, then sprintf(tileString,""%d"")"
+0x00471df0,NUM_FROGS,global,4,high,frogger.c long NUM_FROGS=1: loop bound in GameLoop epilogue and RunGameLoop
+0x036c23e0,enemyList,global,96,high,"ENEMYLIST {array +0; count +4 (0x36c23e4); blocks +6; ENEMY head +8}: UpdateEnemies 0x406a50 walks head.next (0x36c23e8) until &head; ENEMY: uid +8, nmeActor +12, flags +16, speed +24, active +52, isWaiting +54, inTile +64, sizeof 88"
+0x036c21a0,platformList,global,212,high,"PLATFORMLIST {array; count +4 (0x36c21a4); blocks; PLATFORM head +8}: UpdatePlatforms 0x429ea0 walks head.next (0x36c21a8); PLATFORM: uid +24, pltActor +124, active +128, flags +132, currSpeed +136, isWaiting +140, inTile[2] +184, sizeof 204"
+0x036c2460,garibList,global,44,high,"GARIBLIST {array; GARIB head +4 (0x36c2464); blocks +36, count +38, total +40, maxCoins +42}: UpdateGaribs 0x4061c0 walks head.next (0x36c2468) checking active (+8), sprite (+0xc), fx (+0x10), dropSpeed (+0x1c)"
+0x004061c0,UpdateGaribs,function,463,high,collect.c UpdateGaribs: pauseFlag (0x36c2440)/pauseTimer (0x36c2448) block then garib list loop; called first in ProcessCollectables
+0x004054d0,ProcessCollectables,function,46,high,collect.c: UpdateGaribs(); player[0].spawnTimer (0x36c1f18) countdown sets spawnScoreLevel (0x36c1f1a)
+0x00406a50,UpdateEnemies,function,414,high,game.c RunGameLoop call order after UpdatePlatforms; walks enemyList
+0x00429ea0,UpdatePlatforms,function,1288,high,RunGameLoop call order; walks platformList
+0x004142d0,GameProcessController,function,2161,high,RunGameLoop: called for i<NUM_FROGS when frameCount>15
+0x0040d540,UpdateFroggerPos,function,1891,high,RunGameLoop: per-frog call when frog[i] != NULL
+0x0042f3e0,UpdateSpecialEffects,function,43,high,RunGameLoop call order
+0x0040bd80,UpdateEvents,function,274,high,RunGameLoop call order after UpdateSpecialEffects
+0x00404df0,UpdateCameraPosition,function,776,high,RunGameLoop: after startCam/frameCount<2 camera vector copy
+0x00405430,SetCamFF,function,1,high,"RunGameLoop: SetCamFF(currCamSource,currCamTarget) by value (6 dwords)"
+0x00471160,currCamSource,global,12,high,"cam.c FVECTOR currCamSource: RunGameLoop SetVectorFF(&currCamSource,&camSource) and SetCamFF args"
+0x00471180,camSource,global,12,high,cam.c FVECTOR camSource: source of the startCam copy
+0x004891b0,currCamTarget,global,12,high,cam.c FVECTOR currCamTarget: RunGameLoop startCam copy / SetCamFF args 4-6
+0x036c24a0,camTarget,global,12,high,cam.c FVECTOR camTarget: source of the startCam copy
+0x0048981c,startCam,global,4,high,RunGameLoop: if (startCam || frameCount<2) copy cam vectors; startCam=0
+0x004891a4,babiesSaved,global,4,high,RunGameLoop: babiesSaved==numBabies && numBabies -> endLevelTimer
+0x00489978,numBabies,global,4,high,map.c int numBabies: RunGameLoop end-of-level test
+0x036c1c68,endLevelTimer,global,8,high,"game.c TIMER endLevelTimer: RunGameLoop GTUpdate (time +0, lastCount +4) then LEVELCOMPLETE_MODE"
+0x036c1c60,modeTimer,global,8,high,"game.c TIMER modeTimer: GameLoop STARTUP case and RunGameLoop GTInit(&modeTimer,8)"
+0x00479f52,cheatCombos_SKIP_LEVEL_state,global,1,medium,RunGameLoop: cheatCombos[CHEAT_SKIP_LEVEL].state tested and cleared
+0x004178b0,InitLevel,function,1010,high,"layout.c InitLevel(worldID,levelID): calls InitTiming and LoadDemoFile; called with player[0].worldNum/levelNum (GameLoop STARTUP), (8,0)=frontend from RunDemoMode, demoLevels[nextDemo] from InitDemoMode"
+0x00417e90,LoadDemoFile,function,91,high,"levplay.c: sprintf ""DEMOS\RECORD-%lu-%lu.KEY"" (string 0x4793d4), fileLoad, playKeyCount=count/12"
+0x00417ef0,InitDemoMode,function,187,high,levplay.c: gameState multi=1 single=1 mode=10; InitLevel(demoLevels[nextDemo]); curPlayKey=0; demoTimeout=25; called from RunFrontendGameLoop when goingToDemo
+0x00417fb0,RunDemoMode,function,390,high,"levplay.c: demoTimeout GTUpdate, quittingDemo/fade, padData digital/debounce from playKeyList triplets, RunGameLoop; exit InitLevel(8,0), nextDemo wraps at 3"
+0x004793bc,demoLevels,global,24,high,"levplay.c int demoLevels[3][2] = {{0,0},{1,0},{6,1}} (GARDEN1, ANCIENT1, HALLOWEEN2) in .data; indexed by nextDemo*8 in InitDemoMode"
+0x00489970,nextDemo,global,4,high,levplay.c int nextDemo: InitDemoMode index; RunDemoMode ++ and wrap at NUM_DEMOS=3
+0x00489974,quittingDemo,global,4,high,"levplay.c quittingDemo: RunDemoMode sets on debounce/end-of-keys/timeout, clears before FREE(playKeyList)"
+0x036bc678,curPlayKey,global,4,high,levplay.c unsigned long curPlayKey: RunDemoMode replay index
+0x036bc67c,playKeyCount,global,4,high,levplay.c: LoadDemoFile count/12
+0x036bc688,playKeyList,global,4,high,levplay.c unsigned long *playKeyList: LoadDemoFile result; RunDemoMode FREE
+0x036bc680,demoTimeout,global,8,high,levplay.c TIMER demoTimeout: InitDemoMode time=25 (0x19); RunDemoMode GTUpdate with actFrameCount
+0x00489df0,goingToDemo,global,1,high,"menus.c char goingToDemo: first test in RunFrontendGameLoop -> difficulty=NORMAL, InitDemoMode()"
+0x0041c350,RunFrontendGameLoop,function,9672,high,menus.c: goingToDemo/fadingOut test then InitDemoMode; GameLoop case FRONTEND_MODE
+0x0048ab98,fadingOut,global,4,high,fadeout.cpp int fadingOut: STARTUP/RunDemoMode/frontend wait for it to reach 0
+0x0048ab9c,keepFade,global,4,high,fadeout.cpp int keepFade: RunDemoMode keepFade=0 after ScreenFade
+0x0043bf00,ScreenFade,function,90,high,"ScreenFade(255,0,30) in RunDemoMode/STARTUP"
+0x00444180,StartVideoPlayback,function,435,high,"video.cpp StartVideoPlayback(num): GameLoop STARTUP calls (1),(2),(3) gated on quitAllVideo"
+0x036c18f8,quitAllVideo,global,4,high,GameLoop STARTUP: if(quitAllVideo==0) next video
+0x0048a7c8,padData,global,,high,"controll.cpp PadDataType padData: digital[8] at +18 (0x48a7da), debounce[8] at +34 (0x48a7ea); ProcessUserInput clears/rebuilds both; RunDemoMode ORs replay keys"
+0x0043a2d0,ProcessUserInput,function,471,high,"controll.cpp: rKeying&&mode==2&&frameCount==2 -> ""%s\demos\record-%lu-%lu.key"" (0x47c018); digital/debounce from joypadButtons; RecordButtons fwrite(&actFrameCount)"
+0x0043a080,ProcessKeyboardInput,function,585,high,"controll.cpp: lpKeyb (0x48aa3c) GetDeviceData (vtbl+0x28) / GetDeviceState (+0x24, 256-byte buffer 0x48a914); keymap scan"
+0x0048a528,keymap,global,672,medium,"controll.cpp KEYENTRY keymap[56]: ProcessKeyboardInput walks 56 entries (player, button, DIK key at +8)"
+0x0048aa24,joypadButtons,global,8,high,controll.cpp unsigned short joypadButtons[4]: ProcessUserInput ORs into padData.digital
+0x0048aa30,joypadDebounce,global,8,high,ProcessUserInput ORs into padData.debounce then clears
+0x0048aa14,oldJoypadButtons,global,8,medium,ProcessUserInput: oldJoypadButtons[i] = joypadButtons[i]
+0x0047bfb8,keysEnabled,global,4,medium,ProcessUserInput: if (keysEnabled && !showSounds)
+0x0048ab54,rKeying,global,4,high,controll.cpp unsigned rKeying: record-keys init test in ProcessUserInput
+0x0048ab58,rKeyOK,global,4,high,controll.cpp unsigned rKeyOK: set after fopen of the record file; cleared on PAD_START
+0x035f2d08,windowActive,global,4,medium,ProcessUserInput: if (windowActive) ProcessKeyboardInput()
+0x00439ef0,OldProcessJoypad,function,194,medium,ProcessUserInput: unconditional call after keyboard
+0x0043cac0,CopyActorList,function,458,high,"LoopFunc: after StartTimer(11,""UpdateStuff"")"
+0x0043b300,DrawLoop,function,1606,high,LoopFunc: last call
+0x0043ce10,GameStartup,function,414,medium,Main.cpp GameStartup: InitTiming(60.0) call (0x44b3f0) among startup calls
+0x00436b60,NetgameRun,function,183,medium,"LoopFunc networkGame branch after StartTimer(10,""Network""); also calls GameLoop"
+0x0048abdc,networkGame,global,4,high,LoopFunc: if (networkGame) NetgameRun else GameLoop
+0x00489998,quittingLevel,global,4,medium,LoopFunc pause test: (mode!=PAUSE) || (quittingLevel && pauseConfirmMode==0)
+0x036bc57c,pauseConfirmMode,global,4,medium,LoopFunc pause test second operand
+0x0041fc40,UpdateCheatText,function,303,medium,GameLoop: first call (non-FINAL_MASTER camControlMode block compiled out)
+0x00462bc0,sprintf,function,82,high,"CRT sprintf: format strings DEMOS\RECORD-%lu-%lu.KEY, MAPS\ENTITY-%d-%d.DAT"
+0x004187a0,LoadLevelEntities,function,112,high,"map.c: sprintf ""MAPS\ENTITY-%d-%d.DAT"" (0x4798c4)"
+0x0043bf90,fileLoad,function,24,medium,"islfile fileLoad(name,&size): callers LoadDemoFile, LoadLevelEntities"
+0x00471318,enemyAnimHack,data,144,high,"enemies.c NMEHACK[] (8B: char*,short idx into hackFuncs): 17 entries + {NULL,0} terminator; looped by inlined AddEnemyModelUpdates in CreateAndAddEnemy 0x40a5b0 (stride 8, stores hackFuncs[flags] -> nme->Update[1])"
+0x004712f8,hackFuncs,data,28,high,"enemies.c void(*hackFuncs[7])(ENEMY*): indexed by enemyAnimHack[].flags in CreateAndAddEnemy 0x40a5b0"
+0x004713a8,reactiveAnims,data,1680,high,"enemies.c REACTIVEANIM[] (24B: name[16],animChar,animFrog,type): 69 entries + empty-name terminator at 0x471a20; inlined GetReactiveAnimNumber loop in CreateAndAddEnemy 0x40a5b0; NMEDamageFrog 0x4066a0 reads +0x10/+0x12/+0x14"
+0x0040a5b0,CreateAndAddEnemy,function,1671,high,"enemies.c: inlines GetReactiveAnimNumber (gstrlwr/gstrcmp over reactiveAnims) and AddEnemyModelUpdates (enemyAnimHack); strnicmp STNWHEEL/stnwheel 8 -> flag 0x80"
+0x004066a0,NMEDamageFrog,function,934,high,"enemies.c: reactiveAnims[nme->reactiveNumber].type ANI_* tests (2,4,0x80000000), deathAnims[animFrog](pl), animChar != -1 -> actorAnimate(...,64,0)"
+0x004150e0,gstrlwr,function,37,medium,"called on reactiveAnims names and lookup name in CreateAndAddEnemy (GetReactiveAnimNumber inlined)"
+0x004150a0,gstrcmp,function,54,medium,"compare in inlined GetReactiveAnimNumber loop (CreateAndAddEnemy 0x40a5b0), ==0 -> return index"
+0x00415170,stringChangePSIToOBE,function,83,medium,"called once on lowercased name before reactiveAnims loop in CreateAndAddEnemy (only caller)"

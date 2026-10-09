@@ -1,0 +1,20 @@
+[package]
+name = "f2-etc"
+description = "ETC event-script compiler and decompiler for Frogger 2 level scripts (.fev)."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+# Close translation of the original ETC compiler (frogger2-vss/teamSpirit/Etc).
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "f2_etc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "f2-etc"
+path = "src/main.rs"
+
+[dependencies]
+f2-formats = { path = "../../crates/f2-formats" }

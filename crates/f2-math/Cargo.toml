@@ -1,0 +1,14 @@
+[package]
+name = "f2-math"
+description = "Bit-exact port of the original fixed-point and vector maths (Common/fixed.c, maths.c)."
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+serde = { workspace = true }
+
+[build-dependencies]
+cc = "1"

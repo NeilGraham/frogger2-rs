@@ -1,0 +1,16 @@
+[package]
+name = "f2-trace"
+description = "Per-tick game-state traces (retail oracle vs Rust simulation): schema, JSONL/binary encodings, diff."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# Schema compatibility with the oracle's dependency-free encoder.
+f2fix = { path = "../../crates/f2fix" }

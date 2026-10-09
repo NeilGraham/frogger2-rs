@@ -1,0 +1,24 @@
+[package]
+name = "f2-platform"
+description = "Window, input (PSX pad abstraction), config and paths."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[features]
+default = ["window", "gamepad"]
+# winit window/event-loop helper (+ keyboard scancode mapping). Headless crates can disable
+# default features and still use the input types, config and paths.
+window = ["dep:winit"]
+# Gamepads through gilrs.
+gamepad = ["dep:gilrs"]
+
+[dependencies]
+serde.workspace = true
+toml = "0.8"
+winit = { version = "0.30", optional = true }
+gilrs = { version = "0.11", optional = true }
+
+[dev-dependencies]
+f2-import = { path = "../f2-import" }

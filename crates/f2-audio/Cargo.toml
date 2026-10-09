@@ -1,0 +1,17 @@
+[package]
+name = "f2-audio"
+description = "Audio: sample banks, positional voices and music streaming."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[features]
+default = ["cpal"]
+# Real-time output through cpal (ALSA/PulseAudio, WASAPI, CoreAudio). Without it only the
+# null/offline output exists (headless, muted parity runs, tests).
+cpal = ["dep:cpal"]
+
+[dependencies]
+f2-formats = { path = "../f2-formats" }
+cpal = { version = "0.15", optional = true }

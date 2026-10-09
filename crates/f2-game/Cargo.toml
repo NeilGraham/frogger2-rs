@@ -1,0 +1,13 @@
+[package]
+name = "f2-game"
+description = "Deterministic gameplay simulation ported from the original Common/ sources."
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish.workspace = true
+
+[dependencies]
+f2-math = { path = "../f2-math" }
+f2-formats = { path = "../f2-formats" }
+serde = { workspace = true }
+f2-trace = { path = "../../tools/f2-trace" }

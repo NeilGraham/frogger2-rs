@@ -1,0 +1,22 @@
+[package]
+name = "frogger"
+description = "The Frogger 2 Rust port executable."
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish.workspace = true
+
+[[bin]]
+name = "frogger"
+path = "src/main.rs"
+
+[dependencies]
+f2-game = { path = "../f2-game" }
+f2-engine = { path = "../f2-engine" }
+f2-platform = { path = "../f2-platform", features = ["window", "gamepad"] }
+f2-audio = { path = "../f2-audio" }
+f2-bink = { path = "../f2-bink" }
+f2-mods = { path = "../f2-mods" }
+f2-formats = { path = "../f2-formats" }
+f2-math = { path = "../f2-math" }
+wgpu = "=30.0.1"

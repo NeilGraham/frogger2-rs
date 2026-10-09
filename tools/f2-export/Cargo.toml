@@ -1,0 +1,17 @@
+[package]
+name = "f2-export"
+description = "Exports imported game data to PNG/WAV/glTF/JSON."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[dependencies]
+f2-formats = { path = "../../crates/f2-formats" }
+f2-mods = { path = "../../crates/f2-mods" }
+png = "0.17"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+gltf = { version = "1", default-features = false, features = ["import", "utils", "names", "extras"] }
+tempfile = "3"

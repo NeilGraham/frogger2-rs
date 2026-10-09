@@ -1,0 +1,18 @@
+[package]
+name = "f2-import"
+description = "Imports a user-owned Frogger 2 disc image or install into the data directory used by the Rust port."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[[bin]]
+name = "f2-import"
+path = "src/main.rs"
+
+[dependencies]
+f2-media = { path = "../f2-media" }
+f2-formats = { path = "../f2-formats" }
+sha1.workspace = true
+serde.workspace = true
+serde_json.workspace = true

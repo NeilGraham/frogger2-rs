@@ -1,0 +1,14 @@
+[package]
+name = "f2-engine"
+description = "wgpu renderer replacing the MDX library: models, textures, sprites, overlays, fonts."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[dependencies]
+f2-formats = { path = "../f2-formats" }
+wgpu = "=30.0.1"
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+pollster = "=1.0.1"
+png = "=0.18.1"

@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+# f2fix is a 32-bit Windows DLL with its own workspace (built by tools/run/build_f2fix.sh).
+exclude = ["crates/f2fix"]
+members = [
+    "crates/f2-media",
+    "crates/f2-formats",
+    "crates/f2-import",
+    "crates/f2-math",
+    "crates/f2-game",
+    "crates/f2-engine",
+    "crates/f2-audio",
+    "crates/f2-platform",
+    "crates/f2-bink",
+    "crates/f2-mods",
+    "crates/frogger",
+    "tools/f2-export",
+    "tools/f2-viewer",
+    "tools/f2-trace",
+    "tools/f2-etc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[workspace.dependencies]
+sha1 = "0.10"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+zip = { version = "=2.4.2", default-features = false, features = ["deflate-flate2", "flate2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 2

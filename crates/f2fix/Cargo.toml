@@ -1,0 +1,29 @@
+[package]
+name = "f2fix"
+description = "32-bit oracle shim DLL injected (as a dinput.dll proxy) into the retail Frogger2.exe: headless, muted, framebuffer dumps."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+[lib]
+# The Windows build is a cdylib (deployed as dinput.dll); the rlib keeps the
+# portable helpers (cfg, fbconv) unit-testable on the Linux host.
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+
+# Standalone workspace: f2fix is built for i686-pc-windows-msvc by
+# tools/run/build_f2fix.sh with the Windows toolchain and is independent of
+# the root workspace (see docs/ORACLE.md).
+[workspace]
+
+# No unwinding may ever cross into game code.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+debug = 1

@@ -1,0 +1,12 @@
+[package]
+name = "f2-media"
+description = "Disc image access for Frogger 2: CUE/BIN (multi- and single-file), ISO9660, Redump zips, Red Book audio tracks, InstallShield 5 cabinets."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[dependencies]
+sha1.workspace = true
+flate2.workspace = true
+zip.workspace = true

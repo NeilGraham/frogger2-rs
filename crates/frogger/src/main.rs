@@ -1,0 +1,279 @@
+//! `frogger`: the Frogger 2 port executable.
+//!
+//! ```text
+//! frogger [--data DIR] [--mute] [--level W L] [--size WxH] [--fullscreen]
+//! frogger --headless --frames N [--level W L] --screenshot out.png
+//! ```
+//! Until the frontend is ported: no arguments plays the startup FMVs (HASBROS, BLITZS)
+//! and loads Garden 1; `--level W L` starts `INGAME_MODE` directly on that level.
+//! Keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos).
+
+mod app;
+mod data;
+mod render;
+mod video;
+
+use app::{App, Step};
+use f2_audio::AudioEngine;
+use f2_engine::{GpuContext, WindowSurface};
+use f2_platform::gamepad::Gamepads;
+use f2_platform::window::{self, winit, Flow, WindowApp, WindowConfig};
+use f2_platform::Config;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+struct Args {
+    data: Option<PathBuf>,
+    mute: bool,
+    level: Option<(u32, u32)>,
+    headless: bool,
+    frames: u32,
+    screenshot: Option<PathBuf>,
+    size: Option<(u32, u32)>,
+    fullscreen: bool,
+}
+
+fn usage() -> ! {
+    eprintln!(
+        "usage: frogger [--data DIR] [--mute] [--level WORLD LEVEL] [--size WxH] [--fullscreen]\n\
+         \x20      frogger --headless --frames N [--level WORLD LEVEL] [--screenshot out.png] [--size WxH]\n\
+         keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos)"
+    );
+    std::process::exit(2);
+}
+
+fn parse_args() -> Args {
+    let mut a = Args { data: None, mute: false, level: None, headless: false, frames: 120, screenshot: None, size: None, fullscreen: false };
+    let mut it = std::env::args().skip(1);
+    let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--data" => a.data = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--mute" => a.mute = true,
+            "--level" => {
+                let w = num(it.next());
+                let l = num(it.next());
+                a.level = Some((w, l));
+            }
+            "--headless" => a.headless = true,
+            "--frames" => a.frames = num(it.next()),
+            "--screenshot" => a.screenshot = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--size" => {
+                let v = it.next().unwrap_or_else(|| usage());
+                let (w, h) = v.split_once('x').unwrap_or_else(|| usage());
+                a.size = Some((w.parse().unwrap_or_else(|_| usage()), h.parse().unwrap_or_else(|_| usage())));
+            }
+            "--fullscreen" => a.fullscreen = true,
+            "-h" | "--help" => usage(),
+            _ => usage(),
+        }
+    }
+    a
+}
+
+fn main() {
+    let args = parse_args();
+    let cfg = Config::load_default().unwrap_or_else(|e| {
+        eprintln!("frogger: config: {e} (using defaults)");
+        Config::default()
+    });
+    let data = match data::Data::locate(&cfg, args.data.clone()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("frogger: {e}");
+            std::process::exit(1);
+        }
+    };
+    eprintln!("frogger: data {}", data.rendition.display());
+
+    let steps: Vec<Step> = match args.level {
+        Some((w, l)) => vec![Step::Level(w, l)],
+        // Startup FMVs, then Garden 1 (frontend not ported yet).
+        None if args.headless => vec![Step::Level(0, 0)],
+        None => vec![Step::Video("hasbros".into()), Step::Video("blitzs".into()), Step::Level(0, 0)],
+    };
+    let res = if args.headless { headless(data, &cfg, &args, steps) } else { run_window(data, cfg, &args, steps) };
+    if let Err(e) = res {
+        eprintln!("frogger: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn make_audio(cfg: &Config, mute: bool) -> AudioEngine {
+    let mut a = if mute || cfg.audio.muted { AudioEngine::null(44100) } else { AudioEngine::with_default_output() };
+    a.set_master_volume(cfg.audio.master as f32 / 100.0);
+    a.set_music_volume(cfg.audio.music as i32);
+    a.set_sfx_volume(cfg.audio.sfx as i32);
+    a
+}
+
+// ------------------------------------------------------------------ headless
+
+/// CI smoke mode: runs N ticks without a window (muted) and renders the last frame offscreen.
+fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Result<(), String> {
+    let (w, h) = args.size.unwrap_or((640, 480));
+    let ctx = GpuContext::new_headless().map_err(|e| e.to_string())?;
+    let mut app = App::new(data, &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), cfg.input_mapper());
+    app.push_steps(steps);
+    let kb = f2_platform::KeyboardState::default();
+    // First update loads the level (no time passes), then exactly N ticks.
+    app.update(Duration::ZERO, &kb, &[], true);
+    if app.scene.is_none() {
+        return Err("level failed to load".into());
+    }
+    for _ in 0..args.frames {
+        app.tick(&[]);
+    }
+    app.draw(w, h);
+    let tris = app.r.queued_tris();
+    eprintln!("frogger: {} ticks, act_frame_count {}, {tris} triangles", app.ticks, app.game.act_frame_count);
+    if let Some(out) = &args.screenshot {
+        let img = app.r.render_to_image(app.clear_color()).map_err(|e| e.to_string())?;
+        img.write_png(out).map_err(|e| e.to_string())?;
+        eprintln!("frogger: wrote {} ({}x{})", out.display(), img.width, img.height);
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------ window
+
+struct Gfx {
+    ctx: GpuContext,
+    surface: WindowSurface,
+}
+
+struct Host {
+    data: Option<data::Data>,
+    cfg: Config,
+    mute: bool,
+    steps: Vec<Step>,
+    app: Option<App>,
+    gfx: Option<Gfx>,
+    gamepads: Option<Gamepads>,
+    fullscreen: bool,
+    last: Instant,
+    error: Option<String>,
+}
+
+impl WindowApp for Host {
+    fn init(&mut self, window: &Arc<window::Window>) {
+        if self.gfx.is_some() {
+            return;
+        }
+        let size = window.inner_size();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())));
+        let vsync = self.cfg.video.vsync;
+        let res = (|| -> Result<Gfx, String> {
+            let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+            let ctx = GpuContext::with_instance(instance, Some(&surface)).map_err(|e| e.to_string())?;
+            let mut surface = WindowSurface::new(&ctx, surface, size.width, size.height).map_err(|e| e.to_string())?;
+            // Present at display rate (vsync); the simulation is decoupled from it.
+            surface.config.present_mode = if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
+            surface.surface.configure(&ctx.device, &surface.config);
+            Ok(Gfx { ctx, surface })
+        })();
+        match res {
+            Ok(g) => {
+                let audio = make_audio(&self.cfg, self.mute);
+                let mut mapper = self.cfg.input_mapper();
+                self.gamepads = Gamepads::new().map_err(|e| eprintln!("frogger: gamepads unavailable: {e}")).ok();
+                if let Some(p) = &self.gamepads {
+                    if p.count() > 0 && self.cfg.input.controllers.iter().all(|c| *c == f2_platform::Controller::Keyboard) {
+                        mapper.reset_controllers(p.count());
+                    }
+                }
+                eprintln!(
+                    "frogger: {} {:?} ({:?}), audio {}",
+                    g.ctx.adapter.get_info().name,
+                    g.ctx.adapter.get_info().backend,
+                    g.surface.config.format,
+                    if audio.is_realtime() { "on" } else { "muted" }
+                );
+                let mut app = App::new(self.data.take().expect("data"), &g.ctx.device, &g.ctx.queue, g.surface.config.format, audio, mapper);
+                app.push_steps(std::mem::take(&mut self.steps));
+                self.app = Some(app);
+                self.gfx = Some(g);
+            }
+            Err(e) => self.error = Some(e),
+        }
+        self.last = Instant::now();
+    }
+
+    fn resized(&mut self, _w: &Arc<window::Window>, size: winit::dpi::PhysicalSize<u32>) {
+        if let Some(g) = &mut self.gfx {
+            g.surface.resize(&g.ctx.device, size.width, size.height);
+        }
+    }
+
+    fn frame(&mut self, frame: window::Frame<'_>) -> Flow {
+        if self.error.is_some() {
+            return Flow::Exit;
+        }
+        let (Some(app), Some(g)) = (&mut self.app, &mut self.gfx) else { return Flow::Continue };
+        let now = Instant::now();
+        let dt = now - self.last;
+        self.last = now;
+
+        let joypads = self.gamepads.as_mut().map(|p| p.poll()).unwrap_or_default();
+        app.update(dt, frame.keyboard, &joypads, frame.focused);
+        if app.requests.quit {
+            return Flow::Exit;
+        }
+        if std::mem::take(&mut app.requests.toggle_fullscreen) {
+            self.fullscreen = !self.fullscreen;
+            window::set_fullscreen(frame.window, self.fullscreen);
+        }
+        if app.idle() {
+            return Flow::Exit;
+        }
+
+        let (w, h) = (g.surface.config.width, g.surface.config.height);
+        app.draw(w, h);
+        let tex = match g.surface.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                let s = frame.window.inner_size();
+                g.surface.resize(&g.ctx.device, s.width, s.height);
+                return Flow::Continue;
+            }
+            _ => {
+                std::thread::sleep(Duration::from_millis(5));
+                return Flow::Continue;
+            }
+        };
+        let view = tex.texture.create_view(&Default::default());
+        let clear = app.clear_color();
+        app.r.render(&view, w, h, clear);
+        frame.window.pre_present_notify();
+        g.ctx.queue.present(tex);
+        Flow::Continue
+    }
+}
+
+fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>) -> Result<(), String> {
+    let mut wc = WindowConfig::from_config(&cfg);
+    if let Some((w, h)) = args.size {
+        wc.width = w;
+        wc.height = h;
+    }
+    wc.fullscreen |= args.fullscreen;
+    wc.title = "Frogger 2: Swampy's Revenge".into();
+    let host = Host {
+        data: Some(data),
+        mute: args.mute,
+        fullscreen: wc.fullscreen,
+        cfg,
+        steps,
+        app: None,
+        gfx: None,
+        gamepads: None,
+        last: Instant::now(),
+        error: None,
+    };
+    let host = window::run(wc, host)?;
+    match host.error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}

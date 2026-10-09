@@ -1,0 +1,40 @@
+# Known bugs, quirks & community fixes (PC)
+
+Sources: Frogger 2 Enhanced (`HighwayFrogs/frogger2-pc` `fixes` branch, `Files/FEATURES.MD`,
+`Files/RELEASE.MD`), source reading, and research 2026-10-09. TODO: read the `fixes` branch
+diffs in full and turn each into a tracked issue with a root cause.
+
+Legend for "Port": **free** = disappears by construction in the Rust architecture;
+**toggle** = keep authentic behaviour by default, fix behind the "enhanced" profile;
+**fix** = always fix (crash/corruption).
+
+| # | Bug / limitation | Root cause (known/suspected) | Enhanced mod | Port |
+|---|---|---|---|---|
+| 1 | Max resolution 1024×768-ish; no widescreen | Config dialog list; 4:3 projection & overlay maths | High-res + widescreen, sprite/coin scaling | free (any res) + widescreen rules |
+| 2 | 16-bit colour only | `DDrawCreateSurfaces(…,16…)` hard-coded | 32-bit | free |
+| 3 | Half-screen / wrong-colour fullscreen images, garbled level-select book in 32-bit | 16bpp assumptions in backdrop/surface copies | fixed | free |
+| 4 | Camera divide-by-zero crash | `cam.c` | fixed | fix |
+| 5 | Config window sometimes empty resolution list / hidden mouse | device enumeration | always show window | free (own launcher/settings) |
+| 6 | **Music doesn't loop / end-of-level music skipped on Vista+** | MCI CD-audio notify no longer delivered | WAV music from `music\` | free (streamed ripped tracks) |
+| 7 | Pause always resumes Garden track | `PrepareSong` logic on resume | fixed | toggle→fix |
+| 8 | Needs CD in drive for videos | `FindFrogger2CD` | play from `Video\` | free (imported data dir) |
+| 9 | **Gliding lasts longer at high FPS (windowed)** | variable-timestep integration in frog glide | not fixed | free (fixed 60 Hz sim) |
+| 10 | Particles render wrong / too many | particle spawn tied to frame count? | not fixed | investigate → toggle |
+| 11 | Last level: can get stuck after vacuum tube | level script / tile setup | not fixed | fix after root cause |
+| 12 | Software renderer half-screen, purple/green | SoftStation 565/555 mismatch | n/a | free (no software renderer) |
+| 13 | Settings corrupted after DirectX failure | registry write on failure path | — | free (own config file) |
+| 14 | No FPS cap (game runs uncapped in windowed mode) | — | FPS cap | free (vsync/pacing) |
+| 15 | Keyboard-only rebinding via dialog; DInput joystick only | DX7 era | — | free (gilrs + rebinding UI) |
+| 16 | Online multiplayer via DirectPlay (dead) | — | — | Phase 6 replacement |
+
+Bugs discovered during the port should be appended here with: repro, root cause (file:line in
+original), authentic-vs-fixed decision, test (demo/trace) that pins it.
+
+## Found during the port
+
+| # | Bug | Root cause | Port |
+|---|---|---|---|
+| 17 | First keypress of a demo replay registers randomly | `RunDemoMode` (`Common/levplay.c`) reads `playKeyList[-2]` — heap header bytes before the key buffer — to decide whether the first recorded press applies | Treat that value as 0 (oracle does the same) → first press always registers |
+| 18 | Volume 238 plays at full volume | typo in the original volume table (`PC/pcaudio.c`) | reproduced, `BUG(original)` |
+| 19 | Looping sounds resumed after unpause play once | `UnPauseAudio` | reproduced in authentic profile |
+| 20 | Music never loops on PC even pre-Vista; end-of-level loop handoff never fires | retail never calls `LoopSong` | port loops (intended behaviour) |
