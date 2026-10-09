@@ -38,8 +38,10 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
 - [ ] Integer-scaled or high-res UI fonts
 - [x] Draw distance (`display.draw_distance`, far-clip multiplier) / fog (`display.fog`, linear
   to the clear colour ending at the far clip; never on the sky backdrop)
-- [ ] HUD anchoring of the real game HUD/menus once overlays are ported (the renderer rules
-  apply automatically to `draw_sprite_overlay`/`draw_text_overlay`; verify per screen)
+- [ ] HUD anchoring of the real game HUD/menus: the ported overlays/text go through
+  `draw_sprite_overlay`/`draw_text_overlay_ex` (in-game arcade HUD verified at 16:9; level
+  complete / pause / multiplayer screens still to verify per screen). Authentic keeps the
+  original stretch and `SPRITECLIP*` 10-pixel clipping (scaled with the resolution).
 
 ## Input
 

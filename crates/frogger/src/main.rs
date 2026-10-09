@@ -1,18 +1,23 @@
 //! `frogger`: the Frogger 2 port executable.
 //!
 //! ```text
-//! frogger [--data DIR] [--mute] [--level W L] [--size WxH] [--fullscreen] [display options]
-//! frogger --headless --frames N [--level W L] [--size WxH] --screenshot out.png [display options]
+//! frogger [--data DIR] [--mute] [--level W L | --frontend | --multi W L N] [--size WxH] [--fullscreen] [display options]
+//! frogger --headless --frames N [--level W L | --frontend | --multi W L N] [--size WxH] --screenshot out.png [display options]
 //! display options: --profile authentic|enhanced, --msaa N, --render-scale S, --hud-probe
 //! ```
 //! Until the frontend is ported: no arguments plays the startup FMVs (HASBROS, BLITZS)
-//! and loads Garden 1; `--level W L` starts `INGAME_MODE` directly on that level.
+//! and loads Garden 1; `--level W L` starts `INGAME_MODE` directly on that level,
+//! `--frontend` the frontend level (start screen), `--multi W L N` local multiplayer with
+//! N frogs, `--demo W L` a recorded demo, `--boot` the game's own start-up (title, logo
+//! FMVs, frontend).
 //! Keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos);
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
 mod app;
 mod data;
+mod fx;
+mod overlay;
 mod render;
 mod video;
 
@@ -30,6 +35,10 @@ struct Args {
     data: Option<PathBuf>,
     mute: bool,
     level: Option<(u32, u32)>,
+    frontend: bool,
+    boot: bool,
+    multi: Option<(u32, u32, i32)>,
+    demo: Option<(u32, u32)>,
     headless: bool,
     frames: u32,
     screenshot: Option<PathBuf>,
@@ -43,8 +52,8 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: frogger [--data DIR] [--mute] [--level WORLD LEVEL] [--size WxH] [--fullscreen]\n\
-         \x20      frogger --headless --frames N [--level WORLD LEVEL] [--screenshot out.png] [--size WxH]\n\
+        "usage: frogger [--data DIR] [--mute] [--level WORLD LEVEL | --frontend | --boot | --multi WORLD LEVEL FROGS | --demo WORLD LEVEL] [--size WxH] [--fullscreen]\n\
+         \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe]\n\
          keys: F1 free camera, F2 tile overlay, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -58,6 +67,10 @@ fn parse_args() -> Args {
         data: None,
         mute: false,
         level: None,
+        frontend: false,
+        boot: false,
+        multi: None,
+        demo: None,
         headless: false,
         frames: 120,
         screenshot: None,
@@ -78,6 +91,19 @@ fn parse_args() -> Args {
                 let w = num(it.next());
                 let l = num(it.next());
                 a.level = Some((w, l));
+            }
+            "--frontend" => a.frontend = true,
+            "--boot" => a.boot = true,
+            "--multi" => {
+                let w = num(it.next());
+                let l = num(it.next());
+                let n = num(it.next());
+                a.multi = Some((w, l, n as i32));
+            }
+            "--demo" => {
+                let w = num(it.next());
+                let l = num(it.next());
+                a.demo = Some((w, l));
             }
             "--headless" => a.headless = true,
             "--frames" => a.frames = num(it.next()),
@@ -131,6 +157,16 @@ fn main() {
     eprintln!("frogger: data {}", data.rendition.display());
 
     let steps: Vec<Step> = match args.level {
+        _ if args.frontend => vec![Step::Frontend],
+        _ if args.boot => vec![Step::Boot],
+        _ if args.demo.is_some() => {
+            let (w, l) = args.demo.unwrap();
+            vec![Step::Demo(w, l)]
+        }
+        _ if args.multi.is_some() => {
+            let (w, l, n) = args.multi.unwrap();
+            vec![Step::Multi(w, l, n)]
+        }
         Some((w, l)) => vec![Step::Level(w, l)],
         // Startup FMVs, then Garden 1 (frontend not ported yet).
         None if args.headless => vec![Step::Level(0, 0)],
@@ -164,15 +200,50 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     let kb = f2_platform::KeyboardState::default();
     // First update loads the level (no time passes), then exactly N ticks.
     app.update(Duration::ZERO, &kb, &[], true);
-    if app.scene.is_none() {
+    if app.scene.is_none() && !app.has_session() {
         return Err("level failed to load".into());
     }
+    // Debug: `F2_SHOT_UNTIL=tongue|ring|decal|lightning` stops at the first tick showing it.
+    let until = std::env::var("F2_SHOT_UNTIL").ok();
     for _ in 0..args.frames {
+        if let Some(u) = &until {
+            use f2_game::specfx::FxDraw;
+            let g = &app.game;
+            let fx = |d: FxDraw| g.specfx.iter_list().any(|(_, e)| e.draw == Some(d));
+            let hit = match u.as_str() {
+                "tongue" => g.tongue.tongue.iter().any(|t| t.flags & f2_game::tongue::TONGUE_BEINGUSED != 0 && t.progress > 2048),
+                "ring" => fx(FxDraw::Ring),
+                "decal" => fx(FxDraw::Decal),
+                "lightning" => fx(FxDraw::Lightning),
+                _ => false,
+            };
+            if hit {
+                break;
+            }
+        }
         app.tick(&[]);
+        // Videos are skipped headless (the simulation would wait for them).
+        while app.video.is_some() {
+            app.end_video();
+        }
     }
     app.draw(w, h);
     let tris = app.r.queued_tris();
     eprintln!("frogger: {} ticks, act_frame_count {}, {tris} triangles, profile {}", app.ticks, app.game.act_frame_count, app.profile.name());
+    let g = &app.game;
+    let mut fx = std::collections::BTreeMap::new();
+    for (_, e) in g.specfx.iter_list() {
+        *fx.entry(format!("{:?}/{}", e.draw, e.ty)).or_insert(0) += 1;
+    }
+    eprintln!(
+        "frogger: mode {}, {} sprites, {} overlays, {} text overlays, {} proc textures, fade {:?}, effects (draw/type) {fx:?}",
+        g.game_state.mode,
+        g.sprite.count,
+        g.overlays.block.iter().filter(|o| o.used != 0 && o.draw != 0).count(),
+        g.textover.block.iter().filter(|o| o.used != 0 && o.draw != 0).count(),
+        g.ptexture.list.iter().filter(|p| p.surface.is_some()).count(),
+        g.screen_fade_colour()
+    );
     if let Some(out) = &args.screenshot {
         let img = app.r.render_to_image(app.clear_color()).map_err(|e| e.to_string())?;
         img.write_png(out).map_err(|e| e.to_string())?;
@@ -351,8 +422,17 @@ mod tests {
     }
 
     /// Garden 1 after 120 ticks, rendered headless at `w`×`h`. `options = None` applies
-    /// `profile` through the host; `Some` sets the renderer options directly.
-    fn garden1(ctx: &GpuContext, root: &std::path::Path, w: u32, h: u32, profile: Profile, options: Option<f2_engine::RenderOptions>) -> f2_engine::RgbaImage {
+    /// `profile` through the host; `Some` sets the renderer options directly. `hud = false`
+    /// hides the sprite/text overlays (world only).
+    fn garden1(
+        ctx: &GpuContext,
+        root: &std::path::Path,
+        w: u32,
+        h: u32,
+        profile: Profile,
+        options: Option<f2_engine::RenderOptions>,
+        hud: bool,
+    ) -> f2_engine::RgbaImage {
         let data = data::Data::locate(&Config::default(), Some(root.to_path_buf())).expect("data");
         let mut app = App::new(data, &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
         app.set_display(profile, DisplaySettings::ENHANCED);
@@ -364,6 +444,10 @@ mod tests {
         }
         if let Some(o) = options {
             app.r.options = o;
+        }
+        if !hud {
+            app.game.overlays.draw_overlays = false;
+            app.game.textover.num_entries = 0;
         }
         app.draw(w, h);
         app.r.render_to_image(app.clear_color()).expect("render")
@@ -381,10 +465,10 @@ mod tests {
             return;
         };
         let ctx = GpuContext::new_headless().expect("headless GPU");
-        let auth = garden1(&ctx, &root, 640, 480, Profile::Authentic, None);
-        let legacy = garden1(&ctx, &root, 640, 480, Profile::Authentic, Some(f2_engine::RenderOptions::default()));
+        let auth = garden1(&ctx, &root, 640, 480, Profile::Authentic, None, true);
+        let legacy = garden1(&ctx, &root, 640, 480, Profile::Authentic, Some(f2_engine::RenderOptions::default()), true);
         assert!(auth.pixels == legacy.pixels, "authentic profile differs from the retail-default renderer");
-        let enh = garden1(&ctx, &root, 640, 480, Profile::Enhanced, None);
+        let enh = garden1(&ctx, &root, 640, 480, Profile::Enhanced, None, true);
         assert!(enh.pixels != auth.pixels, "enhanced profile should differ (MSAA, filtering)");
         if let Some(base) = std::env::var_os("F2_AUTHENTIC_BASELINE") {
             let out = std::env::temp_dir().join(format!("f2-authentic-{}.png", std::process::id()));
@@ -404,8 +488,10 @@ mod tests {
             return;
         };
         let ctx = GpuContext::new_headless().expect("headless GPU");
-        let wide = garden1(&ctx, &root, 2560, 1080, Profile::Enhanced, None);
-        let narrow = garden1(&ctx, &root, 1440, 1080, Profile::Enhanced, None);
+        // World only: the HUD is re-anchored to the screen edges in the wide frame, so it
+        // is outside the compared centre crop there but inside it in the 4:3 frame.
+        let wide = garden1(&ctx, &root, 2560, 1080, Profile::Enhanced, None, false);
+        let narrow = garden1(&ctx, &root, 1440, 1080, Profile::Enhanced, None, false);
         assert_eq!((wide.width, wide.height), (2560, 1080));
         let (mut same, mut total) = (0usize, 0usize);
         for y in (0..1080).step_by(3) {
@@ -419,7 +505,7 @@ mod tests {
             }
         }
         assert!(same * 100 >= total * 97, "centre crop matches 4:3 render: {same}/{total}");
-        let auth = garden1(&ctx, &root, 2560, 1080, Profile::Authentic, None);
+        let auth = garden1(&ctx, &root, 2560, 1080, Profile::Authentic, None, false);
         assert!(auth.pixels != wide.pixels);
     }
 }

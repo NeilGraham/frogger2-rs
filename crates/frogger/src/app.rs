@@ -2,12 +2,13 @@
 //! interpolated rendering (`docs/architecture.md` §3).
 
 use crate::data::Data;
+use crate::overlay::{GameFonts, TileScroll};
 use crate::render::{self, FlyCam, LevelScene, Snap};
 use crate::video::VideoPlayer;
 use f2_audio::{AudioEngine, Listener, Play, VoiceId};
-use f2_engine::{Camera, Font, FontId, Renderer};
+use f2_engine::{Camera, Font, FontId, Renderer, TexHandle};
 use f2_formats::objbank::ObjectBank;
-use f2_game::define::{mode, SINGLEPLAYER};
+use f2_game::define::{mode, MULTILOCAL, SINGLEPLAYER};
 use f2_game::ids::ActorId;
 use f2_game::{Effect, Game, TickInput};
 use f2_platform::input::JoypadState;
@@ -24,7 +25,17 @@ pub const MAX_CATCHUP: Duration = Duration::from_millis(250);
 #[derive(Clone, Debug)]
 pub enum Step {
     Video(String),
+    /// `INGAME_MODE` on a level, single player.
     Level(u32, u32),
+    /// The frontend level (start screen) through the game's own session flow.
+    Frontend,
+    /// The full start-up: `CommonInit` (title backdrop), then the game plays the logo FMVs
+    /// and loads the frontend level by itself.
+    Boot,
+    /// Local multiplayer: world, level, number of frogs (mode from `multiGameTypes`).
+    Multi(u32, u32, i32),
+    /// The recorded demo of a level (`DEMO_MODE`, `DEMOS\RECORD-W-L.KEY`).
+    Demo(u32, u32),
 }
 
 /// Host-only toggles requested by hotkeys, applied by the window layer.
@@ -42,11 +53,18 @@ pub struct App {
     pub r: Renderer,
     font: Option<Font>,
     font_id: Option<FontId>,
+    /// `bigfont.bmp` / `smallfont.bmp` (`pcFont` / `pcFontSmall`).
+    game_font_files: Option<(Font, Font)>,
+    game_fonts: Option<GameFonts>,
+    /// Full-screen backdrop (`mdxLoadBackdrop`): file and image.
+    backdrop: Option<(String, Option<TexHandle>)>,
+    tile_scroll: TileScroll,
     pub audio: AudioEngine,
     pub game: Game,
     pub scene: Option<LevelScene>,
     steps: VecDeque<Step>,
     pub video: Option<VideoPlayer>,
+    video_queue: VecDeque<String>,
     // input
     pub mapper: InputMapper,
     pad: PadData,
@@ -56,6 +74,8 @@ pub struct App {
     // timing
     acc: Duration,
     prev: Vec<Option<Snap>>,
+    /// Game camera before the last tick (interpolation).
+    prev_cam: Option<Camera>,
     pub ticks: u64,
     // view
     free_cam: Option<FlyCam>,
@@ -83,6 +103,14 @@ pub struct App {
 impl App {
     pub fn new(data: Data, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, mut audio: AudioEngine, mapper: InputMapper) -> App {
         let font = ["textures/font/smallfont.bmp", "textures/font/monofont.bmp"].iter().find_map(|p| data.read(p).ok().and_then(|b| Font::from_bmp(&b)));
+        let load_font = |p: &str| data.read(p).ok().and_then(|b| Font::from_bmp(&b));
+        let game_font_files = match (load_font("textures/font/bigfont.bmp"), load_font("textures/font/smallfont.bmp")) {
+            (Some(b), Some(s)) => Some((b, s)),
+            _ => {
+                eprintln!("frogger: game fonts (bigfont.bmp/smallfont.bmp) missing");
+                None
+            }
+        };
         audio.set_music_dir(data.rendition.join("music"));
         let mut app = App {
             data,
@@ -92,16 +120,22 @@ impl App {
             r: Renderer::new(device, queue, format),
             font,
             font_id: None,
+            game_font_files,
+            game_fonts: None,
+            backdrop: None,
+            tile_scroll: TileScroll::default(),
             audio,
             game: Game::new(),
             scene: None,
             steps: VecDeque::new(),
             video: None,
+            video_queue: VecDeque::new(),
             mapper,
             pad: PadData::default(),
             kb: KeyboardState::default(),
             acc: Duration::ZERO,
             prev: Vec::new(),
+            prev_cam: None,
             ticks: 0,
             free_cam: None,
             last_cam: None,
@@ -119,7 +153,26 @@ impl App {
             hud_probe: false,
         };
         app.rebuild_renderer();
+        app.install_game_hooks();
         app
+    }
+
+    /// Host hooks of the simulation: font metrics for `CalcStringWidth` (textover.c) and,
+    /// after each tick, the view transform for `IsPointVisible` (specfx.c).
+    fn install_game_hooks(&mut self) {
+        if let Some((b, s)) = &self.game_font_files {
+            let w = |f: &Font| (0..=255u8).map(|c| f.char_width(c).min(255) as u8).collect::<Vec<u8>>();
+            self.game.textover.metrics = Some(f2_game::textover::FontMetrics { normal: w(b), small: w(s) });
+        }
+    }
+
+    /// Sets the view `IsPointVisible` uses during the next tick (the camera just computed).
+    fn update_game_view(&mut self) {
+        let far = match &self.scene {
+            Some(s) => render::far_clip(&self.game, s),
+            None => return,
+        };
+        self.game.specfx.view = Some(render::spec_fx_view(&self.game, far));
     }
 
     /// Selects the profile and the enhanced-profile settings (from `config.toml`).
@@ -223,6 +276,8 @@ impl App {
         self.r = Renderer::new(&self.device, &self.queue, self.format);
         self.apply_display();
         self.font_id = self.font.clone().map(|f| self.r.add_font(f));
+        self.game_fonts = self.game_font_files.clone().map(|(b, s)| GameFonts { normal: self.r.add_font(b), small: self.r.add_font(s) });
+        self.backdrop = None;
         if let Some(v) = &mut self.video {
             v.forget_image();
         }
@@ -252,6 +307,30 @@ impl App {
                         self.status = format!("level {w}-{l} failed: {e}");
                     }
                 }
+                Step::Frontend => self.start_frontend(),
+                Step::Boot => {
+                    let cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
+                    self.game = Game::new_session(cfg);
+                    self.install_game_hooks();
+                    self.scene = None;
+                    self.dispatch_effects();
+                }
+                Step::Demo(w, l) => {
+                    self.game.session.data = Some(std::sync::Arc::new(self.data.clone()));
+                    match self.game.init_demo_level(w, l, &self.data) {
+                        Ok(assets) => {
+                            self.dispatch_effects();
+                            self.load_scene(w, l, &assets);
+                        }
+                        Err(e) => eprintln!("frogger: demo {w}-{l}: {e}"),
+                    }
+                }
+                Step::Multi(w, l, n) => {
+                    if let Err(e) = self.start_multi(w, l, n) {
+                        eprintln!("frogger: multiplayer level {w}-{l}: {e}");
+                        self.status = format!("multiplayer level {w}-{l} failed: {e}");
+                    }
+                }
             }
         }
     }
@@ -266,10 +345,14 @@ impl App {
         }
     }
 
-    fn end_video(&mut self) {
+    pub fn end_video(&mut self) {
         if let Some(mut v) = self.video.take() {
             v.release(&mut self.r);
             self.audio.stop_music();
+        }
+        // `StartVideoPlayback` calls in one frame play one after the other.
+        if let Some(next) = self.video_queue.pop_front() {
+            self.start_video(&next);
         }
     }
 
@@ -277,12 +360,54 @@ impl App {
     /// (what the frontend sets up before `InitLevel`).
     pub fn start_level(&mut self, world: u32, level: u32) -> Result<(), String> {
         let g = &mut self.game;
+        g.session.data = Some(std::sync::Arc::new(self.data.clone()));
         g.game_state.mode = mode::INGAME_MODE;
         g.game_state.multi = SINGLEPLAYER;
         g.frogger.num_frogs = 1;
         let assets = g.load_level(world, level, &self.data)?;
         self.dispatch_effects();
+        self.load_scene(world, level, &assets);
+        Ok(())
+    }
 
+    /// Local multiplayer on `world`/`level` with `n` frogs (what `GoMulti`, options.c:966,
+    /// sets up before `InitLevel`): one screen, the camera framing all frogs.
+    pub fn start_multi(&mut self, world: u32, level: u32, n: i32) -> Result<(), String> {
+        let g = &mut self.game;
+        g.session.data = Some(std::sync::Arc::new(self.data.clone()));
+        g.game_state.mode = mode::INGAME_MODE;
+        g.game_state.multi = MULTILOCAL;
+        g.frogger.num_frogs = n.clamp(2, 4);
+        g.multi.multiplayer_mode = f2_game::multi::MULTI_GAME_TYPES.get(world as usize).copied().filter(|&m| m != 0).unwrap_or(f2_game::multi::MULTIMODE_RACE);
+        for i in 0..4 {
+            g.frogger.player[i].character = i as _;
+        }
+        let assets = g.load_level(world, level, &self.data)?;
+        self.dispatch_effects();
+        self.load_scene(world, level, &assets);
+        Ok(())
+    }
+
+    /// The real start-up: a game session (`CommonInit`), straight into the frontend
+    /// level (the logo FMVs are host steps).
+    pub fn start_frontend(&mut self) {
+        let cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
+        self.game = Game::new_session(cfg);
+        self.install_game_hooks();
+        self.game.start_frontend();
+        self.dispatch_effects();
+        self.process_level_loads();
+    }
+
+    /// Rebuilds the scene for levels `InitLevel` loaded inside the simulation.
+    fn process_level_loads(&mut self) {
+        if let Some(l) = self.game.take_level_loads().pop() {
+            self.load_scene(l.world, l.level, &l.assets);
+        }
+    }
+
+    /// Loads the renderer side of a level (object banks, textures, sounds).
+    fn load_scene(&mut self, world: u32, level: u32, assets: &f2_game::layout::LevelAssets) {
         let mut banks = Vec::new();
         for f in &assets.object_banks {
             match self.data.read(f).and_then(|d| ObjectBank::parse(&d).map_err(|e| format!("{f}: {e}"))) {
@@ -299,6 +424,8 @@ impl App {
 
         self.acc = Duration::ZERO;
         self.prev = render::snapshot(&self.game);
+        self.prev_cam = None;
+        self.update_game_view();
         self.free_cam = None;
         self.handles.clear();
         self.sfx_loops.clear();
@@ -309,7 +436,6 @@ impl App {
             assets.object_banks,
             assets.texture_banks
         );
-        Ok(())
     }
 
     /// Port of the file part of `LoadSfx(worldID)` (pcaudio.c:186): `generic.wus`, the
@@ -387,7 +513,7 @@ impl App {
             }
         }
         self.next_step();
-        if self.video.is_some() || self.scene.is_none() {
+        if self.video.is_some() || (self.scene.is_none() && !self.has_session()) {
             self.kb.pressed.clear();
             return;
         }
@@ -411,6 +537,7 @@ impl App {
     /// One 60 Hz simulation step.
     pub fn tick(&mut self, joypads: &[Option<JoypadState>]) {
         self.prev = render::snapshot(&self.game);
+        self.prev_cam = Some(render::game_camera(&self.game));
         let mut kb = std::mem::take(&mut self.kb);
         if self.free_cam.is_some() {
             // The free camera owns the keyboard.
@@ -424,6 +551,11 @@ impl App {
         self.game.tick(TickInput { pads });
         self.ticks += 1;
         self.dispatch_effects();
+        self.process_level_loads();
+        self.update_game_view();
+        if self.game.backdrop.tiled_backdrop.is_some() {
+            self.tile_scroll.step(self.game.game_speed);
+        }
     }
 
     // ------------------------------------------------------------ effects
@@ -491,7 +623,13 @@ impl App {
             }
             Effect::PlayMusic { track, looped } => self.audio.play_music(track, looped),
             Effect::StopMusic => self.audio.stop_music(),
-            Effect::PlayVideo { name } => self.start_video(&name),
+            Effect::PlayVideo { name } => {
+                if self.video.is_some() {
+                    self.video_queue.push_back(name);
+                } else {
+                    self.start_video(&name);
+                }
+            }
             Effect::SaveGame { data } => {
                 let dir = f2_platform::paths::save_dir();
                 let path = dir.join("savegame.dat");
@@ -510,6 +648,34 @@ impl App {
 
     // ------------------------------------------------------------ drawing
 
+    /// Loads (once) the full-screen backdrop the game selected (`mdxLoadBackdrop`).
+    fn backdrop_image(&mut self) -> Option<TexHandle> {
+        let Some(name) = self.game.backdrop.backdrop.clone() else {
+            self.backdrop = None;
+            return None;
+        };
+        if let Some((n, h)) = &self.backdrop {
+            if *n == name {
+                return *h;
+            }
+        }
+        let path = name.replace('\\', "/");
+        let img = self
+            .data
+            .read(&path)
+            .and_then(|d| f2_formats::fla::maybe_decompress(d).map_err(|e| format!("{path}: {e}")))
+            .and_then(|d| f2_formats::texture::parse_backdrop(&d).map_err(|e| format!("{path}: {e}")));
+        let h = match img {
+            Ok(t) => Some(self.r.textures.add_image(t.width as u32, t.height as u32, t.to_rgba8())),
+            Err(e) => {
+                eprintln!("frogger: backdrop {e}");
+                None
+            }
+        };
+        self.backdrop = Some((name, h));
+        h
+    }
+
     /// Queues the frame for a `w`×`h` target.
     pub fn draw(&mut self, w: u32, h: u32) {
         self.width = w;
@@ -520,37 +686,43 @@ impl App {
             return;
         }
         let alpha = (self.acc.as_secs_f32() / TICK.as_secs_f32()).clamp(0.0, 1.0);
-        if let Some(scene) = &mut self.scene {
-            let frog = render::frog_actor(&self.game).map(|id| {
-                let cur = &self.game.actor2.actors[id].actor.position;
-                let c = render::sv_to_render(cur);
-                match self.prev.get(id.idx()).and_then(|p| p.as_ref()) {
-                    Some(p) => f2_engine::math::linear_interp(&p.pos, &c, alpha),
-                    None => c,
-                }
-            });
-            // TODO(port): use the game's camera (cam.c) once ported.
-            let cam = match &self.free_cam {
+        let backdrop = self.backdrop_image();
+        let d = self.display();
+        let authentic = self.profile == Profile::Authentic;
+        let mut ctx = render::DrawCtx {
+            prev: &self.prev,
+            alpha,
+            cam: render::game_camera(&self.game),
+            far_clip: 1200.0,
+            show_tiles: self.show_tiles,
+            fonts: self.game_fonts,
+            authentic,
+            backdrop,
+            tile_scroll: self.tile_scroll,
+        };
+        if let Some(scene) = &self.scene {
+            let gcam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);
+            ctx.cam = match &self.free_cam {
                 Some(fc) => fc.camera(),
-                None => render::follow_camera(&self.game, scene, frog),
+                None => gcam,
             };
-            self.last_cam = Some(cam);
-            let d = match self.profile {
-                Profile::Authentic => DisplaySettings::AUTHENTIC,
-                Profile::Enhanced => self.enhanced,
-            };
-            let far = scene.far_clip * d.draw_distance;
+            self.last_cam = Some(ctx.cam);
+            ctx.far_clip = render::far_clip(&self.game, scene) * d.draw_distance;
             // Enhanced fog: linear to the level's clear colour, ending at the far clip so
             // geometry fades in instead of popping (retail: fog disabled).
             self.r.options.fog = if d.fog {
                 let c = scene.clear;
-                f2_engine::Fog { enabled: true, start: far * 0.5, end: far, color: [c[0] as f32, c[1] as f32, c[2] as f32] }
+                f2_engine::Fog { enabled: true, start: ctx.far_clip * 0.5, end: ctx.far_clip, color: [c[0] as f32, c[1] as f32, c[2] as f32] }
             } else {
                 f2_engine::Fog::default()
             };
-            render::draw_level(&mut self.r, scene, &self.game, &self.prev, alpha, &cam, far, self.show_tiles);
+        }
+        if self.scene.is_some() || backdrop.is_some() {
+            render::draw_loop(&mut self.r, self.scene.as_mut(), &self.game, &ctx);
+        }
+        if self.scene.is_some() {
             // Listener = camera (`currCamSource` 20.12 game units, `vMatrix`).
-            let s = cam.source;
+            let s = ctx.cam.source;
             self.audio.set_listener(Listener { cam_source: s.map(|x| (x * 10.0 * 4096.0) as i32), view: self.r.view.v_matrix });
         }
         self.draw_hud();
@@ -615,7 +787,12 @@ impl App {
 
     /// Whether there is anything left to do (videos/levels).
     pub fn idle(&self) -> bool {
-        self.video.is_none() && self.scene.is_none() && self.steps.is_empty()
+        self.video.is_none() && self.scene.is_none() && self.steps.is_empty() && !self.has_session()
+    }
+
+    /// Whether the game runs its own flow (title, FMVs, frontend) from a session.
+    pub fn has_session(&self) -> bool {
+        self.game.session.data.is_some()
     }
 }
 
