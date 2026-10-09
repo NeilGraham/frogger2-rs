@@ -144,22 +144,6 @@ impl Game {
         Ok(assets)
     }
 
-    /// `ScreenFade(start, end, time)` (PC/fadeout.cpp:75): the timing part.
-    pub fn screen_fade(&mut self, _start: i32, _end: i32, time: i32) {
-        self.levplay.fadeout_start = self.act_frame_count;
-        self.levplay.fadeout_length = time;
-        self.levplay.fading_out = true;
-    }
-
-    /// The `fadingOut = 0` half of `DrawScreenTransition` (PC/fadeout.cpp:95), which
-    /// runs while drawing, after `GameLoop`.
-    pub fn draw_screen_transition(&mut self) {
-        let l = &mut self.levplay;
-        if l.fading_out && self.act_frame_count as i64 > l.fadeout_start as i64 + l.fadeout_length as i64 {
-            l.fading_out = false;
-        }
-    }
-
     /// Port of `RunDemoMode` (Common/levplay.c:120).
     pub fn run_demo_mode(&mut self) {
         let afc = self.act_frame_count;
@@ -179,9 +163,10 @@ impl Game {
             // gameState.difficulty = oldDiffMode (frontend state, not modelled).
             self.game_state.mode = FRONTEND_MODE;
             self.frogger.player[0].character = crate::frogger::FROG_FROGGER;
-            // TODO(port): InitLevel(WORLDID_FRONTEND, LEVELID_FRONTEND1) - the host loads
-            // the frontend; the port only flags the end of the demo.
             self.levplay.demo_finished = true;
+            // InitLevel(WORLDID_FRONTEND, LEVELID_FRONTEND1) through the session's data source
+            // (a no-op without one: the host then loads the frontend itself).
+            self.init_level(crate::layout::worldid::FRONTEND, crate::layout::LEVELID_FRONTEND1);
             self.frame_count = 0; // why? who can say? (me! me!)
             return;
         }
@@ -193,7 +178,7 @@ impl Game {
         if self.levplay.pad_data.debounce[0] != 0 || self.levplay.cur_play_key >= self.levplay.play_key_count || self.levplay.demo_timeout.time == 0 {
             self.levplay.quitting_demo = true;
             self.screen_fade(255, 0, 30);
-            // keepFade = 0
+            self.fadeout.keep_fade = false;
         }
         // BUG(original): the loop clears pad 0 four times instead of each pad.
         for _pl in 0..4 {
