@@ -848,12 +848,17 @@ impl Game {
         let p = pl as usize;
         let ct_id = self.frogmove.curr_tile[p]?;
         let ct = self.map.tile(ct_id).clone();
-        // TODO(port frontend): `gameState.mode == FRONTEND_MODE && currTileNum ==
-        // TILENUM_OPTIONS` takes tilePtrs[1] (and leaves `i` uninitialised).
         let mut direction = *pdir;
-        let i = (direction + self.cam.cam_facing[p] + 2) & 3;
-        let mut dest = ct.tile_ptrs[i as usize];
-        *pdir = i;
+        let mut dest;
+        // wave G: on the frontend's options tile every hop goes to tilePtrs[1].
+        if self.game_state.mode == crate::define::mode::FRONTEND_MODE && self.game.curr_tile_num == crate::menus::TILENUM_OPTIONS {
+            dest = ct.tile_ptrs[1];
+            // BUG(original): `i` is uninitialised here; the port leaves `*pdir` unchanged.
+        } else {
+            let i = (direction + self.cam.cam_facing[p] + 2) & 3;
+            dest = ct.tile_ptrs[i as usize];
+            *pdir = i;
+        }
 
         let d = dest?;
         if self.map.tile(d).state == tilestate::BARRED {

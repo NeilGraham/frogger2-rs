@@ -505,6 +505,8 @@ impl App {
                     eprintln!("game: {text}");
                 }
             }
+            // wave G: TODO(host) music/sfx volume, audio pause, quit.
+            Effect::SetMusicVolume { .. } | Effect::SetSoundVolume { .. } | Effect::PauseAudio | Effect::UnPauseAudio | Effect::Quit => {}
         }
     }
 

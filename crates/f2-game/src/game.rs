@@ -66,7 +66,7 @@ impl Game {
             let afc = self.act_frame_count;
             self.game.end_level_timer.update(-1, afc);
             if self.game.end_level_timer.time == 0 {
-                // TODO(port): cheatCombos[CHEAT_SKIP_LEVEL].state = 0 (menus.c);
+                self.menus.cheat_combos[crate::menus::CHEAT_SKIP_LEVEL].state = 0; // wave G
                 self.cam.cam_dist = f2_math::SVector { vx: 0, vy: (680 * crate::map::SCALE) as i16, vz: (192 * crate::map::SCALE) as i16, pad: 0 };
                 self.game_state.mode = LEVELCOMPLETE_MODE;
                 //bb put this line back in
@@ -167,12 +167,7 @@ impl Game {
         self.game.curr_tile_num = self.frogmove.curr_tile[0].map_or(u32::MAX, |t| t.idx() as u32);
     }
 
-    /// Port of `StartPauseMenu` (Common/menus.c:188), the game-state part.
-    pub fn start_pause_menu(&mut self) {
-        self.game_state.old_mode = self.game_state.mode;
-        self.game_state.mode = PAUSE_MODE;
-        // TODO(port): pause menu state, PauseAudio, text overlays (menus wave).
-    }
+    // wave G: StartPauseMenu is in `crate::menus`.
 
     /// Port of `GameProcessController` (Common/game.c:115): pad input -> frog movement
     /// requests. `debugKeys` (camera turning, baby warp) is off in retail and dropped.
