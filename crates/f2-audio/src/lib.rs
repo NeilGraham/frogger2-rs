@@ -5,8 +5,8 @@
 //!   (`UpdateCRC` of the lowercase name, [`f2_formats::crc`]);
 //! - DirectSound volume/pan/frequency are reproduced with the original `bytetoDB` table and
 //!   DirectSound's dB/pan law, mixed in software ([`mixer`]);
-//! - positional sounds use the original attenuation (`PlaySample`, `UpdateLoopingSample`) and the
-//!   ambient-sound scheduler (`AddAmbientSound`, `UpdateAmbientSounds`);
+//! - positional sounds use the original attenuation (`PlaySample`, `UpdateLoopingSample`); the
+//!   ambient-sound scheduler lives in the simulation (`f2-game::pcaudio`);
 //! - CD tracks are ripped WAVs (`music/trackNN.wav`) with `PrepareSong`/`LoopSong` semantics.
 //!
 //! Output is pluggable ([`AudioOutput`]): [`CpalOutput`] for a real device, [`NullOutput`] for
@@ -127,28 +127,6 @@ pub fn positional(pos: [i16; 3], radius: i32, l: &Listener) -> Positional {
     Positional { dist, att, pan }
 }
 
-/// One `AMBIENT_SOUND` (pcaudio.h:138).
-#[derive(Clone, Debug)]
-pub struct AmbientSound {
-    pub uid: u32,
-    pub pos: [i16; 3],
-    pub radius: i32,
-    pub volume: i32,
-    pub pitch: i16,
-    /// Pre-multiplied by 60 like the original.
-    pub freq: i32,
-    pub rand_freq: i32,
-    /// Opaque id of an actor to follow; resolved by the caller in `update_ambient_sounds`.
-    pub follow: Option<u32>,
-    pub counter: i32,
-    /// `lpdsBuffer`: the instance last started.
-    pub voice: Option<VoiceId>,
-}
-
-/// Handle of an ambient sound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct AmbientId(pub u64);
-
 /// The audio engine. Not thread-safe by itself; the device thread only touches the mixer.
 pub struct AudioEngine {
     mixer: Arc<Mutex<Mixer>>,
@@ -160,10 +138,7 @@ pub struct AudioEngine {
     sfx_volume: i32,
     music_volume: i32,
     music_dir: Option<PathBuf>,
-    /// Head-first like the original linked list (newest first).
-    ambients: Vec<(AmbientId, AmbientSound)>,
     next_voice: u64,
-    next_ambient: u64,
 }
 
 impl AudioEngine {
@@ -184,9 +159,7 @@ impl AudioEngine {
             sfx_volume: MAX_SOUND_VOL,
             music_volume: MAX_SOUND_VOL,
             music_dir: None,
-            ambients: Vec::new(),
             next_voice: 1,
-            next_ambient: 1,
         }
     }
 
@@ -355,95 +328,10 @@ impl AudioEngine {
         &self.listener
     }
 
-    // ---- ambient sounds ----------------------------------------------------------------
-
-    /// Port of `AddAmbientSound` (pcaudio.c:640). `freq`/`rand_freq` are in seconds.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_ambient_sound(
-        &mut self,
-        uid: u32,
-        pos: Option<[i16; 3]>,
-        radius: i32,
-        volume: i32,
-        pitch: i16,
-        freq: i32,
-        rand_freq: i32,
-        follow: Option<u32>,
-    ) -> Option<AmbientId> {
-        self.find_sample(uid)?;
-        let id = AmbientId(self.next_ambient);
-        self.next_ambient += 1;
-        let a = AmbientSound {
-            uid,
-            pos: pos.unwrap_or([0; 3]),
-            radius,
-            volume,
-            pitch,
-            freq: freq.wrapping_mul(60),
-            rand_freq: rand_freq.wrapping_mul(60),
-            follow,
-            counter: 0,
-            voice: None,
-        };
-        self.ambients.insert(0, (id, a));
-        Some(id)
-    }
-
-    /// Port of `SubAmbientSound` (pcaudio.c:1415). Like the original, a playing instance is
-    /// left alone.
-    pub fn sub_ambient_sound(&mut self, id: AmbientId) {
-        self.ambients.retain(|(i, _)| *i != id);
-    }
-
-    pub fn ambient_sounds(&self) -> impl Iterator<Item = (AmbientId, &AmbientSound)> {
-        self.ambients.iter().map(|(i, a)| (*i, a))
-    }
-
-    /// Port of `UpdateAmbientSounds` (pcaudio.c:680), called once per game frame.
-    /// `random(n)` must be the game's `Random` (it consumes the game RNG); `follow_pos`
-    /// returns the followed actor's `SVECTOR` position (already ×10).
-    pub fn update_ambient_sounds(&mut self, act_frame_count: i32, random: &mut dyn FnMut(i32) -> i32, follow_pos: &dyn Fn(u32) -> Option<[i16; 3]>) {
-        for i in 0..self.ambients.len() {
-            let (_, a) = &mut self.ambients[i];
-            if act_frame_count < a.counter {
-                continue;
-            }
-            if let Some(p) = a.follow.and_then(follow_pos) {
-                a.pos = p;
-            }
-            let a = a.clone();
-            let looped = self.find_sample(a.uid).map(|s| s.looped).unwrap_or(false);
-            let voice = if let (true, Some(v)) = (looped, a.voice) {
-                self.update_voice(v, a.volume, a.pitch, Some(a.pos), a.radius);
-                Some(v)
-            } else {
-                // BUG(original): `PlaySample` gets `&amb->pos` even when the computed `pos` is
-                // NULL, so a sound "without a source" is attenuated relative to the origin.
-                self.play(a.uid, Play { volume: a.volume, pitch: a.pitch, pos: Some(a.pos), radius: a.radius, ..Play::default() })
-            };
-            let r = if a.rand_freq != 0 { random(a.rand_freq) } else { 0 };
-            let e = &mut self.ambients[i].1;
-            e.voice = voice;
-            e.counter = act_frame_count.wrapping_add(a.freq).wrapping_add(r);
-        }
-    }
-
-    /// Port of `FreeAmbientSoundList` (pcaudio.c:1427): stops ambient instances and every
-    /// looping voice, then empties the list.
-    pub fn free_ambient_sounds(&mut self) {
-        let ids: Vec<VoiceId> = self.ambients.iter().filter_map(|(_, a)| a.voice).collect();
-        self.ambients.clear();
-        let mut m = self.mixer();
-        m.voices.retain(|v| !ids.contains(&v.id) && !(v.looped && !v.paused));
-    }
-
     // ---- pause -------------------------------------------------------------------------
 
     /// Port of `PauseAudio` (pcaudio.c:742).
     pub fn pause_audio(&mut self) {
-        for (_, a) in &mut self.ambients {
-            a.voice = None;
-        }
         let mut m = self.mixer();
         for v in &mut m.voices {
             v.paused = true;
@@ -454,12 +342,9 @@ impl AudioEngine {
     /// Port of `UnPauseAudio` (pcaudio.c:770).
     ///
     /// BUG(original): buffers are resumed with `Play(0,0,0)`, i.e. without `DSBPLAY_LOOPING`,
-    /// so a paused loop plays to its end once and stops (while the ambient scheduler starts a
-    /// fresh instance). Reproduced.
+    /// so a paused loop plays to its end once and stops (the simulation's ambient scheduler
+    /// in `f2-game::pcaudio` starts a fresh instance). Reproduced.
     pub fn unpause_audio(&mut self) {
-        for (_, a) in &mut self.ambients {
-            a.voice = None;
-        }
         let mut m = self.mixer();
         for v in &mut m.voices {
             if v.paused {

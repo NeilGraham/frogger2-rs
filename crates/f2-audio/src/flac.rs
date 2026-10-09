@@ -268,8 +268,8 @@ impl FlacDecoder {
                 if order > 4 || order > n {
                     return Err(bad("bad fixed order"));
                 }
-                for i in 0..order {
-                    out[i] = self.sbits(bps)?;
+                for o in out.iter_mut().take(order) {
+                    *o = self.sbits(bps)?;
                 }
                 self.residual(out, order)?;
                 const COEF: [&[i64]; 5] = [&[], &[1], &[2, -1], &[3, -3, 1], &[4, -6, 4, -1]];
@@ -287,8 +287,8 @@ impl FlacDecoder {
                 if order > n {
                     return Err(bad("bad LPC order"));
                 }
-                for i in 0..order {
-                    out[i] = self.sbits(bps)?;
+                for o in out.iter_mut().take(order) {
+                    *o = self.sbits(bps)?;
                 }
                 let prec = self.bits(4)? + 1;
                 if prec == 16 {
@@ -330,7 +330,7 @@ impl FlacDecoder {
         let porder = self.bits(4)?;
         let n = out.len();
         let parts = 1usize << porder;
-        if n % parts != 0 || (n >> porder) < order {
+        if !n.is_multiple_of(parts) || (n >> porder) < order {
             return Err(bad("bad partition order"));
         }
         let psize = n >> porder;
