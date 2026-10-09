@@ -26,3 +26,5 @@ deterministic trace parity against the retail exe.
 - WSL2 Ubuntu; Windows interop available (Windows-side toolchains as in the TPW project).
 - `unshield` (use `-O`, lowercase `data1.cab`) and `ffmpeg` are installed; passwordless sudo.
 - Quick data extraction for research: `research/prototypes/README.md`.
+
+**Memory caps:** cargo test/run binaries are capped at 8 GB via `tools/memcap.sh` (the cargo runner). Wrap other heavy commands with `tools/memcap.sh <cmd>`. See the "Memory caps" section in docs/ORCHESTRATION.md.
