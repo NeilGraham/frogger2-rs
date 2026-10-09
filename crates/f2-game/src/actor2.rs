@@ -322,6 +322,7 @@ impl Game {
             // RestoreObjectPointers clears these bits when a bank is loaded.
             root_object_flags: model.root_flags() & !(object_flags::OBJECT_FLAGS_MODGE | object_flags::OBJECT_FLAGS_WAVE | object_flags::OBJECT_FLAGS_ADDITIVE),
             animation: Some(init_anims(&model)),
+            placement: Default::default(),
         };
 
         let mut item = Actor2::default();
@@ -414,6 +415,8 @@ impl Game {
         if let Some(uid) = ambient {
             self.add_ambient_sound(uid, None, 12000, crate::pcaudio::AMBIENT_VOLUME as i16, -1, 0, 0, Some(id));
         }
+        // CreateActor: XformActor(t, 1) at the origin (initial OBJECT_FLAGS_CLIPPED).
+        self.xform_new_actor(id);
         Some(id)
     }
 

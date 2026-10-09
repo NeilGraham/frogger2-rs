@@ -18,6 +18,9 @@ use crate::vector::{
 /// Seed value of `rseed` (Common/maths.c:249, reset by `SeedRandom`).
 pub const RSEED_INIT: u32 = 398_623;
 
+/// Debug aid: log every `Random()` call site to stderr (trace parity work).
+pub static RANDOM_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The game's RNG state: global `ULONG rseed` (Common/maths.c:249).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Rng {
@@ -33,9 +36,13 @@ impl Default for Rng {
 impl Rng {
     /// Port of `Random` (Common/maths.c:251): shift-xor generator, returns `rseed % lim`.
     /// `lim == 0` returns 0 without advancing the state.
+    #[track_caller]
     pub fn random(&mut self, lim: u32) -> i32 {
         if lim == 0 {
             return 0;
+        }
+        if RANDOM_LOG.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("Random({lim}) at {}", std::panic::Location::caller());
         }
         self.rseed ^= self.rseed << 1;
         if self.rseed & 0x8000_0000 == 0 {

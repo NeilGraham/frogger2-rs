@@ -70,6 +70,11 @@ pub struct ModelInfo {
     pub sub_objects: Vec<String>,
     /// Top-level object chain: the root object followed by its `next` siblings.
     pub hierarchy: Vec<ObjNode>,
+    /// Root object keys + bounding box (`OBJECT_FLAGS_CLIPPED`, `view.rs`).
+    pub root_object: Option<crate::view::RootObject>,
+    /// `MDX_ACTOR::trueCentre` / `radius` from `FindActorCentre` (model constants).
+    pub true_centre: [f32; 3],
+    pub actor_radius: f32,
 }
 
 /// Port of `FindObj` (`MDX Library/mdxActor.cpp:978`) on a sibling chain starting at
@@ -132,9 +137,20 @@ impl ModelTable {
             let mut hierarchy = vec![ObjNode::from_object(&m.root)];
             hierarchy.extend(m.root_siblings.iter().map(ObjNode::from_object));
             let animations = m.animations.iter().map(|a| MdxAnimation { anim_start: a.start, anim_end: a.end, speed: a.speed, looped: a.looped }).collect();
-            self.models
-                .entry(m.id)
-                .or_insert_with(|| Arc::new(ModelInfo { id: m.id, name: m.root.name.clone(), radius: m.radius, animations, sub_objects: subs, hierarchy }));
+            self.models.entry(m.id).or_insert_with(|| {
+                let (true_centre, actor_radius) = crate::view::find_actor_centre(m, !m.animations.is_empty());
+                Arc::new(ModelInfo {
+                    id: m.id,
+                    name: m.root.name.clone(),
+                    radius: m.radius,
+                    animations,
+                    sub_objects: subs,
+                    hierarchy,
+                    root_object: Some(crate::view::RootObject::from_object(&m.root)),
+                    true_centre,
+                    actor_radius,
+                })
+            });
         }
     }
 

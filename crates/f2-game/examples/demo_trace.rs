@@ -40,10 +40,22 @@ fn main() -> Result<(), String> {
     g.init_demo_level(world, level, &data)?;
     // InitDemoMode ran inside the frontend's GameLoop, which then does frameCount++.
     g.frame_count += 1;
+    // ... then LoopFunc's CopyActorList + DrawLoop of that frontend iteration.
+    g.after_game_loop();
+    if std::env::var_os("F2_TRACE_DEBUG").is_some() {
+        eprintln!("rseed after init: {}", g.rng.rseed);
+    }
 
     let mut w = std::io::BufWriter::new(std::fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?);
     let mut n = 0u32;
     while n < max_ticks {
+        if let Ok(t) = std::env::var("F2_RANDOM_LOG") {
+            let on = t.split(',').any(|x| x.parse::<u32>().ok() == Some(n + 1));
+            f2_math::maths::RANDOM_LOG.store(on, std::sync::atomic::Ordering::Relaxed);
+            if on {
+                eprintln!("--- tick {}", n + 1);
+            }
+        }
         g.tick(TickInput::default());
         if g.game_state.mode != DEMO_MODE || g.levplay.demo_finished {
             break;

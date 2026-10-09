@@ -59,6 +59,7 @@ pub mod timer;
 pub mod tongue;
 pub mod trace;
 pub mod training;
+pub mod view; // P3-T: MDX view model / culling
 
 use f2_math::Rng;
 
@@ -150,6 +151,8 @@ pub struct Game {
     pub particle: particle::ParticleState,
     /// `Common/specfx.c` (`sfxList`, `p2List`, ...).
     pub specfx: specfx::SpecFxState,
+    /// MDX render globals the simulation culls against (`view.rs`).
+    pub view: view::ViewState,
     /// `Common/overlays.c` (`spriteOverlayList`).
     pub overlays: overlays::SpriteOverlayState,
     /// `Common/textover.c` (`textOverlayList`) and the game text table.
@@ -183,15 +186,35 @@ impl Game {
         // LoopFunc (PC/Main.cpp): ProcessUserInput, then GameLoop, then DrawLoop.
         self.process_user_input(input.pads);
         self.game_loop();
-        // Animation timing happens while drawing in the original (XformActor).
-        self.update_actor_anims();
+        self.after_game_loop();
+    }
+
+    /// The rest of `LoopFunc` (PC/Main.cpp:686) after `GameLoop`: `CopyActorList`, then
+    /// the state changes of `DrawLoop` (view matrix, actor culling + animation, tongue,
+    /// sprites/effects, overlays). Also run once after a level is started from the
+    /// frontend (`InitDemoMode`/`InitLevel` happen inside the frontend's `GameLoop`).
+    pub fn after_game_loop(&mut self) {
+        self.copy_actor_list();
+        self.draw_loop_actors();
+        self.draw_loop_3d_state(); // wave E
+        self.draw_screen_transition();
+        self.draw_loop_2d_state(); // wave E
+    }
+
+    /// `DrawLoop` (PC/drawloop.cpp:142) up to `UpdateFrogTongue`: `CalcViewMatrix`,
+    /// `farClip`, `ActorListDraw(0/1)` (animation advances only for drawn actors).
+    fn draw_loop_actors(&mut self) {
+        use define::mode::*;
+        if matches!(self.game_state.mode, ARTVIEWER_MODE | STARTUP_MODE | TEASERSCREEN_MODE) {
+            return;
+        }
+        self.calc_view_matrix();
+        self.actor_list_draw(0);
+        self.actor_list_draw(1);
         // DrawLoop (PC/drawloop.cpp:250): UpdateFrogTongue(0) after ActorListDraw(1).
         if self.game_state.multi == define::SINGLEPLAYER && self.frogger.frog[0].is_some() {
             self.update_frog_tongue(0);
         }
-        self.draw_loop_3d_state(); // wave E
-        self.draw_screen_transition();
-        self.draw_loop_2d_state(); // wave E
     }
 
     /// Drains platform requests produced since the last call.

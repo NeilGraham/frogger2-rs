@@ -92,6 +92,8 @@ pub struct MdxActor {
     pub root_object_flags: i16,
     /// `animation`; `None` when the model has no animation table.
     pub animation: Option<MdxActorAnimation>,
+    /// `pos`/`qRot`/`scale`/`visible`/`draw` as `CopyActorList` sets them (`view.rs`).
+    pub placement: crate::view::MdxPlacement,
 }
 
 /// Port of `QueueFlush` (`MDX Library/mdxActor.cpp:288`).
