@@ -12,7 +12,7 @@ progress, 14 todo, 0 blocked), [docs/source-map.md](docs/source-map.md) (game-si
 
 | Phase | State | What exists | Open |
 |---|---|---|---|
-| 0 Foundations | mostly done | research, plan, workspace, oracle spike (`f2fix` proxy, trace schema v2), packaging scripts and CI ([BUILDING.md](BUILDING.md)) | P0-1 tooling/CI polish; P0-2 owner decisions ([section 9](#9-decisions-needed-from-the-project-owner)) |
+| 0 Foundations | mostly done | research, plan, workspace, oracle spike (`f2fix` proxy, trace schema v2), packaging scripts and CI ([docs/BUILDING.md](docs/BUILDING.md)) | P0-1 tooling/CI polish; P0-2 owner decisions ([section 9](#9-decisions-needed-from-the-project-owner)) |
 | 1 Media and import | done | `f2-media`, `f2-formats`, `f2-import` (incl. FLAC music), exporters (`f2-export`), `f2-viewer` | none |
 | 2 Engine core | done | `f2-math` (difftests vs C), `f2-engine` (wgpu), `f2-audio`, `f2-platform`, `f2-bink`, `f2-mods`, `frogger` binary | ambient scheduling lives in the simulation (`f2-game::pcaudio`); `PC/` glue files in the source map still `todo` |
 | 3 Gameplay port | ported, unverified | `f2-game`: map, general, path, actor2/anim, platform, enemies, frogmove/tongue, collect/babyfrog, levplay, script/event/evenfunc, cam, specfx/particle/sprite/overlays/textover/hud/ptexture; `game.c` and `layout.c` partial | trace-parity harness (P3-T); `DefData.c`; finish `game.c`/`layout.c` |
