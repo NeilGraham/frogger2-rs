@@ -43,3 +43,5 @@ original), authentic-vs-fixed decision, test (demo/trace) that pins it.
 | 23 | `FroggerHop` indexes `inTile[]` by player number | `frogmove.c` | reproduced |
 | 24 | `AddEnemy` compares array addresses → every enemy inserted at list head | `enemies.c` | reproduced |
 | 25 | `CreateFrogger` checks `> FROG_NUMFROGS` instead of `>=` | `frogger.c` | reproduced |
+| 26 | Multiplayer camera divides by `camDiv[index]` that can be zero/mis-indexed | `multi.c` | guarded, BUG(original) |
+| 27 | `babiesSaved` never incremented in multiplayer | `multi.c` | reproduced |

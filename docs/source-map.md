@@ -41,7 +41,7 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 | `Common/maths.c` | 1848 | f2-math::maths | ported |
 | `Common/memload.c` | 504 | f2-formats::entity | ported |
 | `Common/menus.c` | 2177 | f2-game::ui::pause (+cheats) | todo |
-| `Common/multi.c` | 1821 | f2-game::multi | todo |
+| `Common/multi.c` | 1821 | f2-game::multi | ported |
 | `Common/newpsx.c` | 55 | f2-math::psx | ported |
 | `Common/options.c` | 3253 | f2-game::ui::frontend | todo |
 | `Common/overlays.c` | 150 | f2-engine::overlay | todo |

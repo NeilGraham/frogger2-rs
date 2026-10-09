@@ -747,13 +747,14 @@
       ],
       "files": [],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T16:04:58-06:00 done: multi.c race/collect/battle ported; split-screen rendering pending"
       ]
     },
     {
