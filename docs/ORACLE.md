@@ -111,6 +111,9 @@ start.after=2           # frontend frameCount before start.* fires
 trace.enable=0          # f2-trace.jsonl, one line per GameLoop tick
 trace.file=f2-trace.jsonl
 trace.from=level        # level | all
+trace.version=1         # 2 = + optional sections (script, triggers, camera, ...)
+snap.ticks=             # breakpoint snapshots at these act_frame_count values
+snap.regions=           # NAME@0xADDR:LEN or NAME@*0xADDR:LEN (pointer), space/comma separated
 exit.ticks=0            # end after N trace lines
 exit.level_end=1        # end when the started demo/level returns to the frontend
 ```
@@ -199,7 +202,55 @@ code sites in memory, each verified byte-for-byte first:
   `--level 0-0 --keys record-0-0.key` (2000 ticks, twice, identical). Every line has
   `game_speed 4096` and consecutive `act_frame_count`.
 
-The trace schema, binary encoding and diff live in `tools/f2-trace` (`TraceFrame`, schema v1);
+### Schema v2 sections (`--trace-version 2`, `trace.version=2`)
+
+`"v":2` lines are v1 lines plus these keys after `cam_target`, in this order (types are the
+`tools/f2-trace` structs; offsets in `symbols/frogger2_structs.md`). Every section is
+optional: an emitter (e.g. `f2-game`) may write any subset, the diff only compares the
+sections both sides have and notes the rest, and v1 traces still read and diff.
+
+| key | content |
+|---|---|
+| `players_ext` | per player `i < NUM_FROGS`: `frog_facing` (`frogFacing[i]`), `cam_facing` (`camFacing[i]`), `frogon`, `frogunder`, `old_lives`, `input_pause`, `spawn_timer`, `spawn_score_level`, `idle_time`, `idle_enable`, `has_double_jumped`, `extended_hop_dir`, `stun_time`, `croak_time`, `autohop_time`, `quickhop_time`, `slowhop_time` (TIMER `.time`), `jump_start_frame`, `jump_speed`, `jump_multiplier`, `jump_fwd`, `jump_up` (FVECTOR), `jump_origin` (SVECTOR) |
+| `garib_ext` | `blocks`, `max_coins`, `pause_flag`, `pause_timer`, `drop_speed[]` (per garib, list order as `garibs`) |
+| `babies` | per `babyList[i]`, `i < numBabies`: `is_saved`, `idle`, `collect`, `pos` (baby actor, or null) |
+| `camera` | `source`/`target` (`camSource`/`camTarget`), `cam_vect`, `curr_cam_dist`, `cam_dist` (SVECTOR), `curr_cam_offset`, `cam_look_ofs`, `trans_cam_speed_mult`, `y_fov_new`, `fixed` [`fixedDir`,`fixedPos`,`fixedUp`], `cam_shakiness`, `trans` (highest `tcList` index whose tile is `currTile[0]`, -1), `trans_count`, `fog` [r,g,b,mode,min,max] |
+| `script` | `flags` (`scriptFlags[8]`), `counters` (`scriptCounters[16]`) |
+| `triggers` | `count` (`triggerList.count`, includes AND/OR/NOT sub-triggers), `list[]` {`flags`,`count`,`delay`} of the active ring from `head.next` |
+| `specfx` | `count` (`sfxList.count`), `list[]` {`kind` (type), `origin` (SVECTOR), `lifetime` (absolute actFrameCount), `update_type`} from `head.next` |
+| `sprites` | `count` (`sprList.count`), `particles` (`partList.count`) |
+| `tongue` | per player: `flags`, `radius`, `progress`, `kind`, `can_tongue`, `source`/`target`/`pos` (SVECTOR), `has_thing` |
+| `hud` | `score_timer`, `mode_timer`, `go_timer`, `demo_timeout` (TIMER `.time`), `hand_angle`, `store_frame_count` |
+
+`f2-trace diff` reports the first divergence per section (`core players enemies platforms
+garibs babies camera hud script triggers specfx sprites tongue`; v1 fields map to the
+same names, e.g. `garib_count` -> `garibs`, `cam_source` -> `camera`) and `--sections
+camera,triggers` restricts the comparison. The binary encoding (header version 2) appends the v2
+sections of each frame as a JSON blob and still decodes version-1 files.
+
+**Verified (2026-10-09).** v2 `--demo 0-0` twice (in parallel) -> identical (sha1
+`b0818758...`); `--demo 1-0` twice -> identical (`148391ab...`). With the v2 sections
+stripped the lines are byte-identical to the v1 traces (`44059c7e...`, `605d5851...`).
+
+### Breakpoint snapshots
+
+```bash
+python3 -I tools/run/run.py --id s --trace --demo 0-0 --snap-tick 600 --snap 'player,rseed,*frog:64,tcl=*tcList:72'
+target/agent-f2-trace/release/f2-trace snap A/f2-snap-600.json B/f2-snap-600.json
+```
+
+`--snap-tick N` (repeatable, comma lists) dumps raw bytes after the `GameLoop` of
+`act_frame_count == N` (in the started level) to `f2-snap-N.json`; `--snap` names CSV
+globals (`NAME`, `NAME:LEN`, `*NAME:LEN` = LEN bytes where the pointer in NAME points,
+`0xADDR:LEN`, `LABEL=SPEC`), default every CSV global/data entry with a size. run.py
+resolves names from `symbols/frogger2_usa.csv` into `snap.regions`. Unreadable memory
+gives `"hex":null` (checked with `IsBadReadPtr`). Format: `tools/f2-trace/src/snap.rs`;
+`f2-trace snap A B` lists differing byte ranges per region. Snapshots do not change the trace.
+
+`run.py --data DIR` (= `--game-dir`) selects the rendition; by default a worktree checkout
+uses the main checkout's `game-data/usa`.
+
+The trace schema, binary encoding and diff live in `tools/f2-trace` (`TraceFrame`, schemas v1/v2);
 f2fix has a dependency-free encoder for the same line format, kept byte-compatible by the
 `oracle_encoder_matches_schema` test there.
 

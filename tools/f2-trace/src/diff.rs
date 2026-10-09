@@ -7,10 +7,19 @@
 //! (`players[*].pos[*]`); it matches the path itself or any field below it
 //! (`players` matches everything in `players`), and `*` in a pattern matches
 //! any run of characters (`cam_*`).
+//!
+//! Every field belongs to a *section* ([`section_of`]): the v1 groups `core`,
+//! `players`, `enemies`, `platforms`, `garibs`, `babies`, `camera`, `hud`
+//! and the optional v2 sections `script`, `triggers`, `specfx`, `sprites`,
+//! `tongue` (plus v2 additions to `players`, `camera`, `babies`, `hud`).
+//! The report lists the first divergence per section; `Options::sections`
+//! restricts the comparison. An optional v2 section that one side does not
+//! have (a v1 trace, or an emitter that does not fill it yet) is not compared
+//! and is counted in [`Report::missing`] instead. `v` is never compared.
 
 use crate::TraceFrame;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
@@ -29,6 +38,8 @@ pub struct Options {
     pub align: Align,
     /// Fields listed for the first divergent frame (0 = all).
     pub max_fields: usize,
+    /// Compare only these sections (empty = all), see [`section_of`].
+    pub sections: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -55,7 +66,48 @@ pub struct Report {
     pub compared: usize,
     pub diverged_frames: usize,
     pub first: Option<Divergence>,
+    /// Per section: frames that differ in it and its first divergence.
+    pub sections: BTreeMap<String, SectionReport>,
+    /// Per optional section: compared frames in which only one side had it.
+    pub missing: BTreeMap<String, usize>,
 }
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SectionReport {
+    pub diverged_frames: usize,
+    /// First divergent frame of this section (`fields` truncated to `max_fields`).
+    pub first: Option<Divergence>,
+}
+
+/// v1 fields by top-level key; anything else is its own section (the v2
+/// section keys `script`, `triggers`, `camera`, `specfx`, `sprites`,
+/// `tongue`, `babies`, `hud`, `players_ext`).
+pub fn section_of(path: &str) -> &'static str {
+    let top = path.split(['.', '[']).next().unwrap_or("");
+    match top {
+        "players" | "players_ext" => "players",
+        "enemies" => "enemies",
+        "platforms" => "platforms",
+        "garib_count" | "garib_total" | "garibs" | "garib_ext" => "garibs",
+        "babies_saved" | "num_babies" | "babies" => "babies",
+        "cam_source" | "cam_target" | "camera" => "camera",
+        "end_level_timer" | "hud" => "hud",
+        "script" => "script",
+        "triggers" => "triggers",
+        "specfx" => "specfx",
+        "sprites" => "sprites",
+        "tongue" => "tongue",
+        "<frame>" => "<frame>",
+        _ => "core",
+    }
+}
+
+/// Every section name [`section_of`] can return (for `--sections` validation).
+pub const SECTIONS: &[&str] =
+    &["core", "players", "enemies", "platforms", "garibs", "babies", "camera", "hud", "script", "triggers", "specfx", "sprites", "tongue"];
+
+/// Top-level keys of optional (v2) sections.
+pub const OPTIONAL: &[&str] = &["players_ext", "garib_ext", "babies", "camera", "hud", "script", "triggers", "specfx", "sprites", "tongue"];
 
 impl Report {
     pub fn identical(&self) -> bool {
@@ -129,10 +181,16 @@ fn flatten(v: &Value, path: &mut String, out: &mut Vec<(String, Value)>) {
     }
 }
 
-fn fields(f: &TraceFrame) -> Vec<(String, Value)> {
+fn fields(f: &TraceFrame) -> (Vec<(String, Value)>, Vec<String>) {
+    let v = serde_json::to_value(f).expect("serialisable");
+    let tops = v.as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
     let mut out = Vec::new();
-    flatten(&serde_json::to_value(f).expect("serialisable"), &mut String::new(), &mut out);
-    out
+    flatten(&v, &mut String::new(), &mut out);
+    (out, tops)
+}
+
+fn top(path: &str) -> &str {
+    path.split(['.', '[']).next().unwrap_or("")
 }
 
 fn within(opt: &Options, path: &str, a: &Value, b: &Value) -> bool {
@@ -145,13 +203,29 @@ fn within(opt: &Options, path: &str, a: &Value, b: &Value) -> bool {
 
 /// Field differences between two frames (ignores and tolerances applied).
 pub fn diff_frames(a: &TraceFrame, b: &TraceFrame, opt: &Options) -> Vec<FieldDiff> {
-    let fa = fields(a);
-    let fb = fields(b);
+    diff_frames_ex(a, b, opt, &mut BTreeMap::new())
+}
+
+/// [`diff_frames`], also counting optional sections present on one side only.
+fn diff_frames_ex(a: &TraceFrame, b: &TraceFrame, opt: &Options, missing: &mut BTreeMap<String, usize>) -> Vec<FieldDiff> {
+    let (fa, ta) = fields(a);
+    let (fb, tb) = fields(b);
+    let one_sided: Vec<&str> = OPTIONAL.iter().copied().filter(|k| ta.iter().any(|t| t == k) != tb.iter().any(|t| t == k)).collect();
+    for k in &one_sided {
+        if opt.sections.is_empty() || opt.sections.iter().any(|s| s == section_of(k)) {
+            *missing.entry(k.to_string()).or_default() += 1;
+        }
+    }
     let mb: HashMap<&str, &Value> = fb.iter().map(|(k, v)| (k.as_str(), v)).collect();
     let ma: HashMap<&str, &Value> = fa.iter().map(|(k, v)| (k.as_str(), v)).collect();
     let mut out = Vec::new();
     let mut push = |path: &str, x: &Value, y: &Value| {
-        if opt.ignore.iter().any(|p| matches(p, path)) || within(opt, path, x, y) {
+        if path == "v"
+            || one_sided.contains(&top(path))
+            || (!opt.sections.is_empty() && !opt.sections.iter().any(|s| s == section_of(path)))
+            || opt.ignore.iter().any(|p| matches(p, path))
+            || within(opt, path, x, y)
+        {
             return;
         }
         out.push(FieldDiff { path: path.to_string(), a: x.clone(), b: y.clone() });
@@ -184,7 +258,7 @@ pub fn diff(a: &[TraceFrame], b: &[TraceFrame], opt: &Options) -> Report {
         let d = match (ia, ib) {
             (Some(i), Some(j)) => {
                 rep.compared += 1;
-                diff_frames(&a[i], &b[j], opt)
+                diff_frames_ex(&a[i], &b[j], opt, &mut rep.missing)
             }
             _ => vec![FieldDiff {
                 path: "<frame>".into(),
@@ -196,14 +270,28 @@ pub fn diff(a: &[TraceFrame], b: &[TraceFrame], opt: &Options) -> Report {
             continue;
         }
         rep.diverged_frames += 1;
-        if rep.first.is_none() {
+        let afc = ia.map(|i| a[i].act_frame_count).or(ib.map(|j| b[j].act_frame_count)).unwrap_or(0);
+        let make = |d: Vec<FieldDiff>| {
             let total = d.len();
             let mut fields = d;
             if opt.max_fields > 0 {
                 fields.truncate(opt.max_fields);
             }
-            let afc = ia.map(|i| a[i].act_frame_count).or(ib.map(|j| b[j].act_frame_count)).unwrap_or(0);
-            rep.first = Some(Divergence { index_a: ia, index_b: ib, act_frame_count: afc, fields, total_fields: total });
+            Divergence { index_a: ia, index_b: ib, act_frame_count: afc, fields, total_fields: total }
+        };
+        let mut by_sec: BTreeMap<&str, Vec<FieldDiff>> = BTreeMap::new();
+        for f in &d {
+            by_sec.entry(section_of(&f.path)).or_default().push(f.clone());
+        }
+        for (sec, fs) in by_sec {
+            let r = rep.sections.entry(sec.to_string()).or_default();
+            r.diverged_frames += 1;
+            if r.first.is_none() {
+                r.first = Some(make(fs));
+            }
+        }
+        if rep.first.is_none() {
+            rep.first = Some(make(d));
         }
     }
     rep
@@ -231,7 +319,22 @@ pub fn render(rep: &Report, name_a: &str, name_b: &str) -> String {
             if d.fields.len() < d.total_fields {
                 s.push_str(&format!("  ... {} more\n", d.total_fields - d.fields.len()));
             }
+            s.push_str("per section (first divergence, frames differing):\n");
+            for (name, r) in &rep.sections {
+                let Some(f) = &r.first else { continue };
+                let first = f.fields.first().map_or(String::new(), |x| format!(": {} {} != {}", x.path, x.a, x.b));
+                s.push_str(&format!(
+                    "  {name:<9} act_frame_count {} (line {}), {} field(s), {} frame(s){first}\n",
+                    f.act_frame_count,
+                    idx(f.index_a),
+                    f.total_fields,
+                    r.diverged_frames
+                ));
+            }
         }
+    }
+    for (k, n) in &rep.missing {
+        s.push_str(&format!("note: section {k} present on one side only in {n} compared frame(s); not compared\n"));
     }
     s
 }
@@ -277,6 +380,38 @@ mod tests {
         assert_eq!(d.index_a, Some(6));
         assert!(d.fields.iter().any(|f| f.path == "enemies.len"));
         assert!(d.fields.iter().any(|f| f.path.starts_with("enemies[1].") && f.b == Value::Null));
+    }
+
+    #[test]
+    fn sections_v2_and_filter() {
+        use crate::sample_v2;
+        let a: Vec<_> = (0..6).map(sample_v2).collect();
+        // v1 vs v2: sections only one side has are not compared, `v` is never compared.
+        let v1: Vec<_> = (0..6).map(sample).collect();
+        let r = diff(&a, &v1, &Options::default());
+        assert!(r.identical(), "{}", render(&r, "a", "b"));
+        assert_eq!(r.missing.get("script"), Some(&6));
+        assert!(render(&r, "a", "b").contains("note: section script present on one side only in 6"));
+
+        let mut b = a.clone();
+        b[2].script.as_mut().unwrap().flags[3] = 8;
+        b[4].triggers.as_mut().unwrap().list[0].count = 5;
+        b[4].rseed ^= 1;
+        let r = diff(&a, &b, &Options::default());
+        assert_eq!(r.diverged_frames, 2);
+        assert_eq!(r.sections["script"].first.as_ref().unwrap().act_frame_count, 3);
+        assert_eq!(r.sections["triggers"].first.as_ref().unwrap().fields[0].path, "triggers.list[0].count");
+        assert_eq!(r.sections["core"].diverged_frames, 1);
+        let text = render(&r, "a", "b");
+        assert!(text.contains("  script    act_frame_count 3 (line 2), 1 field(s), 1 frame(s): script.flags[3] 0 != 8"), "{text}");
+
+        let opt = Options { sections: vec!["triggers".into()], ..Default::default() };
+        let r = diff(&a, &b, &opt);
+        assert_eq!(r.diverged_frames, 1);
+        assert_eq!(r.first.unwrap().fields[0].path, "triggers.list[0].count");
+        assert_eq!(section_of("garib_ext.drop_speed[0]"), "garibs");
+        assert_eq!(section_of("players_ext[0].frog_facing"), "players");
+        assert_eq!(section_of("rseed"), "core");
     }
 
     #[test]

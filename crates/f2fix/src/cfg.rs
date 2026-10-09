@@ -32,6 +32,10 @@
 //! trace.enable=0          # write one JSON line of game state per GameLoop tick
 //! trace.file=f2-trace.jsonl
 //! trace.from=level        # level (from the started demo/level on) | all (every GameLoop)
+//! trace.version=1         # 1 = base schema; 2 = + script/triggers/camera/specfx/sprites/tongue/babies/hud sections
+//! snap.ticks=             # breakpoint snapshots: act_frame_count values (comma/space list) after whose GameLoop
+//! snap.regions=           #   the regions are dumped to f2-snap-<tick>.json; NAME@0xADDR:LEN (LEN bytes at ADDR)
+//!                         #   or NAME@*0xADDR:LEN (LEN bytes at the pointer stored at ADDR), comma/space separated
 //! exit.ticks=0            # terminate after N traced ticks (0 = never)
 //! exit.level_end=1        # terminate when the started demo/level is left
 //! ```
@@ -78,6 +82,9 @@ pub struct Cfg {
     pub trace_enable: bool,
     pub trace_file: String,
     pub trace_from_level: bool,
+    pub trace_version: u32,
+    pub snap_ticks: Vec<u32>,
+    pub snap_regions: Vec<SnapRegion>,
     pub exit_ticks: u32,
     pub exit_level_end: bool,
 }
@@ -113,6 +120,9 @@ impl Default for Cfg {
             trace_enable: false,
             trace_file: "f2-trace.jsonl".into(),
             trace_from_level: true,
+            trace_version: 1,
+            snap_ticks: Vec::new(),
+            snap_regions: Vec::new(),
             exit_ticks: 0,
             exit_level_end: true,
         }
@@ -151,6 +161,43 @@ fn parse_wl(v: &str) -> Option<Option<(u32, u32)>> {
     let (w, l) = v.split_once(['-', ','])?;
     let (w, l) = (w.trim().parse::<u32>().ok()?, l.trim().parse::<u32>().ok()?);
     (w < 16 && l < 16).then_some(Some((w, l)))
+}
+
+/// One region of a breakpoint snapshot (`snap.regions`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapRegion {
+    pub name: String,
+    pub addr: u32,
+    pub len: u32,
+    /// `addr` holds a pointer; dump `len` bytes where it points.
+    pub deref: bool,
+}
+
+fn parse_u32(v: &str) -> Option<u32> {
+    match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+        Some(h) => u32::from_str_radix(h, 16).ok(),
+        None => v.parse().ok(),
+    }
+}
+
+fn list(v: &str) -> impl Iterator<Item = &str> {
+    v.split([',', ' ', '\t']).filter(|s| !s.is_empty())
+}
+
+/// `NAME@0xADDR:LEN` / `NAME@*0xADDR:LEN`, comma/space separated (at most 1 MiB each).
+pub fn parse_regions(v: &str) -> Option<Vec<SnapRegion>> {
+    list(v)
+        .map(|t| {
+            let (name, rest) = t.split_once('@')?;
+            let (deref, rest) = match rest.strip_prefix('*') {
+                Some(r) => (true, r),
+                None => (false, rest),
+            };
+            let (a, l) = rest.split_once(':')?;
+            let (addr, len) = (parse_u32(a)?, parse_u32(l)?);
+            (!name.is_empty() && len > 0 && len <= 1 << 20).then(|| SnapRegion { name: name.into(), addr, len, deref })
+        })
+        .collect()
 }
 
 fn parse_res(v: &str) -> Option<(u32, u32)> {
@@ -244,6 +291,9 @@ pub fn parse(text: &str) -> (Cfg, Vec<String>) {
                 }
                 _ => false,
             },
+            "trace.version" => num().filter(|x| (1..=2).contains(x)).map(|x| c.trace_version = x).is_some(),
+            "snap.ticks" => list(v).map(parse_u32).collect::<Option<Vec<_>>>().map(|x| c.snap_ticks = x).is_some(),
+            "snap.regions" => parse_regions(v).map(|x| c.snap_regions = x).is_some(),
             "exit.ticks" => num().map(|x| c.exit_ticks = x).is_some(),
             "exit.level_end" => parse_bool(v).map(|x| c.exit_level_end = x).is_some(),
             _ => {
@@ -336,6 +386,24 @@ mod tests {
         let (c, e) = parse("start.demo=\nstart.level=x-1\ntrace.from=sometimes\n");
         assert_eq!(e.len(), 2, "{e:?}");
         assert_eq!(c.start_demo, None);
+    }
+
+    #[test]
+    fn trace_v2_and_snapshots() {
+        let (c, e) = parse("trace.version=2\nsnap.ticks=1, 200 0x10\nsnap.regions=rseed@0x479d70:4, frog0@*0x489698:64\n");
+        assert!(e.is_empty(), "{e:?}");
+        assert_eq!(c.trace_version, 2);
+        assert_eq!(c.snap_ticks, vec![1, 200, 16]);
+        assert_eq!(
+            c.snap_regions,
+            vec![
+                SnapRegion { name: "rseed".into(), addr: 0x479d70, len: 4, deref: false },
+                SnapRegion { name: "frog0".into(), addr: 0x489698, len: 64, deref: true },
+            ]
+        );
+        let (c, e) = parse("trace.version=3\nsnap.regions=x@0x10\nsnap.ticks=a\n");
+        assert_eq!(e.len(), 3, "{e:?}");
+        assert_eq!(c, Cfg::default());
     }
 
     #[test]

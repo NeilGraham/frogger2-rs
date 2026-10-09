@@ -22,6 +22,7 @@ Nothing from game-data/ is executed except the retail exe inside the run root.
 """
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -38,6 +39,69 @@ SYS32 = "/mnt/c/Windows/System32"
 PS = SYS32 + "/WindowsPowerShell/v1.0/powershell.exe"
 STAGE_MARKER = ".f2-stage.json"
 EXE = "frogger2.exe"
+
+
+def default_game_dir():
+    """$F2_GAME_DIR, else game-data/usa of this checkout, else of the main checkout
+    (a git worktree has no gitignored game data of its own)."""
+    if os.environ.get("F2_GAME_DIR"):
+        return os.environ["F2_GAME_DIR"]
+    own = os.path.join(REPO, "game-data/usa")
+    if os.path.isdir(own):
+        return own
+    try:
+        common = subprocess.run(["git", "-C", REPO, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                check=True, capture_output=True, text=True).stdout.strip()
+        main = os.path.join(os.path.dirname(common), "game-data/usa")
+        if os.path.isdir(main):
+            return main
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return own
+
+
+def load_symbols(path=None):
+    """symbols/frogger2_usa.csv globals/data -> {name: (address, size or None)}."""
+    path = path or os.path.join(REPO, "symbols/frogger2_usa.csv")
+    out = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                size = int(row["size"]) if row["size"].strip() else None
+            except ValueError:
+                size = None
+            if row["kind"] in ("global", "data"):
+                out[row["name"]] = (int(row["address"], 16), size)
+    return out
+
+
+def snap_regions(specs, symbols):
+    """--snap items -> f2fix `snap.regions` tokens.
+
+    NAME            a CSV global with its CSV size
+    NAME:LEN        a CSV global, LEN bytes (hex 0x.. or decimal)
+    *NAME:LEN       LEN bytes at the pointer stored in global NAME
+    0xADDR:LEN      a raw address (named after the address)
+    LABEL=SPEC      any of the above under another name
+    """
+    out = []
+    for item in [x for spec in specs for x in re.split(r"[,\s]+", spec) if x]:
+        label, _, spec = item.rpartition("=")
+        deref = spec.startswith("*")
+        spec = spec.lstrip("*")
+        target, _, length = spec.partition(":")
+        if re.fullmatch(r"0[xX][0-9a-fA-F]+", target):
+            addr, size = int(target, 16), None
+        elif target in symbols:
+            addr, size = symbols[target]
+        else:
+            raise SystemExit(f"run: --snap: unknown symbol {target!r} (not in symbols/frogger2_usa.csv)")
+        size = int(length, 0) if length else size
+        if not size:
+            raise SystemExit(f"run: --snap: {item!r} needs a length (NAME:LEN)")
+        name = label or (("*" if deref else "") + target).replace("*", "p_")
+        out.append(f"{name}@{'*' if deref else ''}{addr:#x}:{size}")
+    return out
 
 
 def log(msg):
@@ -130,6 +194,9 @@ def write_ini(path, args, root_w):
         f"start.after={args.start_after}",
         f"trace.enable={1 if args.trace else 0}",
         f"trace.from={args.trace_from}",
+        f"trace.version={args.trace_version}",
+        f"snap.ticks={','.join(str(t) for t in args.snap_ticks)}",
+        f"snap.regions={' '.join(args.snap_regions)}",
         f"exit.ticks={args.exit_ticks}",
         f"exit.level_end={0 if args.no_level_end_exit else 1}",
     ]
@@ -214,7 +281,9 @@ def summarize_trace(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--id", required=True, help="run id (letters, digits, - and _)")
-    ap.add_argument("--game-dir", default=os.environ.get("F2_GAME_DIR", os.path.join(REPO, "game-data/usa")))
+    ap.add_argument("--game-dir", "--data", dest="game_dir", default=default_game_dir(),
+                    help="rendition root with game/, video/, oracle/ (default $F2_GAME_DIR, game-data/usa, "
+                         "or the main checkout's game-data/usa from a git worktree)")
     ap.add_argument("--dll", default=os.path.join(REPO, "target/oracle-bin/f2fix.dll"))
     ap.add_argument("--timeout", type=float, default=90, help="kill after S seconds (default 90)")
     ap.add_argument("--exit-frames", type=int, default=0, help="f2fix ends the run after N presents")
@@ -244,8 +313,25 @@ def main():
     g.add_argument("--start-after", type=int, default=2, help="frontend frames before --demo/--level fires")
     g.add_argument("--trace-from", choices=["level", "all"], default="level")
     g.add_argument("--exit-ticks", type=int, default=0, help="end after N traced ticks")
+    g.add_argument("--trace-version", type=int, choices=[1, 2], default=1,
+                   help="trace schema: 1 = base, 2 = + script/triggers/camera/specfx/sprites/tongue/babies/hud")
+    g.add_argument("--snap-tick", metavar="N[,N]", action="append", default=[],
+                   help="breakpoint snapshot after the GameLoop of act_frame_count N -> f2-snap-N.json")
+    g.add_argument("--snap", metavar="SPEC", action="append", default=[],
+                   help="snapshot regions: NAME | NAME:LEN | *NAME:LEN | 0xADDR:LEN | LABEL=SPEC (CSV names; "
+                        "comma lists ok; default: every CSV global/data entry with a size)")
     g.add_argument("--no-level-end-exit", action="store_true", help="keep running after the demo/level is left")
     args = ap.parse_args()
+    args.snap_ticks = [int(t, 0) for spec in args.snap_tick for t in spec.split(",") if t.strip()]
+    if args.snap_ticks:
+        syms = load_symbols()
+        if args.snap:
+            args.snap_regions = snap_regions(args.snap, syms)
+        else:
+            args.snap_regions = snap_regions([n for n, (_, size) in syms.items() if size], syms)
+        args.fixed_time = args.skip_fmv = True
+    else:
+        args.snap_regions = []
     if args.trace:
         args.fixed_time = args.skip_fmv = True
     for wl in (args.demo, args.level):
@@ -319,7 +405,7 @@ def main():
 
     shots = []
     for name in sorted(os.listdir(root)):
-        if re.fullmatch(r"f2-shot-.*\.png", name) or name in ("f2fix.log", "f2-trace.jsonl"):
+        if re.fullmatch(r"f2-shot-.*\.png|f2-snap-\d+\.json", name) or name in ("f2fix.log", "f2-trace.jsonl"):
             shutil.copyfile(os.path.join(root, name), os.path.join(collect, name))
             if name.endswith(".png"):
                 shots.append(name)
@@ -346,6 +432,8 @@ def main():
     }
     if args.trace:
         result["trace"] = summarize_trace(os.path.join(collect, "f2-trace.jsonl"))
+    if args.snap_ticks:
+        result["snapshots"] = sorted(n for n in os.listdir(collect) if re.fullmatch(r"f2-snap-\d+\.json", n))
     with open(os.path.join(collect, "result.json"), "w") as f:
         json.dump(result, f, indent=2)
     if not args.keep_root:
