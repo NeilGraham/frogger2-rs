@@ -582,6 +582,10 @@ impl Game {
         self.cam.start_cam_facing = 0;
         self.cam.start_frog_facing = 0;
         self.free_tongues();
+        // TODO(merge specfx): FreeSpecFXList() runs before this.
+        if self.game_state.multi != crate::define::SINGLEPLAYER {
+            self.free_multiplayer();
+        }
         self.free_garib_list();
         self.level_files = LevelFiles::default();
         self.free_actor_list();
@@ -721,7 +725,11 @@ impl Game {
         self.frogger.player[0].old_lives = self.frogger.player[0].lives;
         self.game.start_cam = 1;
         self.game.end_level_timer.init(0);
-        // TODO(port): ReinitialiseMultiplayer/ResetMultiplayer (multi), ResetCamera (wave D).
+        if self.game_state.multi != crate::define::SINGLEPLAYER {
+            self.reinitialise_multiplayer();
+            self.reset_multiplayer();
+        }
+        // TODO(port): ResetCamera (wave D).
         self.init_camera();
 
         self.update_enemies();
