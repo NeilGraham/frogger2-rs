@@ -453,8 +453,10 @@ impl Game {
             MULTI_WINCOLLECT_MODE => self.run_multi_win_collect(),
             MULTI_WINRACE_MODE => self.run_multi_win_race(),
             ARTVIEWER_MODE => self.run_art_viewer(),
+            // wave G: charsel.c's mode (never entered by the retail game, see crate::charsel).
+            CHARSELECT_MODE => self.run_character_select_mode(),
             // CONTROLLERVIEW_MODE / E3_LEVELSELECT_MODE are commented out, TEASERSCREEN_MODE is
-            // PC_DEMO only; WORLDCOMPLETE, GAMECOMPLETE, INTRO, CHARSELECT and FMVPLAY have no
+            // PC_DEMO only; WORLDCOMPLETE, GAMECOMPLETE, INTRO and FMVPLAY have no
             // case in the retail GameLoop (nothing runs).
             _ => {}
         }
@@ -1602,37 +1604,8 @@ impl Game {
 
     // ------------------------------------------------------------ hooks into other waves
 
-    /// `RunFrontendGameLoop` (Common/menus.c:863). TODO(port menus.c): the title/options
-    /// menus. Until then the frontend level simply runs like a level (the frog can hop
-    /// around it).
-    pub fn run_frontend_game_loop(&mut self) {
-        self.frontend.check_menu_keys = 0;
-        self.run_game_loop();
-        self.frogger.p_oi_distance = 20000 << 12;
-    }
-
-    /// `RunPauseMenu` (Common/menus.c:389). TODO(port menus.c): until ported, Start resumes.
-    pub fn run_pause_menu(&mut self) {
-        if self.levplay.pad_data.debounce[self.frogger.pause_controller.clamp(0, 3) as usize] & crate::levplay::PAD_START != 0 {
-            self.game_state.mode = self.game_state.old_mode;
-        }
-    }
-
-    /// `RunArtViewer` (Common/options.c:3152). TODO(port options.c).
-    pub fn run_art_viewer(&mut self) {}
-
-    /// `UpdateCheatText` (Common/menus.c:2153). TODO(port menus.c).
-    pub fn update_cheat_text(&mut self) {}
-
-    /// `cheatCombos[CHEAT_SKIP_LEVEL].state` (Common/menus.c). TODO(port menus.c).
-    pub fn cheat_skip_level(&self) -> bool {
-        false
-    }
-
-    /// `cheatCombos[CHEAT_MAD_GARIBS].state` (Common/menus.c). TODO(port menus.c).
-    pub fn cheat_mad_garibs(&self) -> bool {
-        false
-    }
+    // wave G: RunFrontendGameLoop, RunPauseMenu, UpdateCheatText and the cheat flags are in
+    // `crate::menus`; RunArtViewer is in `crate::options`.
 
     /// `arcadeHud.timeOutText->draw` (Common/hud.c): the hard-mode time ran out.
     pub fn arcade_hud_time_out_draw(&self) -> bool {

@@ -593,6 +593,7 @@ impl Game {
         // wave E: FreeTextOverlayLinkedList, FreeSpriteOverlayLinkedList, FreeSpriteList,
         // FreeProcTextures; then InitTextOverlayLinkedList(400 / 40), InitSpriteOverlayLinkedList.
         self.textover.free_text_overlay_linked_list();
+        self.menus.tile_num = None; // wave G: tileNum = NULL (layout.c:1197)
         self.overlays.free_sprite_overlay_linked_list();
         self.sprite.free_sprite_list();
         self.free_proc_textures();

@@ -17,6 +17,7 @@ pub mod backdrop;
 pub mod bank_tables;
 pub mod bbtimer;
 pub mod cam;
+pub mod charsel; // wave G
 pub mod collect;
 pub mod define;
 pub mod effects;
@@ -39,7 +40,9 @@ pub mod list;
 pub mod map;
 pub mod mdx_actor;
 pub mod memload;
+pub mod menus; // wave G
 pub mod multi;
+pub mod options; // wave G
 pub mod overlays; // wave E
 pub mod particle; // wave E
 pub mod path;
@@ -165,6 +168,13 @@ pub struct Game {
     pub event: event::EventState,
     /// `Common/script.c` globals (wave D: script flags/counters, `scriptBuffer`).
     pub script: script::ScriptState,
+    // wave G: frontend menus.
+    /// `Common/menus.c` globals (pause menu, cheats, frontend loop).
+    pub menus: menus::MenusState,
+    /// `Common/options.c` globals (`options`, credits, art viewer).
+    pub options: options::OptionsState,
+    /// `Common/charsel.c` (`charSel`).
+    pub charsel: charsel::CharSelState,
 }
 
 impl Game {

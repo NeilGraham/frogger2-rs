@@ -81,6 +81,23 @@ pub enum Effect {
     Log {
         text: String,
     },
+    // ---- wave G (menus.c / options.c) ----
+    /// `SetMusicVolume()` → `SetCDVolume(cd_volume)` (PC): `vol` = `globalMusicVol` (0..=100),
+    /// `cd_volume` = `vol * 65535 / 100`.
+    SetMusicVolume {
+        vol: i32,
+        cd_volume: u32,
+    },
+    /// `globalSoundVol` changed (0..=100; `PlaySample` scales by it, PC/pcaudio.c:298).
+    SetSoundVolume {
+        vol: i32,
+    },
+    /// `PauseAudio()` (pause menu, FMV list): pause all playing samples.
+    PauseAudio,
+    /// `UnPauseAudio()`.
+    UnPauseAudio,
+    /// `PostQuitMessage(0)`: "Quit" in the frontend's pause menu exits the game.
+    Quit,
 }
 
 impl crate::Game {
