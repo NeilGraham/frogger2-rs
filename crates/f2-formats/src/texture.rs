@@ -16,6 +16,7 @@ use crate::read::{Reader, Result};
 pub const TEX_TRANSVAL: u16 = 0x7c1f;
 
 /// `TEXTURE_*` type in the header flags (`mdxTexture.h`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TexType {
     Normal,
@@ -43,6 +44,7 @@ impl TexType {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct Texture {
     pub flags: u32,
@@ -54,6 +56,7 @@ pub struct Texture {
     pub pixels: Vec<u16>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TexAnimFrame {
     pub crc: u32,
@@ -61,12 +64,14 @@ pub struct TexAnimFrame {
     pub time: i32,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TexAnim {
     pub base_crc: u32,
     pub frames: Vec<TexAnimFrame>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct TexBank {
     pub textures: Vec<Texture>,

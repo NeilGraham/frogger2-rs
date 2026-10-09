@@ -8,6 +8,7 @@
 use crate::read::{Error, Result};
 
 /// Language column order in the file (`LANG_UK`, `LANG_F`, `LANG_D`, `LANG_IT`, `LANG_US`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Language {
     Uk = 0,
@@ -21,6 +22,7 @@ impl Language {
     pub const ALL: [Language; 5] = [Language::Uk, Language::French, Language::German, Language::Italian, Language::Us];
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct StringTable {
     pub languages: Vec<String>,

@@ -5,6 +5,7 @@
 use crate::read::{Reader, Result};
 
 /// `SVECTOR` on PC (`PC/libgte.h`): four i16.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SVec {
     pub x: i16,
@@ -20,6 +21,7 @@ impl SVec {
 }
 
 /// `GAMETILE` (`Common/define.h`), 68 bytes on disk.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tile {
     /// Adjacent tile indices: north, south, east, west (`-1` = none).
@@ -31,6 +33,7 @@ pub struct Tile {
 }
 
 /// `CAM_PLANE`: fixed-point normal, `k` (×10 at load) and status flags.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CamPlane {
     pub normal: [i32; 3],
@@ -38,12 +41,14 @@ pub struct CamPlane {
     pub status: u32,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CamBox {
     pub num_planes: i32,
     pub first_plane: i32,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct Collision {
     pub player_start: [i32; 4],
@@ -105,6 +110,7 @@ impl Collision {
 }
 
 /// `IQUATERNION`: four i32 (12-bit fixed point).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IQuat {
     pub x: i32,
@@ -114,6 +120,7 @@ pub struct IQuat {
 }
 
 /// `SCENIC` (`Common/define.h`), 44 bytes, chained by byte offsets.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scenic {
     pub name: String,
@@ -157,6 +164,7 @@ fn log_mismatch(count: i32, chained: usize) {
 }
 
 /// One record of an animation→sound map (`LoadSfxMapping`, `Common/general.c:330`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SfxMapping {
     pub uid: i32,
@@ -177,6 +185,7 @@ pub fn sfx_mapping_slots(kind: i32) -> usize {
 }
 
 /// Ambient sound placed on a tile (kind 4 with `uid < tileCount`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AmbientSfx {
     pub tile: i32,

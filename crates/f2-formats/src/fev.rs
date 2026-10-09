@@ -11,6 +11,7 @@ use crate::read::{cstr, Reader, Result};
 
 pub const FEV_VERSION: u8 = 3;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Trigger {
     EnemyOnTile {
@@ -64,6 +65,7 @@ pub enum Trigger {
     Not(Box<Trigger>),
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EffectParams {
     pub id: i16,
@@ -74,6 +76,7 @@ pub struct EffectParams {
     pub lifetime: i32,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     /// `EV_ON`: attach `block` to run when `trigger` fires (`flags` = TRIGGER_*).
@@ -238,13 +241,36 @@ pub enum Command {
     },
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct Script {
     pub commands: Vec<Command>,
+    /// Raw stored values of every shifted operand (FIXED `>> 4`, speeds `>> 8`, and the
+    /// skipped word of `LineNumber`), in file order (depth-first). Lets [`Script::write`]
+    /// reproduce the original bytes; decoded fields in `commands` are `fixed_value(raw)`.
+    pub raw_operands: Vec<i32>,
 }
 
-fn fixed(r: &mut Reader) -> Result<i32> {
-    Ok(r.i32()? >> 4)
+/// Decodes a stored FIXED operand like `MEMGETFIXED` (`raw >> 4`).
+pub fn fixed_value(raw: i32) -> i32 {
+    raw >> 4
+}
+
+/// Decodes a stored speed operand (`raw >> 8`).
+pub fn speed_value(raw: i32) -> i32 {
+    raw >> 8
+}
+
+fn fixed(r: &mut Reader, raw: &mut Vec<i32>) -> Result<i32> {
+    let v = r.i32()?;
+    raw.push(v);
+    Ok(fixed_value(v))
+}
+
+fn speed8(r: &mut Reader, raw: &mut Vec<i32>) -> Result<i32> {
+    let v = r.i32()?;
+    raw.push(v);
+    Ok(speed_value(v))
 }
 
 fn string(r: &mut Reader) -> Result<String> {
@@ -252,7 +278,7 @@ fn string(r: &mut Reader) -> Result<String> {
     Ok(cstr(r.bytes(n)?))
 }
 
-pub fn read_trigger(r: &mut Reader, depth: u32) -> Result<Trigger> {
+fn trigger_ctx(r: &mut Reader, depth: u32, raw: &mut Vec<i32>) -> Result<Trigger> {
     if depth > 64 {
         return Err(r.err("trigger nesting too deep"));
     }
@@ -261,39 +287,39 @@ pub fn read_trigger(r: &mut Reader, depth: u32) -> Result<Trigger> {
         0 => Trigger::EnemyOnTile { enemy: r.i16()?, tile: r.i16()? },
         1 => Trigger::FrogOnTile { frog: r.u8()?, tile: r.i16()? },
         2 => Trigger::FrogOnPlatform { frog: r.u8()?, platform: r.i16()? },
-        3 => Trigger::RandomWait { start: fixed(r)?, end: fixed(r)? },
+        3 => Trigger::RandomWait { start: fixed(r, raw)?, end: fixed(r, raw)? },
         8 => Trigger::EnemyAtFlag { enemy: r.i16()?, flag: r.i16()? },
         9 => Trigger::PlatAtFlag { platform: r.i16()?, flag: r.i16()? },
-        10 => Trigger::Wait { time: fixed(r)? },
+        10 => Trigger::Wait { time: fixed(r, raw)? },
         11 => Trigger::FlagSet { flag: r.u8()? },
         12 => Trigger::CounterEquals { counter: r.u8()?, value: r.i16()? },
         13 => Trigger::FrogIsDead { frog: r.u8()? },
         14 => Trigger::LevelIsOpen { world: r.u8()?, level: r.u8()? },
         15 => Trigger::OnPath { frog: r.u8()?, enemy: r.i16()? },
-        64 => Trigger::And(Box::new(read_trigger(r, depth + 1)?), Box::new(read_trigger(r, depth + 1)?)),
-        65 => Trigger::Or(Box::new(read_trigger(r, depth + 1)?), Box::new(read_trigger(r, depth + 1)?)),
-        66 => Trigger::Not(Box::new(read_trigger(r, depth + 1)?)),
+        64 => Trigger::And(Box::new(trigger_ctx(r, depth + 1, raw)?), Box::new(trigger_ctx(r, depth + 1, raw)?)),
+        65 => Trigger::Or(Box::new(trigger_ctx(r, depth + 1, raw)?), Box::new(trigger_ctx(r, depth + 1, raw)?)),
+        66 => Trigger::Not(Box::new(trigger_ctx(r, depth + 1, raw)?)),
         x => return Err(r.err(format!("unknown trigger {x}"))),
     })
 }
 
-fn effect(r: &mut Reader) -> Result<EffectParams> {
-    Ok(EffectParams { id: r.i16()?, kind: r.u8()?, size: fixed(r)?, speed: fixed(r)?, accn: fixed(r)?, lifetime: fixed(r)? })
+fn effect(r: &mut Reader, raw: &mut Vec<i32>) -> Result<EffectParams> {
+    Ok(EffectParams { id: r.i16()?, kind: r.u8()?, size: fixed(r, raw)?, speed: fixed(r, raw)?, accn: fixed(r, raw)?, lifetime: fixed(r, raw)? })
 }
 
 /// Reads a sized sub-block and checks it ends exactly at `size`.
-fn sized_block(r: &mut Reader, size: usize, depth: u32) -> Result<Vec<Command>> {
+fn sized_block(r: &mut Reader, size: usize, depth: u32, raw: &mut Vec<i32>) -> Result<Vec<Command>> {
     let start = r.pos;
     let bytes = r.bytes(size)?;
     let mut sub = Reader::at(r.what, &r.data[..start + bytes.len()], start);
-    let block = read_block(&mut sub, depth + 1)?;
+    let block = block_ctx(&mut sub, depth + 1, raw)?;
     if sub.pos != start + size {
         return Err(sub.err(format!("block size {size} but commands used {}", sub.pos - start)));
     }
     Ok(block)
 }
 
-pub fn read_command(r: &mut Reader, depth: u32) -> Result<Command> {
+fn command_ctx(r: &mut Reader, depth: u32, raw: &mut Vec<i32>) -> Result<Command> {
     let op = r.u8()?;
     Ok(match op {
         0 => Command::Debug { text: string(r)? },
@@ -301,12 +327,12 @@ pub fn read_command(r: &mut Reader, depth: u32) -> Result<Command> {
         3 => Command::ResetEnemyFlag { id: r.i16()?, flags: r.u32()? },
         4 => Command::SetPlatFlag { id: r.i16()?, flags: r.u32()? },
         5 => Command::ResetPlatFlag { id: r.i16()?, flags: r.u32()? },
-        6 => Command::AnimateActor { id: r.i16()?, anim: r.u8()?, flags: r.u8()?, speed: r.i32()? >> 8 },
+        6 => Command::AnimateActor { id: r.i16()?, anim: r.u8()?, flags: r.u8()?, speed: speed8(r, raw)? },
         7 => Command::SetEnemy { id: r.i16()?, value: r.u8()? },
         8 => Command::SetPlatform { id: r.i16()?, value: r.u8()? },
         10 => Command::MoveEnemy { id: r.i16()?, node: r.i16()? },
         11 => Command::MovePlat { id: r.i16()?, node: r.i16()? },
-        13 => Command::ChangeVolume { n: r.u8()?, delta: fixed(r)?, platform: r.i16()? },
+        13 => Command::ChangeVolume { n: r.u8()?, delta: fixed(r, raw)?, platform: r.i16()? },
         16 => Command::ChangeLevel { world: r.u8()?, level: r.u8()? },
         18 => Command::Hop { frog: r.u8()?, tile: r.i16()? },
         20 => Command::Fog { r: r.u8()?, g: r.u8()?, b: r.u8()?, min: r.i16()?, max: r.i16()? },
@@ -315,56 +341,56 @@ pub fn read_command(r: &mut Reader, depth: u32) -> Result<Command> {
         23 => Command::CameoModeOff,
         24 => Command::SetFlag { flag: r.u8()? },
         25 => Command::ResetFlag { flag: r.u8()? },
-        27 => Command::SfxEnemy(effect(r)?),
-        28 => Command::SfxPlaceholder(effect(r)?),
+        27 => Command::SfxEnemy(effect(r, raw)?),
+        28 => Command::SfxPlaceholder(effect(r, raw)?),
         29 => Command::HurtFrog,
-        30 => Command::ScaleEnemySpeed { id: r.i16()?, speed: fixed(r)? },
-        31 => Command::ScalePlatSpeed { id: r.i16()?, speed: fixed(r)? },
+        30 => Command::ScaleEnemySpeed { id: r.i16()?, speed: fixed(r, raw)? },
+        31 => Command::ScalePlatSpeed { id: r.i16()?, speed: fixed(r, raw)? },
         32 => Command::IncCounter { counter: r.u8()? },
         33 => Command::DecCounter { counter: r.u8()? },
         34 => Command::SetCounter { counter: r.u8()?, value: r.i16()? },
-        35 => Command::CollapsePlat { id: r.i16()?, time: fixed(r)? },
+        35 => Command::CollapsePlat { id: r.i16()?, time: fixed(r, raw)? },
         36 => Command::ChangeFrog { frog: r.u8()?, model: string(r)? },
-        37 => Command::ShakeCamera { shakiness: fixed(r)?, falloff: fixed(r)? },
+        37 => Command::ShakeCamera { shakiness: fixed(r, raw)?, falloff: fixed(r, raw)? },
         38 => Command::SetTileP { id: r.i16()?, state: r.u8()? },
-        39 => Command::TeleportP { frog: r.u8()?, id: r.i16()?, time: fixed(r)? },
+        39 => Command::TeleportP { frog: r.u8()?, id: r.i16()?, time: fixed(r, raw)? },
         40 => Command::SetStartTileP { id: r.i16()? },
-        41 => Command::SpringP { frog: r.u8()?, id: r.i16()?, height: fixed(r)?, time: fixed(r)? },
+        41 => Command::SpringP { frog: r.u8()?, id: r.i16()?, height: fixed(r, raw)?, time: fixed(r, raw)? },
         42 => Command::PlaySound { name: string(r)?, uid: r.i16()? },
         43 => Command::StopSound { name: string(r)? },
         44 => Command::KillFrog { frog: r.u8()?, death: r.u8()? },
-        45 => Command::AnimateFrog { frog: r.u8()?, anim: r.u8()?, flags: r.u8()?, speed: r.i32()? >> 8 },
+        45 => Command::AnimateFrog { frog: r.u8()?, anim: r.u8()?, flags: r.u8()?, speed: speed8(r, raw)? },
         46 => Command::ResetScript,
         47 => Command::EndLevel,
         48 => Command::PokeFrogs,
-        49 => Command::SfxPlaceholderNoClip(effect(r)?),
+        49 => Command::SfxPlaceholderNoClip(effect(r, raw)?),
         50 => Command::Hint { string: r.i16()? },
         64 => {
-            let trigger = read_trigger(r, 0)?;
+            let trigger = trigger_ctx(r, 0, raw)?;
             let flags = r.u8()?;
             let size = r.i32()?;
             if size < 0 {
                 return Err(r.err("negative block size"));
             }
-            Command::On { trigger, flags, block: sized_block(r, size as usize, depth)? }
+            Command::On { trigger, flags, block: sized_block(r, size as usize, depth, raw)? }
         }
         65 => {
-            let trigger = read_trigger(r, 0)?;
+            let trigger = trigger_ctx(r, 0, raw)?;
             let size = r.i32()?;
             if size < 0 {
                 return Err(r.err("negative block size"));
             }
-            Command::If { trigger, block: sized_block(r, size as usize, depth)? }
+            Command::If { trigger, block: sized_block(r, size as usize, depth, raw)? }
         }
         255 => {
-            r.i16()?;
+            raw.push(r.i16()? as i32);
             Command::LineNumber { line: r.i16()? }
         }
         x => return Err(r.err(format!("unknown command {x}"))),
     })
 }
 
-pub fn read_block(r: &mut Reader, depth: u32) -> Result<Vec<Command>> {
+fn block_ctx(r: &mut Reader, depth: u32, raw: &mut Vec<i32>) -> Result<Vec<Command>> {
     if depth > 64 {
         return Err(r.err("block nesting too deep"));
     }
@@ -372,7 +398,7 @@ pub fn read_block(r: &mut Reader, depth: u32) -> Result<Vec<Command>> {
     if n < 0 {
         return Err(r.err(format!("negative command count {n}")));
     }
-    (0..n).map(|_| read_command(r, depth)).collect()
+    (0..n).map(|_| command_ctx(r, depth, raw)).collect()
 }
 
 impl Script {
@@ -383,7 +409,12 @@ impl Script {
             return Err(r.err(format!("script version {v}, expected {FEV_VERSION}")));
         }
         let _outer = r.i32()?;
-        let commands = read_block(&mut r, 0)?;
-        Ok(Script { commands })
+        let mut raw = Vec::new();
+        let commands = block_ctx(&mut r, 0, &mut raw)?;
+        Ok(Script { commands, raw_operands: raw })
     }
 }
+
+#[path = "fev_write.rs"]
+mod write;
+pub use write::{read_block, read_command, read_trigger};
