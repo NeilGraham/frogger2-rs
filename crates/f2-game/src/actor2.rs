@@ -327,7 +327,22 @@ impl Game {
 
         let mut item = Actor2::default();
 
-        // TODO(port): AddObjectsSpritesToSpriteList(object, 0) (PC sprite list, sprite wave).
+        // AddObjectsSpritesToSpriteList(object, 0) (PC/pcsprite.c:61): one pool sprite per
+        // object sprite (never freed before the level ends).
+        for &(tex, xlu) in &model.obj_sprites {
+            if let Some(s) = self.sprite.allocate_sprites(1) {
+                let sp = self.sprite.get_mut(s);
+                sp.texture = tex;
+                sp.pos = SVector::default();
+                sp.r = 255;
+                sp.g = 255;
+                sp.b = 255;
+                sp.a = 128;
+                sp.flags = if xlu < 255 { crate::sprite::SPRITE_TRANSLUCENT } else { 0 };
+                sp.offset_x = -16;
+                sp.offset_y = -16;
+            }
+        }
 
         // Cue sounds from animations
         let (mapping, ambient) = self.general.find_sfx_mapping(model.id);

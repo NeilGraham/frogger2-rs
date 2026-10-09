@@ -81,6 +81,8 @@ pub struct Garib {
     pub garib_type: u8,
     /// `sprite` (coins only).
     pub sprite: Option<GaribSprite>,
+    /// The `sprList` slot `AllocateSprites(1)` gave `garib->sprite` (pool bookkeeping).
+    pub pool_sprite: Option<crate::ids::SpriteId>,
     /// `fx` (power-ups: the `FXTYPE_HEALTHFLY` effect).
     pub fx: Option<SpecFxId>,
     /// `SetFXColour(garib->fx, r, g, b)`: the colour `UpdateGaribs` reads back as
@@ -458,7 +460,11 @@ impl Game {
             return;
         }
 
-        // DeallocateSprites(garib->sprite, 1): the sprite is owned by the garib here.
+        // DeallocateSprites(garib->sprite, 1): the sprite's state is owned by the garib
+        // here; the pool slot is returned.
+        if let Some(s) = self.garib(id).pool_sprite {
+            self.sprite.deallocate_sprites(Some(s), 1);
+        }
         let gl = &mut self.collect.garib_list;
         gl.head.remove(&mut gl.array, id);
         gl.count = gl.count.wrapping_sub(1);
@@ -556,6 +562,8 @@ impl Game {
         if garib_type == GOLDCOIN_GARIB || garib_type == SILVERCOIN_GARIB {
             // initialise garib sprite (AllocateSprites(1): sprite pool exhaustion, where
             // the C frees the array element and returns NULL, is not modelled).
+            let ps = self.sprite.allocate_sprites(1);
+            self.garib_mut(id).pool_sprite = ps;
             // TODO(port): cheatCombos[CHEAT_MAD_GARIBS] -> "RGARIB01".
             let (r, g, b) = if garib_type == GOLDCOIN_GARIB { (255, 255, 0) } else { (255, 255, 255) };
             let angle = self.rng.random(4096) as i16;

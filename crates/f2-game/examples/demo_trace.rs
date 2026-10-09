@@ -37,6 +37,9 @@ fn main() -> Result<(), String> {
     let data = DirData(game_dir());
     let mut g = Game::new();
     g.rng.rseed = ORACLE_RSEED_AT_DEMO_START;
+    // Frontend leftovers the level never resets: GameLoop's STARTUP_MODE case ends with
+    // GTInit(&modeTimer, 1) (Common/frontend.c:187) and the frontend never updates it.
+    g.game.mode_timer.init(1);
     g.init_demo_level(world, level, &data)?;
     // InitDemoMode ran inside the frontend's GameLoop, which then does frameCount++.
     g.frame_count += 1;

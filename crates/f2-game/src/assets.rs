@@ -75,6 +75,8 @@ pub struct ModelInfo {
     /// `MDX_ACTOR::trueCentre` / `radius` from `FindActorCentre` (model constants).
     pub true_centre: [f32; 3],
     pub actor_radius: f32,
+    /// `(textureID, obj->xlu)` of every object sprite, in `AddObjectsSpritesToSpriteList` order.
+    pub obj_sprites: Vec<(u32, u8)>,
 }
 
 /// Port of `FindObj` (`MDX Library/mdxActor.cpp:978`) on a sibling chain starting at
@@ -139,6 +141,17 @@ impl ModelTable {
             let animations = m.animations.iter().map(|a| MdxAnimation { anim_start: a.start, anim_end: a.end, speed: a.speed, looped: a.looped }).collect();
             self.models.entry(m.id).or_insert_with(|| {
                 let (true_centre, actor_radius) = crate::view::find_actor_centre(m, !m.animations.is_empty());
+                fn sprites(o: &Object, out: &mut Vec<(u32, u8)>) {
+                    out.extend(o.sprites.iter().map(|s| (s.texture, o.xlu)));
+                    for c in &o.children {
+                        sprites(c, out);
+                    }
+                }
+                let mut obj_sprites = Vec::new();
+                sprites(&m.root, &mut obj_sprites);
+                for s in &m.root_siblings {
+                    sprites(s, &mut obj_sprites);
+                }
                 Arc::new(ModelInfo {
                     id: m.id,
                     name: m.root.name.clone(),
@@ -149,6 +162,7 @@ impl ModelTable {
                     root_object: Some(crate::view::RootObject::from_object(&m.root)),
                     true_centre,
                     actor_radius,
+                    obj_sprites,
                 })
             });
         }
