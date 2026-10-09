@@ -585,7 +585,9 @@ impl Game {
 
     /// Port of `DeathMulti` (Common/anim.c:464): a standard multiplayer death.
     pub fn death_multi(&mut self, pl: i32) {
-        // TODO(port specfx): CreateRespawnEffect( currTile[pl], pl );
+        if let Some(t) = self.frogmove.curr_tile[pl as usize] {
+            self.create_respawn_effect(t, pl);
+        }
 
         self.death_sample(GEN_DEATHEXPLODE);
 

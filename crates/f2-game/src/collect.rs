@@ -249,7 +249,11 @@ impl Game {
                 rotate_vector_by_quaternion_ff(&mut se_up, &UP_VEC, &q_rot);
 
                 if self.collect_battle_mode() {
-                    // TODO(port): mpl[pl].trail += (GOLDCOIN ? 20 : 4) (multi.c state).
+                    if garib_type == GOLDCOIN_GARIB {
+                        self.multi.mpl[p].trail = self.multi.mpl[p].trail.wrapping_add(20);
+                    } else {
+                        self.multi.mpl[p].trail = self.multi.mpl[p].trail.wrapping_add(4);
+                    }
                 } else {
                     let pp = &mut self.frogger.player[p];
                     if pp.spawn_timer != 0 && pp.spawn_score_level < 5 {
@@ -371,7 +375,7 @@ impl Game {
         if self.collect_battle_mode() {
             // TODO(port): DeallocateFX(garib->fx, 1) (specfx).
             self.sub_garib(id);
-            // TODO(port): numMultiItems-- (multi.c).
+            self.multi.num_multi_items = self.multi.num_multi_items.wrapping_sub(1);
         } else if !(garib_type == AUTOHOP_GARIB || garib_type == QUICKHOP_GARIB || garib_type == SLOWHOP_GARIB || garib_type == INVULNERABILITY_GARIB) {
             self.sub_garib(id);
         }
