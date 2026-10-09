@@ -36,6 +36,7 @@ pub mod multi;
 pub mod path;
 pub mod pc_actor;
 pub mod pc_banks;
+pub mod pcaudio; // ambient
 pub mod platform;
 pub mod specfx;
 pub mod timer;
@@ -108,6 +109,8 @@ pub struct Game {
     pub levplay: levplay::LevPlayState,
     /// `Common/tongue.c` globals.
     pub tongue: tongue::TongueState,
+    /// `PC/pcaudio.c` simulation-side globals (samples, ambient sounds, cdTrack). // ambient
+    pub pcaudio: pcaudio::PcAudioState,
 }
 
 impl Game {

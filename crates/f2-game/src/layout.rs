@@ -566,6 +566,8 @@ impl Game {
         // is not cleared by FreeMap, so reset with the old count first.
         self.reset_babies();
         self.map = Default::default(); // FreeMap, FreeEntityBank, FreeScenic
+        self.free_ambient_sound_list(); // ambient: FreeAmbientSoundList
+        self.pcaudio.init_sample_list(); // ambient: FreeSampleList
         self.general.sfx_anim_map.clear(); // FreeSampleList
         self.general.ambient_tile_sfx.clear();
         self.free_enemy_linked_list();
@@ -618,7 +620,10 @@ impl Game {
         if let Some(f) = texture_bank_file(INGAMEGENERIC_TEX_BANK) {
             out.texture_banks.push(f);
         }
-        // TODO(port): LoadSfx(worldID) (audio).
+        // ambient: InitSampleList, InitAmbientSoundList, LoadSfx(worldID) (useAudio).
+        self.pcaudio.init_sample_list();
+        self.pcaudio.ambient_sound_list.clear();
+        self.load_sfx(world, data);
 
         let wvd = self.layout.world_visual_data[world as usize];
         let lvd = wvd.level_visual_data[level as usize];
@@ -687,6 +692,12 @@ impl Game {
             let (maps, amb) = level::parse_sfx_mapping(&bytes, self.map.tiles.len()).map_err(|e| format!("{sam}: {e}"))?;
             self.general.load_sfx_mapping(&maps, &amb);
             self.level_files.sfx_mapping = maps;
+            // ambient: type 4 records -> AddAmbientSound(FindSample(s), &firstTile[uid].centre,
+            // 12000, AMBIENT_VOLUME, -1, 0, 0, NULL), in file order.
+            for t in self.general.ambient_tile_sfx.clone() {
+                let centre = self.map.tiles.get(t.tile.0 as usize).map(|g| g.centre);
+                self.add_ambient_sound(t.sample, centre, 12000, crate::pcaudio::AMBIENT_VOLUME as i16, -1, 0, 0, None);
+            }
         }
 
         // TODO(port): InitInGameTextOverlays; player[0].lives = numLives[difficulty]
@@ -704,8 +715,9 @@ impl Game {
         // TODO(port): InitTiming(60).
         self.act_frame_count = 0;
         // TODO(port): drawLandscape, ScreenFade, InitTrainingMode (FRONTEND4) / train = 0,
-        // LoadDemoFile, moolard cheat file, PrepareSong (Effect::PlayMusic), UnPauseAudio,
-        // SetMusicVolume.
+        // LoadDemoFile, moolard cheat file, SetMusicVolume.
+        self.prepare_song(world as i16, true); // ambient: PrepareSong(worldID, 1) (useAudio)
+        self.un_pause_audio(); // ambient
         self.frogger.player[0].old_lives = self.frogger.player[0].lives;
         self.game.start_cam = 1;
         self.game.end_level_timer.init(0);

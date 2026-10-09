@@ -17,7 +17,6 @@ use f2_math::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::effects::Effect;
 use crate::ids::ActorId;
 use crate::list::{Head, LinkStore, Links};
 use crate::mdx_actor::{init_anims, mdx_flags, object_flags, MdxActor, INIT_SHADOW};
@@ -335,11 +334,7 @@ impl Game {
             anim.loop_flags = [0; 5];
             anim.sfx_mapping = mapping;
         }
-        if let Some(uid) = ambient {
-            // TODO(port): AddAmbientSound(sample, &actor->position, 12000, AMBIENT_VOLUME, ...)
-            // belongs to the audio port (pcaudio.c); the request is surfaced as a log.
-            self.effects.push(Effect::Log { text: format!("ambient sfx {uid:#x} for actor {newname}") });
-        }
+        // ambient: AddAmbientSound for a scenic record is made below, once the actor id exists.
 
         // null object - do not display
         let nb = newname.as_bytes();
@@ -414,6 +409,11 @@ impl Game {
         self.actor2.actors.slots.push(Some(item));
         let a2 = &mut self.actor2;
         a2.act_list.push_front(&mut a2.actors, id);
+        // ambient: FindSfxMapping type 3 -> AddAmbientSound(sample, &actor->position (still
+        // zero there), 12000, AMBIENT_VOLUME, -1, 0, 0, act).
+        if let Some(uid) = ambient {
+            self.add_ambient_sound(uid, None, 12000, crate::pcaudio::AMBIENT_VOLUME as i16, -1, 0, 0, Some(id));
+        }
         Some(id)
     }
 

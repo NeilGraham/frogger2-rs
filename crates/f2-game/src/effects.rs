@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Effect {
     /// `PlaySample(sample, pos, radius, volume, pitch)` (`PC/pcaudio.c`). `uid` = sample CRC.
+    /// `handle != 0` (ambient sounds, `crate::pcaudio`): bind the started voice to
+    /// `handle` for later `UpdateHandle`/`StopHandle`.
     PlaySample {
         uid: u32,
         pos: Option<SVector>,
@@ -24,6 +26,8 @@ pub enum Effect {
     StopSample {
         uid: u32,
     },
+    /// No longer emitted: `PlaySfxMappedSample` is simulated in `crate::pcaudio` (kept for
+    /// host compatibility). // ambient
     /// `StartAnim` → `PlaySfxMappedSample(act)` (`PC/pcaudio.c:425`): an actor started
     /// animation `anim` whose sfx mapping names sample `uid`. If the sample loops the
     /// audio layer adds it as an ambient sound once per (actor, anim) (`loopFlags`),
@@ -44,12 +48,14 @@ pub enum Effect {
     StopHandle {
         handle: u32,
     },
-    /// Change volume/pitch/position of a playing voice.
+    /// Change volume/pitch/position of a playing voice (`UpdateLoopingSample`;
+    /// `radius` 0 = `DEFAULT_SFX_DIST`).
     UpdateHandle {
         handle: u32,
         volume: i32,
         pitch: i32,
         pos: Option<SVector>,
+        radius: i32, // ambient
     },
     /// `PrepareSong(track, loop)`: CD track number (2–12), see `f2_import::MUSIC_TRACKS`.
     PlayMusic {

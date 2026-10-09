@@ -374,9 +374,9 @@ impl App {
                     self.audio.stop(v);
                 }
             }
-            Effect::UpdateHandle { handle, volume, pitch, pos } => {
+            Effect::UpdateHandle { handle, volume, pitch, pos, radius } => {
                 if let Some(&v) = self.handles.get(&handle) {
-                    self.audio.update_voice(v, volume, pitch as i16, pos.map(sv), 0);
+                    self.audio.update_voice(v, volume, pitch as i16, pos.map(sv), radius);
                 }
             }
             Effect::PlayMusic { track, looped } => self.audio.play_music(track, looped),

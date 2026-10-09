@@ -10,7 +10,6 @@
 //! actor once per tick. TODO(port): revisit once the camera port can provide the
 //! on-screen test deterministically.
 
-use crate::effects::Effect;
 use crate::ids::ActorId;
 use crate::mdx_actor::{self, init_anims, AnimEvent};
 use crate::Game;
@@ -42,7 +41,8 @@ impl Game {
         }
         // SetVectorSR(&pos, &act->pos); ScaleVector(&pos, 10): the MDX position is the
         // game position / 10, so this is the actor position (to within rounding).
-        self.effects.push(Effect::PlaySfxMapped { actor: id, uid, anim: anim.current_animation, pos: a.position });
+        let (cur, pos) = (anim.current_animation, a.position);
+        self.play_sfx_mapped_sample(id, uid, cur, pos); // ambient
     }
 
     /// Port of `actorAnimate` (PC/actor.cpp:38): speed is 8.8 fixed (`speed/256.0f`).
