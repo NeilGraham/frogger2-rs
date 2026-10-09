@@ -23,3 +23,15 @@ Read `CLAUDE.md` (hard rules) and only the docs your brief names.
    unfinished and report partial progress honestly.
 8. **Report** (final message, ≤ 15 lines): status (done/partial/blocked), what you built (files),
    the acceptance command output summary, deviations/open issues, requested changes to shared files.
+
+## Worktree agents (parallel work)
+
+- You may be running in an isolated git worktree (not `<repo>`). Gitignored
+  inputs are NOT in your worktree — use absolute paths:
+  - game data: `F2_GAME_DIR=<repo>/game-data/usa/game` (rendition root `<repo>/game-data/usa`)
+  - original source: `<repo>/frogger2-vss/teamSpirit/...`
+- Commit your work on your worktree branch when done (small, descriptive commits; end each message
+  with `Co-Authored-By: Claude <noreply@anthropic.com>`). Never push. Never commit game data.
+- Other agents edit other modules concurrently. Keep edits to shared files (`crates/f2-game/src/lib.rs`,
+  `game.rs`, `Cargo.toml`) minimal and additive (new fields/mod lines/calls at clearly marked spots)
+  so the orchestrator can merge.
