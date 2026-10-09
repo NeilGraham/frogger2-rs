@@ -45,6 +45,8 @@ pub struct Requests {
     pub toggle_fullscreen: bool,
     /// Bindings were edited in the controls screen: persist them.
     pub save_bindings: bool,
+    /// The game changed the music / sound volume (0..=100): persist them in the config.
+    pub save_volumes: Option<(i32, i32)>,
 }
 
 pub struct App {
@@ -112,6 +114,13 @@ pub struct App {
     osd: Option<(String, f32)>,
     /// Draw sample overlays in the 4096 space to check anchoring (`--hud-probe`).
     pub hud_probe: bool,
+    /// Scripted pad 0 buttons (`--pad-script`): replaces player 1's input when set.
+    pub pad_override: Option<u16>,
+    /// `--pad-script`: sets `pad_override` at the scripted ticks.
+    pub pad_script: Option<crate::padscript::PadScript>,
+    /// The texture last copied onto the arcade screen (`menus.arcade_screen_copy`) and
+    /// the source image it came from.
+    arcade_copied: Option<(String, TexHandle)>,
 }
 
 impl App {
@@ -172,6 +181,9 @@ impl App {
             enhanced: DisplaySettings::ENHANCED,
             osd: None,
             hud_probe: false,
+            pad_override: None,
+            pad_script: None,
+            arcade_copied: None,
         };
         app.rebuild_renderer();
         app.install_game_hooks();
@@ -299,6 +311,7 @@ impl App {
         self.font_id = self.font.clone().map(|f| self.r.add_font(f));
         self.game_fonts = self.game_font_files.clone().map(|(b, s)| GameFonts { normal: self.r.add_font(b), small: self.r.add_font(s) });
         self.backdrop = None;
+        self.arcade_copied = None;
         if let Some(v) = &mut self.video {
             v.forget_image();
         }
@@ -418,6 +431,57 @@ impl App {
         self.game.start_frontend();
         self.dispatch_effects();
         self.process_level_loads();
+        self.grab_textures();
+    }
+
+    /// The PC renderer's texture grabs after a frame (drawloop.cpp:376): the story book
+    /// page (`grabToTexture`, `DrawPageB`).
+    fn grab_textures(&mut self) {
+        if self.game.options.grab_to_texture == 1 || self.game.options.grab_to_texture == 3 {
+            let font = self.game_font_files.as_ref().map(|(b, _)| b);
+            crate::book::process_grab(&mut self.r, &mut self.game, font);
+        }
+    }
+
+    /// Names of player 1's face buttons for the `@X`/`@T`/`@S`/`@C` text codes: the first
+    /// key binding on the keyboard, the first pad binding on a joypad.
+    fn button_prompts(&self) -> Vec<(char, String)> {
+        use f2_game::levplay::{PAD_CIRCLE, PAD_CROSS, PAD_SQUARE, PAD_TRIANGLE};
+        let pad = !matches!(self.mapper.controllers[0], f2_platform::Controller::Keyboard);
+        [('X', PAD_CROSS), ('T', PAD_TRIANGLE), ('S', PAD_SQUARE), ('C', PAD_CIRCLE)]
+            .into_iter()
+            .filter_map(|(c, a)| {
+                let b = self.bindings.get(0, a);
+                let pick = b.iter().find(|x| matches!(x, f2_platform::Binding::Key(_)) != pad).or(b.first())?;
+                Some((c, pick.label(self.families[0])))
+            })
+            .collect()
+    }
+
+    /// `CopyTexture(arcadeScreenTex, FindTexture(arcade_screen_copy))` (menus.c:1219):
+    /// the arcade machine's `TEST5` screen shows the selected level / static noise.
+    fn sync_arcade_screen(&mut self) {
+        let m = &self.game.menus;
+        if m.arcade_screen_copy.is_empty() || m.arcade_screen_tex.is_empty() {
+            return;
+        }
+        let src = self.r.textures.current(f2_game::specfx::find_texture(&m.arcade_screen_copy));
+        let Some(src) = src else {
+            if self.arcade_copied.as_ref().is_none_or(|(n, _)| *n != m.arcade_screen_copy) {
+                if std::env::var_os("F2_GAME_LOG").is_some() {
+                    eprintln!("frogger: arcade screen texture {} not loaded", m.arcade_screen_copy);
+                }
+                self.arcade_copied = Some((m.arcade_screen_copy.clone(), TexHandle(u32::MAX)));
+            }
+            return;
+        };
+        if self.arcade_copied.as_ref().is_some_and(|(n, h)| *n == m.arcade_screen_copy && *h == src) {
+            return;
+        }
+        let (dest, name) = (m.arcade_screen_tex.clone(), m.arcade_screen_copy.clone());
+        if crate::book::copy_texture(&mut self.r, &dest, &name) {
+            self.arcade_copied = Some((name, src));
+        }
     }
 
     /// Rebuilds the scene for levels `InitLevel` loaded inside the simulation.
@@ -647,10 +711,17 @@ impl App {
         self.kb.down = kb.down;
         let mut pads = [0u16; 4];
         pads.copy_from_slice(&self.pad.digital[..4]);
+        if let Some(m) = self.pad_script.as_ref().and_then(|s| s.pad_at(self.ticks)) {
+            self.pad_override = Some(m);
+        }
+        if let Some(b) = self.pad_override {
+            pads[0] = b;
+        }
         self.game.tick(TickInput { pads });
         self.ticks += 1;
         self.dispatch_effects();
         self.process_level_loads();
+        self.grab_textures();
         self.update_game_view();
         if self.game.backdrop.tiled_backdrop.is_some() {
             self.tile_scroll.step(self.game.game_speed);
@@ -742,8 +813,17 @@ impl App {
                     eprintln!("game: {text}");
                 }
             }
-            // wave G: TODO(host) music/sfx volume, audio pause, quit.
-            Effect::SetMusicVolume { .. } | Effect::SetSoundVolume { .. } | Effect::PauseAudio | Effect::UnPauseAudio | Effect::Quit => {}
+            Effect::SetMusicVolume { vol, .. } => {
+                self.audio.set_music_volume(vol);
+                self.requests.save_volumes = Some((self.audio.music_volume(), self.audio.sfx_volume()));
+            }
+            Effect::SetSoundVolume { vol } => {
+                self.audio.set_sfx_volume(vol);
+                self.requests.save_volumes = Some((self.audio.music_volume(), self.audio.sfx_volume()));
+            }
+            Effect::PauseAudio => self.audio.pause_audio(),
+            Effect::UnPauseAudio => self.audio.unpause_audio(),
+            Effect::Quit => self.requests.quit = true,
         }
     }
 
@@ -788,6 +868,10 @@ impl App {
         }
         let alpha = (self.acc.as_secs_f32() / TICK.as_secs_f32()).clamp(0.0, 1.0);
         let backdrop = self.backdrop_image();
+        if self.scene.is_some() {
+            self.sync_arcade_screen();
+        }
+        crate::overlay::set_button_prompts(self.button_prompts());
         let d = self.display();
         let authentic = self.profile == Profile::Authentic;
         let mut ctx = render::DrawCtx {

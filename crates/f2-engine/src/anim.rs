@@ -32,11 +32,17 @@ pub struct Actor {
     pub extra_flags: i16,
     /// `lastMKey`, `lastSKey`, `lastRKey` per object (pre-order), search hints.
     pub last_keys: Vec<[i16; 3]>,
+    /// `MDX_ACTOR.overrideTex`: every face uses this image instead of its own
+    /// (`PCRenderObject`, mdxRender.cpp:2106).
+    pub override_tex: Option<crate::TexHandle>,
+    /// `SetObjectGouraudValues(r, g, b)` (0.0..=1.0): replaces the vertex colours' RGB
+    /// (the original writes the mesh's `gouraudColors`).
+    pub gouraud: Option<[f32; 3]>,
 }
 
 impl Default for Actor {
     fn default() -> Self {
-        Actor { pos: [0.0; 3], q_rot: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3], anim_time: 0.0, animated: true, xlu: 1.0, extra_flags: 0, last_keys: Vec::new() }
+        Actor { pos: [0.0; 3], q_rot: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3], anim_time: 0.0, animated: true, xlu: 1.0, extra_flags: 0, last_keys: Vec::new(), override_tex: None, gouraud: None }
     }
 }
 
