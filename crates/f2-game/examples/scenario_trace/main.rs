@@ -37,6 +37,16 @@
 //! Each line then carries the `mp` section (multi.c globals, `mpl[]`) while
 //! `gameState.multi == MULTILOCAL`. `--list-multi` prints `W-L MODE` for the table.
 
+//!
+//! Planner (`--plan OUT.key`, `plan.rs`): searches inputs that reach the level's end
+//! state with the simulation itself (single player: all babies, level complete screen,
+//! continue; multiplayer: rounds to a match winner), writes them as a `.key` and then
+//! traces that script like any other. The simulation is deterministic and matches the
+//! retail exe, so the oracle replays the same script to the same end (`f2-parity
+//! --corpus finish`). `F2_SAVE_OUT=FILE` writes the run's last `SaveGame` block.
+
+mod plan;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -115,10 +125,10 @@ fn list_levels() {
 }
 
 /// Local multiplayer start options (`--multi`, `--chars`, `--mp-mode`).
-struct MultiOpts {
-    players: u32,
-    chars: [u8; 4],
-    mp_mode: i32,
+pub struct MultiOpts {
+    pub players: u32,
+    pub chars: [u8; 4],
+    pub mp_mode: i32,
 }
 
 /// `--list-multi`: the frontend's multiplayer level table (`multiWorldNum/multiLevelNum`)
@@ -166,48 +176,9 @@ fn mp_section(g: &Game) -> MpState {
     }
 }
 
-fn main() -> Result<(), String> {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("--list-levels") {
-        list_levels();
-        return Ok(());
-    }
-    if args.first().map(String::as_str) == Some("--list-multi") {
-        list_multi();
-        return Ok(());
-    }
-    let mut mp = MultiOpts { players: 0, chars: [0, 1, 2, 3], mp_mode: 0 };
-    while args.first().is_some_and(|a| a.starts_with("--")) {
-        let flag = args.remove(0);
-        if args.is_empty() {
-            return Err(format!("{flag} needs a value"));
-        }
-        let val = args.remove(0);
-        match flag.as_str() {
-            "--multi" => mp.players = val.parse().ok().filter(|n| (2..=4).contains(n)).ok_or("--multi takes 2..4")?,
-            "--chars" => {
-                for (i, c) in val.split(',').take(4).enumerate() {
-                    mp.chars[i] = c.trim().parse().map_err(|e| format!("--chars: {e}"))?;
-                }
-            }
-            "--mp-mode" => mp.mp_mode = val.parse().ok().filter(|m| (0..=3).contains(m)).ok_or("--mp-mode takes 0..3")?,
-            _ => return Err(format!("unknown option {flag}")),
-        }
-    }
-    if args.len() < 4 {
-        return Err("usage: scenario_trace [--multi N [--chars a,b,..] [--mp-mode M]] <world> <level> <keys.key|-> out.jsonl [max_ticks] | --list-levels | --list-multi".into());
-    }
-    let world: u32 = args[0].parse().map_err(|e| format!("world: {e}"))?;
-    let level: u32 = args[1].parse().map_err(|e| format!("level: {e}"))?;
-    let records = if args[2] == "-" { Vec::new() } else { parse_keys(&std::fs::read(&args[2]).map_err(|e| format!("{}: {e}", args[2]))?)? };
-    let out = PathBuf::from(&args[3]);
-    let max_ticks: u32 = args.get(4).map_or(Ok(100_000), |s| s.parse()).map_err(|e| format!("max_ticks: {e}"))?;
-    let rseed: u32 = match std::env::var("F2_START_RSEED") {
-        Ok(s) => s.parse().map_err(|e| format!("F2_START_RSEED: {e}"))?,
-        Err(_) => ORACLE_RSEED_AT_LEVEL_START,
-    };
-
-    let data = Arc::new(DirData(game_dir()));
+/// The scenario start as f2fix does it (`start.level` / `start.multi`), up to the first
+/// level tick.
+pub fn start_game(world: u32, level: u32, mp: &MultiOpts, rseed: u32, data: Arc<DirData>) -> Result<Game, String> {
     let mut g = Game::new();
     // In-level InitLevel calls (restart, next level) need the data source.
     g.session.data = Some(data.clone());
@@ -261,17 +232,112 @@ fn main() -> Result<(), String> {
         }
     }
     g.take_level_loads();
+    Ok(g)
+}
 
+/// The first half of one scenario tick: held pad state `held` (previous `prev`), then
+/// `GameLoop`. Returns false when the level was left for the frontend (f2fix: the run
+/// ends, no trace line).
+pub fn tick_first(g: &mut Game, prev: [u16; 4], held: [u16; 4]) -> bool {
+    // process_user_input derives debounce = ~padData.digital & live.
+    g.levplay.pad_data.digital = prev;
+    g.tick_game_loop(TickInput { pads: held });
+    g.game_state.mode != FRONTEND_MODE
+}
+
+/// The second half: `CopyActorList` + `DrawLoop`; returns the tick's `SaveGame` block.
+pub fn tick_second(g: &mut Game) -> Option<Vec<u8>> {
+    g.after_game_loop();
+    g.take_level_loads();
+    g.take_effects().into_iter().rev().find_map(|e| match e {
+        f2_game::effects::Effect::SaveGame { data } => Some(data),
+        _ => None,
+    })
+}
+
+fn main() -> Result<(), String> {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--list-levels") {
+        list_levels();
+        return Ok(());
+    }
+    if args.first().map(String::as_str) == Some("--list-multi") {
+        list_multi();
+        return Ok(());
+    }
+    let mut mp = MultiOpts { players: 0, chars: [0, 1, 2, 3], mp_mode: 0 };
+    let mut plan_out: Option<PathBuf> = None;
+    let mut plan_opts = plan::PlanOpts::default();
+    while args.first().is_some_and(|a| a.starts_with("--")) {
+        let flag = args.remove(0);
+        if args.is_empty() {
+            return Err(format!("{flag} needs a value"));
+        }
+        let val = args.remove(0);
+        match flag.as_str() {
+            "--multi" => mp.players = val.parse().ok().filter(|n| (2..=4).contains(n)).ok_or("--multi takes 2..4")?,
+            "--chars" => {
+                for (i, c) in val.split(',').take(4).enumerate() {
+                    mp.chars[i] = c.trim().parse().map_err(|e| format!("--chars: {e}"))?;
+                }
+            }
+            "--mp-mode" => mp.mp_mode = val.parse().ok().filter(|m| (0..=3).contains(m)).ok_or("--mp-mode takes 0..3")?,
+            "--plan" => plan_out = Some(PathBuf::from(val)),
+            "--plan-seed" => plan_opts.seed = val.parse().map_err(|e| format!("--plan-seed: {e}"))?,
+            "--plan-budget" => plan_opts.budget = val.parse().map_err(|e| format!("--plan-budget: {e}"))?,
+            "--plan-rivals" => plan_opts.rivals = val.parse()?,
+            _ => return Err(format!("unknown option {flag}")),
+        }
+    }
+    if args.len() < 4 {
+        return Err("usage: scenario_trace [--multi N [--chars a,b,..] [--mp-mode M]] [--plan OUT.key [--plan-seed S] [--plan-budget TICKS] [--plan-rivals plan|random|idle]] <world> <level> <keys.key|-> out.jsonl [max_ticks] | --list-levels | --list-multi".into());
+    }
+    let world: u32 = args[0].parse().map_err(|e| format!("world: {e}"))?;
+    let level: u32 = args[1].parse().map_err(|e| format!("level: {e}"))?;
+    let out = PathBuf::from(&args[3]);
+    let max_ticks: u32 = args.get(4).map_or(Ok(100_000), |s| s.parse()).map_err(|e| format!("max_ticks: {e}"))?;
+    let rseed: u32 = match std::env::var("F2_START_RSEED") {
+        Ok(s) => s.parse().map_err(|e| format!("F2_START_RSEED: {e}"))?,
+        Err(_) => ORACLE_RSEED_AT_LEVEL_START,
+    };
+    let data = Arc::new(DirData(game_dir()));
+
+    let records = match &plan_out {
+        Some(kp) => {
+            // Planner: search inputs with the simulation itself, write them as a .key.
+            let g = start_game(world, level, &mp, rseed, data.clone())?;
+            let (recs, summary) = plan::plan(g, mp.players.max(1) as usize, &plan_opts);
+            let mut b = Vec::with_capacity(recs.len() * 12);
+            for &(f, buttons, p) in &recs {
+                b.extend_from_slice(&f.to_le_bytes());
+                b.extend_from_slice(&u32::from(buttons).to_le_bytes());
+                b.extend_from_slice(&(p as u32).to_le_bytes());
+            }
+            std::fs::write(kp, &b).map_err(|e| format!("{}: {e}", kp.display()))?;
+            println!("{summary}");
+            recs
+        }
+        None if args[2] == "-" => Vec::new(),
+        None => parse_keys(&std::fs::read(&args[2]).map_err(|e| format!("{}: {e}", args[2]))?)?,
+    };
+
+    let mut g = start_game(world, level, &mp, rseed, data)?;
     let mut keys = KeyPlayer { records, next: 0, held: [0; 4] };
     let mut w = std::io::BufWriter::new(std::fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?);
+    let mut save: Option<Vec<u8>> = None;
     let mut n = 0u32;
     while n < max_ticks {
         // LoopFunc sets actFrameCount before the (hooked) GameLoop, where f2fix writes padData.
         let (prev, held) = keys.step(g.act_frame_count.wrapping_add(1));
-        // process_user_input derives debounce = ~padData.digital & live.
-        g.levplay.pad_data.digital = prev;
-        g.tick_game_loop(TickInput { pads: held });
-        if g.game_state.mode == FRONTEND_MODE {
+        // F2_RANDOM_LOG=SEQ,..: log every Random() call (with its caller) of those lines.
+        if let Ok(t) = std::env::var("F2_RANDOM_LOG") {
+            let on = t.split(',').any(|x| x.parse::<u32>().ok() == Some(n));
+            f2_math::maths::RANDOM_LOG.store(on, std::sync::atomic::Ordering::Relaxed);
+            if on {
+                eprintln!("--- line {n} (afc {})", g.act_frame_count.wrapping_add(1));
+            }
+        }
+        if !tick_first(&mut g, prev, held) {
             break; // f2fix: level left -> no line, run ends (exit.level_end)
         }
         let mut f = g.trace_frame();
@@ -281,11 +347,15 @@ fn main() -> Result<(), String> {
         }
         writeln!(w, "{}", f.to_json_line()).map_err(|e| e.to_string())?;
         n += 1;
-        g.after_game_loop();
-        g.take_effects();
-        g.take_level_loads();
+        if let Some(s) = tick_second(&mut g) {
+            save = Some(s);
+        }
     }
     w.flush().map_err(|e| e.to_string())?;
-    eprintln!("{n} ticks -> {}", out.display());
+    // F2_SAVE_OUT: the last SaveGame block of the run (savegame.dat), if any.
+    if let (Some(p), Some(s)) = (std::env::var_os("F2_SAVE_OUT"), &save) {
+        std::fs::write(&p, s).map_err(|e| format!("F2_SAVE_OUT: {e}"))?;
+    }
+    eprintln!("{n} ticks -> {}{}", out.display(), if save.is_some() { " (savegame written)" } else { "" });
     Ok(())
 }
