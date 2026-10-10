@@ -343,7 +343,8 @@ pub enum Source {
 
 /// Recognises a drive (`D:`, `/dev/sr0`, a drive's mount point), a disc/install folder, or an image.
 pub fn classify(path: &Path) -> io::Result<Source> {
-    if let Some(d) = cdrom::drive_for_path(path) {
+    // Image files never need the (slower) drive enumeration.
+    if let Some(d) = (!path.is_file()).then(|| cdrom::drive_for_path(path)).flatten() {
         return Ok(Source::Drive(d));
     }
     if path.is_dir() {
