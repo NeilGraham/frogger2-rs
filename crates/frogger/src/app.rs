@@ -1,6 +1,10 @@
 //! The game host: fixed 60 Hz simulation, effect dispatch (audio, video, saves) and
 //! interpolated rendering (`docs/architecture.md` §3).
 
+mod settings;
+
+pub use settings::{nav as settings_nav, FpsMeter, Page as SettingsPage, SettingsUi, WinInfo};
+
 use crate::controls::{Act, ControlsUi};
 use crate::data::Data;
 use crate::gameplay::{GAct, GameplayUi, LevelChoice, LevelSelectUi, Speedrun, Tab};
@@ -55,6 +59,14 @@ pub struct Requests {
     pub save_volumes: Option<(i32, i32)>,
     /// The gameplay tab changed `[gameplay]` / the profile: persist them (P6-1).
     pub save_gameplay: bool,
+    /// The settings screen changed `cfg`: persist it.
+    pub save_config: bool,
+    /// Window mode / resolution / refresh rate changed in `cfg.video`: apply them.
+    pub apply_window: bool,
+    /// `cfg.video.vsync` changed: reconfigure the swap chain.
+    pub apply_vsync: bool,
+    /// Rumble settings changed: push them to the gamepads.
+    pub apply_input: bool,
 }
 
 pub struct App {
@@ -161,6 +173,25 @@ pub struct App {
     pub editor_mods: Option<(std::path::PathBuf, String)>,
     /// Commands run once the editor has loaded (`--editor-cmd`).
     pub editor_cmds: Vec<String>,
+    /// Shift held this frame (Shift+F10).
+    kb_shift: bool,
+    // ---- settings screen
+    /// The configuration the settings screen edits (the host saves it).
+    pub cfg: f2_platform::Config,
+    /// Window state for the Display page (host-updated).
+    pub win: WinInfo,
+    /// The in-game settings screen (simulation paused while open).
+    pub settings: Option<SettingsUi>,
+    /// Adds the "Settings" items to the game's menus (`GameOptions::settings_menu`).
+    pub settings_menu: bool,
+    /// Rendered frame rate.
+    pub fps: FpsMeter,
+    /// Pad bits masked from player 1 until released (after closing the settings screen).
+    pad_hold: u16,
+    /// `windowActive`.
+    focused: bool,
+    /// Language columns with text in the rendition (Gameplay page).
+    languages: Vec<usize>,
 }
 
 /// `--host` / `--join` request from the command line.
@@ -247,6 +278,15 @@ impl App {
             editor: None,
             editor_mods: None,
             editor_cmds: Vec::new(),
+            kb_shift: false,
+            cfg: f2_platform::Config::default(),
+            win: WinInfo { size: (640, 480), ..Default::default() },
+            settings: None,
+            settings_menu: true,
+            fps: FpsMeter::default(),
+            pad_hold: 0,
+            focused: true,
+            languages: Vec::new(),
         };
         if !app.data.levels.is_empty() {
             app.game.install_level_registry(app.data.levels.clone()); // mod levels (P7-1)
@@ -612,6 +652,7 @@ impl App {
         cfg.extra_levels = self.data.levels.clone();
         cfg.scripts = self.data.scripts.clone(); // P7b
         cfg.options = self.game_options();
+        cfg.language = settings::lang_index(&self.cfg.language);
         cfg
     }
 
@@ -627,7 +668,27 @@ impl App {
 
     /// The simulation options for the current profile and `[gameplay]`.
     pub fn game_options(&self) -> f2_game::enhance::GameOptions {
-        crate::gameplay::game_options(self.profile, &self.gameplay)
+        let mut o = crate::gameplay::game_options(self.profile, &self.gameplay);
+        // Offline play: the "Settings" entries of the pause menus / Extras (never online:
+        // matches use `fresh_game`'s authentic options).
+        o.settings_menu = self.settings_menu;
+        o
+    }
+
+    /// Sets the configuration (start-up) the settings screen edits.
+    pub fn set_config(&mut self, cfg: f2_platform::Config) {
+        self.cfg = cfg;
+    }
+
+    /// Copies the state other screens changed (bindings, gameplay, profile, volumes) into
+    /// `cfg` before it is saved.
+    pub fn sync_cfg(&mut self) {
+        self.cfg.set_bindings(&self.bindings);
+        self.cfg.gameplay = self.gameplay.clone();
+        self.cfg.profile = self.profile;
+        self.cfg.audio.music = self.audio.music_volume().clamp(0, 100) as u8;
+        self.cfg.audio.sfx = self.audio.sfx_volume().clamp(0, 100) as u8;
+        self.cfg.input.deadzone = self.deadzone;
     }
 
     /// Host QoL (FMV skipping, logos, timer, auto-save) is on in the enhanced profile.
@@ -894,6 +955,10 @@ impl App {
 
     /// A raw pad event (button / strong stick push) from the host.
     pub fn pad_event(&mut self, ev: RawEvent) {
+        if self.settings.is_some() {
+            self.settings_raw_pad(ev);
+            return;
+        }
         if self.video.is_some() && self.controls.is_none() && self.qol() && self.gameplay.skip_fmv_any_key && matches!(ev, RawEvent::PadButton(..)) {
             self.end_video(); // P6-1: skip FMVs with any button
             return;
@@ -946,6 +1011,13 @@ impl App {
                     continue;
                 }
             }
+            if self.settings.is_some() {
+                // The settings screen reads the keyboard itself (`settings_input`).
+                if k == dik::F11 {
+                    self.requests.toggle_fullscreen = true;
+                }
+                continue;
+            }
             if self.controls.is_some() {
                 let capturing = self.controls.as_ref().is_some_and(|c| c.rebind.is_some());
                 if k == dik::TAB && !capturing {
@@ -962,7 +1034,10 @@ impl App {
                 continue;
             }
             match k {
-                dik::F10 if self.video.is_none() => self.toggle_controls(),
+                // F10: the settings screen; Shift+F10: the advanced (debug) screen with the
+                // level select.
+                dik::F10 if self.video.is_none() && (self.kb_shift) => self.toggle_controls(),
+                dik::F10 if self.video.is_none() => self.open_settings_page(SettingsPage::Display),
                 dik::ESCAPE if self.video.is_some() => self.end_video(),
                 dik::RETURN | dik::NUMPADENTER if self.video.is_some() => self.end_video(),
                 // Esc is the game's Start/Triangle (pause/back) when the game runs its own
@@ -998,7 +1073,23 @@ impl App {
         } else {
             kb
         };
+        self.fps.frame(Instant::now());
+        if self.focused != focused {
+            self.focused = focused;
+            self.apply_master_volume();
+        }
+        self.kb_shift = kb.is_down(dik::LSHIFT) || kb.is_down(dik::RSHIFT);
+        let was_open = self.settings.is_some();
         self.hotkeys(&kb.pressed);
+        if self.settings.is_some() {
+            // Simulation paused while the settings screen is open.
+            if was_open {
+                self.settings_input(kb, joypads);
+            }
+            self.kb.pressed.clear();
+            self.acc = Duration::ZERO;
+            return;
+        }
         if self.controls.is_some() {
             // Simulation paused while the rebinding screen is open.
             self.kb.pressed.clear();
@@ -1116,6 +1207,9 @@ impl App {
         if let Some(b) = self.pad_override {
             pads[0] = b;
         }
+        // Buttons still held from the settings screen do not reach the game.
+        self.pad_hold &= pads[0];
+        pads[0] &= !self.pad_hold;
         pads
     }
 
@@ -1347,6 +1441,7 @@ impl App {
             Effect::PauseAudio => self.audio.pause_audio(),
             Effect::UnPauseAudio => self.audio.unpause_audio(),
             Effect::Quit => self.requests.quit = true,
+            Effect::OpenSettings => self.open_settings_page(SettingsPage::Display),
         }
     }
 
@@ -1387,6 +1482,7 @@ impl App {
         self.r.begin_frame(w, h);
         if let Some(v) = &mut self.video {
             v.draw(&mut self.r, w as f32, h as f32);
+            self.draw_fps();
             return;
         }
         let alpha = (self.acc.as_secs_f32() / TICK.as_secs_f32()).clamp(0.0, 1.0);
@@ -1443,7 +1539,7 @@ impl App {
         if !self.editing() {
             self.draw_hud();
         }
-        if self.qol() && self.gameplay.speedrun_timer && self.controls.is_none() && !self.editing() {
+        if self.qol() && self.gameplay.speedrun_timer && self.controls.is_none() && self.settings.is_none() && !self.editing() {
             if let Some(font) = self.font_id {
                 let ow = self.r.output_size().0 as f32;
                 let mut y = 72.0;
@@ -1466,6 +1562,10 @@ impl App {
                 }
             }
         }
+        if self.settings.is_some() {
+            self.draw_settings();
+        }
+        self.draw_fps();
     }
 
     fn draw_hud(&mut self) {

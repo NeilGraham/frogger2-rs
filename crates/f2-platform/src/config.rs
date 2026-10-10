@@ -81,13 +81,141 @@ impl Default for Gameplay {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Video {
+    /// Windowed-mode inner size (remembered across runs; follows the user's resizing).
     pub width: u32,
     pub height: u32,
+    /// Legacy switch (`true` = fullscreen). Kept in sync with `window_mode`; a config with
+    /// only `fullscreen = true` starts in `fullscreen_type`.
     pub fullscreen: bool,
+    /// Windowed / borderless / exclusive fullscreen.
+    pub window_mode: WindowMode,
+    /// What Alt+Enter / F11 switch to from windowed: borderless unless exclusive fullscreen
+    /// was chosen in the settings screen.
+    pub fullscreen_type: FullscreenType,
+    /// `None` = auto (window / desktop size). Explicit: the window's inner size (windowed),
+    /// the video mode (exclusive fullscreen) or the render-target size (borderless).
+    pub resolution: Option<[u32; 2]>,
+    /// Exclusive fullscreen refresh rate in mHz (`None` = highest for the resolution).
+    pub refresh_mhz: Option<u32>,
+    /// Windowed-mode outer position (remembered).
+    pub window_pos: Option<[i32; 2]>,
     pub vsync: bool,
     /// Frame-rate cap in frames per second (`0` = uncapped; with `vsync` the display rate
     /// caps it anyway). The simulation always ticks at 60 Hz; rendering is interpolated.
     pub frame_cap: u32,
+    /// Final-pass brightness in percent (100 = unchanged).
+    pub brightness: u32,
+    /// FPS counter corner (`off` = hidden).
+    pub show_fps: FpsCorner,
+}
+
+/// How the game window covers the screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowMode {
+    #[default]
+    Windowed,
+    /// Borderless window covering the monitor (desktop video mode).
+    Borderless,
+    /// Exclusive fullscreen with a chosen video mode.
+    Fullscreen,
+}
+
+impl WindowMode {
+    pub const ALL: [WindowMode; 3] = [WindowMode::Windowed, WindowMode::Borderless, WindowMode::Fullscreen];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            WindowMode::Windowed => "Windowed",
+            WindowMode::Borderless => "Borderless",
+            WindowMode::Fullscreen => "Fullscreen",
+        }
+    }
+}
+
+/// Fullscreen flavour Alt+Enter / F11 toggle to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FullscreenType {
+    #[default]
+    Borderless,
+    Exclusive,
+}
+
+impl FullscreenType {
+    pub fn mode(self) -> WindowMode {
+        match self {
+            FullscreenType::Borderless => WindowMode::Borderless,
+            FullscreenType::Exclusive => WindowMode::Fullscreen,
+        }
+    }
+}
+
+/// Corner of the FPS counter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FpsCorner {
+    #[default]
+    Off,
+    TopRight,
+    TopLeft,
+    BottomRight,
+    BottomLeft,
+}
+
+impl FpsCorner {
+    pub const ALL: [FpsCorner; 5] = [FpsCorner::Off, FpsCorner::TopRight, FpsCorner::TopLeft, FpsCorner::BottomRight, FpsCorner::BottomLeft];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FpsCorner::Off => "Off",
+            FpsCorner::TopRight => "Top right",
+            FpsCorner::TopLeft => "Top left",
+            FpsCorner::BottomRight => "Bottom right",
+            FpsCorner::BottomLeft => "Bottom left",
+        }
+    }
+}
+
+impl Video {
+    /// Alt+Enter / F11: windowed <-> the fullscreen type.
+    pub fn toggle_fullscreen(&mut self) {
+        self.window_mode = match self.window_mode {
+            WindowMode::Windowed => self.fullscreen_type.mode(),
+            _ => WindowMode::Windowed,
+        };
+        self.fullscreen = self.window_mode != WindowMode::Windowed;
+    }
+
+    /// An explicit choice in the settings screen; a fullscreen choice becomes what the
+    /// toggle switches to.
+    pub fn select_mode(&mut self, m: WindowMode) {
+        self.window_mode = m;
+        match m {
+            WindowMode::Borderless => self.fullscreen_type = FullscreenType::Borderless,
+            WindowMode::Fullscreen => self.fullscreen_type = FullscreenType::Exclusive,
+            WindowMode::Windowed => {}
+        }
+        self.fullscreen = m != WindowMode::Windowed;
+    }
+
+    /// Follows the actual window state (the OS or the window manager changed it). Returns
+    /// whether anything changed. The fullscreen type is left alone.
+    pub fn observe_mode(&mut self, actual: WindowMode) -> bool {
+        if self.window_mode == actual {
+            return false;
+        }
+        self.window_mode = actual;
+        self.fullscreen = actual != WindowMode::Windowed;
+        true
+    }
+
+    /// Legacy `fullscreen = true` without a `window_mode`: start in the fullscreen type.
+    pub fn migrate(&mut self) {
+        if self.fullscreen && self.window_mode == WindowMode::Windowed {
+            self.window_mode = self.fullscreen_type.mode();
+        }
+    }
 }
 
 /// Behaviour profile (`docs/enhancements.md`).
@@ -227,6 +355,8 @@ pub struct Audio {
     pub music: u8,
     pub sfx: u8,
     pub muted: bool,
+    /// Silence the game while its window is not focused.
+    pub mute_unfocused: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -256,13 +386,26 @@ pub const ENHANCED_HOP_BUFFER_FRAMES: u32 = 6;
 
 impl Default for Video {
     fn default() -> Self {
-        Video { width: 640, height: 480, fullscreen: false, vsync: true, frame_cap: 0 }
+        Video {
+            width: 640,
+            height: 480,
+            fullscreen: false,
+            window_mode: WindowMode::Windowed,
+            fullscreen_type: FullscreenType::Borderless,
+            resolution: None,
+            refresh_mhz: None,
+            window_pos: None,
+            vsync: true,
+            frame_cap: 0,
+            brightness: 100,
+            show_fps: FpsCorner::Off,
+        }
     }
 }
 
 impl Default for Audio {
     fn default() -> Self {
-        Audio { master: 100, music: 100, sfx: 100, muted: false }
+        Audio { master: 100, music: 100, sfx: 100, muted: false, mute_unfocused: false }
     }
 }
 
@@ -299,7 +442,9 @@ impl Default for Config {
 
 impl Config {
     pub fn from_toml(s: &str) -> Result<Config, String> {
-        toml::from_str(s).map_err(|e| e.to_string())
+        let mut c: Config = toml::from_str(s).map_err(|e| e.to_string())?;
+        c.video.migrate();
+        Ok(c)
     }
 
     pub fn to_toml(&self) -> String {
@@ -401,6 +546,66 @@ mod tests {
         assert_eq!(Config::default().profile, Profile::Enhanced);
         let back = Config::from_toml(&c.to_toml()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn window_mode_toggle_state_machine() {
+        let mut v = Video::default();
+        assert_eq!((v.window_mode, v.fullscreen_type), (WindowMode::Windowed, FullscreenType::Borderless));
+        // Default: Alt+Enter goes windowed <-> borderless.
+        v.toggle_fullscreen();
+        assert_eq!(v.window_mode, WindowMode::Borderless);
+        assert!(v.fullscreen);
+        v.toggle_fullscreen();
+        assert_eq!(v.window_mode, WindowMode::Windowed);
+        // Choosing exclusive fullscreen in the settings makes the toggle use it.
+        v.select_mode(WindowMode::Fullscreen);
+        assert_eq!(v.fullscreen_type, FullscreenType::Exclusive);
+        v.toggle_fullscreen();
+        assert_eq!(v.window_mode, WindowMode::Windowed);
+        v.toggle_fullscreen();
+        assert_eq!(v.window_mode, WindowMode::Fullscreen);
+        // Choosing windowed keeps the type; choosing borderless resets it.
+        v.select_mode(WindowMode::Windowed);
+        assert_eq!(v.fullscreen_type, FullscreenType::Exclusive);
+        v.select_mode(WindowMode::Borderless);
+        v.toggle_fullscreen();
+        v.toggle_fullscreen();
+        assert_eq!(v.window_mode, WindowMode::Borderless);
+        // The real window state wins (e.g. the OS left fullscreen).
+        assert!(v.observe_mode(WindowMode::Windowed));
+        assert!(!v.observe_mode(WindowMode::Windowed));
+        assert_eq!((v.window_mode, v.fullscreen), (WindowMode::Windowed, false));
+        // Legacy `fullscreen = true`.
+        let c = Config::from_toml("[video]\nfullscreen = true\n").unwrap();
+        assert_eq!(c.video.window_mode, WindowMode::Borderless);
+    }
+
+    #[test]
+    fn settings_persist_round_trip() {
+        let mut c = Config::default();
+        c.video.select_mode(WindowMode::Fullscreen);
+        c.video.resolution = Some([1920, 1080]);
+        c.video.refresh_mhz = Some(144_000);
+        c.video.window_pos = Some([-10, 20]);
+        c.video.width = 1280;
+        c.video.height = 720;
+        c.video.brightness = 120;
+        c.video.show_fps = FpsCorner::BottomLeft;
+        c.video.frame_cap = 144;
+        c.audio.mute_unfocused = true;
+        c.audio.master = 40;
+        c.display.render_scale = Some(1.5);
+        c.language = "de".into();
+        c.input.rumble_scale = 0.5;
+        let path = std::env::temp_dir().join(format!("f2-settings-{}.toml", std::process::id()));
+        c.save(&path).unwrap();
+        let back = Config::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back, c);
+        // A config without the new keys loads with the defaults.
+        let old = Config::from_toml("[video]\nwidth = 800\nheight = 600\nvsync = false\n").unwrap();
+        assert_eq!((old.video.window_mode, old.video.resolution, old.video.brightness, old.video.show_fps), (WindowMode::Windowed, None, 100, FpsCorner::Off));
     }
 
     #[test]

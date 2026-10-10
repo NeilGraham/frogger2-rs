@@ -20,9 +20,10 @@
 //! and print the final state checksum (`NETPLAY_FINAL ...`).
 //! `--editor [--level W L]` opens the level editor (`src/editor/`; Ctrl+E toggles it in
 //! dev builds); `--mod ID` / `--mods-dir DIR` stack mods over the data.
-//! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 / Alt+Enter fullscreen, Esc quit (Enter/Esc skip videos);
-//! Keys: F1 free camera, F2 tile overlay, F10 settings (controls / gameplay / level select;
-//! Tab switches page), F11 / Alt+Enter fullscreen, Esc quit (Enter/Esc skip videos; any key in the
+//! Keys: F1 free camera, F2 tile overlay, F10 settings screen (Display / Audio / Controls /
+//! Gameplay; also "Settings" in the pause menus and Extras), Shift+F10 the advanced screen
+//! (raw controls / gameplay / level select; Tab switches page), F11 / Alt+Enter toggle
+//! windowed and the fullscreen type, Esc quit (Enter/Esc skip videos; any key in the
 //! enhanced profile);
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
@@ -38,6 +39,7 @@ mod netplay;
 mod gameplay;
 mod overlay;
 mod padscript;
+mod present;
 mod render;
 mod video;
 
@@ -62,6 +64,12 @@ struct Args {
     demo: Option<(u32, u32)>,
     choice: Option<gameplay::LevelChoice>,
     screenshot_settings: Option<gameplay::Tab>,
+    /// `--screenshot-page PAGE[:ROW]` (headless): the settings screen in the screenshot.
+    screenshot_page: Option<(app::SettingsPage, usize)>,
+    /// `--screenshot-keymap normal|capture|conflict` (headless).
+    screenshot_keymap: Option<String>,
+    /// `--show-fps` (headless screenshots).
+    show_fps: bool,
     headless: bool,
     frames: u32,
     screenshot: Option<PathBuf>,
@@ -97,10 +105,11 @@ fn usage() -> ! {
          online: --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS | --join CODE  [--pad-seed S (headless)]\n\
          mods: [--mods ID,ID...] [--mod ID]... (default: config [mods] enabled; \"\" = none) [--mods-dir DIR]\n\
          practice: [--practice WORLD LEVEL | --story CHAPTER] (level select through a game session)\n\
-         \x20      [--screenshot-settings controls|gameplay|levels] (headless: F10 page in the screenshot)\n\
+         \x20      [--screenshot-settings controls|gameplay|levels] (headless: Shift+F10 page in the screenshot)\n\
+         \x20      [--screenshot-page display|audio|controls|gameplay[:ROW]] [--screenshot-keymap normal|capture|conflict] [--show-fps]\n\
          editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
-         keys: F1 free camera, F2 tile overlay, F10 settings (Tab: controls/gameplay/level select), F11 / Alt+Enter fullscreen, Esc quit\n\
+         keys: F1 free camera, F2 tile overlay, F10 settings, Shift+F10 advanced (level select), F11 / Alt+Enter fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
          \x20     F9 fog, F12 draw distance"
     );
@@ -118,6 +127,9 @@ fn parse_args() -> Args {
         demo: None,
         choice: None,
         screenshot_settings: None,
+        screenshot_page: None,
+        screenshot_keymap: None,
+        show_fps: false,
         headless: false,
         frames: 120,
         screenshot: None,
@@ -193,6 +205,13 @@ fn parse_args() -> Args {
                     _ => usage(),
                 })
             }
+            "--screenshot-page" => {
+                let v = it.next().unwrap_or_else(|| usage());
+                let (p, row) = v.split_once(':').map_or((v.as_str(), 0), |(p, r)| (p, r.parse().unwrap_or_else(|_| usage())));
+                a.screenshot_page = Some((app::SettingsPage::parse(p).unwrap_or_else(|| usage()), row));
+            }
+            "--screenshot-keymap" => a.screenshot_keymap = Some(it.next().unwrap_or_else(|| usage())),
+            "--show-fps" => a.show_fps = true,
             "--headless" => a.headless = true,
             "--frames" => a.frames = num(it.next()),
             "--screenshot" => a.screenshot = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
@@ -357,6 +376,12 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.set_input(cfg.bindings(), cfg.input.deadzone, cfg.hop_buffer_frames(Profile::Enhanced));
     app.hud_probe = args.hud_probe;
     app.set_gameplay(cfg.gameplay.clone(), None);
+    let mut hcfg = cfg.clone();
+    if args.show_fps {
+        hcfg.video.show_fps = f2_platform::FpsCorner::TopRight;
+    }
+    app.set_config(hcfg);
+    app.win = app::WinInfo { size: (w, h), ..Default::default() };
     app.editor_mods = Some(editor_target(args, cfg));
     app.editor_cmds = args.editor_cmds.clone();
     // Headless runs only read a save given explicitly and never write one.
@@ -415,6 +440,28 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     if let Some(tab) = args.screenshot_settings {
         app.open_settings(tab);
     }
+    if let Some((page, row)) = args.screenshot_page {
+        app.open_settings_page(page);
+        use app::settings_nav as nav;
+        for _ in 0..row {
+            app.settings_nav(nav::DOWN);
+        }
+    }
+    if let Some(k) = &args.screenshot_keymap {
+        // Controls -> Keyboard mapping; `capture`: waiting for the key of Down;
+        // `conflict`: Down rebound to Up's key (the conflict prompt).
+        use app::settings_nav as nav;
+        app.open_settings_page(app::SettingsPage::Controls);
+        app.settings_nav(nav::OK);
+        app.settings_nav(nav::DOWN);
+        if k != "normal" {
+            app.settings_nav(nav::OK);
+        }
+        if k == "conflict" {
+            let up = app.bindings.get(0, f2_game::levplay::PAD_UP).iter().find_map(|b| if let f2_platform::Binding::Key(k) = b { Some(*k) } else { None });
+            app.settings_key_raw(up.unwrap_or(f2_platform::dik::UP));
+        }
+    }
     if args.screenshot_rebind {
         // Demo of the F10 screen: rebind Down to Up's key (conflict message), then start
         // capturing for the Cross row.
@@ -471,9 +518,69 @@ struct Host {
     app: Option<App>,
     gfx: Option<Gfx>,
     gamepads: Option<Gamepads>,
-    fullscreen: bool,
+    /// Present pass (brightness / borderless render resolution), created on demand.
+    present: Option<present::Present>,
+    /// A requested window mode and when it was requested (the real state follows
+    /// asynchronously; until then the observed state does not overwrite the config).
+    mode_req: Option<(f2_platform::WindowMode, Instant)>,
+    /// Last logged window state.
+    logged: Option<(f2_platform::WindowMode, u32, u32)>,
+    /// Window size / position changed: save the config on exit.
+    window_dirty: bool,
     last: Instant,
     error: Option<String>,
+}
+
+impl Host {
+    /// Applies `cfg.video`'s window mode / resolution to the window.
+    fn apply_window(&mut self, window: &window::Window) {
+        let Some(app) = &mut self.app else { return };
+        let v = &app.cfg.video;
+        let msg = window::apply_mode(window, v.window_mode, v.resolution, v.refresh_mhz, [v.width, v.height]);
+        eprintln!("frogger: window: {msg}");
+        self.mode_req = Some((v.window_mode, Instant::now()));
+    }
+
+    /// Follows the real window state: mode (the OS can leave fullscreen), size, monitor
+    /// modes; logs changes.
+    fn observe_window(&mut self, window: &window::Window) {
+        let (Some(app), Some(g)) = (&mut self.app, &self.gfx) else { return };
+        let actual = window::actual_mode(window);
+        let size = (g.surface.config.width, g.surface.config.height);
+        app.win.mode = actual;
+        app.win.size = size;
+        if app.win.modes.is_empty() || app.win.desktop != window::monitor_mode(window) {
+            app.win.modes = window::video_modes(window);
+            app.win.desktop = window::monitor_mode(window);
+        }
+        let pending = match self.mode_req {
+            Some((m, t)) if m != actual && t.elapsed() < Duration::from_secs(2) => true,
+            Some(_) => {
+                self.mode_req = None;
+                false
+            }
+            None => false,
+        };
+        if !pending && app.cfg.video.observe_mode(actual) {
+            eprintln!("frogger: window mode changed outside the game: {}", actual.name());
+            self.window_dirty = true;
+        }
+        if self.logged != Some((actual, size.0, size.1)) {
+            self.logged = Some((actual, size.0, size.1));
+            let inner = window.inner_size();
+            eprintln!("frogger: window now {} (inner {}x{}, surface {}x{})", actual.name(), inner.width, inner.height, size.0, size.1);
+        }
+    }
+
+    /// Saves the configuration (the app's copy).
+    fn save_config(&mut self) {
+        let Some(app) = &mut self.app else { return };
+        app.sync_cfg();
+        self.cfg = app.cfg.clone();
+        if let Err(e) = self.cfg.save_default() {
+            eprintln!("frogger: saving config: {e}");
+        }
+    }
 }
 
 impl WindowApp for Host {
@@ -511,6 +618,8 @@ impl WindowApp for Host {
                     if audio.is_realtime() { "on" } else { "muted" }
                 );
                 let mut app = App::new(self.data.take().expect("data"), &g.ctx.device, &g.ctx.queue, g.surface.config.format, audio, mapper);
+                app.set_config(self.cfg.clone());
+                app.apply_master_volume();
                 app.set_display(self.cfg.profile, self.cfg.display_settings(Profile::Enhanced));
                 app.set_input(self.cfg.bindings(), self.cfg.input.deadzone, self.cfg.hop_buffer_frames(Profile::Enhanced));
                 if let Some(p) = &mut self.gamepads {
@@ -547,8 +656,16 @@ impl WindowApp for Host {
         self.last = Instant::now();
     }
 
-    fn event(&mut self, _w: &Arc<window::Window>, event: &winit::event::WindowEvent) -> Flow {
+    fn event(&mut self, w: &Arc<window::Window>, event: &winit::event::WindowEvent) -> Flow {
         use winit::event::{ElementState, MouseButton, WindowEvent};
+        if let (WindowEvent::Moved(_), Some(app)) = (event, &mut self.app) {
+            if let Some(p) = window::windowed_position(w) {
+                if app.cfg.video.window_pos != Some(p) {
+                    app.cfg.video.window_pos = Some(p);
+                    self.window_dirty = true;
+                }
+            }
+        }
         if let Some(ed) = self.app.as_mut().and_then(|a| a.editor.as_mut()) {
             match event {
                 WindowEvent::CursorMoved { position, .. } => ed.mouse(Some((position.x as f32, position.y as f32)), false),
@@ -559,9 +676,23 @@ impl WindowApp for Host {
         Flow::Continue
     }
 
-    fn resized(&mut self, _w: &Arc<window::Window>, size: winit::dpi::PhysicalSize<u32>) {
+    fn resized(&mut self, w: &Arc<window::Window>, size: winit::dpi::PhysicalSize<u32>) {
         if let Some(g) = &mut self.gfx {
             g.surface.resize(&g.ctx.device, size.width, size.height);
+        }
+        // Windowed: remember the size; a user resize away from a fixed resolution makes it
+        // "Auto" (the setting always shows the real state).
+        if let Some(app) = &mut self.app {
+            let v = &mut app.cfg.video;
+            if w.fullscreen().is_none() && v.window_mode == f2_platform::WindowMode::Windowed && self.mode_req.is_none() && size.width > 0 && size.height > 0 {
+                if v.resolution.is_some_and(|[rw, rh]| (rw, rh) != (size.width, size.height)) {
+                    v.resolution = None;
+                }
+                if (v.width, v.height) != (size.width, size.height) {
+                    (v.width, v.height) = (size.width, size.height);
+                    self.window_dirty = true;
+                }
+            }
         }
     }
 
@@ -608,39 +739,43 @@ impl WindowApp for Host {
         } else {
             app.rumble.clear();
         }
-        if std::mem::take(&mut app.requests.save_bindings) {
-            self.cfg.set_bindings(&app.bindings);
-            if let Err(e) = self.cfg.save_default() {
-                eprintln!("frogger: saving config: {e}");
-            }
+        let rq = &mut app.requests;
+        let save = std::mem::take(&mut rq.save_bindings) | std::mem::take(&mut rq.save_gameplay) | rq.save_volumes.take().is_some() | std::mem::take(&mut rq.save_config);
+        if std::mem::take(&mut rq.apply_vsync) {
+            g.surface.config.present_mode = if app.cfg.video.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
+            g.surface.surface.configure(&g.ctx.device, &g.surface.config);
         }
-        if std::mem::take(&mut app.requests.save_gameplay) {
-            self.cfg.gameplay = app.gameplay.clone();
-            self.cfg.profile = app.profile;
-            if let Err(e) = self.cfg.save_default() {
-                eprintln!("frogger: saving config: {e}");
-            }
-        }
-        if let Some((music, sfx)) = app.requests.save_volumes.take() {
-            self.cfg.audio.music = music.clamp(0, 100) as u8;
-            self.cfg.audio.sfx = sfx.clamp(0, 100) as u8;
-            if let Err(e) = self.cfg.save_default() {
-                eprintln!("frogger: saving config: {e}");
+        if std::mem::take(&mut rq.apply_input) {
+            if let Some(p) = &mut self.gamepads {
+                p.rumble_scale = if app.cfg.input.rumble { app.cfg.input.rumble_scale } else { 0.0 };
             }
         }
         if app.requests.quit {
             return Flow::Exit;
         }
-        if std::mem::take(&mut app.requests.toggle_fullscreen) {
-            self.fullscreen = !self.fullscreen;
-            window::set_fullscreen(frame.window, self.fullscreen);
+        let toggle = std::mem::take(&mut app.requests.toggle_fullscreen);
+        if toggle {
+            app.cfg.video.toggle_fullscreen();
+            eprintln!("frogger: Alt+Enter / F11: {}", app.cfg.video.window_mode.name());
         }
+        let apply = std::mem::take(&mut app.requests.apply_window) | toggle;
         if app.idle() {
             return Flow::Exit;
         }
+        if save || toggle {
+            self.save_config();
+        }
+        if apply {
+            self.apply_window(frame.window);
+        }
+        self.observe_window(frame.window);
+        let (Some(app), Some(g)) = (&mut self.app, &mut self.gfx) else { return Flow::Continue };
 
         let (w, h) = (g.surface.config.width, g.surface.config.height);
-        app.draw(w, h);
+        let v = &app.cfg.video;
+        let (rs, via_present) = present::plan((w, h), app.win.mode == f2_platform::WindowMode::Borderless, v.resolution, v.brightness);
+        let brightness = v.brightness;
+        app.draw(rs.0, rs.1);
         let tex = match g.surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -655,12 +790,21 @@ impl WindowApp for Host {
         };
         let view = tex.texture.create_view(&Default::default());
         let clear = app.clear_color();
-        app.r.render(&view, w, h, clear);
+        if via_present {
+            let p = self.present.get_or_insert_with(|| present::Present::new(&g.ctx.device, g.surface.config.format));
+            {
+                let off = p.target(&g.ctx.device, rs.0, rs.1);
+                app.r.render(off, rs.0, rs.1, clear);
+            }
+            p.blit(&g.ctx.device, &g.ctx.queue, &view, w, h, brightness);
+        } else {
+            app.r.render(&view, w, h, clear);
+        }
         frame.window.pre_present_notify();
         g.ctx.queue.present(tex);
         // Frame cap (`video.frame_cap`): the simulation is fixed 60 Hz and rendering is
         // interpolated, so any cap/refresh rate is smooth.
-        let cap = self.cfg.video.frame_cap;
+        let cap = app.cfg.video.frame_cap;
         if cap > 0 {
             let period = Duration::from_secs_f64(1.0 / cap as f64);
             let spent = now.elapsed();
@@ -672,13 +816,15 @@ impl WindowApp for Host {
     }
 }
 
-fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>, net: Option<NetRequest>) -> Result<(), String> {
-    let mut wc = WindowConfig::from_config(&cfg);
+fn run_window(data: data::Data, mut cfg: Config, args: &Args, steps: Vec<Step>, net: Option<NetRequest>) -> Result<(), String> {
     if let Some((w, h)) = args.size {
-        wc.width = w;
-        wc.height = h;
+        (cfg.video.width, cfg.video.height) = (w, h);
+        cfg.video.resolution = None;
     }
-    wc.fullscreen |= args.fullscreen;
+    if args.fullscreen && cfg.video.window_mode == f2_platform::WindowMode::Windowed {
+        cfg.video.window_mode = cfg.video.fullscreen_type.mode();
+    }
+    let mut wc = WindowConfig::from_config(&cfg);
     wc.title = "Frogger 2: Swampy's Revenge".into();
     let editor_setup = (editor_target(args, &cfg), args.editor_cmds.clone());
     let host = Host {
@@ -691,7 +837,10 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>, net:
         },
         save_path: args.save.clone().unwrap_or_else(|| f2_platform::paths::save_dir().join("savegame.dat")),
         dev_unlock: args.dev_unlock,
-        fullscreen: wc.fullscreen,
+        present: None,
+        mode_req: (wc.mode != f2_platform::WindowMode::Windowed).then(|| (wc.mode, Instant::now())),
+        logged: None,
+        window_dirty: false,
         cfg,
         steps,
         net,
@@ -702,7 +851,11 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>, net:
         last: Instant::now(),
         error: None,
     };
-    let host = window::run(wc, host)?;
+    let mut host = window::run(wc, host)?;
+    if host.window_dirty {
+        // Remember the window size / position.
+        host.save_config();
+    }
     match host.error {
         Some(e) => Err(e),
         None => Ok(()),

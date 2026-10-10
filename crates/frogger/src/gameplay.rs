@@ -28,6 +28,7 @@ pub fn game_options(profile: Profile, gp: &Gameplay) -> GameOptions {
             invulnerable: gp.invulnerable,
             enemy_speed: gp.enemy_speed.clamp(ENEMY_SPEED_MIN, 100),
             fix_tube_softlock: gp.fix_tube_softlock,
+            settings_menu: false,
         },
     }
 }
