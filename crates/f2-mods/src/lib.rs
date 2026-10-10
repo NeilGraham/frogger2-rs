@@ -77,6 +77,12 @@ fn find_ci(dir: &Path, name: &str) -> Vec<PathBuf> {
     out
 }
 
+/// `dir/name` with `name` matched case-insensitively against existing subdirectories (so a
+/// mod's `Game/` or `MUSIC/` works on case-sensitive hosts); `dir/name` when none exists.
+fn subdir_ci(dir: &Path, name: &str) -> PathBuf {
+    find_ci(dir, name).into_iter().find(|p| p.is_dir()).unwrap_or_else(|| dir.join(name))
+}
+
 fn resolve_in(dir: PathBuf, rest: &[String], want_file: bool) -> Option<PathBuf> {
     let Some((first, tail)) = rest.split_first() else {
         return (!want_file || dir.is_file()).then_some(dir);
@@ -158,9 +164,9 @@ impl Vfs {
     }
 
     fn add_rendition_layers(&mut self, name: &str, dir: &Path) {
-        self.add_layer(name, dir.join("game"));
-        self.mount(format!("{name}/music"), "music", dir.join("music"));
-        self.mount(format!("{name}/video"), "video", dir.join("video"));
+        self.add_layer(name, subdir_ci(dir, "game"));
+        self.mount(format!("{name}/music"), "music", subdir_ci(dir, "music"));
+        self.mount(format!("{name}/video"), "video", subdir_ci(dir, "video"));
     }
 
     /// Adds a layer mounted at the virtual root. Later layers override earlier ones.
@@ -265,7 +271,13 @@ impl Vfs {
                         Some((n, e)) if !n.is_empty() => (n.to_ascii_lowercase(), e.to_ascii_lowercase()),
                         _ => (fname.to_ascii_lowercase(), String::new()),
                     };
-                    map.entry((bank.clone(), name.clone(), ext.clone())).or_insert(EntryOverride { bank: bank.clone(), name, ext, path, layer: l.name.clone() });
+                    map.entry((bank.clone(), name.clone(), ext.clone())).or_insert(EntryOverride {
+                        bank: bank.clone(),
+                        name,
+                        ext,
+                        path,
+                        layer: l.name.clone(),
+                    });
                 }
             }
         }
@@ -286,7 +298,7 @@ impl Vfs {
             m.check_compatible()?;
             self.add_rendition_layers(&format!("mod:{}", m.id), dir);
             // Level packages (`levels/<id>/level.toml` + files), see `docs/modding.md` §3.
-            self.mount(format!("mod:{}/levels", m.id), "levels", dir.join("levels"));
+            self.mount(format!("mod:{}/levels", m.id), "levels", subdir_ci(dir, "levels"));
             loaded.push(m.clone());
         }
         Ok(loaded)
@@ -540,9 +552,9 @@ gameplay_affecting = false
         let mods = tempfile::tempdir().unwrap();
         put(mods.path(), "a/mod.toml", b"id='a'\nname='A'\nversion='1'\nengine_version='*'");
         put(mods.path(), "a/game/objects/garden1.dll", b"A");
-        put(mods.path(), "a/music/TRACK02.wav", b"A-music");
+        put(mods.path(), "a/Music/TRACK02.wav", b"A-music"); // mixed-case layer dir (case-sensitive hosts)
         put(mods.path(), "b-dir/MOD.TOML", b"id='b'\nname='B'\nversion='1'\nengine_version='*'\ngameplay_affecting=true");
-        put(mods.path(), "b-dir/game/OBJECTS/Garden1.dll", b"B");
+        put(mods.path(), "b-dir/GAME/OBJECTS/Garden1.dll", b"B");
         put(mods.path(), "old/mod.toml", b"id='old'\nname='O'\nversion='1'\nengine_version='<0.0.1'");
         put(mods.path(), "notamod/readme.txt", b"");
 

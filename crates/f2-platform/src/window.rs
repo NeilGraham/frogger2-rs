@@ -69,6 +69,18 @@ pub fn set_fullscreen(window: &Window, on: bool) {
     window.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
 }
 
+/// The requested window size. macOS sizes windows in points, so `width`x`height` is logical
+/// there (a 640x480 window stays 640x480 points on a Retina display, rendered at 2x physical
+/// pixels: the surface follows `inner_size()`/`Resized`, which are physical). Elsewhere it is
+/// physical pixels, as before.
+fn initial_size(cfg: &WindowConfig) -> winit::dpi::Size {
+    if cfg!(target_os = "macos") {
+        winit::dpi::LogicalSize::new(cfg.width, cfg.height).into()
+    } else {
+        PhysicalSize::new(cfg.width, cfg.height).into()
+    }
+}
+
 struct Runner<A: WindowApp> {
     cfg: WindowConfig,
     app: A,
@@ -76,7 +88,14 @@ struct Runner<A: WindowApp> {
     keyboard: KeyboardState,
     focused: bool,
     error: Option<String>,
+    /// Cmd (super) held: macOS shortcut handling, see [`MAC_SHORTCUTS`].
+    cmd_held: bool,
 }
+
+/// macOS conventions: Cmd+Q / Cmd+W quit, Cmd+F, Ctrl+Cmd+F and Cmd+Enter toggle fullscreen
+/// (delivered to the app as F11, like Alt+Enter on Windows/Linux). Other Cmd+key presses are
+/// hidden from the game so system shortcuts (Cmd+H, Cmd+M, Cmd+Tab) never register as input.
+const MAC_SHORTCUTS: bool = cfg!(target_os = "macos");
 
 impl<A: WindowApp> ApplicationHandler for Runner<A> {
     fn resumed(&mut self, el: &ActiveEventLoop) {
@@ -85,7 +104,7 @@ impl<A: WindowApp> ApplicationHandler for Runner<A> {
         }
         let attrs = Window::default_attributes()
             .with_title(self.cfg.title.clone())
-            .with_inner_size(PhysicalSize::new(self.cfg.width, self.cfg.height))
+            .with_inner_size(initial_size(&self.cfg))
             .with_resizable(self.cfg.resizable)
             .with_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None)));
         match el.create_window(attrs) {
@@ -115,7 +134,19 @@ impl<A: WindowApp> ApplicationHandler for Runner<A> {
                 }
             }
             WindowEvent::Resized(s) => self.app.resized(&w, *s),
+            WindowEvent::ModifiersChanged(m) => self.cmd_held = m.state().super_key(),
+            WindowEvent::KeyboardInput { event: k, .. } if MAC_SHORTCUTS && self.cmd_held && k.state == ElementState::Pressed => match k.physical_key {
+                PhysicalKey::Code(KeyCode::KeyQ | KeyCode::KeyW) => {
+                    el.exit();
+                    return;
+                }
+                PhysicalKey::Code(KeyCode::KeyF | KeyCode::Enter | KeyCode::NumpadEnter) if !k.repeat => self.keyboard.key_down(dik::F11),
+                _ => {}
+            },
             WindowEvent::KeyboardInput { event: k, .. } => {
+                if MAC_SHORTCUTS && matches!(k.physical_key, PhysicalKey::Code(KeyCode::KeyF | KeyCode::Enter | KeyCode::NumpadEnter)) {
+                    self.keyboard.key_up(dik::F11);
+                }
                 if let PhysicalKey::Code(code) = k.physical_key {
                     if let Some(d) = dik_from_keycode(code) {
                         match k.state {
@@ -163,7 +194,7 @@ pub fn run<A: WindowApp>(cfg: WindowConfig, app: A) -> Result<A, String> {
     prefer_x11_on_wsl();
     let el = EventLoop::new().map_err(|e| e.to_string())?;
     el.set_control_flow(ControlFlow::Poll);
-    let mut r = Runner { cfg, app, window: None, keyboard: KeyboardState::default(), focused: true, error: None };
+    let mut r = Runner { cfg, app, window: None, keyboard: KeyboardState::default(), focused: true, error: None, cmd_held: false };
     el.run_app(&mut r).map_err(|e| e.to_string())?;
     match r.error {
         Some(e) => Err(e),

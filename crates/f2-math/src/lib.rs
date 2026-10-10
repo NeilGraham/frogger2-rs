@@ -5,6 +5,11 @@
 //! `VECTOR`/`SVECTOR`) and `PC/islutil.{h,cpp}` (`utilSqrt`, `utilCalcAngle`).
 //! All integer arithmetic wraps like MSVC 32-bit `long`; float->int conversions follow
 //! MSVC 6 `_ftol` (see [`util::ftol`]).
+//!
+//! `no_std` (core only, no allocator) when the default `std` feature is off, for future
+//! console/embedded targets (docs/PLATFORMS.md). Float maths goes through [`detfloat`] (libm),
+//! never the host C library, so results are identical with and without `std`.
+#![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 
 pub mod acostable;

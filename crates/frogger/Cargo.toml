@@ -10,11 +10,18 @@ publish.workspace = true
 name = "frogger"
 path = "src/main.rs"
 
+[features]
+default = ["audio-device"]
+# Real audio output (cpal: ALSA/PulseAudio/PipeWire, WASAPI, CoreAudio). Off = always muted;
+# lets `cargo check --target *-apple-darwin --no-default-features` run without the macOS SDK
+# (coreaudio-sys needs it for bindgen). See docs/PLATFORMS.md.
+audio-device = ["f2-audio/cpal"]
+
 [dependencies]
 f2-game = { path = "../f2-game" }
 f2-engine = { path = "../f2-engine" }
 f2-platform = { path = "../f2-platform", features = ["window", "gamepad"] }
-f2-audio = { path = "../f2-audio" }
+f2-audio = { path = "../f2-audio", default-features = false }
 f2-bink = { path = "../f2-bink" }
 f2-mods = { path = "../f2-mods" }
 f2-modkit = { path = "../f2-modkit" }

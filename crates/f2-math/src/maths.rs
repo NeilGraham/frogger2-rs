@@ -19,7 +19,8 @@ use crate::vector::{
 pub const RSEED_INIT: u32 = 398_623;
 
 /// Debug aid: log every `Random()` call site to stderr (trace parity work).
-pub static RANDOM_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Without the `std` feature the flag exists but logs nothing (no stderr).
+pub static RANDOM_LOG: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// The game's RNG state: global `ULONG rseed` (Common/maths.c:249).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -41,7 +42,8 @@ impl Rng {
         if lim == 0 {
             return 0;
         }
-        if RANDOM_LOG.load(std::sync::atomic::Ordering::Relaxed) {
+        #[cfg(feature = "std")]
+        if RANDOM_LOG.load(core::sync::atomic::Ordering::Relaxed) {
             eprintln!("Random({lim}) at {}", std::panic::Location::caller());
         }
         self.rseed ^= self.rseed << 1;

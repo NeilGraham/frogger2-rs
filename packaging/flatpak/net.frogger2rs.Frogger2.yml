@@ -1,8 +1,24 @@
-# DRAFT Flatpak manifest (untested). Build:
-#   flatpak-builder --user --install --force-clean build-dir packaging/flatpak/net.frogger2rs.Frogger2.yml
-# Offline cargo builds need vendored crates: generate cargo-sources.json with
-# flatpak-cargo-generator.py (flatpak-builder-tools) from Cargo.lock and list it under sources.
-# App id is a placeholder; pick a real reverse-DNS id before publishing.
+# Flatpak manifest (not yet built end-to-end: needs flatpak-builder + network for the runtimes).
+# App id is a placeholder; pick a real reverse-DNS id you control before publishing.
+#
+# 1. Vendored crates (flatpak-builder builds offline). Regenerate whenever Cargo.lock changes:
+#      git clone https://github.com/flatpak/flatpak-builder-tools
+#      python3 -m pip install --user aiohttp toml        # generator dependencies
+#      python3 flatpak-builder-tools/cargo/flatpak-cargo-generator.py Cargo.lock \
+#        -o packaging/flatpak/cargo-sources.json
+#    (cargo-sources.json is generated, ~1 MB; commit it next to this file when publishing.)
+# 2. Runtimes:
+#      flatpak install flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 \
+#        org.freedesktop.Sdk.Extension.rust-stable//24.08
+# 3. Build + install + run:
+#      flatpak-builder --user --install --force-clean build-dir packaging/flatpak/net.frogger2rs.Frogger2.yml
+#      flatpak run net.frogger2rs.Frogger2.f2-import ...   # see "Importing" below
+#      flatpak run net.frogger2rs.Frogger2
+#
+# Importing game data: paths follow XDG inside the sandbox (~/.var/app/<id>/data/frogger2-rs/data,
+# config in ~/.var/app/<id>/config/frogger2-rs). Disc images in ~/Downloads, mounted discs under
+# /media and /run/media are readable (see finish-args); anything else needs e.g.
+#   flatpak run --filesystem=~/isos:ro --command=f2-import net.frogger2rs.Frogger2 ~/isos/frogger2.cue
 app-id: net.frogger2rs.Frogger2
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
@@ -12,29 +28,47 @@ sdk-extensions:
 command: frogger
 finish-args:
   - --share=ipc
-  - --socket=x11
+  # winit: native Wayland when available, X11 (XWayland) otherwise.
   - --socket=wayland
+  - --socket=fallback-x11
+  # cpal: ALSA through the PulseAudio/PipeWire-pulse socket.
   - --socket=pulseaudio
-  - --device=dri
-  # Imported game data lives in the sandboxed XDG data dir; the user's disc image folder is
-  # passed to f2-import with --filesystem=... at run time (e.g. flatpak run --filesystem=~/isos:ro ...).
+  # GPU (dri), gamepads (gilrs reads /dev/input/event* and needs udev) and optical drives
+  # (/dev/sr*, direct disc import). --device=input alone would cover pads on flatpak >= 1.15.6.
+  - --device=all
+  # Netplay (--host / --join).
+  - --share=network
+  # Disc images and mounted discs for f2-import (read-only).
+  - --filesystem=xdg-download:ro
+  - --filesystem=/media:ro
+  - --filesystem=/run/media:ro
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/frogger2/cargo
+    CARGO_NET_OFFLINE: 'true'
 modules:
   - name: frogger2
     buildsystem: simple
     build-commands:
-      - cargo --offline build --release -p frogger -p f2-import
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release -p frogger -p f2-import -p f2-viewer
       - install -Dm755 target/release/frogger /app/bin/frogger
       - install -Dm755 target/release/f2-import /app/bin/f2-import
+      - install -Dm755 target/release/f2-viewer /app/bin/f2-viewer
       - install -Dm644 packaging/frogger2-rs.desktop /app/share/applications/net.frogger2rs.Frogger2.desktop
+      - desktop-file-edit --set-icon=net.frogger2rs.Frogger2 /app/share/applications/net.frogger2rs.Frogger2.desktop
       - install -Dm644 packaging/frogger2-rs.svg /app/share/icons/hicolor/scalable/apps/net.frogger2rs.Frogger2.svg
-      - sed -i 's/^Icon=.*/Icon=net.frogger2rs.Frogger2/' /app/share/applications/net.frogger2rs.Frogger2.desktop
+      - install -Dm644 packaging/flatpak/net.frogger2rs.Frogger2.metainfo.xml -t /app/share/metainfo/
       - install -Dm644 NOTICE /app/share/licenses/net.frogger2rs.Frogger2/NOTICE
       - install -Dm644 LICENSE-GPL-3.0 LICENSE-MIT LICENSE-APACHE LICENSE-LGPL-2.1 -t /app/share/licenses/net.frogger2rs.Frogger2/
     sources:
       - type: dir
         path: ../..
-      # - cargo-sources.json   # generated, see header
+        skip:
+          - target
+          - game-data
+          - frogger2-vss
+          - work
+          - .claude
+      - cargo-sources.json

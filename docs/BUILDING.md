@@ -3,19 +3,33 @@
 Requires Rust 1.88+ (see `rust-version`). No game data is needed to build or run the tests; tests
 that need it skip themselves when `F2_GAME_DIR` / `F2_DATA_DIR` are unset.
 
+Platform overview, support matrix and future targets: [PLATFORMS.md](PLATFORMS.md).
+
 ## Linux
 
 ```sh
-sudo apt-get install -y libasound2-dev libudev-dev   # + mesa-vulkan-drivers / a Vulkan or GL driver
+sudo apt-get install -y libasound2-dev libudev-dev   # Debian/Ubuntu
+sudo dnf install -y alsa-lib-devel systemd-devel     # Fedora
+sudo pacman -S --needed alsa-lib systemd-libs        # Arch
 cargo build --release -p frogger -p f2-import -p f2-viewer
 ```
 
-Binaries land in `target/release/`.
+Binaries land in `target/release/`. At run time you need a Vulkan or OpenGL driver (Mesa is fine)
+and a Wayland or X11 session: winit uses Wayland natively when `WAYLAND_DISPLAY` is set (unset it
+to force X11; the XWayland fallback is automatic only under WSL). Audio goes through ALSA, which
+PipeWire/PulseAudio desktops route to the sound server (`pipewire-alsa` or the ALSA pulse
+plugin). Gamepads need read access to `/dev/input/event*` (default on desktop distros).
 
 ## Windows (MSVC)
 
 Install Rust with the `x86_64-pc-windows-msvc` toolchain and the Visual Studio Build Tools
 ("Desktop development with C++"), then the same `cargo build --release ...` command.
+
+Native `cargo test` / `cargo run` on Windows: `.cargo/config.toml` sets the Linux memory-cap
+runner `tools/memcap.sh`, which a native Windows cargo cannot execute. Remove that runner in a
+local, uncommitted edit (CI deletes the file on Windows), or set a target-specific runner, which
+takes precedence over the `cfg(all())` one (`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER`).
+`cargo build` is unaffected.
 
 From WSL you can cross-build with the Windows toolchain: `tools/package/build-windows.sh`. It mirrors
 sources to `C:\f2-build\<checkout>` (cmd.exe rejects UNC working directories and MSVC linking over
@@ -25,8 +39,21 @@ exes to `target/package/win-bin/`. Override with `F2_WIN_CARGO` / `F2_BUILD_ROOT
 
 ## macOS
 
-`cargo build --release ...` with the Xcode command line tools. `tools/package/package.sh macos`
-produces an untested `.app` bundle.
+`cargo build --release ...` with the Xcode command line tools (`xcode-select --install`).
+`tools/package/package.sh macos` produces a `.app` bundle (`F2_MACOS_UNIVERSAL=1` for an arm64 +
+x86_64 universal build); signing and notarisation: `tools/package/README-macos.md`. The macOS
+build is compile-checked from Linux and built/tested by CI on `macos-14`, but has not been run
+on a Mac yet.
+
+Checking macOS from Linux (no SDK needed, nothing is linked):
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cargo check --workspace --all-targets --no-default-features --target aarch64-apple-darwin
+```
+
+`--no-default-features` turns off the binaries' `audio-device` feature (cpal), because
+`coreaudio-sys` runs bindgen against the macOS SDK headers in its build script.
 
 ## Importing your game data
 
@@ -105,18 +132,33 @@ cargo run -p frogger -- --headless --frames 120 --level 0 0 --size 2560x1080 --p
 ## Packaging
 
 ```sh
-tools/package/package.sh linux     # target/package/*.tar.gz (+ AppImage if appimagetool is on PATH)
+tools/package/package.sh linux     # target/package/*.tar.gz (+ AppImage if appimagetool is found)
 tools/package/package.sh windows   # target/package/*.zip
-tools/package/package.sh macos     # on macOS
+tools/package/package.sh macos     # on macOS: .app in a tar.gz
 ```
 
-Each archive carries `NOTICE`, the four license texts (`licenses/`) and no game data. A Flatpak draft
-is in `packaging/flatpak/`. The CI `release` job (manual dispatch) runs these scripts.
+Each archive carries `NOTICE`, the four license texts (`licenses/`) and no game data.
+`$CARGO_TARGET_DIR` is honoured with `F2_SKIP_BUILD=1`.
+
+- **AppImage**: needs [appimagetool](https://github.com/AppImage/appimagetool/releases) on `PATH`
+  or in `F2_APPIMAGETOOL`. It downloads the AppImage runtime while building; offline, pass a
+  downloaded [type2 runtime](https://github.com/AppImage/type2-runtime/releases) as
+  `F2_APPIMAGE_RUNTIME=/path/runtime-x86_64`. Without FUSE (containers, WSL) set
+  `APPIMAGE_EXTRACT_AND_RUN=1`. `Frogger2rs-*.AppImage f2-import <disc>` runs the importer.
+- **Flatpak**: `packaging/flatpak/net.frogger2rs.Frogger2.yml` (+ AppStream metainfo); generate
+  `cargo-sources.json` with flatpak-cargo-generator first (steps in the manifest header).
+- **Desktop entry / icon**: `packaging/frogger2-rs.desktop`, `packaging/frogger2-rs.svg`
+  (placeholder art, not from the game).
+
+CI (`.github/workflows/ci.yml`): `lint` (fmt + clippy), `test` (build + test on ubuntu, windows,
+macos-14; no game data), `cross-check` (macOS targets and the no_std `f2-math` from Linux), and a
+manual `release` job that runs these scripts per OS and uploads the archives.
 
 ## WSL2 notes
 
-- Prefer WSLg. If Wayland misbehaves, force X11 by unsetting the Wayland display:
-  `env -u WAYLAND_DISPLAY frogger` (or `WINIT_UNIX_BACKEND=x11`).
+- Prefer WSLg. Under WSL the game and viewer drop `WAYLAND_DISPLAY` themselves and use X11
+  (XWayland), because winit's native Wayland client crashes WSLg's Weston; `F2_WAYLAND=1`
+  (viewer: `F2_VIEWER_WAYLAND=1`) opts back in.
 - No GPU Vulkan under WSL? Use the software rasteriser: `sudo apt install mesa-vulkan-drivers`
   (lavapipe) or force GL with `WGPU_BACKEND=gl LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe). Slow but works.
 - Audio: WSLg exposes PulseAudio, not an ALSA card. Route ALSA through Pulse with

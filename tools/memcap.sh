@@ -6,6 +6,9 @@
 # MEMCAP=16G raises the cap (default 8G); MEMCAP=off disables it.
 cap="${MEMCAP:-8G}"
 [ "$cap" = off ] && exec "$@"
+# Linux only (the cap protects the shared WSL VM): macOS has no cgroups and rejects RLIMIT_AS.
+# Native Windows cargo cannot run this sh script at all; see docs/BUILDING.md.
+[ "$(uname -s)" = Linux ] || exec "$@"
 if systemd-run --user --scope -q -p MemoryMax="$cap" -p MemorySwapMax=0 -- true 2>/dev/null; then
   exec systemd-run --user --scope -q -p MemoryMax="$cap" -p MemorySwapMax=0 -- "$@"
 fi

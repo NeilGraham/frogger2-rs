@@ -287,6 +287,7 @@ impl RootObject {
 /// The local part of `TransformObject` (mdxObject.cpp:371): the object's `rotmat` (with
 /// the scaled translation in row 3) and its `scale` vector at `time`. `last` holds
 /// `lastMKey`, `lastSKey`, `lastRKey`.
+#[allow(clippy::too_many_arguments)]
 fn object_local(mk: &[VKey], sk: &[VKey], rk: &[QKey], animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
     let translation = if mk.len() > 1 && animated {
         let (f, t, i) = find_to_from(mk, time, last[0]);

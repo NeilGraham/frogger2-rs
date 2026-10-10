@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for the Flatpak (placeholder app id; see net.frogger2rs.Frogger2.yml). -->
+<component type="desktop-application">
+  <id>net.frogger2rs.Frogger2</id>
+  <name>Frogger 2 (Rust port)</name>
+  <summary>Rust port of Frogger 2: Swampy's Revenge; requires your own game data</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>
+      A source port of the 2000 PC game Frogger 2: Swampy's Revenge. It contains no game
+      data: import the content from your own CD or disc image with the bundled f2-import tool.
+    </p>
+  </description>
+  <launchable type="desktop-id">net.frogger2rs.Frogger2.desktop</launchable>
+  <categories>
+    <category>Game</category>
+    <category>ArcadeGame</category>
+  </categories>
+  <supports>
+    <control>keyboard</control>
+    <control>gamepad</control>
+  </supports>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">mild</content_attribute>
+    <content_attribute id="social-chat">none</content_attribute>
+  </content_rating>
+</component>
