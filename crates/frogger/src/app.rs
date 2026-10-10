@@ -954,7 +954,9 @@ impl App {
                 dik::F10 if self.video.is_none() => self.toggle_controls(),
                 dik::ESCAPE if self.video.is_some() => self.end_video(),
                 dik::RETURN | dik::NUMPADENTER if self.video.is_some() => self.end_video(),
-                dik::ESCAPE => self.requests.quit = true,
+                // Esc is the game's Start/Triangle (pause/back) when the game runs its own
+                // flow; it only quits the bare dev scenes (`--level` without a session).
+                dik::ESCAPE if !self.has_session() => self.requests.quit = true,
                 dik::F1 => {
                     self.free_cam = match self.free_cam {
                         Some(_) => None,

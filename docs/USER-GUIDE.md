@@ -66,8 +66,9 @@ These are the retail defaults (`DEFAULT_KEYMAP` in `crates/f2-platform/src/input
 | L2 / R2 / Select | Numpad 4 / Numpad 6 / Numpad 0 | (unbound) | (unbound) | (unbound) |
 
 In menus, player 1 also gets Up/Down/Left/Right, Enter and Esc. During videos Enter or Esc skips
-the clip. Esc is the game's Start/Triangle (pause/back) key; the host also treats Esc outside
-videos as a quit request, so use F10 to move it if that bothers you.
+the clip. Esc is the game's Start/Triangle (pause/back) key. Quit from the game's own menus (Quit on the
+frontend, or pause → Quit) or close the window; Esc only quits developer scenes started with
+`--level` outside a normal game session.
 
 ### Gamepads
 
