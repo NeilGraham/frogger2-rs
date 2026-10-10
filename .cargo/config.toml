@@ -1,0 +1,4 @@
+# Memory cap: every test/run/bench binary runs under tools/memcap.sh (8G
+# cgroup cap; MEMCAP=16G to raise). A runaway test OOM-crashed WSL on 2026-10-09.
+[target.'cfg(all())']
+runner = ["tools/memcap.sh"]
