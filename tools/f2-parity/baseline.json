@@ -20,6 +20,22 @@
       "matched": 1800,
       "oracle_ticks": 1800
     },
+    "1-3-mp2": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "1-3-mp2-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "1-3-mp4": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "1-3-mp4-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
     "2-0": {
       "matched": 1800,
       "oracle_ticks": 1800
@@ -31,6 +47,22 @@
     "2-2": {
       "matched": 1687,
       "oracle_ticks": 1687
+    },
+    "3-0-mp2": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "3-0-mp2-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "3-0-mp4": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "3-0-mp4-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
     },
     "4-0": {
       "matched": 1787,
@@ -56,6 +88,78 @@
       "matched": 965,
       "oracle_ticks": 965
     },
+    "5-3-mp2": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-3-mp2-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-3-mp2-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-3-mp4": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-3-mp4-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-3-mp4-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-4-mp2": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-4-mp2-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-4-mp2-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-4-mp4": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-4-mp4-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-4-mp4-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-5-mp2": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-5-mp2-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-5-mp2-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-5-mp4": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-5-mp4-collect": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "5-5-mp4-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
     "6-0": {
       "matched": 1800,
       "oracle_ticks": 1800
@@ -75,6 +179,54 @@
     "7-1": {
       "matched": 1487,
       "oracle_ticks": 1487
+    },
+    "7-10-mp2": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-10-mp2-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-10-mp4": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-10-mp4-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-11-mp2": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-11-mp2-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-11-mp4": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-11-mp4-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-12-mp2": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-12-mp2-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-12-mp4": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "7-12-mp4-race": {
+      "matched": 1800,
+      "oracle_ticks": 1800
     },
     "7-2": {
       "matched": 1800,

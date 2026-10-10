@@ -57,6 +57,7 @@ pub const PLAYER: u32 = 0x036c_1f00;
 pub const PLAYER_SIZE: u32 = 156;
 /// Offsets in `PLAYER`.
 pub mod player {
+    pub const CHARACTER: u32 = 8;
     pub const NUM_SPAWN: u32 = 14;
     pub const LIVES: u32 = 16;
     pub const HEALTH_POINTS: u32 = 20;
@@ -285,3 +286,67 @@ pub mod mode {
     pub const DEMO: u32 = 10;
     pub const STARTUP: u32 = 19;
 }
+
+// ---- local multiplayer (Common/multi.c, Common/options.c) --------------------
+
+/// `GoMulti` (Common/options.c:950), `void(void)`: the frontend's multiplayer start
+/// (`NUM_FROGS = options.numPlayers`, level from `multiWorldNum/multiLevelNum[levelSelection]`,
+/// `gameState = {MULTILOCAL, INVALID_MODE, INGAME}`, `multiplayerMode = multiGameTypes[world]`,
+/// `player[i].character = options.playerChar[i]` for `i < currentPlayer`, `InitLevel`).
+/// The retail build also clears `options.mode` (0x47a1ec = -1) and the `draw` flag (+0x21)
+/// of two option overlays (pointers at 0x47a328 / 0x47a32c).
+pub const GO_MULTI: u32 = 0x0042_2e40;
+/// `options` fields read by `GoMulti` (Common/options.c `OPTIONSOBJECTS options`).
+pub mod options {
+    /// `options.mode` (int; GoMulti writes -1).
+    pub const MODE: u32 = 0x0047_a1ec;
+    /// Two `TEXTOVERLAY *` whose `draw` (+0x21) GoMulti clears.
+    pub const OVERLAY_A: u32 = 0x0047_a328;
+    pub const OVERLAY_B: u32 = 0x0047_a32c;
+    pub const OVERLAY_DRAW: u32 = 0x21;
+    /// `long numPlayers` -> `NUM_FROGS`.
+    pub const NUM_PLAYERS: u32 = 0x0047_a370;
+    /// `long levelSelection` (index into `multiWorldNum`/`multiLevelNum`).
+    pub const LEVEL_SELECTION: u32 = 0x0047_a380;
+    /// `long currentPlayer` (players whose character was picked).
+    pub const CURRENT_PLAYER: u32 = 0x0047_a384;
+    /// `char playerChar[4]`.
+    pub const PLAYER_CHAR: u32 = 0x0047_a5c0;
+}
+/// `long multiLevelNum[8]` / `long multiWorldNum[8]` (Common/options.c:548).
+pub const MULTI_LEVEL_NUM: u32 = 0x0047_aba8;
+pub const MULTI_WORLD_NUM: u32 = 0x0047_abc8;
+pub const NUM_MULTI_LEVELS: u32 = 8;
+/// `char multiGameTypes[MAX_WORLDS]` (Common/multi.c:75).
+pub const MULTI_GAME_TYPES: u32 = 0x0047_a13c;
+/// `int multiplayerMode` (Common/multi.c).
+pub const MULTIPLAYER_MODE: u32 = 0x036b_c500;
+/// `long started`, `unsigned long numMultiItems`, `fixed initialCamHeight` (Common/multi.c).
+pub const MP_STARTED: u32 = 0x0048_9df8;
+pub const NUM_MULTI_ITEMS: u32 = 0x0048_9dfc;
+pub const INITIAL_CAM_HEIGHT: u32 = 0x0048_9e00;
+/// `signed char gameWinner, matchWinner` (Common/multi.c).
+pub const GAME_WINNER: u32 = 0x0047_a12b;
+pub const MATCH_WINNER: u32 = 0x0047_a12c;
+/// `TIMER multiTimer`, `TIMER endTimer` (Common/multi.c).
+pub const MULTI_TIMER: u32 = 0x036b_c420;
+pub const END_TIMER: u32 = 0x036b_c508;
+/// `MPINFO mpl[4]` (Common/multi.h), `sizeof(MPINFO) == 44`.
+pub const MPL: u32 = 0x036b_c440;
+pub const MPINFO_SIZE: u32 = 44;
+pub mod mpinfo {
+    pub const WINS: u32 = 0;
+    pub const LAP: u32 = 2;
+    pub const TIMER: u32 = 4;
+    pub const PENALTY: u32 = 8;
+    pub const CHECK: u32 = 12;
+    pub const SCORE: u32 = 14;
+    pub const TRAIL: u32 = 16;
+    pub const READY: u32 = 18;
+    pub const LASTTILE: u32 = 20;
+}
+/// `fogStore` (Common/menus.c; `GoMulti`: `fog.max = fogStore`), `lastActFrameCount`.
+pub const FOG_STORE: u32 = 0x036b_c61c;
+pub const LAST_ACT_FRAME_COUNT: u32 = 0x0048_9958;
+/// `gameState.multi` values (Common/define.h).
+pub const MULTILOCAL: u8 = 2;

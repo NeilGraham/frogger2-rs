@@ -13,6 +13,15 @@
 //! f2-parity gen   [--levels W-L,..] [--ticks N] [--seed S]
 //! ```
 //!
+//! Local multiplayer cases (`W-L-mpN`, N = 2 or 4 frogs) cover every level of the
+//! frontend's multiplayer table (`scenario_trace --list-multi`: 1-3/3-0 race, 5-3..5 battle,
+//! 7-10..12 collect) in its own mode (`W-L-mpN`) and in the two other modes
+//! (`W-L-mpN-race|battle|collect`, `multiGameTypes[W]` overridden before `GoMulti`), with
+//! one seeded script stream per player
+//! (`script::GENERATOR_MP`); the oracle starts them with `run.py --level W-L --multi N`
+//! (f2fix `start.multi`, the retail `GoMulti`) and the traces carry the `mp` section.
+//! `--corpus single|multi|all` (default all) selects the case families.
+//!
 //! `check` needs no Windows: it compares fresh Rust traces with the cached oracle traces
 //! (`target/parity/oracle/`, or `--cache DIR`; a worktree falls back to the main checkout's)
 //! and exits 1 when a level matches fewer ticks than recorded in
@@ -60,7 +69,18 @@ struct Opts {
     sim: Option<PathBuf>,
     dll: Option<PathBuf>,
     cache: Option<PathBuf>,
+    corpus: Corpus,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Corpus {
+    Single,
+    Multi,
+    All,
+}
+
+/// Player counts of the multiplayer corpus.
+const MP_PLAYERS: [u32; 2] = [2, 4];
 
 #[derive(Serialize, Deserialize, Default)]
 struct Baseline {
@@ -84,13 +104,20 @@ struct OracleMeta {
     key: String,
     rseed: Option<u32>,
     lines: usize,
+    /// Multiplayer: the frontend's `fogStore` when `GoMulti` ran (f2fix log).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fog_store: Option<i32>,
 }
 
-/// One corpus entry.
+/// One corpus entry: `level` is the case id (`W-L`, or `W-L-mpN` for N local players).
 struct Case {
     level: String,
     world: u32,
     lvl: u32,
+    /// 0 = single-player arcade, 2..=4 = local multiplayer frogs.
+    players: u32,
+    /// Multiplayer mode override (1 race, 2 battle, 3 collect; 0 = the level's own).
+    mp_mode: u32,
     keys: PathBuf,
     key: String,
 }
@@ -128,9 +155,9 @@ fn main() -> ExitCode {
 }
 
 const USAGE: &str = "usage:
-  f2-parity run   [--levels W-L,..] [--ticks N] [--seed S] [--oracle-jobs N] [--jobs N] [--refresh] [--no-oracle] [--update-baseline] [--sim PATH] [--dll PATH] [--cache DIR]
-  f2-parity check [--baseline FILE] [--levels W-L,..] [--update] [--jobs N] [--sim PATH] [--cache DIR]
-  f2-parity gen   [--levels W-L,..] [--ticks N] [--seed S]";
+  f2-parity run   [--levels W-L[-mpN],..] [--corpus single|multi|all] [--ticks N] [--seed S] [--oracle-jobs N] [--jobs N] [--refresh] [--no-oracle] [--update-baseline] [--sim PATH] [--dll PATH] [--cache DIR]
+  f2-parity check [--baseline FILE] [--levels W-L[-mpN],..] [--corpus single|multi|all] [--update] [--jobs N] [--sim PATH] [--cache DIR]
+  f2-parity gen   [--levels W-L[-mpN],..] [--corpus single|multi|all] [--ticks N] [--seed S]";
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
     let mut o = Opts {
@@ -146,6 +173,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         sim: None,
         dll: None,
         cache: None,
+        corpus: Corpus::All,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -163,6 +191,14 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--sim" => o.sim = Some(PathBuf::from(val()?)),
             "--dll" => o.dll = Some(PathBuf::from(val()?)),
             "--cache" => o.cache = Some(PathBuf::from(val()?)),
+            "--corpus" => {
+                o.corpus = match val()?.as_str() {
+                    "single" => Corpus::Single,
+                    "multi" => Corpus::Multi,
+                    "all" => Corpus::All,
+                    s => return Err(format!("bad --corpus {s} (single|multi|all)")),
+                }
+            }
             s => return Err(format!("unknown argument {s}\n{USAGE}")),
         }
     }
@@ -358,16 +394,58 @@ fn write(p: &Path, b: &[u8]) -> Result<(), String> {
 
 // ---- corpus ------------------------------------------------------------------
 
-fn select_levels(ctx: &Ctx, o: &Opts) -> Result<Vec<(u32, u32)>, String> {
-    let out = Command::new(&ctx.sim).arg("--list-levels").output().map_err(|e| format!("{}: {e}", ctx.sim.display()))?;
-    if !out.status.success() {
-        return Err("scenario_trace --list-levels failed".into());
-    }
-    let all: Vec<(u32, u32)> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| parse_level(l.split_whitespace().next()?)).collect();
-    match &o.levels {
-        None => Ok(all),
-        Some(want) => want.iter().map(|w| parse_level(w).ok_or(format!("bad level {w} (want W-L)"))).collect(),
-    }
+/// Multiplayer modes (`multiGameTypes`, multi.h `MULTIMODE_*`) by id 1..=3.
+const MP_MODES: [&str; 3] = ["race", "battle", "collect"];
+
+/// `(world, level, players, mp_mode)` of the selected cases (players 0 = single-player;
+/// mp_mode 0 = the level's own `multiGameTypes` mode, else an override).
+fn select_levels(ctx: &Ctx, o: &Opts) -> Result<Vec<(u32, u32, u32, u32)>, String> {
+    let list = |flag: &str| -> Result<Vec<(u32, u32, String)>, String> {
+        let out = Command::new(&ctx.sim).arg(flag).output().map_err(|e| format!("{}: {e}", ctx.sim.display()))?;
+        if !out.status.success() {
+            return Err(format!("scenario_trace {flag} failed"));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                let (w, lv) = parse_level(it.next()?)?;
+                Some((w, lv, it.next().unwrap_or("").to_string()))
+            })
+            .collect())
+    };
+    let keep = |p: u32| match o.corpus {
+        Corpus::All => true,
+        Corpus::Single => p == 0,
+        Corpus::Multi => p != 0,
+    };
+    let all = match &o.levels {
+        None => {
+            let mut v = Vec::new();
+            if o.corpus != Corpus::Multi {
+                v.extend(list("--list-levels")?.into_iter().map(|(w, l, _)| (w, l, 0, 0)));
+            }
+            if o.corpus != Corpus::Single {
+                // Every multiplayer level in its own mode, plus race and collect on the others.
+                // Battle on a non-battle level is left out: the retail exe dies in
+                // GoMulti/InitLevel (no trace line; probably the battle trail cube model, which only the
+                // laboratory banks load), a combination the frontend never starts.
+                for (w, l, native) in list("--list-multi")? {
+                    for &p in &MP_PLAYERS {
+                        v.push((w, l, p, 0));
+                        for (i, m) in MP_MODES.iter().enumerate() {
+                            if *m != native && *m != "battle" {
+                                v.push((w, l, p, i as u32 + 1));
+                            }
+                        }
+                    }
+                }
+            }
+            v
+        }
+        Some(want) => want.iter().map(|w| parse_case(w).ok_or(format!("bad case {w} (want W-L, W-L-mpN or W-L-mpN-MODE)"))).collect::<Result<_, _>>()?,
+    };
+    Ok(all.into_iter().filter(|c| keep(c.2)).collect())
 }
 
 fn parse_level(s: &str) -> Option<(u32, u32)> {
@@ -375,20 +453,49 @@ fn parse_level(s: &str) -> Option<(u32, u32)> {
     Some((w.parse().ok()?, l.parse().ok()?))
 }
 
-fn gen_scripts(ctx: &Ctx, o: &Opts, levels: &[(u32, u32)]) -> Result<Vec<Case>, String> {
+/// `W-L` (single-player), `W-L-mpN` (N = 2..=4 local players, the level's own mode) or
+/// `W-L-mpN-MODE` (MODE = race|battle|collect overrides `multiGameTypes[W]`).
+fn parse_case(s: &str) -> Option<(u32, u32, u32, u32)> {
+    match s.split_once("-mp") {
+        Some((wl, rest)) => {
+            let (w, l) = parse_level(wl)?;
+            let (n, mode) = match rest.split_once('-') {
+                Some((n, m)) => (n, MP_MODES.iter().position(|x| *x == m)? as u32 + 1),
+                None => (rest, 0),
+            };
+            let n: u32 = n.parse().ok().filter(|n| (2..=4).contains(n))?;
+            Some((w, l, n, mode))
+        }
+        None => parse_level(s).map(|(w, l)| (w, l, 0, 0)),
+    }
+}
+
+fn case_id(w: u32, l: u32, players: u32, mode: u32) -> String {
+    match (players, mode) {
+        (0, _) => format!("{w}-{l}"),
+        (p, 0) => format!("{w}-{l}-mp{p}"),
+        (p, m) => format!("{w}-{l}-mp{p}-{}", MP_MODES[(m - 1) as usize]),
+    }
+}
+
+fn gen_scripts(ctx: &Ctx, o: &Opts, levels: &[(u32, u32, u32, u32)]) -> Result<Vec<Case>, String> {
     let mut v = Vec::new();
-    for &(w, l) in levels {
-        let level = format!("{w}-{l}");
-        let bytes = script::to_key_bytes(&script::generate(w, l, o.seed, o.ticks));
+    for &(w, l, players, mp_mode) in levels {
+        let level = case_id(w, l, players, mp_mode);
+        let (generator, bytes) = if players == 0 {
+            (script::GENERATOR, script::to_key_bytes(&script::generate(w, l, o.seed, o.ticks)))
+        } else {
+            (script::GENERATOR_MP, script::to_key_bytes_multi(&script::generate_multi(w, l, players, o.seed, o.ticks)))
+        };
         let mut h = Sha1::new();
-        h.update(format!("{}\n{level}\nticks {}\ntrace v{TRACE_VERSION}\nseed {}\n", script::GENERATOR, o.ticks, o.seed).as_bytes());
+        h.update(format!("{generator}\n{level}\nticks {}\ntrace v{TRACE_VERSION}\nseed {}\n", o.ticks, o.seed).as_bytes());
         h.update(&bytes);
         let key: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
         let keys = ctx.dir.join("scripts").join(format!("{level}-{key}.key"));
         if !keys.is_file() {
             write(&keys, &bytes)?;
         }
-        v.push(Case { level, world: w, lvl: l, keys, key });
+        v.push(Case { level, world: w, lvl: l, players, mp_mode, keys, key });
     }
     Ok(v)
 }
@@ -445,9 +552,17 @@ fn run_oracles(ctx: &Ctx, o: &Opts, cases: &[Case]) -> Result<(), String> {
 
 fn run_oracle(ctx: &Ctx, o: &Opts, dll: &Path, c: &Case) -> Result<usize, String> {
     let id = format!("parity-{}-{}", c.level, &c.key[..8]);
-    let st = memcap(&ctx.root)
-        .args(["python3", "-I", "tools/run/run.py", "--id", &id, "--trace", "--trace-version", &TRACE_VERSION.to_string()])
-        .args(["--level", &c.level, "--keys"])
+    let mut cmd = memcap(&ctx.root);
+    cmd.args(["python3", "-I", "tools/run/run.py", "--id", &id, "--trace", "--trace-version", &TRACE_VERSION.to_string()])
+        .args(["--level", &format!("{}-{}", c.world, c.lvl)]);
+    if c.players >= 2 {
+        cmd.args(["--multi", &c.players.to_string()]);
+    }
+    if c.mp_mode != 0 {
+        cmd.args(["--mp-mode", &c.mp_mode.to_string()]);
+    }
+    let st = cmd
+        .arg("--keys")
         .arg(&c.keys)
         .args(["--exit-ticks", &o.ticks.to_string(), "--exit-seconds", "150", "--timeout", "200", "--dll"])
         .arg(dll)
@@ -468,9 +583,13 @@ fn run_oracle(ctx: &Ctx, o: &Opts, dll: &Path, c: &Case) -> Result<usize, String
         let i = l.find("rseed before InitLevel ")?;
         l[i + 23..].trim_end_matches(')').trim().parse().ok()
     });
+    let fog_store = log.lines().find_map(|l| {
+        let i = l.find(", fogStore ")?;
+        l[i + 11..].split(',').next()?.trim().parse().ok()
+    });
     let (tp, mp) = oracle_path(ctx, c);
     write(&tp, text.as_bytes())?;
-    let meta = OracleMeta { level: c.level.clone(), key: c.key.clone(), rseed, lines };
+    let meta = OracleMeta { level: c.level.clone(), key: c.key.clone(), rseed, lines, fog_store };
     write(&mp, serde_json::to_string_pretty(&meta).unwrap().as_bytes())?;
     let _ = std::fs::remove_dir_all(&run);
     Ok(lines)
@@ -507,8 +626,17 @@ fn compare_one(ctx: &Ctx, o: &Opts, c: &Case) -> Row {
     let out = ctx.dir.join("rust").join(format!("{}.jsonl", c.level));
     let _ = std::fs::create_dir_all(out.parent().unwrap());
     let mut cmd = memcap(&ctx.root);
-    cmd.arg(&ctx.sim)
-        .args([c.world.to_string(), c.lvl.to_string()])
+    cmd.arg(&ctx.sim);
+    if c.players >= 2 {
+        cmd.args(["--multi".to_string(), c.players.to_string()]);
+    }
+    if c.mp_mode != 0 {
+        cmd.args(["--mp-mode".to_string(), c.mp_mode.to_string()]);
+    }
+    if let Some(f) = meta.fog_store {
+        cmd.env("F2_FOG_STORE", f.to_string());
+    }
+    cmd.args([c.world.to_string(), c.lvl.to_string()])
         .arg(&c.keys)
         .arg(&out)
         .arg(o.ticks.to_string())
@@ -619,6 +747,8 @@ fn classify(fields: &[FieldDiff], mode: Option<u32>, afc: u32) -> String {
         } else {
             "frogmove.rs (hop: UpdateFroggerPos, MoveToRequestedDestination, superhop)"
         }
+    } else if has("mp") {
+        "multi.rs (RunMultiplayer: race/battle/collect rules, mpl[], winners)"
     } else if has("tongue") {
         "tongue.rs (UpdateFrogTongue, tongue targets)"
     } else if has("platforms") {
@@ -654,13 +784,15 @@ fn render(o: &Opts, rows: &[Row]) -> String {
     let mut s = String::new();
     s.push_str("# Parity corpus report\n\n");
     s.push_str(&format!(
-        "Generator `{}`, seed {}, {} ticks, trace v{TRACE_VERSION}. Oracle: `run.py --trace --level W-L --keys` (cached by script hash); \
-         Rust: `f2-game` example `scenario_trace`. *matched* = leading ticks identical on every section both sides emit.\n\n",
+        "Generator `{}` (multiplayer `W-L-mpN`: `{}`, one stream per player), seed {}, {} ticks, trace v{TRACE_VERSION}. \
+         Oracle: `run.py --trace --level W-L [--multi N] --keys` (cached by script hash); \
+         Rust: `f2-game` example `scenario_trace [--multi N]`. *matched* = leading ticks identical on every section both sides emit.\n\n",
         script::GENERATOR,
+        script::GENERATOR_MP,
         o.seed,
         o.ticks
     ));
-    s.push_str("| level | oracle | rust | matched | first divergence (afc) | section | field: oracle != rust | likely module |\n");
+    s.push_str("| case | oracle | rust | matched | first divergence (afc) | section | field: oracle != rust | likely module |\n");
     s.push_str("|---|---:|---:|---:|---:|---|---|---|\n");
     let num = |v: Option<usize>| v.map_or("-".to_string(), |n| n.to_string());
     let (mut full, mut total) = (0, 0);
@@ -691,7 +823,7 @@ fn render(o: &Opts, rows: &[Row]) -> String {
             module
         ));
     }
-    s.push_str(&format!("\n{full}/{total} levels identical.\n\n## First divergence per section (afc, frames differing)\n\n"));
+    s.push_str(&format!("\n{full}/{total} cases identical.\n\n## First divergence per section (afc, frames differing)\n\n"));
     for r in rows.iter().filter(|r| !r.sections.is_empty()) {
         let v: Vec<String> = r.sections.iter().map(|(n, a, k)| format!("{n}@{a} ({k})")).collect();
         s.push_str(&format!("- {}: {}\n", r.level, v.join(", ")));
@@ -744,5 +876,13 @@ mod tests {
     fn level_parse() {
         assert_eq!(parse_level("7-9"), Some((7, 9)));
         assert_eq!(parse_level("x"), None);
+        assert_eq!(parse_case("7-10-mp4"), Some((7, 10, 4, 0)));
+        assert_eq!(parse_case("7-10-mp2-battle"), Some((7, 10, 2, 2)));
+        assert_eq!(parse_case("1-3"), Some((1, 3, 0, 0)));
+        assert_eq!(parse_case("1-3-mp1"), None);
+        assert_eq!(parse_case("1-3-mp2-golf"), None);
+        assert_eq!(case_id(5, 3, 2, 0), "5-3-mp2");
+        assert_eq!(case_id(5, 3, 4, 1), "5-3-mp4-race");
+        assert!(classify(&[fd("mp.mpl[1].timer")], None, 9).starts_with("multi.rs"));
     }
 }

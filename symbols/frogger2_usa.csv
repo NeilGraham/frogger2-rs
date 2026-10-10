@@ -219,3 +219,26 @@ address,name,kind,size,confidence,evidence
 0x00471e64,hopHeight,data,4,high,".data 0x12c000=(30*SCALE)<<12; superhopHeight 0x471e68=0x1f4000, doublehopHeight 0x471e6c=0x2ee000"
 0x00471b50,fog,global,8,high,"frogger.c FOG fog={120,120,160,FOG_OFF,995,5000}: .data bytes 78 78 a0 00 e3 03 88 13; InitLevel sets r/g/b,min,max from level table"
 0x00471b78,upVec,data,12,high,"frogger.c {0,4096,0}; ResetCamera cameraUpVect=upVec"
+0x00422e40,GoMulti,function,,high,"options.c GoMulti: fog.max(0x471b56)=fogStore; NUM_FROGS=options.numPlayers(0x47a370); lastActFrameCount=actFrameCount; player[0].worldNum/levelNum=multiWorldNum/multiLevelNum[options.levelSelection(0x47a380)]; gameState mode=2 single=0, multi=2 unless 3; multiplayerMode=multiGameTypes[world]; player[i].character=options.playerChar[i] for i<options.currentPlayer(0x47a384); InitLevel. Retail extra: options.mode(0x47a1ec)=-1, draw(+0x21)=0 on overlays *0x47a328/*0x47a32c"
+0x0047a370,options.numPlayers,global,4,high,GoMulti NUM_FROGS=options.numPlayers
+0x0047a380,options.levelSelection,global,4,high,GoMulti index into multiWorldNum/multiLevelNum (stride 4)
+0x0047a384,options.currentPlayer,global,4,high,GoMulti loop bound for the player[i].character copy
+0x0047a5c0,options.playerChar,global,4,high,GoMulti byte copy to player[i].character (0x36c1f08 stride 0x9c)
+0x0047a1ec,options.mode,global,4,medium,GoMulti writes -1; frontend menu code compares it with 1/3/4/5/7/8
+0x0047aba8,multiLevelNum,data,32,high,options.c long[8] .data 3 0 3 4 5 10 11 12 (GoMulti)
+0x0047abc8,multiWorldNum,data,32,high,options.c long[8] .data 1 3 5 5 5 7 7 7 = ANCIENT CITY LAB LAB LAB SUPERRETRO x3 (GoMulti)
+0x0047a13c,multiGameTypes,data,9,high,multi.c char[MAX_WORLDS] .data 0 1 0 1 0 2 0 3 0 (GoMulti multiplayerMode=multiGameTypes[world])
+0x036bc500,multiplayerMode,global,4,high,multi.c int: RunMultiplayer ==1 UpdateRace / ==2 UpdateBattle / ==3 UpdateCollect
+0x00421070,RunMultiplayer,function,,high,multi.c RunMultiplayer: UpDateMultiplayerInfo then switch multiplayerMode; mpl[i].numText (+36) draw per NUM_FROGS
+0x0041fd70,UpdateRace,function,,high,"multi.c UpdateRace: started 0x489df8, initialCamHeight 0x489e00=camSource.vy, GTInit(&multiTimer,6), racehorngo/frogletsgo/racehorn samples"
+0x004203a0,UpdateBattle,function,,high,multi.c UpdateBattle (multiplayerMode 2): numMultiItems < 15 (0x489dfc) then ++
+0x00420c90,UpdateCollect,function,,high,multi.c UpdateCollect (multiplayerMode 3)
+0x00489df8,started,global,4,high,"multi.c long started: UpdateRace 0 wait, 1 countdown, 2 running"
+0x00489dfc,numMultiItems,global,4,high,multi.c unsigned long: UpdateBattle <0xf then ++; =0 on reset
+0x00489e00,initialCamHeight,global,4,high,multi.c fixed: UpdateRace =camSource.vy (0x471184)
+0x0047a12b,gameWinner,global,1,high,"multi.c signed char gameWinner=-1 (.data ff): =0x7f MULTI_ROUND_DRAW or the winner (mpl[w].wins++)"
+0x0047a12c,matchWinner,global,1,high,multi.c signed char matchWinner=-1: set when mpl[i].wins==3 or NUM_FROGS==1; =0xff on reset
+0x036bc420,multiTimer,global,8,high,multi.c TIMER: UpdateRace GTInit(&multiTimer,6) countdown (time +0, lastCount +4)
+0x036bc508,endTimer,global,8,high,multi.c TIMER: UpdateRace endTimer countdown (time +0, lastCount +4)
+0x036bc440,mpl,global,176,high,"multi.c MPINFO mpl[4], sizeof 44 (index*0x16 shorts): wins +0 (++ on round win), penalText +32 (0x36bc460), numText +36 (0x36bc464)"
+0x036bc61c,fogStore,global,4,medium,menus.c fogStore: GoMulti fog.max=fogStore (10000 at the frontend)

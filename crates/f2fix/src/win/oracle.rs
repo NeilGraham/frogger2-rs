@@ -192,6 +192,24 @@ unsafe extern "C" fn h_game_loop() {
                     rd::<i32>(A::FRAME_COUNT),
                     rd::<u32>(A::RSEED)
                 );
+            } else if let (Some((w, l)), true) = (c.start_level, c.start_multi >= 2) {
+                // Local multiplayer: the options the frontend's multiplayer menus fill in,
+                // then (below, instead of this iteration's GameLoop) GoMulti.
+                st.fired = true;
+                flog!(
+                    "oracle: start multi {}-{} players {} chars {:?} mp_mode {} difficulty {} (loop {}, fogStore {}, actFrameCount {}, rseed before InitLevel {})",
+                    w,
+                    l,
+                    c.start_multi,
+                    &c.start_chars[..c.start_multi as usize],
+                    c.start_mp_mode,
+                    rd::<u32>(A::GAME_STATE + A::game_state::DIFFICULTY),
+                    st.loops,
+                    rd::<i32>(A::FOG_STORE),
+                    rd::<u32>(A::ACT_FRAME_COUNT),
+                    rd::<u32>(A::RSEED)
+                );
+                skip = true;
             } else if let Some((w, l)) = c.start_level {
                 // As levplay.c InitDemoMode, but an arcade game in INGAME_MODE.
                 wr::<u8>(A::GAME_STATE + A::game_state::MULTI, 1);
@@ -222,8 +240,12 @@ unsafe extern "C" fn h_game_loop() {
     }
     if skip {
         if let Some((w, l)) = c.start_level {
-            let init_level: extern "C" fn(u32, u32) = core::mem::transmute(A::INIT_LEVEL as usize);
-            init_level(w, l);
+            if c.start_multi >= 2 {
+                start_multi(w, l, c.start_multi, &c.start_chars, c.start_mp_mode);
+            } else {
+                let init_level: extern "C" fn(u32, u32) = core::mem::transmute(A::INIT_LEVEL as usize);
+                init_level(w, l);
+            }
             // GameLoop's epilogue for this iteration.
             wr::<i32>(A::FRAME_COUNT, rd::<i32>(A::FRAME_COUNT).wrapping_add(1));
         }
@@ -271,6 +293,92 @@ unsafe extern "C" fn h_game_loop() {
     if let Some(why) = end {
         flush_and_terminate(why);
     }
+}
+
+/// Start a local multiplayer match on `w-l` with `n` frogs, as the frontend does
+/// (Common/options.c `GoMulti`, reached from the multiplayer level/character menus):
+/// fill `options.{numPlayers, currentPlayer, levelSelection, playerChar[]}` and call
+/// the retail `GoMulti`. A level outside `multiWorldNum/multiLevelNum`, or a frontend
+/// whose option overlays are not set up yet, gets the same writes done here instead.
+/// `mp_mode != 0` overrides `multiGameTypes[w]` (which `GoMulti` reads) first.
+unsafe fn start_multi(w: u32, l: u32, n: u32, chars: &[u8; 4], mp_mode: u32) {
+    use A::options as O;
+    let idx = (0..A::NUM_MULTI_LEVELS).find(|&i| rd::<u32>(A::MULTI_WORLD_NUM + 4 * i) == w && rd::<u32>(A::MULTI_LEVEL_NUM + 4 * i) == l);
+    if mp_mode != 0 && w < 9 {
+        wr::<u8>(A::MULTI_GAME_TYPES + w, mp_mode as u8);
+    }
+    wr::<i32>(O::NUM_PLAYERS, n as i32);
+    wr::<i32>(O::CURRENT_PLAYER, n as i32);
+    for i in 0..4u32 {
+        wr::<u8>(O::PLAYER_CHAR + i, chars[i as usize]);
+    }
+    let ov_a: u32 = rd(O::OVERLAY_A);
+    let ov_b: u32 = rd(O::OVERLAY_B);
+    let overlays = readable(ov_a, O::OVERLAY_DRAW + 1) && readable(ov_b, O::OVERLAY_DRAW + 1);
+    if let (Some(i), true) = (idx, overlays) {
+        wr::<i32>(O::LEVEL_SELECTION, i as i32);
+        flog!("oracle: GoMulti (levelSelection {}, multiGameTypes[{}] = {})", i, w, rd::<i8>(A::MULTI_GAME_TYPES + w));
+        let go_multi: extern "C" fn() = core::mem::transmute(A::GO_MULTI as usize);
+        go_multi();
+    } else {
+        flog!("oracle: GoMulti replicated (table index {:?}, overlays {:#x}/{:#x})", idx, ov_a, ov_b);
+        wr::<i32>(O::MODE, -1);
+        wr::<i16>(A::FOG + 6, rd::<i32>(A::FOG_STORE) as i16);
+        wr::<i32>(A::NUM_FROGS, n as i32);
+        wr::<u32>(A::LAST_ACT_FRAME_COUNT, rd(A::ACT_FRAME_COUNT));
+        wr::<u8>(A::PLAYER + A::player::WORLD_NUM, w as u8);
+        wr::<u8>(A::PLAYER + A::player::LEVEL_NUM, l as u8);
+        wr::<u32>(A::GAME_STATE + A::game_state::MODE, A::mode::INGAME);
+        wr::<u8>(A::GAME_STATE + A::game_state::SINGLE, 0);
+        if rd::<u8>(A::GAME_STATE + A::game_state::MULTI) != 3 {
+            wr::<u8>(A::GAME_STATE + A::game_state::MULTI, A::MULTILOCAL);
+        }
+        wr::<i32>(A::MULTIPLAYER_MODE, if w < 9 { rd::<i8>(A::MULTI_GAME_TYPES + w) as i32 } else { 0 });
+        for i in 0..n {
+            wr::<u8>(A::PLAYER + i * A::PLAYER_SIZE + A::player::CHARACTER, chars[i as usize]);
+        }
+        let init_level: extern "C" fn(u32, u32) = core::mem::transmute(A::INIT_LEVEL as usize);
+        init_level(w, l);
+    }
+    flog!(
+        "oracle: multiplayer started: NUM_FROGS {}, multiplayerMode {}, gameState.multi {}, world {}-{}",
+        rd::<i32>(A::NUM_FROGS),
+        rd::<i32>(A::MULTIPLAYER_MODE),
+        rd::<u8>(A::GAME_STATE + A::game_state::MULTI),
+        rd::<u8>(A::PLAYER + A::player::WORLD_NUM),
+        rd::<u8>(A::PLAYER + A::player::LEVEL_NUM)
+    );
+}
+
+/// `"mp"` trace section (Common/multi.c globals), `n` = `NUM_FROGS`.
+unsafe fn read_mp(n: u32) -> trace::Mp {
+    let mut m = trace::Mp {
+        mode: rd(A::MULTIPLAYER_MODE),
+        started: rd(A::MP_STARTED),
+        num_multi_items: rd(A::NUM_MULTI_ITEMS),
+        game_winner: rd(A::GAME_WINNER),
+        match_winner: rd(A::MATCH_WINNER),
+        multi_timer: rd(A::MULTI_TIMER),
+        end_timer: rd(A::END_TIMER),
+        initial_cam_height: rd(A::INITIAL_CAM_HEIGHT),
+        mpl: Vec::new(),
+    };
+    for i in 0..n {
+        let p = A::MPL + i * A::MPINFO_SIZE;
+        use A::mpinfo as M;
+        m.mpl.push(trace::MpPlayer {
+            wins: rd(p + M::WINS),
+            lap: rd(p + M::LAP),
+            timer: rd(p + M::TIMER),
+            penalty: rd(p + M::PENALTY),
+            check: rd(p + M::CHECK),
+            score: rd(p + M::SCORE),
+            trail: rd(p + M::TRAIL),
+            ready: rd(p + M::READY),
+            lasttile: rd(p + M::LASTTILE),
+        });
+    }
+    m
 }
 
 /// BUG(original): levplay.c `RunDemoMode` computes the first replayed key's
@@ -565,5 +673,8 @@ unsafe fn read_v2(f: &Frame) -> trace::V2 {
         hand_angle: rd(A::HAND_ANGLE),
         store_frame_count: rd(A::STORE_FRAME_COUNT),
     };
+    if rd::<u8>(A::GAME_STATE + A::game_state::MULTI) == A::MULTILOCAL {
+        v.mp = Some(read_mp(f.players.len() as u32));
+    }
     v
 }

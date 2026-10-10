@@ -108,6 +108,9 @@ start.demo=             # W-L: frontend -> attract demo of world W level L
 start.level=            # W-L: frontend -> arcade level (scenario mode)
 start.keys=             # scenario .key file (relative = run dir)
 start.after=2           # frontend frameCount before start.* fires
+start.multi=0           # 2..4: start.level as a local multiplayer match (GoMulti) with N frogs
+start.chars=0,1,2,3     # start.multi: options.playerChar[] (frogger.h FROG_*)
+start.mp_mode=0         # start.multi: override multiGameTypes[W] (1 race, 2 battle, 3 collect)
 trace.enable=0          # f2-trace.jsonl, one line per GameLoop tick
 trace.file=f2-trace.jsonl
 trace.from=level        # level | all
@@ -184,6 +187,17 @@ code sites in memory, each verified byte-for-byte first:
   (`DEMOS\RECORD-W-L.KEY`). `start.level=W-L` does what `InitDemoMode` does but as an arcade
   game: `gameState = {multi 1, single ARCADE, mode INGAME, difficulty NORMAL}`, `InitLevel(W,L)`
   (that iteration's `GameLoop` is replaced by the call and `frameCount++`).
+- **Local multiplayer** (`run.py --level W-L --multi N [--chars a,b,c,d] [--mp-mode M]`,
+  `start.multi`): f2fix fills what the frontend's multiplayer menus leave behind,
+  `options.{numPlayers, currentPlayer} = N`, `playerChar[] = chars`, `levelSelection` = the
+  level's index in `multiWorldNum/multiLevelNum` (1-3, 3-0 race; 5-3, 5-4, 5-5 battle; 7-10,
+  7-11, 7-12 collect), optionally `multiGameTypes[W] = M`, and calls the retail **`GoMulti`**
+  (0x422e40) instead of that iteration's `GameLoop`: `NUM_FROGS = N`, `gameState = {MULTILOCAL,
+  INVALID_MODE, INGAME}` (difficulty stays the frontend's NORMAL), `multiplayerMode`,
+  characters, `fog.max = fogStore` (10000), `InitLevel`. (A level outside the table, or a
+  frontend without its option overlays, gets the same writes done by f2fix.) The scenario
+  `.key` drives all four pads (record field `player`). The log line `start multi ...` carries
+  `fogStore` and the rseed for the Rust side.
 - **Trace window.** With `trace.from=level` the first line is the first `GameLoop` tick of the
   started level (`act_frame_count == 1`); each line is the state after `GameLoop` returned. The
   run ends when the game is back in the frontend (demo timeout ≈ 25 s = 1556 ticks) or after
@@ -221,9 +235,10 @@ sections both sides have and notes the rest, and v1 traces still read and diff.
 | `sprites` | `count` (`sprList.count`), `particles` (`partList.count`) |
 | `tongue` | per player: `flags`, `radius`, `progress`, `kind`, `can_tongue`, `source`/`target`/`pos` (SVECTOR), `has_thing` |
 | `hud` | `score_timer`, `mode_timer`, `go_timer`, `demo_timeout` (TIMER `.time`), `hand_angle`, `store_frame_count` |
+| `mp` | only while `gameState.multi == MULTILOCAL` (diff section `multi`): `mode` (`multiplayerMode` 1 race, 2 battle, 3 collect), `started`, `num_multi_items`, `game_winner`, `match_winner` (-1, a player, 127 draw), `multi_timer`, `end_timer` (TIMER `.time`), `initial_cam_height`, `mpl[]` per player `i < NUM_FROGS`: `wins`, `lap`, `timer`, `penalty`, `check`, `score`, `trail`, `ready`, `lasttile` |
 
 `f2-trace diff` reports the first divergence per section (`core players enemies platforms
-garibs babies camera hud script triggers specfx sprites tongue`; v1 fields map to the
+garibs babies camera hud script triggers specfx sprites tongue multi`; v1 fields map to the
 same names, e.g. `garib_count` -> `garibs`, `cam_source` -> `camera`) and `--sections
 camera,triggers` restricts the comparison. The binary encoding (header version 2) appends the v2
 sections of each frame as a JSON blob and still decodes version-1 files.
@@ -276,6 +291,17 @@ cargo run -p f2-parity -- check --update   # record improvements in tools/f2-par
 - `target/parity/report.md` lists per level the matched leading ticks, the first divergent
   field and a likely module. Status 2026-10-09: **26/26 levels identical** for the full
   oracle length (the demos stay identical too).
+- **Local multiplayer** (`--corpus single|multi|all`, default all): every level of the
+  frontend's multiplayer table (`scenario_trace --list-multi`) × 2 and 4 frogs in its own
+  mode (`W-L-mpN`), plus race and collect forced on the other levels (`W-L-mpN-race`,
+  `-collect`, `run.py --mp-mode`): 38 cases, generator `f2-parity-mp-gen-1` (one seeded
+  stream per player, merged by frame). The oracle runs `run.py --level W-L --multi N`; the
+  Rust side `scenario_trace --multi N [--mp-mode M]` (`F2_FOG_STORE` from the meta). Battle
+  forced on a non-battle level is not in the corpus: the retail exe dies during
+  `GoMulti`/`InitLevel` (no trace), and the frontend never starts that combination.
+  Status 2026-10-09: **38/38 identical** for 1800 ticks, `mp` section included (battle
+  rounds won and drawn, mode 16 win screens; races reach the countdown and running state
+  but no lap is completed with random input, so lap/match-end logic is still unexercised).
 - To investigate a divergence take oracle snapshots at the tick
   (`run.py --level W-L --keys K --snap-tick N --snap NAME@ADDR:LEN`) and compare with
   `scenario_trace`; draw-time state (`DrawLoop`: effects created while drawing, croak,

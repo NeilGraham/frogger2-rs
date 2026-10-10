@@ -79,6 +79,14 @@ pub struct Cfg {
     pub start_level: Option<(u32, u32)>,
     pub start_keys: String,
     pub start_after: u32,
+    /// `start.multi=N` (2..=4): start `start.level` as a local multiplayer match the way
+    /// the frontend's `GoMulti` does, with `N` frogs (0 = arcade).
+    pub start_multi: u32,
+    /// `start.chars=a,b,c,d`: `options.playerChar[i]` (frog characters, frogger.h).
+    pub start_chars: [u8; 4],
+    /// `start.mp_mode=M` (1 race, 2 battle, 3 collect): override `multiGameTypes[world]`
+    /// before `GoMulti` (0 = the level's own mode).
+    pub start_mp_mode: u32,
     pub trace_enable: bool,
     pub trace_file: String,
     pub trace_from_level: bool,
@@ -117,6 +125,9 @@ impl Default for Cfg {
             start_level: None,
             start_keys: String::new(),
             start_after: 2,
+            start_multi: 0,
+            start_chars: [0, 1, 2, 3],
+            start_mp_mode: 0,
             trace_enable: false,
             trace_file: "f2-trace.jsonl".into(),
             trace_from_level: true,
@@ -275,6 +286,18 @@ pub fn parse(text: &str) -> (Cfg, Vec<String>) {
                 true
             }
             "start.after" => num().map(|x| c.start_after = x).is_some(),
+            "start.multi" => num().filter(|x| *x == 0 || (2..=4).contains(x)).map(|x| c.start_multi = x).is_some(),
+            "start.chars" => {
+                let v: Option<Vec<u8>> = list(v).map(|x| parse_u32(x).filter(|n| *n < 9).map(|n| n as u8)).collect();
+                match v {
+                    Some(v) if !v.is_empty() && v.len() <= 4 => {
+                        c.start_chars[..v.len()].copy_from_slice(&v);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            "start.mp_mode" => num().filter(|x| *x <= 3).map(|x| c.start_mp_mode = x).is_some(),
             "trace.enable" => parse_bool(v).map(|x| c.trace_enable = x).is_some(),
             "trace.file" => {
                 c.trace_file = v.into();
@@ -381,6 +404,11 @@ mod tests {
         assert_eq!(c.start_level, Some((2, 3)));
         assert_eq!(c.start_keys, "a.key");
         assert_eq!(c.exit_ticks, 900);
+        let (c, e) = parse("start.level=1-3\nstart.multi=4\nstart.chars=7, 6 5\nstart.mp_mode=2\n");
+        assert!(e.is_empty(), "{e:?}");
+        assert_eq!((c.start_multi, c.start_chars, c.start_mp_mode), (4, [7, 6, 5, 3], 2));
+        let (_, e) = parse("start.multi=1\nstart.chars=9\nstart.mp_mode=4\n");
+        assert_eq!(e.len(), 3, "{e:?}");
         let (c, e) = parse("start.demo=\nstart.level=x-1\ntrace.from=sometimes\n");
         assert_eq!(e.len(), 2, "{e:?}");
         assert_eq!(c.start_demo, None);

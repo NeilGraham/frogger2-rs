@@ -20,6 +20,22 @@
 //!
 //! Game data: `F2_GAME_DIR` (default `game-data/usa/game`; `.../usa` is accepted).
 //! `F2_START_RSEED` overrides the `rseed` at the start (default: the oracle's logged value).
+//!
+//! Local multiplayer (f2fix `start.multi`, `run.py --level W-L --multi N`):
+//!
+//! ```text
+//! scenario_trace --multi N [--chars a,b,c,d] [--mp-mode M] <world> <level> <keys|-> out.jsonl [max_ticks]
+//! scenario_trace --list-multi
+//! ```
+//!
+//! The start mirrors the frontend's `GoMulti` (Common/options.c:950) as f2fix calls it:
+//! `options.{numPlayers, currentPlayer} = N`, `playerChar[] = chars` (default 0,1,2,3),
+//! `levelSelection` = the level's index in `multiWorldNum/multiLevelNum`; `fog.max =
+//! fogStore` (the oracle's frontend value, `F2_FOG_STORE`, default 10000), `NUM_FROGS = N`,
+//! `gameState = {MULTILOCAL, INVALID_MODE, INGAME}` (difficulty: the frontend's NORMAL),
+//! `multiplayerMode = multiGameTypes[world]` (or `--mp-mode`), characters, `InitLevel`.
+//! Each line then carries the `mp` section (multi.c globals, `mpl[]`) while
+//! `gameState.multi == MULTILOCAL`. `--list-multi` prints `W-L MODE` for the table.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -27,9 +43,12 @@ use std::sync::Arc;
 
 use f2_game::assets::DirData;
 use f2_game::define::mode::FRONTEND_MODE;
-use f2_game::define::{ARCADE_MODE, DIFFICULTY_NORMAL, SINGLEPLAYER};
+use f2_game::define::{ARCADE_MODE, DIFFICULTY_NORMAL, INVALID_MODE, MULTILOCAL, SINGLEPLAYER};
 use f2_game::layout::{worldid, ORIG_WORLD_VISUAL_DATA};
+use f2_game::multi::MULTI_GAME_TYPES;
+use f2_game::options::{MULTI_LEVEL_NUM, MULTI_WORLD_NUM};
 use f2_game::{Game, TickInput};
+use f2_trace::{MpPlayerState, MpState};
 
 /// `rseed` when f2fix fires `start.level` (frontend `frameCount` 33, before `InitLevel`):
 /// "oracle: start level W-L (..., rseed before InitLevel N)" in `f2fix.log`.
@@ -95,14 +114,88 @@ fn list_levels() {
     }
 }
 
+/// Local multiplayer start options (`--multi`, `--chars`, `--mp-mode`).
+struct MultiOpts {
+    players: u32,
+    chars: [u8; 4],
+    mp_mode: i32,
+}
+
+/// `--list-multi`: the frontend's multiplayer level table (`multiWorldNum/multiLevelNum`)
+/// with each level's `multiGameTypes` mode.
+fn list_multi() {
+    for i in 0..MULTI_WORLD_NUM.len() {
+        let w = MULTI_WORLD_NUM[i];
+        let mode = match MULTI_GAME_TYPES[w as usize] {
+            1 => "race",
+            2 => "battle",
+            3 => "collect",
+            _ => "none",
+        };
+        println!("{}-{} {}", w, MULTI_LEVEL_NUM[i], mode);
+    }
+}
+
+/// The `mp` trace section from `multi.c`'s globals (f2fix `read_mp`).
+fn mp_section(g: &Game) -> MpState {
+    let m = &g.multi;
+    let n = g.frogger.num_frogs.clamp(0, 4) as usize;
+    MpState {
+        mode: m.multiplayer_mode,
+        started: m.started,
+        num_multi_items: m.num_multi_items,
+        game_winner: m.game_winner,
+        match_winner: m.match_winner,
+        multi_timer: m.multi_timer.time,
+        end_timer: m.end_timer.time,
+        initial_cam_height: m.initial_cam_height,
+        mpl: m.mpl[..n]
+            .iter()
+            .map(|p| MpPlayerState {
+                wins: p.wins,
+                lap: p.lap,
+                timer: p.timer,
+                penalty: p.penalty,
+                check: p.check,
+                score: p.score,
+                trail: p.trail,
+                ready: p.ready,
+                lasttile: p.lasttile,
+            })
+            .collect(),
+    }
+}
+
 fn main() -> Result<(), String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--list-levels") {
         list_levels();
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("--list-multi") {
+        list_multi();
+        return Ok(());
+    }
+    let mut mp = MultiOpts { players: 0, chars: [0, 1, 2, 3], mp_mode: 0 };
+    while args.first().is_some_and(|a| a.starts_with("--")) {
+        let flag = args.remove(0);
+        if args.is_empty() {
+            return Err(format!("{flag} needs a value"));
+        }
+        let val = args.remove(0);
+        match flag.as_str() {
+            "--multi" => mp.players = val.parse().ok().filter(|n| (2..=4).contains(n)).ok_or("--multi takes 2..4")?,
+            "--chars" => {
+                for (i, c) in val.split(',').take(4).enumerate() {
+                    mp.chars[i] = c.trim().parse().map_err(|e| format!("--chars: {e}"))?;
+                }
+            }
+            "--mp-mode" => mp.mp_mode = val.parse().ok().filter(|m| (0..=3).contains(m)).ok_or("--mp-mode takes 0..3")?,
+            _ => return Err(format!("unknown option {flag}")),
+        }
+    }
     if args.len() < 4 {
-        return Err("usage: scenario_trace <world> <level> <keys.key|-> out.jsonl [max_ticks] | --list-levels".into());
+        return Err("usage: scenario_trace [--multi N [--chars a,b,..] [--mp-mode M]] <world> <level> <keys.key|-> out.jsonl [max_ticks] | --list-levels | --list-multi".into());
     }
     let world: u32 = args[0].parse().map_err(|e| format!("world: {e}"))?;
     let level: u32 = args[1].parse().map_err(|e| format!("level: {e}"))?;
@@ -121,10 +214,39 @@ fn main() -> Result<(), String> {
     g.rng.rseed = rseed;
     // Frontend leftover (see demo_trace): STARTUP_MODE ends with GTInit(&modeTimer, 1).
     g.game.mode_timer.init(1);
-    g.game_state.multi = SINGLEPLAYER;
-    g.game_state.single = ARCADE_MODE;
-    g.game_state.mode = f2_game::define::mode::INGAME_MODE;
-    g.game_state.difficulty = DIFFICULTY_NORMAL;
+    if mp.players >= 2 {
+        // f2fix start_multi -> GoMulti (Common/options.c:950); difficulty stays the
+        // frontend's (NORMAL in the oracle log).
+        g.game_state.difficulty = DIFFICULTY_NORMAL;
+        let n = mp.players as i32;
+        g.options.num_players = n;
+        g.options.current_player = n;
+        for i in 0..4 {
+            g.options.player_char[i] = mp.chars[i] as i8;
+        }
+        if let Some(i) = (0..MULTI_WORLD_NUM.len()).find(|&i| MULTI_WORLD_NUM[i] == world && MULTI_LEVEL_NUM[i] == level) {
+            g.options.level_selection = i as i32;
+        }
+        let fog_store: i32 = std::env::var("F2_FOG_STORE").ok().and_then(|s| s.parse().ok()).unwrap_or(10000);
+        g.menus.fog_store = fog_store;
+        g.frogger.fog.max = fog_store as i16;
+        g.frogger.num_frogs = n;
+        g.last_act_frame_count = g.act_frame_count;
+        g.frogger.player[0].world_num = world as u8;
+        g.frogger.player[0].level_num = level as u8;
+        g.game_state.mode = f2_game::define::mode::INGAME_MODE;
+        g.game_state.single = INVALID_MODE;
+        g.game_state.multi = MULTILOCAL;
+        g.multi.multiplayer_mode = if mp.mp_mode != 0 { mp.mp_mode } else { MULTI_GAME_TYPES.get(world as usize).copied().unwrap_or(0) };
+        for i in 0..mp.players as usize {
+            g.frogger.player[i].character = mp.chars[i];
+        }
+    } else {
+        g.game_state.multi = SINGLEPLAYER;
+        g.game_state.single = ARCADE_MODE;
+        g.game_state.mode = f2_game::define::mode::INGAME_MODE;
+        g.game_state.difficulty = DIFFICULTY_NORMAL;
+    }
     g.load_level(world, level, &*data)?;
     // f2fix: GameLoop's epilogue for the start iteration.
     g.frame_count += 1;
@@ -154,6 +276,9 @@ fn main() -> Result<(), String> {
         }
         let mut f = g.trace_frame();
         f.seq = n;
+        if g.game_state.multi == MULTILOCAL {
+            f.mp = Some(mp_section(&g));
+        }
         writeln!(w, "{}", f.to_json_line()).map_err(|e| e.to_string())?;
         n += 1;
         g.after_game_loop();
