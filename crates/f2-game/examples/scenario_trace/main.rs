@@ -286,11 +286,15 @@ fn main() -> Result<(), String> {
             "--plan-seed" => plan_opts.seed = val.parse().map_err(|e| format!("--plan-seed: {e}"))?,
             "--plan-budget" => plan_opts.budget = val.parse().map_err(|e| format!("--plan-budget: {e}"))?,
             "--plan-rivals" => plan_opts.rivals = val.parse()?,
+            "--plan-waypoints" => {
+                let text = std::fs::read_to_string(&val).map_err(|e| format!("{val}: {e}"))?;
+                plan_opts.waypoints = plan::parse_waypoints(&text)?;
+            }
             _ => return Err(format!("unknown option {flag}")),
         }
     }
     if args.len() < 4 {
-        return Err("usage: scenario_trace [--multi N [--chars a,b,..] [--mp-mode M]] [--plan OUT.key [--plan-seed S] [--plan-budget TICKS] [--plan-rivals plan|random|idle]] <world> <level> <keys.key|-> out.jsonl [max_ticks] | --list-levels | --list-multi".into());
+        return Err("usage: scenario_trace [--multi N [--chars a,b,..] [--mp-mode M]] [--plan OUT.key [--plan-seed S] [--plan-budget TICKS] [--plan-rivals plan|random|idle] [--plan-waypoints FILE]] <world> <level> <keys.key|-> out.jsonl [max_ticks] | --list-levels | --list-multi".into());
     }
     let world: u32 = args[0].parse().map_err(|e| format!("world: {e}"))?;
     let level: u32 = args[1].parse().map_err(|e| format!("level: {e}"))?;

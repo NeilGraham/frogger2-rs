@@ -69,11 +69,57 @@ pub struct PlanOpts {
     /// Maximum committed ticks.
     pub budget: u32,
     pub rivals: Rivals,
+    /// Hand-authored waypoints (single player): stages of tiles visited in order before
+    /// the babies (`--plan-waypoints FILE`, [`parse_waypoints`]).
+    pub waypoints: Vec<Vec<u32>>,
+}
+
+/// Parses a waypoint file (`tools/f2-parity/finish/waypoints/W-L.toml`):
+/// `stages = [[t, t, ..], [t], ..]`, tile indices (`firstTile[n]`), `#` comments. The
+/// archive search drives the frog to any tile of stage 0, then of stage 1, ... and then
+/// to the babies (a switch, a lift ride, the far side of a gate the distance cannot see).
+pub fn parse_waypoints(text: &str) -> Result<Vec<Vec<u32>>, String> {
+    let body: String = text.lines().map(|l| l.split('#').next().unwrap_or("")).collect::<Vec<_>>().join(" ");
+    let rest = body.split_once("stages").ok_or("waypoints: no `stages = [...]`")?.1;
+    let rest = rest.trim_start().strip_prefix('=').ok_or("waypoints: expected `=`")?;
+    let mut stages = Vec::new();
+    let mut depth = 0;
+    let mut cur: Option<Vec<u32>> = None;
+    let mut num = String::new();
+    for ch in rest.chars() {
+        if ch.is_ascii_digit() {
+            num.push(ch);
+            continue;
+        }
+        if !num.is_empty() {
+            cur.as_mut().ok_or("waypoints: number outside a stage")?.push(num.parse().map_err(|e| format!("waypoints: {e}"))?);
+            num.clear();
+        }
+        match ch {
+            '[' => {
+                depth += 1;
+                if depth == 2 {
+                    cur = Some(Vec::new());
+                }
+            }
+            ']' => {
+                if depth == 2 {
+                    stages.push(cur.take().unwrap_or_default());
+                }
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(stages)
 }
 
 impl Default for PlanOpts {
     fn default() -> Self {
-        PlanOpts { seed: 1, budget: 60_000, rivals: Rivals::Auto }
+        PlanOpts { seed: 1, budget: 60_000, rivals: Rivals::Auto, waypoints: Vec::new() }
     }
 }
 
@@ -102,45 +148,232 @@ fn step(g: &mut Game, prev: [u16; 4], held: [u16; 4]) -> bool {
     true
 }
 
-/// Tile graph distances (reverse Dijkstra), cached per target set.
+/// Tile graph distances (reverse Dijkstra), cached per target set and tile-state set.
+///
+/// Besides `tile_ptrs` the graph has "map knowledge" edges the static tile graph does not
+/// show: script teleports and springs (`EV_TELEPORT_P`/`EV_SPRING_P` under a
+/// `TR_FROGONTILE`/`OnPath` trigger: trigger tiles -> placeholder tile), and rides along
+/// platform paths (lifts, carts, tube rides: consecutive node tiles, both ways). Barred
+/// tiles are impassable *in the current state* (`EV_SETTILE_P` gates open as switches are
+/// pressed), so a baby behind a closed gate is far until the switch is found.
 struct Dist {
-    /// `rev[n]` = tiles with an edge into `n`.
-    rev: Vec<Vec<u32>>,
-    cost: Vec<u32>,
-    cache: HashMap<Vec<u32>, Vec<u32>>,
+    /// `rev[n]` = (tile with an edge into `n`, extra cost of that edge).
+    rev: Vec<Vec<(u32, u32)>>,
+    cache: HashMap<(Vec<u32>, u64), Vec<u32>>,
+    /// Number of map-knowledge edges (script jumps, platform rides).
+    extra_edges: usize,
 }
 
 const FAR: u32 = 1 << 20;
+/// Distance of a frog behind a closed gate: this plus the distance to a switch.
+const SWITCH_DIST: u32 = 5000;
+
+fn tile_cost(state: u32) -> Option<u32> {
+    match state {
+        tilestate::DEADLY | tilestate::DEADLYFALL | tilestate::HOT | tilestate::ELECTRIC | tilestate::NOSUPERHOT => Some(4),
+        tilestate::BARRED => None,
+        _ => Some(1),
+    }
+}
+
+/// Tiles where a script trigger fires for the frog (`FrogOnTile`, `OnPath`), recursively.
+fn trigger_tiles(g: &mut Game, t: &f2_formats::fev::Trigger, out: &mut Vec<u32>) {
+    use f2_formats::fev::Trigger as T;
+    match t {
+        T::FrogOnTile { tile, .. } => {
+            if let Some(x) = g.get_tile_from_number(*tile as i32) {
+                out.push(x.0);
+            }
+        }
+        T::OnPath { enemy, .. } => {
+            if let Some(e) = g.get_enemy_from_uid(*enemy as i32) {
+                let path = g.enemies.enemy_list.array[e.idx()].path;
+                out.extend(g.path.nodes(&path).iter().filter_map(|n| n.world_tile.map(|t| t.0)));
+            }
+        }
+        T::FrogOnPlatform { platform, .. } => {
+            if let Some(pid) = g.get_platform_from_uid(*platform as i32) {
+                let path = g.platform.platform_list.array[pid.idx()].path;
+                out.extend(g.path.nodes(&path).iter().filter_map(|n| n.world_tile.map(|t| t.0)));
+            }
+        }
+        T::And(a, b) | T::Or(a, b) => {
+            trigger_tiles(g, a, out);
+            trigger_tiles(g, b, out);
+        }
+        _ => {}
+    }
+}
+
+/// Teleport/spring destinations in a command block (recursively).
+fn jump_dests(g: &Game, cmds: &[f2_formats::fev::Command], out: &mut Vec<u32>) {
+    use f2_formats::fev::Command as C;
+    for c in cmds {
+        match c {
+            C::TeleportP { id, .. } | C::SpringP { id, .. } => {
+                if let Some(e) = g.get_enemy_from_uid(*id as i32) {
+                    let path = g.enemies.enemy_list.array[e.idx()].path;
+                    if let Some(t) = g.path.nodes(&path).first().and_then(|n| n.world_tile) {
+                        out.push(t.0);
+                    }
+                }
+            }
+            C::On { block, .. } | C::If { block, .. } => jump_dests(g, block, out),
+            _ => {}
+        }
+    }
+}
+
+fn script_edges(g: &mut Game, cmds: &[f2_formats::fev::Command], edges: &mut Vec<(u32, u32, u32)>) {
+    use f2_formats::fev::Command as C;
+    for c in cmds {
+        if let C::On { trigger, block, .. } | C::If { trigger, block } = c {
+            let mut from = Vec::new();
+            trigger_tiles(g, trigger, &mut from);
+            let mut to = Vec::new();
+            jump_dests(g, block, &mut to);
+            for &f in &from {
+                for &t in &to {
+                    edges.push((f, t, 3));
+                }
+            }
+            script_edges(g, block, edges);
+        }
+    }
+}
+
+fn has_end_level(cmds: &[f2_formats::fev::Command]) -> bool {
+    use f2_formats::fev::Command as C;
+    cmds.iter().any(|c| match c {
+        C::EndLevel => true,
+        C::On { block, .. } | C::If { block, .. } => has_end_level(block),
+        _ => false,
+    })
+}
+
+/// Tiles of the script triggers that end the level (`EV_ENDLEVEL` in their block, also
+/// nested): the targets of a level without babies (6-2 ends after a tube ride).
+fn end_level_targets(g: &Game) -> Vec<u32> {
+    fn walk(g: &mut Game, cmds: &[f2_formats::fev::Command], out: &mut Vec<u32>) {
+        use f2_formats::fev::Command as C;
+        for c in cmds {
+            if let C::On { trigger, block, .. } | C::If { trigger, block } = c {
+                if has_end_level(block) {
+                    trigger_tiles(g, trigger, out);
+                }
+                walk(g, block, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(s) = g.script.script_buffer.clone() {
+        walk(&mut g.clone(), &s.commands, &mut out);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Gate switches: (gate tile, trigger tiles) for every `EV_SETTILE_P` that sets a tile to
+/// a passable state under a frog trigger (`OnPath`, `FrogOnTile`, `FrogOnPlatform`).
+fn gate_switches(g: &Game) -> Vec<(u32, Vec<u32>)> {
+    fn sets(g: &Game, cmds: &[f2_formats::fev::Command], out: &mut Vec<u32>) {
+        use f2_formats::fev::Command as C;
+        for c in cmds {
+            match c {
+                C::SetTileP { id, state } if u32::from(*state) != tilestate::BARRED => {
+                    if let Some(e) = g.get_enemy_from_uid(*id as i32) {
+                        let path = g.enemies.enemy_list.array[e.idx()].path;
+                        if let Some(t) = g.path.nodes(&path).first().and_then(|n| n.world_tile) {
+                            out.push(t.0);
+                        }
+                    }
+                }
+                C::On { block, .. } | C::If { block, .. } => sets(g, block, out),
+                _ => {}
+            }
+        }
+    }
+    fn walk(g: &mut Game, cmds: &[f2_formats::fev::Command], out: &mut Vec<(u32, Vec<u32>)>) {
+        use f2_formats::fev::Command as C;
+        for c in cmds {
+            if let C::On { trigger, block, .. } | C::If { trigger, block } = c {
+                let mut gates = Vec::new();
+                sets(g, block, &mut gates);
+                if !gates.is_empty() {
+                    let mut tiles = Vec::new();
+                    trigger_tiles(g, trigger, &mut tiles);
+                    if !tiles.is_empty() {
+                        for gt in gates {
+                            out.push((gt, tiles.clone()));
+                        }
+                    }
+                }
+                walk(g, block, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(s) = g.script.script_buffer.clone() {
+        walk(&mut g.clone(), &s.commands, &mut out);
+    }
+    out
+}
 
 impl Dist {
     fn new(g: &Game) -> Dist {
         let n = g.map.tiles.len();
         let mut rev = vec![Vec::new(); n];
-        let mut cost = vec![1; n];
         for (i, t) in g.map.tiles.iter().enumerate() {
             for nb in t.tile_ptrs.iter().flatten() {
                 if nb.idx() < n {
-                    rev[nb.idx()].push(i as u32);
+                    rev[nb.idx()].push((i as u32, 0));
                 }
             }
-            cost[i] = match t.state {
-                tilestate::DEADLY | tilestate::DEADLYFALL | tilestate::HOT | tilestate::ELECTRIC | tilestate::NOSUPERHOT => 4,
-                tilestate::BARRED => 30,
-                _ => 1,
-            };
         }
-        Dist { rev, cost, cache: HashMap::new() }
+        let mut edges: Vec<(u32, u32, u32)> = Vec::new();
+        // Platform rides: consecutive path nodes, both ways (cost ~ waiting for the ride).
+        for p in &g.platform.platform_list.array {
+            let tiles: Vec<u32> = g.path.nodes(&p.path).iter().filter_map(|n| n.world_tile.map(|t| t.0)).collect();
+            for w in tiles.windows(2) {
+                if w[0] != w[1] {
+                    edges.push((w[0], w[1], 4));
+                    edges.push((w[1], w[0], 4));
+                }
+            }
+        }
+        if let Some(s) = g.script.script_buffer.clone() {
+            let mut gm = g.clone();
+            script_edges(&mut gm, &s.commands, &mut edges);
+        }
+        let extra_edges = edges.len();
+        for (f, t, c) in edges {
+            if (f as usize) < n && (t as usize) < n {
+                rev[t as usize].push((f, c));
+            }
+        }
+        Dist { rev, cache: HashMap::new(), extra_edges }
     }
 
-    /// Distances of every tile to the nearest of `targets` (entering a tile costs its `cost`).
-    fn to(&mut self, targets: &[u32]) -> &Vec<u32> {
+    /// Distances of every tile to the nearest of `targets` in the tile states of `g`
+    /// (entering a tile costs its state's cost; barred tiles cannot be entered).
+    fn to(&mut self, g: &Game, targets: &[u32]) -> &Vec<u32> {
         let mut key = targets.to_vec();
         key.sort_unstable();
         key.dedup();
-        if !self.cache.contains_key(&key) {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for t in &g.map.tiles {
+            h = (h ^ u64::from(t.state == tilestate::BARRED)).wrapping_mul(0x100_0000_01b3);
+        }
+        let ck = (key, h);
+        if !self.cache.contains_key(&ck) {
+            if self.cache.len() > 4096 {
+                self.cache.clear();
+            }
+            let cost: Vec<Option<u32>> = g.map.tiles.iter().map(|t| tile_cost(t.state)).collect();
             let mut d = vec![FAR; self.rev.len()];
             let mut heap = BinaryHeap::new();
-            for &t in &key {
+            for &t in &ck.0 {
                 if (t as usize) < d.len() {
                     d[t as usize] = 0;
                     heap.push(std::cmp::Reverse((0u32, t)));
@@ -150,18 +383,23 @@ impl Dist {
                 if dv > d[n as usize] {
                     continue;
                 }
-                let c = self.cost[n as usize];
-                for &p in &self.rev[n as usize] {
-                    let nd = dv + c;
+                // Targets themselves are always enterable (a baby on a barred tile).
+                let c = match cost[n as usize] {
+                    Some(c) => c,
+                    None if dv == 0 => 1,
+                    None => continue,
+                };
+                for &(p, extra) in &self.rev[n as usize] {
+                    let nd = dv + c + extra;
                     if nd < d[p as usize] {
                         d[p as usize] = nd;
                         heap.push(std::cmp::Reverse((nd, p)));
                     }
                 }
             }
-            self.cache.insert(key.clone(), d);
+            self.cache.insert(ck.clone(), d);
         }
-        &self.cache[&key]
+        &self.cache[&ck]
     }
 }
 
@@ -231,6 +469,13 @@ struct Planner {
     explore: f64,
     /// Rounds finished on the archive search's current path.
     rounds: u32,
+    /// Tiles of the triggers that end the level by script (levels without babies).
+    end_targets: Vec<u32>,
+    waypoints: Vec<Vec<u32>>,
+    /// Waypoint stage reached on the archive search's current path.
+    wp: usize,
+    /// [`gate_switches`].
+    switches: Vec<(u32, Vec<u32>)>,
 }
 
 /// Outcome of a candidate.
@@ -241,6 +486,19 @@ struct Eval {
 }
 
 impl Planner {
+    /// Single player targets: the unsaved babies, else the level-ending script triggers.
+    fn targets(&self, g: &Game) -> Vec<u32> {
+        if let Some(w) = self.waypoints.get(self.wp) {
+            return w.clone();
+        }
+        let t = baby_targets(g);
+        if t.is_empty() {
+            self.end_targets.clone()
+        } else {
+            t
+        }
+    }
+
     /// Is the scenario's end state reached?
     fn goal(&self, g: &Game) -> bool {
         match self.kind {
@@ -254,9 +512,21 @@ impl Planner {
             return 0.0;
         }
         let tile = g.frogmove.curr_tile[p].or(g.frogmove.dest_tile[p]);
-        match tile {
-            Some(TileId(t)) => self.dist.to(targets).get(t as usize).copied().unwrap_or(FAR) as f64,
-            None => FAR as f64,
+        let Some(TileId(t)) = tile else { return FAR as f64 };
+        let d = self.dist.to(g, targets).get(t as usize).copied().unwrap_or(FAR);
+        if d < FAR || self.kind != Kind::Single {
+            return d as f64;
+        }
+        // Behind a closed gate: head for a switch that opens one (then the target is near).
+        let sw: Vec<u32> = self.switches.iter().filter(|(gt, _)| g.map.tiles.get(*gt as usize).is_some_and(|x| x.state == tilestate::BARRED)).flat_map(|(_, ts)| ts.iter().copied()).collect();
+        if sw.is_empty() {
+            return FAR as f64;
+        }
+        let d2 = self.dist.to(g, &sw).get(t as usize).copied().unwrap_or(FAR);
+        if d2 < FAR {
+            (SWITCH_DIST + d2) as f64
+        } else {
+            FAR as f64
         }
     }
 
@@ -265,7 +535,7 @@ impl Planner {
             Kind::Single => {
                 let lost = (base.frogger.player[0].lives as i32 - g.frogger.player[0].lives as i32).max(0) as f64;
                 let saved = g.babyfrog.baby_list.iter().filter(|b| b.is_saved != 0).count() as f64;
-                let t = baby_targets(g);
+                let t = self.targets(g);
                 let d = self.player_dist(g, 0, &t);
                 let dead = if is_dead(g, 0) { 1.0 } else { 0.0 };
                 saved * 1e6 - (lost + dead) * 3e5 - d * 1000.0
@@ -362,8 +632,8 @@ impl Planner {
         match self.kind {
             Kind::Single => {
                 let saved = g.babyfrog.baby_list.iter().filter(|b| b.is_saved != 0).count() as u32;
-                let t = baby_targets(g);
-                (saved, self.player_dist(g, 0, &t))
+                let t = self.targets(g);
+                (self.wp as u32 * 8 + saved, self.player_dist(g, 0, &t))
             }
             Kind::Race => {
                 // Rounds (draws included) rather than wins, so a drawn round is progress too.
@@ -395,7 +665,16 @@ impl Planner {
 
     fn ge_key(&mut self, g: &Game) -> (u32, u32, u64) {
         match self.kind {
-            Kind::Single => cell_key(g),
+            Kind::Single => {
+                let (a, b, mut h) = cell_key(g);
+                // On a target tile without the pickup (a baby moving on a path, e.g.
+                // up and down): waiting there is progress, so time makes new cells.
+                let t = self.targets(g);
+                if !t.is_empty() && self.player_dist(g, 0, &t) == 0.0 {
+                    h = (h ^ u64::from(g.act_frame_count / 32 + 1)).wrapping_mul(0x100_0000_01b3);
+                }
+                (a, b, h ^ (self.wp as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+            }
             _ => {
                 let a = self.active(g);
                 let (lvl, _) = self.ge_progress(g);
@@ -453,6 +732,8 @@ struct Cell {
     dist: f64,
     /// Multiplayer rounds finished (wins and draws) on the way to this cell.
     rounds: u32,
+    /// Waypoint stage reached on the way to this cell.
+    wp: usize,
 }
 
 fn cell_key(g: &Game) -> (u32, u32, u64) {
@@ -470,6 +751,12 @@ fn cell_key(g: &Game) -> (u32, u32, u64) {
     }
     for &c in g.script.script_counters.iter() {
         mix(c as u16 as u64);
+    }
+    // Gates opened or closed by switches (`EV_SETTILE_P`).
+    for (i, t) in g.map.tiles.iter().enumerate() {
+        if t.state == tilestate::BARRED {
+            mix(i as u64 + 0x10_0000);
+        }
     }
     // On a platform the tile alone does not tell where the frog is (moving platforms,
     // lifts): add the platform and the coarse position.
@@ -523,8 +810,9 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
     let max_cells: usize = std::env::var("F2_PLAN_MAX_CELLS").ok().and_then(|s| s.parse().ok()).unwrap_or(6000);
     let sim_budget: u64 = std::env::var("F2_PLAN_SIM_BUDGET").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000_000);
     let mut index: HashMap<(u32, u32, u64), usize> = HashMap::new();
+    pl.wp = 0;
     let (l0, d0) = pl.ge_progress(g0);
-    let mut cells = vec![Cell { state: Box::new(g0.clone()), prev: [0; 4], t: 0, parent: None, seg: Vec::new(), visits: 0, saved: l0, dist: d0, rounds: 0 }];
+    let mut cells = vec![Cell { state: Box::new(g0.clone()), prev: [0; 4], t: 0, parent: None, seg: Vec::new(), visits: 0, saved: l0, dist: d0, rounds: 0, wp: 0 }];
     index.insert(pl.ge_key(g0), 0);
     let mut sim: u64 = 0;
     let mut iter = 0u64;
@@ -569,7 +857,8 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
         let lives0 = g.frogger.player[0].lives;
         let active0 = pl.active(&g);
         pl.rounds = cells[i].rounds;
-        let saved0 = cells[i].saved;
+        pl.wp = cells[i].wp;
+        let saved0 = g.babyfrog.baby_list.iter().filter(|b| b.is_saved != 0).count() as u32;
         let len = pl.rng.range(40, 160) as usize;
         let seq = Planner::random_seq(&mut pl.rng, len, if pl.kind == Kind::Battle { Kind::Battle } else { Kind::Single });
         let mut parent = i;
@@ -589,6 +878,10 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
             seg.push(held);
             if !ok {
                 break;
+            }
+            if pl.kind == Kind::Single && pl.wp < pl.waypoints.len() && g.frogmove.curr_tile[0].is_some_and(|c| pl.waypoints[pl.wp].contains(&c.0)) && !is_dead(&g, 0) {
+                pl.wp += 1;
+                eprintln!("plan: waypoint stage {} reached at t={t}", pl.wp);
             }
             if pl.goal(&g) {
                 eprintln!("plan: go-explore goal at t={t} after {iter} iterations, {sim} sim ticks, {} cells", cells.len());
@@ -614,7 +907,7 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
             let key = pl.ge_key(&g);
             if !index.contains_key(&key) && cells.len() < max_cells && !(pl.kind == Kind::Single && is_dead(&g, 0)) {
                 let (saved, dist) = pl.ge_progress(&g);
-                cells.push(Cell { state: Box::new(g.clone()), prev, t, parent: Some(parent), seg: std::mem::take(&mut seg), visits: 0, saved, dist, rounds: pl.rounds });
+                cells.push(Cell { state: Box::new(g.clone()), prev, t, parent: Some(parent), seg: std::mem::take(&mut seg), visits: 0, saved, dist, rounds: pl.rounds, wp: pl.wp });
                 parent = cells.len() - 1;
                 index.insert(key, parent);
             }
@@ -699,14 +992,42 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
         visited: vec![false; g0.map.tiles.len()],
         explore: 0.0,
         rounds: 0,
+        end_targets: end_level_targets(&g0),
+        waypoints: o.waypoints.clone(),
+        wp: 0,
+        switches: gate_switches(&g0),
     };
     if std::env::var_os("F2_PLAN_DEBUG").is_some() {
-        let t = baby_targets(&g0);
-        let d: Vec<u32> = t.iter().map(|&x| pl.dist.to(&[x]).get(g0.frogmove.curr_tile[0].map_or(0, |c| c.idx())).copied().unwrap_or(FAR)).collect();
-        eprintln!("plan: kind {kind:?} tiles {} frog tile {:?} baby tiles {t:?} dist {d:?} finish {}", g0.map.tiles.len(), g0.frogmove.curr_tile[0], pl.finish.len());
+        let t = pl.targets(&g0);
+        let d: Vec<u32> = t.iter().map(|&x| pl.dist.to(&g0, &[x]).get(g0.frogmove.curr_tile[0].map_or(0, |c| c.idx())).copied().unwrap_or(FAR)).collect();
+        let pd = pl.player_dist(&g0, 0, &pl.targets(&g0));
+        eprintln!("plan: gate switches {:?} start dist {pd}", pl.switches.iter().map(|(g, t)| (*g, t.len())).collect::<Vec<_>>());
+        if std::env::var_os("F2_PLAN_DEBUG_SCRIPT").is_some() {
+            for (gt, ts) in &pl.switches {
+                let c = |t: u32| {
+                    let x = g0.map.tile(TileId(t));
+                    (t, x.state, x.centre.vx, x.centre.vy, x.centre.vz, x.tile_ptrs.iter().flatten().map(|p| p.0).collect::<Vec<_>>())
+                };
+                eprintln!("plan:   gate {:?} switch tiles {:?}", c(*gt), ts.iter().map(|&t| c(t)).collect::<Vec<_>>());
+                // Greedy route from the start (tile, state, height).
+                let d = pl.dist.to(&g0, ts).clone();
+                let mut cur = g0.frogmove.curr_tile[0].map_or(0, |t| t.0);
+                let mut route = vec![(cur, g0.map.tile(TileId(cur)).state, g0.map.tile(TileId(cur)).centre.vy)];
+                while d[cur as usize] > 0 && d[cur as usize] < FAR && route.len() < 200 {
+                    let nx = g0.map.tiles[cur as usize].tile_ptrs.iter().flatten().map(|p| p.0).chain(pl.dist.rev.iter().enumerate().filter(|(_, r)| r.iter().any(|&(f, _)| f == cur)).map(|(i, _)| i as u32)).min_by_key(|&n| d[n as usize]);
+                    match nx {
+                        Some(n) if d[n as usize] < d[cur as usize] => cur = n,
+                        _ => break,
+                    }
+                    route.push((cur, g0.map.tile(TileId(cur)).state, g0.map.tile(TileId(cur)).centre.vy));
+                }
+                eprintln!("plan:   route {route:?}");
+            }
+        }
+        eprintln!("plan: kind {kind:?} tiles {} (+{} map edges) frog tile {:?} baby tiles {t:?} dist {d:?} finish {}", g0.map.tiles.len(), pl.dist.extra_edges, g0.frogmove.curr_tile[0], pl.finish.len());
         if !pl.finish.is_empty() {
             let fin = pl.finish.clone();
-            let d: Vec<u32> = (0..n).map(|p| g0.frogmove.curr_tile[p].map_or(FAR, |c| pl.dist.to(&fin)[c.idx()])).collect();
+            let d: Vec<u32> = (0..n).map(|p| g0.frogmove.curr_tile[p].map_or(FAR, |c| pl.dist.to(&g0, &fin)[c.idx()])).collect();
             let mut states = std::collections::BTreeMap::new();
             for t in &g0.map.tiles {
                 *states.entry(t.state).or_insert(0) += 1;
