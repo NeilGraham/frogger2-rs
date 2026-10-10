@@ -607,7 +607,15 @@ impl Game {
                 pp.can_jump = 0;
                 self.frog_leave_platform(f_num as i32); // bah
 
-                // PC: dissolveTex override texture (renderer state) dropped.
+                // #ifdef PC_VERSION: the frog dissolves (procedural texture, Random() per texel).
+                if let Some(d) = self.ptexture.dissolve_tex {
+                    if self.babyfrog.babies_saved as i32 != self.map.num_babies {
+                        if let Some(fa) = self.frogger.frog[f_num] {
+                            self.actor2.actors[fa].override_tex = Some(self.ptexture.list[d].name.clone());
+                        }
+                        self.ptexture.list[d].active = 1;
+                    }
+                }
 
                 if let (Some(ct), Some(f0)) = (self.frogmove.curr_tile[0], self.frogger.frog[0]) {
                     let n = self.map.tile(ct).normal;

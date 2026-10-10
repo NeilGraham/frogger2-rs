@@ -282,7 +282,7 @@ pub fn object_bank(vfs: &Vfs, bank: &str) -> Result<Loaded<ObjectBank>, Error> {
     let path = format!("objects/{bank}.dll");
     let base = match read_container(vfs, &path)? {
         Some(d) => ObjectBank::parse(&d).map_err(|e| Error::new(format!("{path}: {e}")))?,
-        None => ObjectBank { models: vec![] },
+        None => ObjectBank { models: vec![], anim_past_end: vec![] },
     };
     let names = model_names(&base);
     let mut out = Loaded::new(base);

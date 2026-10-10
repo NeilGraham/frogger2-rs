@@ -127,11 +127,11 @@
       "level": 0,
       "players": 0,
       "mp_mode": 0,
-      "ticks": 60048,
+      "ticks": 8181,
       "key": "4-0.key",
-      "seed": 1,
+      "seed": 2,
       "rivals": "auto",
-      "plan": "kind Single players 1 goal no ticks 60048 afc 60048 babies 0 wins [0] match_winner -1"
+      "plan": "kind Single players 1 goal @7244 ticks 8181 afc 240 babies 0 wins [0] match_winner -1 moved-on@7941 level 4-0"
     },
     "fin-4-1": {
       "world": 4,
@@ -182,11 +182,11 @@
       "level": 2,
       "players": 0,
       "mp_mode": 0,
-      "ticks": 60024,
+      "ticks": 11310,
       "key": "5-2.key",
       "seed": 1,
       "rivals": "auto",
-      "plan": "kind Single players 1 goal no ticks 60024 afc 60024 babies 0 wins [0] match_winner -1"
+      "plan": "kind Single players 1 goal @10453 ticks 11310 afc 240 babies 0 wins [0] match_winner -1 moved-on@11070 level 5-2"
     },
     "fin-5-3-mp2": {
       "world": 5,
@@ -270,11 +270,11 @@
       "level": 1,
       "players": 0,
       "mp_mode": 0,
-      "ticks": 60040,
+      "ticks": 10188,
       "key": "6-1.key",
-      "seed": 1,
+      "seed": 2,
       "rivals": "auto",
-      "plan": "kind Single players 1 goal no ticks 60040 afc 60040 babies 0 wins [0] match_winner -1"
+      "plan": "kind Single players 1 goal @9251 ticks 10188 afc 240 babies 0 wins [0] match_winner -1 moved-on@9948 level 6-1"
     },
     "fin-6-2": {
       "world": 6,

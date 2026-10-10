@@ -268,7 +268,7 @@
       "save": "identical"
     },
     "fin-1-1": {
-      "matched": 10692,
+      "matched": 10976,
       "oracle_ticks": 10976,
       "end": "complete@10183 babies 5/5 next 1-1@10735",
       "end_match": true,
@@ -296,7 +296,7 @@
       "save": "identical"
     },
     "fin-2-2": {
-      "matched": 8835,
+      "matched": 14595,
       "oracle_ticks": 14595,
       "end": "complete@13842 babies 5/5 next 2-2@14354",
       "end_match": true,
@@ -316,8 +316,15 @@
       "end_match": true,
       "save": "none"
     },
+    "fin-4-0": {
+      "matched": 8181,
+      "oracle_ticks": 8181,
+      "end": "complete@7428 babies 5/5 next 4-0@7940",
+      "end_match": true,
+      "save": "identical"
+    },
     "fin-4-1": {
-      "matched": 8762,
+      "matched": 9356,
       "oracle_ticks": 9356,
       "end": "complete@8563 babies 5/5 next 4-1@9115",
       "end_match": true,
@@ -341,6 +348,13 @@
       "matched": 13247,
       "oracle_ticks": 13247,
       "end": "complete@12454 babies 5/5 next 5-1@13006",
+      "end_match": true,
+      "save": "identical"
+    },
+    "fin-5-2": {
+      "matched": 11310,
+      "oracle_ticks": 11310,
+      "end": "complete@10637 babies 5/5 next 5-2@11069",
       "end_match": true,
       "save": "identical"
     },
@@ -390,6 +404,13 @@
       "matched": 7213,
       "oracle_ticks": 7213,
       "end": "complete@6420 babies 5/5 next 6-0@6972",
+      "end_match": true,
+      "save": "identical"
+    },
+    "fin-6-1": {
+      "matched": 10188,
+      "oracle_ticks": 10188,
+      "end": "complete@9435 babies 5/5 next 6-1@9947",
       "end_match": true,
       "save": "identical"
     },

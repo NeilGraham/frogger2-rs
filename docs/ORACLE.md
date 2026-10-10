@@ -316,33 +316,50 @@ cargo run -p f2-parity -- check --update   # record improvements in tools/f2-par
   receding-horizon random shooting (battle); `F2_PLAN_DEBUG=1` prints targets and, on
   give-up, the most advanced cell; `F2_PLAN_SIM_BUDGET`, `F2_PLAN_MAX_CELLS` (memory:
   ~0.6 MB per cell; use `MEMCAP=12G` above 6000). Levels finished under par would open the
-  name entry (keyboard text the pad script cannot type), so the planner then starts later.
+  name entry (keyboard text the pad script cannot type), so the planner pads the found route
+  with idle ticks (latest point that still wins), else waits somewhere along it and
+  re-searches the rest, else starts later.
+  Map knowledge in the distance (`plan.rs` `Dist`): hops as `GetNextTile` resolves `JOIN`
+  tiles, priced by `GameTileTooHigh` height (superhop +1, too high +40); script jumps
+  (`EV_TELEPORT_P`/`EV_SPRING_P` from their `FrogOnTile`/`OnPath`/`FrogOnPlatform` trigger
+  tiles); platform path rides; barred tiles impassable in the current state, and behind a
+  closed gate the distance heads for an `EV_SETTILE_P` switch (or the setters of the script
+  flags the gate's trigger waits for); levels without babies target the triggers that
+  `EV_ENDLEVEL`; on a target tile without the pickup (a baby moving on a path) time makes
+  new cells. Hand-authored waypoints: `--plan-waypoints FILE`
+  (`finish/waypoints/W-L.toml`, `stages = [[tile, ..], ..]`, visited in order before the
+  babies; `f2-parity plan` passes the file when present and honours `--seed`).
+  `F2_PLAN_DEBUG_SCRIPT=1` also prints the script, gates and switch routes,
+  `F2_PLAN_DEBUG_ROUTE=TILE` the raw tile route to TILE with the modelled hops.
   The report adds the end state of each trace and the `savegame.dat` comparison (run.py
   collects `SaveData\savegame.dat`; Rust: `F2_SAVE_OUT`); `check` fails when a baselined
   end state or save stops matching. Needs an `f2fix.dll` with `start.multi`
   (`tools/run/build_f2fix.sh`; f2-parity now refuses a multiplayer trace without a
   multiplayer start — an old DLL silently ran them single-player).
-  Status 2026-10-09: **35 cases baselined, every end state and save identical**:
-  all 16 multiplayer cases (race 1-3/3-0, battle 5-3..5, collect 7-10..12, 2 and 4 frogs)
-  identical for the whole run, `mp` section and win screens included; 19 single-player
+  Status 2026-10-10: **38 cases baselined, all identical for the whole run**, end states
+  and saves included: all 16 multiplayer cases (race 1-3/3-0, battle 5-3..5, collect
+  7-10..12, 2 and 4 frogs), `mp` section and win screens included; 19 single-player
   levels (0-0, 1-1, 2-1, 2-2, 4-1, 4-2, 5-0, 5-1, 6-0, 7-0..7-9) complete with the oracle's
   level-complete afc, the next start and a byte-identical `savegame.dat` (retro levels
-  7-x write none on either side). 16 of them are identical throughout; three have a
-  cosmetic-RNG divergence that does not change the outcome:
-  - `fin-2-2` @8836 (a baby rescue in LEV_SPA3): the oracle draws 1061 `Random()` calls
-    that tick, Rust 37 — an effect created at draw time on the exe side (not found yet).
-  - `fin-4-1` @8763 (level-complete screen, CROSS held): Rust draws one more `Random(1000)`
-    (frontend.c:1990 celebrate check: Rust's frog is in looping `FROG_ANIM_BREATHE` one
-    tick before the exe's; anim queue timing in `RunLevelComplete`).
-  - `fin-1-1` @10693 (level-complete screen, 510 ticks after `complete`): Rust 31 draws,
-    the exe 20 — Rust re-initialises a sparkle (frontend.c:1910, `draw == 0` after `DEC_ALPHA`)
-    plus the celebrate check; same `RunLevelComplete` cosmetic area as `fin-4-1`.
-  Not finished by the planner yet (puzzle levels; the static tile graph does not see
-  switches/teleports/lifts): 1-0, 1-2, 2-0, 4-0, 5-2, 6-1, 6-2 (6-2 has no
-  babies: it ends by script, `EndLevel` after a tube platform ride). Best seen (babies saved / 5, 60M sim ticks, `--plan-seed 3`): 1-0 3, 1-2 4,
-  2-0 1, 4-0 0, 5-2 3, 6-1 3 (a remaining baby moves on a vertical path: the frog reaches its tile but
-  never meets it). Their manifest
-  entries hold the partial 60000-tick plans (`goal no`) and are not baselined.
+  7-x write none on either side). The three former cosmetic-RNG divergences were:
+  - `fin-4-1` @8763 / `fin-1-1` @10693 (level-complete screen): the celebrate anim
+    `celebrateAnim[]` = 42 equals the frog's `numAnimations`; `Animate` only rejects
+    `> numAnimations`, so the exe plays `anims[42]` = the 12 bank bytes after the table
+    (start 1, end 31: ~110 ticks at speed 70), Rust played a zeroed entry and was back in
+    looping `BREATHE` (an extra `Random(1000)`) after one tick. f2-formats now keeps those
+    bytes (`ObjectBank::anim_past_end`, `research/known-bugs.md` #28).
+  - `fin-2-2` @8836 (teleport in LEV_SPA3): the PC build sets `dissolveTex->active = 1` in
+    `EV_TELEPORT_P` (and `2` in `TeleportFrog`); `ProcessPTDissolve` then draws 1024
+    `Random()` per tick. The port had dropped both as renderer state.
+  Planned since (2026-10-10, map-knowledge planner, all identical incl. `savegame.dat`):
+  4-0 (seed 2), 5-2 (seed 1, 150M sim ticks), 6-1 (seed 2): 38 cases baselined.
+  Not finished yet: 1-0, 1-2, 2-0, 6-2 (6-2 has no babies: it ends by script, `EndLevel`
+  after a tube platform ride). Best seen (babies / 5, up to 120M sim ticks, seeds 1-4):
+  1-0 3 (both remaining babies far, the search stalls 22 tiles out at tile 228 on a
+  DEADLY run), 1-2 4 (stalls 3 tiles from the last baby 508, a superhop up a wall at
+  tile 504), 2-0 1 (14000-cell cap reached; many platforms), 6-2 0 (cell cap; the
+  `EndLevel` trigger tiles sit behind gate 506). Candidates for waypoint files. Their
+  manifest entries hold the old partial 60000-tick plans (`goal no`), not baselined.
 - To investigate a divergence take oracle snapshots at the tick
   (`run.py --level W-L --keys K --snap-tick N --snap NAME@ADDR:LEN`) and compare with
   `scenario_trace`; draw-time state (`DrawLoop`: effects created while drawing, croak,

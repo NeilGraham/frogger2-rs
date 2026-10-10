@@ -49,6 +49,9 @@ pub struct MdxActorAnimation {
     pub number_queued: i16,
     /// `anims`: copy of the model's `MDX_ANIMATION` table (empty = `NULL`).
     pub anims: Vec<MdxAnimation>,
+    /// `anims[numAnimations]` (what follows the table in the bank image), if known.
+    #[serde(default)]
+    pub anim_past_end: Option<MdxAnimation>,
     pub anim_time: f32,
     /// `loopFlags[5]` (looping sounds already started per animation).
     pub loop_flags: [i8; 5],
@@ -58,13 +61,19 @@ pub struct MdxActorAnimation {
 
 impl MdxActorAnimation {
     /// `anims + i`. Out-of-range reads (the original reads past the table when
-    /// `animNum == numAnimations`, see `animate`) yield a zeroed entry.
+    /// `animNum == numAnimations`, see `animate`) yield the bank bytes after the table
+    /// (`anim_past_end`), else a zeroed entry.
     // BUG(original): `Animate` only rejects `animNum > numAnimations`; index ==
-    // numAnimations reads whatever follows the table in the bank. We return zeros.
+    // numAnimations reads whatever follows the table in the bank image (e.g. the frog's
+    // celebrate anim 42 on the level-complete screen, fin-4-1).
     #[inline]
     pub fn anim(&self, i: i32) -> MdxAnimation {
         if i >= 0 {
-            self.anims.get(i as usize).copied().unwrap_or_default()
+            match self.anims.get(i as usize) {
+                Some(a) => *a,
+                None if i as usize == self.anims.len() => self.anim_past_end.unwrap_or_default(),
+                None => MdxAnimation::default(),
+            }
         } else {
             MdxAnimation::default()
         }
@@ -108,7 +117,7 @@ pub fn queue_flush(anim: &mut MdxActorAnimation) {
 /// controller's template copies `numAnimations` and `anims`; every other field of the
 /// template is zero in the banks, so they start zeroed (incl. `sfxMapping`).
 pub fn init_anims(model: &ModelInfo) -> MdxActorAnimation {
-    let mut a = MdxActorAnimation { num_animations: model.animations.len() as i16, anims: model.animations.clone(), ..Default::default() };
+    let mut a = MdxActorAnimation { num_animations: model.animations.len() as i16, anims: model.animations.clone(), anim_past_end: model.anim_past_end, ..Default::default() };
     a.current_animation = -1;
     // Only the first five entries are reset (all of them, as the queue length is 5).
     a.queue_animation = [-1; MDX_ANIM_QUEUE_LENGTH];

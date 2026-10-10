@@ -285,7 +285,11 @@ impl Game {
         }
 
         self.init_camera();
-        // PC: dissolveTex override texture reset (renderer state) dropped.
+        // #ifdef PC_VERSION
+        if let Some(d) = self.ptexture.dissolve_tex {
+            self.actor2.actors[act].override_tex = None;
+            self.ptexture.list[d].active = 2;
+        }
     }
 
     /// Port of `TeleportActorToTile` (Common/actor2.c:1230): teleports the actor to the

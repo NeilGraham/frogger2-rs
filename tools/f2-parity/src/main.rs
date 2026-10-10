@@ -119,6 +119,9 @@ struct FinishCase {
     rivals: String,
     /// The planner's summary line.
     plan: String,
+    /// Hand-authored waypoint file used (`finish/waypoints/W-L.toml`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    waypoints: Option<String>,
 }
 
 fn manifest_path(root: &Path) -> PathBuf {
@@ -745,11 +748,15 @@ fn plan_finish(ctx: &Ctx, o: &Opts, levels: &[Sel]) -> Result<u8, String> {
         if mp_mode != 0 {
             cmd.args(["--mp-mode".to_string(), mp_mode.to_string()]);
         }
-        let seed = 1u64;
+        let seed = o.seed;
         let rivals = "auto";
+        // Hand-authored waypoints for puzzle levels (single player).
+        let wp_rel = format!("waypoints/{w}-{l}.toml");
+        let waypoints = (players < 2 && dir.join(&wp_rel).is_file()).then_some(wp_rel);
         let tmp = ctx.dir.join("plan").join(format!("{id}.jsonl"));
         let _ = std::fs::create_dir_all(tmp.parent().unwrap());
         cmd.args(["--plan".into(), dir.join(&key).display().to_string(), "--plan-seed".into(), seed.to_string(), "--plan-rivals".into(), rivals.to_string()])
+            .args(waypoints.iter().flat_map(|f| ["--plan-waypoints".to_string(), dir.join(f).display().to_string()]))
             .args([w.to_string(), l.to_string(), "-".into()])
             .arg(&tmp)
             .arg("1")
@@ -759,7 +766,7 @@ fn plan_finish(ctx: &Ctx, o: &Opts, levels: &[Sel]) -> Result<u8, String> {
             Ok(out) if out.status.success() => {
                 let summary = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let ticks = summary.split_whitespace().skip_while(|w| *w != "ticks").nth(1).and_then(|t| t.parse::<u32>().ok()).unwrap_or(0);
-                Ok(FinishCase { world: w, level: l, players, mp_mode, ticks, key, seed, rivals: rivals.into(), plan: summary })
+                Ok(FinishCase { world: w, level: l, players, mp_mode, ticks, key, seed, rivals: rivals.into(), plan: summary, waypoints: waypoints.clone() })
             }
             Ok(out) => Err(format!("scenario_trace --plan: {}", out.status)),
             Err(e) => Err(e.to_string()),

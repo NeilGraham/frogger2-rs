@@ -97,6 +97,9 @@ pub struct ModelInfo {
     pub name: String,
     pub radius: f32,
     pub animations: Vec<MdxAnimation>,
+    /// `anims[numAnimations]`: the bank bytes after the table, read by `Animate`/`UpdateAnims`
+    /// for `animNum == numAnimations` (BUG(original), see `MdxActorAnimation::anim`).
+    pub anim_past_end: Option<MdxAnimation>,
     /// Names of every object in the hierarchy, pre-order: root subtree, then each
     /// root sibling subtree (sub-object lookups such as the frog's head).
     pub sub_objects: Vec<String>,
@@ -198,6 +201,12 @@ impl ModelTable {
                     actor_radius,
                     obj_sprites,
                     xform_tree: std::iter::once(&m.root).chain(m.root_siblings.iter()).map(crate::view::XNode::from_object).collect(),
+                    anim_past_end: bank
+                        .anim_past_end
+                        .iter()
+                        .find(|e| e.0 == m.id)
+                        .and_then(|e| e.1.clone())
+                        .map(|a| MdxAnimation { anim_start: a.start, anim_end: a.end, speed: a.speed, looped: a.looped }),
                 })
             });
         }
