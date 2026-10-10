@@ -815,13 +815,14 @@
       ],
       "files": [],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T18:27:34-06:00 done: rollback netplay: f2-net + Game snapshot/checksum; host --host/--join; loopback+UDP tests identical"
       ]
     },
     {
