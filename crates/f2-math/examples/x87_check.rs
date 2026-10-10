@@ -52,16 +52,25 @@ mod x87 {
     }
 
     pub fn rsin(x: i32) -> i32 {
-        seq!("fild dword ptr [{x}]\nfmul dword ptr [{inv}]\nfmul qword ptr [{pi2}]\nfsin\nfmul qword ptr [{k}]",
-            x = &x, inv = &INV4096F, pi2 = &PI2, k = &D4096)
+        seq!(
+            "fild dword ptr [{x}]\nfmul dword ptr [{inv}]\nfmul qword ptr [{pi2}]\nfsin\nfmul qword ptr [{k}]",
+            x = &x,
+            inv = &INV4096F,
+            pi2 = &PI2,
+            k = &D4096
+        )
     }
     pub fn rcos(x: i32) -> i32 {
-        seq!("fild dword ptr [{x}]\nfmul dword ptr [{inv}]\nfmul qword ptr [{pi2}]\nfcos\nfmul qword ptr [{k}]",
-            x = &x, inv = &INV4096F, pi2 = &PI2, k = &D4096)
+        seq!(
+            "fild dword ptr [{x}]\nfmul dword ptr [{inv}]\nfmul qword ptr [{pi2}]\nfcos\nfmul qword ptr [{k}]",
+            x = &x,
+            inv = &INV4096F,
+            pi2 = &PI2,
+            k = &D4096
+        )
     }
     pub fn util_calc_angle(adj: i32, opp: i32) -> i32 {
-        seq!("fild dword ptr [{a}]\nfild dword ptr [{o}]\nfpatan\nfdiv qword ptr [{c}]\nfmul qword ptr [{k}]",
-            a = &adj, o = &opp, c = &TWOPI_C, k = &D4096)
+        seq!("fild dword ptr [{a}]\nfild dword ptr [{o}]\nfpatan\nfdiv qword ptr [{c}]\nfmul qword ptr [{k}]", a = &adj, o = &opp, c = &TWOPI_C, k = &D4096)
     }
     pub fn arccos(c: i32) -> i32 {
         seq!("fild dword ptr [{c}]\nfdiv dword ptr [{f}]\nfld st(0)\nfmul st(0), st(0)\nfld1\nfsubrp st(1), st(0)\nfsqrt\nfxch st(1)\nfpatan\nfmul qword ptr [{k}]",

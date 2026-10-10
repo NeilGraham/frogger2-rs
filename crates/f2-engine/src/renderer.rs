@@ -462,16 +462,18 @@ impl Renderer {
             // Same size and mip count (e.g. the next video frame): write the pixels into the
             // existing texture, keeping its view and bind groups.
             let reuse = self.gpu_images.get(idx).map(|g| g.texture.clone()).filter(|t| t.size() == size && t.mip_level_count() == 1 + chain.len() as u32);
-            let tex = reuse.clone().unwrap_or_else(|| self.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size,
-                mip_level_count: 1 + chain.len() as u32,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            }));
+            let tex = reuse.clone().unwrap_or_else(|| {
+                self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size,
+                    mip_level_count: 1 + chain.len() as u32,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                })
+            });
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 &img.rgba,

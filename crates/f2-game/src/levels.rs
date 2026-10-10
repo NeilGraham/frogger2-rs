@@ -198,7 +198,15 @@ mod tests {
         let mut data = ORIG_WORLD_VISUAL_DATA[0].level_visual_data[0];
         data.fog = [10, 20, 30];
         let reg = LevelRegistry {
-            levels: vec![ExtraLevel { world: 0, level: 1, data, name: Some("Hello".into()), files: Default::default(), music_track: Some(5), world_patch: None }],
+            levels: vec![ExtraLevel {
+                world: 0,
+                level: 1,
+                data,
+                name: Some("Hello".into()),
+                files: Default::default(),
+                music_track: Some(5),
+                world_patch: None,
+            }],
             strings: vec!["first".into()],
         };
         g.install_level_registry(reg);

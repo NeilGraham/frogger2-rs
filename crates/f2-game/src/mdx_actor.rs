@@ -117,7 +117,12 @@ pub fn queue_flush(anim: &mut MdxActorAnimation) {
 /// controller's template copies `numAnimations` and `anims`; every other field of the
 /// template is zero in the banks, so they start zeroed (incl. `sfxMapping`).
 pub fn init_anims(model: &ModelInfo) -> MdxActorAnimation {
-    let mut a = MdxActorAnimation { num_animations: model.animations.len() as i16, anims: model.animations.clone(), anim_past_end: model.anim_past_end, ..Default::default() };
+    let mut a = MdxActorAnimation {
+        num_animations: model.animations.len() as i16,
+        anims: model.animations.clone(),
+        anim_past_end: model.anim_past_end,
+        ..Default::default()
+    };
     a.current_animation = -1;
     // Only the first five entries are reset (all of them, as the queue length is 5).
     a.queue_animation = [-1; MDX_ANIM_QUEUE_LENGTH];

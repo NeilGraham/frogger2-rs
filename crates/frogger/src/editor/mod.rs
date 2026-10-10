@@ -892,7 +892,18 @@ impl Editor {
         ));
         if let Some(t) = self.hover_tile {
             let tl = &d.col.tiles[t];
-            l.push((format!("pointer: tile {t} state {} {}  links n{} s{} e{} w{}", tl.state, tile_state_name(tl.state), tl.adj[0], tl.adj[1], tl.adj[2], tl.adj[3]), grey));
+            l.push((
+                format!(
+                    "pointer: tile {t} state {} {}  links n{} s{} e{} w{}",
+                    tl.state,
+                    tile_state_name(tl.state),
+                    tl.adj[0],
+                    tl.adj[1],
+                    tl.adj[2],
+                    tl.adj[3]
+                ),
+                grey,
+            ));
         }
         match self.mode {
             Mode::Tiles => {
@@ -943,7 +954,10 @@ impl Editor {
             Mode::Scenics => {
                 if let Some(i) = self.sel_scenic {
                     let s = &d.scenics[i];
-                    l.push((format!("scenic {i}: {} pos {} {} {} rot {} {} {} {}", s.name, s.pos.x, s.pos.y, s.pos.z, s.rot.x, s.rot.y, s.rot.z, s.rot.w), white));
+                    l.push((
+                        format!("scenic {i}: {} pos {} {} {} rot {} {} {} {}", s.name, s.pos.x, s.pos.y, s.pos.z, s.rot.x, s.rot.y, s.rot.z, s.rot.w),
+                        white,
+                    ));
                 }
                 l.push((format!("{} scenics", d.scenics.len()), grey));
             }
@@ -965,7 +979,15 @@ impl Editor {
             let max = ((h as f32 - 160.0) / lh).max(4.0) as usize;
             let total = src.lines().count();
             self.script_scroll = self.script_scroll.min(total.saturating_sub(1));
-            lines.push((format!("{}  lines {}-{} of {total}  (PgUp/PgDn, O: $EDITOR, `script compile`)", self.doc.fev_path.replace(".fev", ".etc"), self.script_scroll + 1, (self.script_scroll + max).min(total)), [255, 230, 90, 255]));
+            lines.push((
+                format!(
+                    "{}  lines {}-{} of {total}  (PgUp/PgDn, O: $EDITOR, `script compile`)",
+                    self.doc.fev_path.replace(".fev", ".etc"),
+                    self.script_scroll + 1,
+                    (self.script_scroll + max).min(total)
+                ),
+                [255, 230, 90, 255],
+            ));
             for s in src.lines().skip(self.script_scroll).take(max) {
                 lines.push((s.replace('\t', "    "), [210, 255, 210, 255]));
             }
@@ -1013,7 +1035,11 @@ fn lift(p: [i32; 3]) -> [f32; 3] {
 
 fn tile_geo(t: &f2_formats::level::Tile) -> render::TileGeo {
     let s = |v: &f2_formats::level::SVec| [v.x as f32, v.y as f32, v.z as f32];
-    render::TileGeo { centre: s(&t.centre), normal: [t.normal.x as f32 / 4096.0, t.normal.y as f32 / 4096.0, t.normal.z as f32 / 4096.0], dir: [t.dir_vector[0].x as f32 / 4096.0, t.dir_vector[0].y as f32 / 4096.0, t.dir_vector[0].z as f32 / 4096.0] }
+    render::TileGeo {
+        centre: s(&t.centre),
+        normal: [t.normal.x as f32 / 4096.0, t.normal.y as f32 / 4096.0, t.normal.z as f32 / 4096.0],
+        dir: [t.dir_vector[0].x as f32 / 4096.0, t.dir_vector[0].y as f32 / 4096.0, t.dir_vector[0].z as f32 / 4096.0],
+    }
 }
 
 fn vtx(x: f32, y: f32, z: f32, c: [u8; 4]) -> TlVertex {
@@ -1071,7 +1097,12 @@ fn tile_state_by_name(s: &str) -> Option<u32> {
 
 /// US-layout character for a scan code (the command line).
 fn key_char(k: u8, shift: bool) -> Option<char> {
-    const ROWS: [(u8, &str, &str); 4] = [(dik::KEY_1, "1234567890-=", "!@#$%^&*()_+"), (dik::Q, "qwertyuiop[]", "QWERTYUIOP{}"), (dik::A, "asdfghjkl;'`", "ASDFGHJKL:\"~"), (dik::Z, "zxcvbnm,./", "ZXCVBNM<>?")];
+    const ROWS: [(u8, &str, &str); 4] = [
+        (dik::KEY_1, "1234567890-=", "!@#$%^&*()_+"),
+        (dik::Q, "qwertyuiop[]", "QWERTYUIOP{}"),
+        (dik::A, "asdfghjkl;'`", "ASDFGHJKL:\"~"),
+        (dik::Z, "zxcvbnm,./", "ZXCVBNM<>?"),
+    ];
     if k == dik::SPACE {
         return Some(' ');
     }

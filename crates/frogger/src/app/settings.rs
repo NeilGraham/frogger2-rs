@@ -17,7 +17,9 @@
 use super::App;
 use crate::overlay::expand_prompts;
 use f2_engine::{Blend, Font, FontId, Quad2D, Renderer};
-use f2_game::levplay::{PAD_CIRCLE, PAD_CROSS, PAD_DOWN, PAD_L1, PAD_L2, PAD_LEFT, PAD_R1, PAD_R2, PAD_RIGHT, PAD_SELECT, PAD_SQUARE, PAD_START, PAD_TRIANGLE, PAD_UP};
+use f2_game::levplay::{
+    PAD_CIRCLE, PAD_CROSS, PAD_DOWN, PAD_L1, PAD_L2, PAD_LEFT, PAD_R1, PAD_R2, PAD_RIGHT, PAD_SELECT, PAD_SQUARE, PAD_START, PAD_TRIANGLE, PAD_UP,
+};
 use f2_platform::bindings::{ConflictPolicy, RebindMode, ACTIONS, DEFAULT_DEADZONE};
 use f2_platform::config::ENHANCED_HOP_BUFFER_FRAMES;
 use f2_platform::controller::{FaceLayout, StickMode};
@@ -41,7 +43,8 @@ pub struct WinInfo {
 }
 
 /// Common resolutions offered next to the monitor's video modes.
-const COMMON: [(u32, u32); 10] = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960), (1366, 768), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)];
+const COMMON: [(u32, u32); 10] =
+    [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960), (1366, 768), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)];
 
 impl WinInfo {
     /// Explicit resolutions for `mode` (smallest first): the monitor's video modes (exclusive
@@ -375,8 +378,14 @@ const FRAME_CAPS: [u32; 6] = [0, 30, 60, 120, 144, 240];
 const RENDER_SCALES: [f32; 7] = [0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0];
 const DRAW_DISTANCES: [f32; 5] = [1.0, 1.5, 2.0, 3.0, 4.0];
 /// Texture filter choices: (filter, anisotropy).
-const FILTERS: [(TextureFilter, u16); 6] =
-    [(TextureFilter::Nearest, 1), (TextureFilter::Linear, 1), (TextureFilter::Anisotropic, 1), (TextureFilter::Anisotropic, 4), (TextureFilter::Anisotropic, 8), (TextureFilter::Anisotropic, 16)];
+const FILTERS: [(TextureFilter, u16); 6] = [
+    (TextureFilter::Nearest, 1),
+    (TextureFilter::Linear, 1),
+    (TextureFilter::Anisotropic, 1),
+    (TextureFilter::Anisotropic, 4),
+    (TextureFilter::Anisotropic, 8),
+    (TextureFilter::Anisotropic, 16),
+];
 
 const ENH_HINT: &str = "Enhanced profile only: the authentic profile keeps the retail behaviour.";
 
@@ -620,7 +629,14 @@ impl App {
         let gate = |e: bool, desc: &str| if e { desc.to_string() } else { format!("{desc} {ENH_HINT}") };
         match ui.page() {
             Page::Display => {
-                add(Id::WindowMode, "Window mode", v.window_mode.name().into(), "Windowed, borderless fullscreen or exclusive fullscreen. Alt+Enter / F11 toggle windowed and your fullscreen choice.", true, true);
+                add(
+                    Id::WindowMode,
+                    "Window mode",
+                    v.window_mode.name().into(),
+                    "Windowed, borderless fullscreen or exclusive fullscreen. Alt+Enter / F11 toggle windowed and your fullscreen choice.",
+                    true,
+                    true,
+                );
                 let res = match v.resolution {
                     None => format!("Auto ({}x{})", self.win.size.0, self.win.size.1),
                     Some([w, h]) => format!("{w}x{h}"),
@@ -640,7 +656,14 @@ impl App {
                     },
                     Some(r) => format!("{:.2} Hz", r as f32 / 1000.0).replace(".00", ""),
                 };
-                add(Id::Refresh, "Refresh rate", rate, if fs { "Refresh rate of the exclusive fullscreen mode." } else { "Exclusive fullscreen only." }, fs, true);
+                add(
+                    Id::Refresh,
+                    "Refresh rate",
+                    rate,
+                    if fs { "Refresh rate of the exclusive fullscreen mode." } else { "Exclusive fullscreen only." },
+                    fs,
+                    true,
+                );
                 add(Id::VSync, "VSync", on_off(v.vsync), "Wait for the display refresh (no tearing).", true, true);
                 let cap = match v.frame_cap {
                     0 => "Off".to_string(),
@@ -648,9 +671,23 @@ impl App {
                     n => format!("{n} fps (custom)"),
                 };
                 add(Id::FrameCap, "Frame cap", cap, "Limits rendered frames. The game itself always runs at 60 Hz.", true, true);
-                add(Id::Profile, "Profile", if enh { "Enhanced" } else { "Authentic" }.into(), "Authentic: the retail look and behaviour. Enhanced: widescreen, smoother graphics and the gameplay options.", true, true);
+                add(
+                    Id::Profile,
+                    "Profile",
+                    if enh { "Enhanced" } else { "Authentic" }.into(),
+                    "Authentic: the retail look and behaviour. Enhanced: widescreen, smoother graphics and the gameplay options.",
+                    true,
+                    true,
+                );
                 add(Id::Widescreen, "Widescreen", on_off(d.hor_plus), &gate(enh, "Hor+ field of view and edge-anchored HUD on wide screens."), enh, true);
-                add(Id::RenderScale, "Render scale", format!("{}x", d.render_scale), &gate(enh, "Internal resolution multiplier (2x = supersampling)."), enh, true);
+                add(
+                    Id::RenderScale,
+                    "Render scale",
+                    format!("{}x", d.render_scale),
+                    &gate(enh, "Internal resolution multiplier (2x = supersampling)."),
+                    enh,
+                    true,
+                );
                 add(Id::Msaa, "Anti-aliasing", if d.msaa > 1 { "4x MSAA".into() } else { "Off".into() }, &gate(enh, "Multisample anti-aliasing."), enh, true);
                 let filt = match d.filter {
                     TextureFilter::Nearest => "Nearest".to_string(),
@@ -658,13 +695,34 @@ impl App {
                     TextureFilter::Anisotropic if d.anisotropy <= 1 => "Trilinear".into(),
                     TextureFilter::Anisotropic => format!("Anisotropic {}x", d.anisotropy),
                 };
-                add(Id::Filter, "Texture filter", filt, &gate(enh, "Nearest = blocky, bilinear = retail, trilinear / anisotropic = sharper at a distance."), enh, true);
-                add(Id::Perspective, "Perspective textures", on_off(d.perspective_correct), &gate(enh, "Perspective-correct texturing (retail: affine, wobbly)."), enh, true);
+                add(
+                    Id::Filter,
+                    "Texture filter",
+                    filt,
+                    &gate(enh, "Nearest = blocky, bilinear = retail, trilinear / anisotropic = sharper at a distance."),
+                    enh,
+                    true,
+                );
+                add(
+                    Id::Perspective,
+                    "Perspective textures",
+                    on_off(d.perspective_correct),
+                    &gate(enh, "Perspective-correct texturing (retail: affine, wobbly)."),
+                    enh,
+                    true,
+                );
                 add(Id::DrawDistance, "Draw distance", format!("{}x", d.draw_distance), &gate(enh, "Far clip multiplier."), enh, true);
                 add(Id::Fog, "Fog", on_off(d.fog), &gate(enh, "Distance fog so far geometry fades in instead of popping."), enh, true);
                 add(Id::Brightness, "Brightness", format!("{}%", v.brightness), "Final brightness multiply.", true, true);
                 add(Id::ShowFps, "FPS counter", v.show_fps.name().into(), "Shows rendered frames per second and frame time.", true, true);
-                add(Id::ResetDisplay, "Reset to defaults", String::new(), "Restores every Display setting (windowed, auto resolution, enhanced profile).", true, false);
+                add(
+                    Id::ResetDisplay,
+                    "Reset to defaults",
+                    String::new(),
+                    "Restores every Display setting (windowed, auto resolution, enhanced profile).",
+                    true,
+                    false,
+                );
             }
             Page::Audio => {
                 add(Id::Master, "Master volume", format!("{}", c.audio.master), "Overall volume.", true, true);
@@ -676,21 +734,56 @@ impl App {
             Page::Controls => {
                 add(Id::KeyboardMap, "Keyboard mapping", String::new(), "Rebind the keys of each action and player.", true, false);
                 add(Id::ControllerMap, "Controller mapping", String::new(), "Rebind the controller buttons and stick directions of each player.", true, false);
-                add(Id::Deadzone, "Stick dead zone", format!("{}%", (c.input.deadzone * 100.0).round()), "How far the stick must move before it counts.", true, true);
+                add(
+                    Id::Deadzone,
+                    "Stick dead zone",
+                    format!("{}%", (c.input.deadzone * 100.0).round()),
+                    "How far the stick must move before it counts.",
+                    true,
+                    true,
+                );
                 let sm = match c.input.stick_mode {
                     StickMode::FourWay => "4-way",
                     StickMode::Raw => "Raw (PC)",
                 };
-                add(Id::StickMode, "Stick as d-pad", sm.into(), "4-way: one direction at a time, like a PS1 d-pad. Raw: each axis on its own (PC retail; diagonals press two).", true, true);
+                add(
+                    Id::StickMode,
+                    "Stick as d-pad",
+                    sm.into(),
+                    "4-way: one direction at a time, like a PS1 d-pad. Raw: each axis on its own (PC retail; diagonals press two).",
+                    true,
+                    true,
+                );
                 let fl = match c.input.face_layout {
                     FaceLayout::Positional => "Positional",
                     FaceLayout::NintendoLabels => "Nintendo labels",
                 };
-                add(Id::FaceLayout, "Button layout", fl.into(), "Positional: the bottom face button is Cross on every pad. Nintendo labels: A confirms, B goes back (Nintendo pads only).", true, true);
+                add(
+                    Id::FaceLayout,
+                    "Button layout",
+                    fl.into(),
+                    "Positional: the bottom face button is Cross on every pad. Nintendo labels: A confirms, B goes back (Nintendo pads only).",
+                    true,
+                    true,
+                );
                 add(Id::Rumble, "Rumble", on_off(c.input.rumble), "Controller vibration.", true, true);
-                add(Id::RumbleStrength, "Rumble strength", format!("{}%", (c.input.rumble_scale * 100.0).round()), "Vibration intensity.", c.input.rumble, true);
+                add(
+                    Id::RumbleStrength,
+                    "Rumble strength",
+                    format!("{}%", (c.input.rumble_scale * 100.0).round()),
+                    "Vibration intensity.",
+                    c.input.rumble,
+                    true,
+                );
                 let hop = c.hop_buffer_frames(Profile::Enhanced);
-                add(Id::HopBuffer, "Hop input buffer", if hop == 0 { "Off".into() } else { format!("{hop} frames") }, &gate(enh, "Remembers a hop pressed just before the frog can hop again."), enh, true);
+                add(
+                    Id::HopBuffer,
+                    "Hop input buffer",
+                    if hop == 0 { "Off".into() } else { format!("{hop} frames") },
+                    &gate(enh, "Remembers a hop pressed just before the frog can hop again."),
+                    enh,
+                    true,
+                );
                 add(Id::ResetControls, "Reset to defaults", String::new(), "Restores all key bindings and controller settings.", true, false);
             }
             Page::Gameplay => {
@@ -704,9 +797,23 @@ impl App {
                 add(Id::SaveSlot, "Save slot", format!("{}", g.save_slot), "Left / Right choose a slot; @X loads it (restarts at the title).", true, true);
                 add(Id::SaveNow, "Save now", String::new(), "Writes your progress to the selected slot.", true, false);
                 add(Id::AutoSave, "Auto-save", on_off(g.auto_save), &gate(enh, "Save automatically after each level."), enh, true);
-                add(Id::TubeFix, "Fix tube softlock", on_off(g.fix_tube_softlock), &gate(enh, "Fixes a softlock after a vacuum tube on the last level."), enh, true);
+                add(
+                    Id::TubeFix,
+                    "Fix tube softlock",
+                    on_off(g.fix_tube_softlock),
+                    &gate(enh, "Fixes a softlock after a vacuum tube on the last level."),
+                    enh,
+                    true,
+                );
                 let li = lang_index(&c.language) as usize;
-                add(Id::Language, "Language", LANGS.get(li).map_or("?", |l| l.1).into(), "Game text language. New text uses it at once; menus already on screen change when next opened or at the next level.", self.languages.len() > 1, true);
+                add(
+                    Id::Language,
+                    "Language",
+                    LANGS.get(li).map_or("?", |l| l.1).into(),
+                    "Game text language. New text uses it at once; menus already on screen change when next opened or at the next level.",
+                    self.languages.len() > 1,
+                    true,
+                );
                 add(Id::ResetGameplay, "Reset to defaults", String::new(), "Restores every Gameplay setting.", true, false);
             }
         }
@@ -729,7 +836,8 @@ impl App {
                 self.requests.apply_window = true;
             }
             Id::Resolution => {
-                let list: Vec<Option<[u32; 2]>> = std::iter::once(None).chain(self.win.resolutions(self.win.mode).into_iter().map(|(w, h)| Some([w, h]))).collect();
+                let list: Vec<Option<[u32; 2]>> =
+                    std::iter::once(None).chain(self.win.resolutions(self.win.mode).into_iter().map(|(w, h)| Some([w, h]))).collect();
                 v.resolution = step(&list, v.resolution, dir);
                 v.refresh_mhz = None;
                 self.requests.apply_window = true;
@@ -1005,7 +1113,14 @@ impl App {
                 arrows: false,
             });
         }
-        out.push(Item { id: Id::MapResetAll, label: "Reset all to defaults".into(), value: String::new(), desc: "Restores every player's original PC keys.".into(), enabled: true, arrows: false });
+        out.push(Item {
+            id: Id::MapResetAll,
+            label: "Reset all to defaults".into(),
+            value: String::new(),
+            desc: "Restores every player's original PC keys.".into(),
+            enabled: true,
+            arrows: false,
+        });
         out
     }
 
@@ -1059,7 +1174,13 @@ impl App {
         }
         let (sel, player, device) = (m.sel, m.player, m.device);
         if sel == 0 {
-            let d = if ev & nav::LEFT != 0 { -1 } else if ev & (nav::RIGHT | nav::OK) != 0 { 1 } else { 0 };
+            let d = if ev & nav::LEFT != 0 {
+                -1
+            } else if ev & (nav::RIGHT | nav::OK) != 0 {
+                1
+            } else {
+                0
+            };
             if d != 0 {
                 m.player = (player as i32 + d).rem_euclid(4) as u8;
                 self.menu_sfx(false);
@@ -1121,7 +1242,11 @@ impl App {
                     self.map_commit(rb, c.binding, Resolve::Unbind);
                 } else {
                     let fam = self.families[rb.player as usize];
-                    let who: Vec<String> = c.conflicts.iter().map(|&(p, a)| if p == rb.player { action_label(a).to_string() } else { format!("P{} {}", p + 1, action_label(a)) }).collect();
+                    let who: Vec<String> = c
+                        .conflicts
+                        .iter()
+                        .map(|&(p, a)| if p == rb.player { action_label(a).to_string() } else { format!("P{} {}", p + 1, action_label(a)) })
+                        .collect();
                     m.msg = format!("{} is already used by {}", c.binding.label(fam), who.join(", "));
                     m.conflict = Some(Conflict { rb, binding: c.binding, choice: 0 });
                 }
@@ -1281,13 +1406,23 @@ impl App {
                 desc = format!("{}.  {}", m.msg, opts.join("   "));
                 dcol = hi;
             } else if let Some(cp) = &m.capture {
-                desc = format!("Press the new {} for {} ({}).  Esc cancels.", if m.device == Device::Keyboard { "key" } else { "button" }, action_label(cp.action), if cp.mode == RebindMode::Add { "added" } else { "replaces the current one" });
+                desc = format!(
+                    "Press the new {} for {} ({}).  Esc cancels.",
+                    if m.device == Device::Keyboard { "key" } else { "button" },
+                    action_label(cp.action),
+                    if cp.mode == RebindMode::Add { "added" } else { "replaces the current one" }
+                );
                 dcol = hi;
             } else if !m.msg.is_empty() {
                 desc = m.msg.clone();
                 dcol = [120, 255, 120, 255];
             } else if sel.is_some_and(|s| s >= 1 && s <= ACTIONS.len()) {
-                desc = if m.device == Device::Keyboard { "@X Change   Ins Add key   @S / Del Clear   @C Reset action" } else { "@X Change   @S Clear   @C Reset action" }.into();
+                desc = if m.device == Device::Keyboard {
+                    "@X Change   Ins Add key   @S / Del Clear   @C Reset action"
+                } else {
+                    "@X Change   @S Clear   @C Reset action"
+                }
+                .into();
             }
         } else if !ui.msg.is_empty() {
             desc = ui.msg.clone();
@@ -1378,11 +1513,12 @@ impl Canvas {
         let k = self.k * scale;
         let b: Vec<u8> = s.chars().map(|c| if (c as u32) < 256 { c as u8 } else { b'?' }).collect();
         let w = f.string_width(&b, k) as f32;
-        let x = self.px(ux) - match align {
-            -1 => 0.0,
-            0 => w / 2.0,
-            _ => w,
-        };
+        let x = self.px(ux)
+            - match align {
+                -1 => 0.0,
+                0 => w / 2.0,
+                _ => w,
+            };
         let y = self.py(uy);
         let dy = if big { 6.0 } else { 4.0 } * self.k.max(1.0);
         r.draw_text(id, x, y + dy, s, [0, 0, 0, (col[3] as f32 * 0.7) as u8], k, None);
@@ -1454,7 +1590,12 @@ mod tests {
     #[test]
     fn resolutions_follow_mode() {
         let m = |w, h, r| VideoMode { width: w, height: h, refresh_mhz: r };
-        let wi = WinInfo { mode: WindowMode::Windowed, size: (800, 600), modes: vec![m(1920, 1080, 60000), m(1920, 1080, 144000), m(1280, 720, 60000)], desktop: Some(m(1920, 1080, 144000)) };
+        let wi = WinInfo {
+            mode: WindowMode::Windowed,
+            size: (800, 600),
+            modes: vec![m(1920, 1080, 60000), m(1920, 1080, 144000), m(1280, 720, 60000)],
+            desktop: Some(m(1920, 1080, 144000)),
+        };
         let fs = wi.resolutions(WindowMode::Fullscreen);
         assert_eq!(fs, vec![(1280, 720), (1920, 1080)]);
         let win = wi.resolutions(WindowMode::Windowed);

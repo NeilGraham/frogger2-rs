@@ -366,7 +366,9 @@ where
                         Err(e) => notes.push(self.end(format!("could not join: {e}"))),
                     }
                 }
-                JoinStatus::Rejected(r) => notes.push(self.end(format!("the host refused to let us join (reason {r}: {})", if r == 1 { "full" } else { "already started" }))),
+                JoinStatus::Rejected(r) => {
+                    notes.push(self.end(format!("the host refused to let us join (reason {r}: {})", if r == 1 { "full" } else { "already started" })))
+                }
                 JoinStatus::Welcomed { slot } => {
                     if let Some(s) = slot {
                         if self.local_slot != s {
@@ -739,7 +741,15 @@ mod tests {
 
     /// One peer's thread: lobby, `frames` scripted ticks, settle. All threads share a
     /// virtual clock advanced in lockstep (barriers) by the leader.
-    fn peer(mut np: NetPlay<f2_net::LoopbackTransport>, data: Data, net: LoopbackNetwork, barrier: Arc<Barrier>, done: Arc<AtomicUsize>, leader: bool, frames: i32) -> PeerResult {
+    fn peer(
+        mut np: NetPlay<f2_net::LoopbackTransport>,
+        data: Data,
+        net: LoopbackNetwork,
+        barrier: Arc<Barrier>,
+        done: Arc<AtomicUsize>,
+        leader: bool,
+        frames: i32,
+    ) -> PeerResult {
         let mut pads: Option<PadGen> = None;
         let mut pending = None;
         let mut finished = false;
@@ -813,7 +823,14 @@ mod tests {
         for (name, r) in [("host", &a), ("joiner", &b)] {
             eprintln!(
                 "{name}: rollbacks {} ({} frames, max {}), stalls {}, waits {}, checksums compared {}, rtt {:?}, final {:016x}",
-                r.stats.rollbacks, r.stats.rollback_frames, r.stats.max_rollback, r.stats.stalls, r.stats.wait_frames, r.stats.checksums_compared, r.stats.rtt_ms, r.final_cs
+                r.stats.rollbacks,
+                r.stats.rollback_frames,
+                r.stats.max_rollback,
+                r.stats.stalls,
+                r.stats.wait_frames,
+                r.stats.checksums_compared,
+                r.stats.rtt_ms,
+                r.final_cs
             );
             assert_eq!(r.desyncs, 0, "{name} saw a desync");
         }

@@ -203,14 +203,7 @@ impl EntityFile {
                 let (speed, l5) = fixed(&mut r)?;
                 let wait_time = r.i32()?;
                 let sample_uid = r.u32()?;
-                nodes.push(PathNode {
-                    place,
-                    offset: offset.wrapping_mul(10),
-                    offset2: offset2.wrapping_mul(10),
-                    speed,
-                    wait_time,
-                    sample_uid,
-                });
+                nodes.push(PathNode { place, offset: offset.wrapping_mul(10), offset2: offset2.wrapping_mul(10), speed, wait_time, sample_uid });
                 nres.push([pl[0], pl[1], pl[2], l3, l4, l5]);
             }
             paths.push(Path { nodes });
@@ -293,14 +286,7 @@ impl EntityFile {
                         return Err(r.err(format!("bad camera node count {n}")));
                     }
                     let (nodes, nodes_lo) = (0..n).map(|_| place(&mut r, fast)).collect::<Result<(Vec<_>, Vec<_>)>>()?;
-                    items.push(Item::CameraCase(CameraCaseDef {
-                        flags,
-                        pos: [x, y, z],
-                        fov,
-                        speed,
-                        target,
-                        nodes,
-                    }));
+                    items.push(Item::CameraCase(CameraCaseDef { flags, pos: [x, y, z], fov, speed, target, nodes }));
                     residue.items.push(ItemResidue { lo: [l0, l1, l2, l3, l4, t[3] as u16], pad: [0; 2], nodes: nodes_lo });
                 }
                 t => return Err(r.err(format!("unknown entity type {t}"))),
@@ -309,7 +295,10 @@ impl EntityFile {
         if !r.is_empty() {
             return Err(r.err(format!("{} trailing bytes", r.remaining())));
         }
-        Ok(EntityFile { entities: Entities { fast, total_path_nodes, paths, total_enemies, total_platforms, total_garibs, total_camera_cases, total_placeholders, items }, residue })
+        Ok(EntityFile {
+            entities: Entities { fast, total_path_nodes, paths, total_enemies, total_platforms, total_garibs, total_camera_cases, total_placeholders, items },
+            residue,
+        })
     }
 }
 

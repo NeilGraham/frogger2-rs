@@ -42,7 +42,18 @@ pub struct Actor {
 
 impl Default for Actor {
     fn default() -> Self {
-        Actor { pos: [0.0; 3], q_rot: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3], anim_time: 0.0, animated: true, xlu: 1.0, extra_flags: 0, last_keys: Vec::new(), override_tex: None, gouraud: None }
+        Actor {
+            pos: [0.0; 3],
+            q_rot: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+            anim_time: 0.0,
+            animated: true,
+            xlu: 1.0,
+            extra_flags: 0,
+            last_keys: Vec::new(),
+            override_tex: None,
+            gouraud: None,
+        }
     }
 }
 

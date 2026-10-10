@@ -351,7 +351,9 @@ fn real_main(args: &[String]) -> Result<u8, String> {
                         regress += 1;
                         println!("REGRESS  {:<5} matched {} < baseline {}{}", r.level, m, b.matched, first_txt(r));
                     }
-                    Some(_) if b.end_match == Some(true) && (r.end_rust != r.end_oracle || !r.save.as_deref().is_some_and(|s| s == "identical" || s == "none")) => {
+                    Some(_)
+                        if b.end_match == Some(true) && (r.end_rust != r.end_oracle || !r.save.as_deref().is_some_and(|s| s == "identical" || s == "none")) =>
+                    {
                         regress += 1;
                         println!(
                             "REGRESS  {:<5} end state {} != oracle {} (save {})",

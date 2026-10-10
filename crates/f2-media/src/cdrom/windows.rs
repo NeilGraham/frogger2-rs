@@ -17,7 +17,16 @@ type Bool = i32;
 extern "system" {
     fn GetLogicalDrives() -> u32;
     fn GetDriveTypeW(root: *const u16) -> u32;
-    fn GetVolumeInformationW(root: *const u16, name: *mut u16, name_len: u32, serial: *mut u32, max_comp: *mut u32, flags: *mut u32, fs: *mut u16, fs_len: u32) -> Bool;
+    fn GetVolumeInformationW(
+        root: *const u16,
+        name: *mut u16,
+        name_len: u32,
+        serial: *mut u32,
+        max_comp: *mut u32,
+        flags: *mut u32,
+        fs: *mut u16,
+        fs_len: u32,
+    ) -> Bool;
     fn CreateFileW(name: *const u16, access: u32, share: u32, sa: *mut c_void, disposition: u32, flags: u32, template: Handle) -> Handle;
     fn DeviceIoControl(h: Handle, code: u32, inb: *const c_void, in_len: u32, outb: *mut c_void, out_len: u32, returned: *mut u32, ov: *mut c_void) -> Bool;
     fn CloseHandle(h: Handle) -> Bool;
@@ -197,7 +206,18 @@ fn volume_label(root: &str) -> Option<String> {
     let mut name = [0u16; 261];
     // SAFETY: `r` is NUL-terminated; `name` is writable for its stated length; the other
     // optional out pointers are null.
-    let ok = unsafe { GetVolumeInformationW(r.as_ptr(), name.as_mut_ptr(), name.len() as u32, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0) };
+    let ok = unsafe {
+        GetVolumeInformationW(
+            r.as_ptr(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
     if ok == 0 {
         return None;
     }

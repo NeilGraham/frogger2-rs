@@ -130,13 +130,21 @@ pub fn write_image(disc: &Disc, fmt: OutFormat, dir: &Path, stem: &str) -> io::R
         }
         OutFormat::Ccd => {
             std::fs::write(dir.join(format!("{stem}.sub")), vec![0u8; leadout as usize * 96])?;
-            let t: Vec<CcdOut> = layout.iter().map(|&(n, audio, at, pregap, _)| CcdOut { number: n, audio, index0: (pregap > 0).then_some(at), index1: at + pregap }).collect();
+            let t: Vec<CcdOut> =
+                layout.iter().map(|&(n, audio, at, pregap, _)| CcdOut { number: n, audio, index0: (pregap > 0).then_some(at), index1: at + pregap }).collect();
             Some(("ccd", write_ccd(&t, leadout).into_bytes()))
         }
         OutFormat::Mds | OutFormat::MdsSub => {
             let t: Vec<MdsOut> = layout
                 .iter()
-                .map(|&(n, audio, at, pregap, sectors)| MdsOut { number: n as u8, audio, lba: at + pregap, pregap, length: sectors, offset: u64::from(at) * stride })
+                .map(|&(n, audio, at, pregap, sectors)| MdsOut {
+                    number: n as u8,
+                    audio,
+                    lba: at + pregap,
+                    pregap,
+                    length: sectors,
+                    offset: u64::from(at) * stride,
+                })
                 .collect();
             Some(("mds", write_mds(&t, stride as u16, leadout)))
         }
@@ -155,7 +163,10 @@ pub fn write_image(disc: &Disc, fmt: OutFormat, dir: &Path, stem: &str) -> io::R
             None
         }
         OutFormat::Toc => {
-            let t: Vec<TocOut> = layout.iter().map(|&(_, audio, at, pregap, sectors)| TocOut { audio, offset: u64::from(at) * RAW, pregap, sectors: pregap + sectors }).collect();
+            let t: Vec<TocOut> = layout
+                .iter()
+                .map(|&(_, audio, at, pregap, sectors)| TocOut { audio, offset: u64::from(at) * RAW, pregap, sectors: pregap + sectors })
+                .collect();
             Some(("toc", write_toc(&data_name, &t).into_bytes()))
         }
         OutFormat::Iso => unreachable!(),

@@ -121,7 +121,11 @@ fn audit(full: bool) -> u64 {
     let tag = if full { "all i32" } else { "|x| <= 2^22" };
     bad += report(&format!("rsin ({tag})"), (hi - lo + 1) as u64, par_check(lo, hi, |x| rsin(x) == rsin_sys(x)));
     bad += report(&format!("rcos ({tag})"), (hi - lo + 1) as u64, par_check(lo, hi, |x| rcos(x) == rcos_sys(x)));
-    bad += report(&format!("rsin_f64/rcos_f64 ({tag})"), (hi - lo + 1) as u64, par_check(lo, hi, |x| rsin_f64(x) == rsin_f64_sys(x) && rcos_f64(x) == rcos_f64_sys(x)));
+    bad += report(
+        &format!("rsin_f64/rcos_f64 ({tag})"),
+        (hi - lo + 1) as u64,
+        par_check(lo, hi, |x| rsin_f64(x) == rsin_f64_sys(x) && rcos_f64(x) == rcos_f64_sys(x)),
+    );
 
     // arccos: |cos| > 4096 is NaN -> 0 on both; check a margin past the domain.
     bad += report("arccos (24-bit, cos in -8192..=8192)", 16385, par_check(-8192, 8192, |c| arccos(c) == arccos_sys(c)));
@@ -168,22 +172,30 @@ fn hashes() {
         println!("{name:<28} {:016x}", h.0);
     };
     const R: i32 = 1 << 20;
-    run("rsin/rcos detfloat", &|h| (-R..=R).for_each(|x| {
-        h.u32(rsin(x) as u32);
-        h.u32(rcos(x) as u32)
-    }));
-    run("rsin/rcos system", &|h| (-R..=R).for_each(|x| {
-        h.u32(rsin_sys(x) as u32);
-        h.u32(rcos_sys(x) as u32)
-    }));
-    run("arccos detfloat", &|h| (-4100..=4100).for_each(|c| {
-        h.u32(arccos(c) as u32);
-        h.u32(arccos_f64(c) as u32)
-    }));
-    run("arccos system", &|h| (-4100..=4100).for_each(|c| {
-        h.u32(arccos_sys(c) as u32);
-        h.u32(arccos_f64_sys(c) as u32)
-    }));
+    run("rsin/rcos detfloat", &|h| {
+        (-R..=R).for_each(|x| {
+            h.u32(rsin(x) as u32);
+            h.u32(rcos(x) as u32)
+        })
+    });
+    run("rsin/rcos system", &|h| {
+        (-R..=R).for_each(|x| {
+            h.u32(rsin_sys(x) as u32);
+            h.u32(rcos_sys(x) as u32)
+        })
+    });
+    run("arccos detfloat", &|h| {
+        (-4100..=4100).for_each(|c| {
+            h.u32(arccos(c) as u32);
+            h.u32(arccos_f64(c) as u32)
+        })
+    });
+    run("arccos system", &|h| {
+        (-4100..=4100).for_each(|c| {
+            h.u32(arccos_sys(c) as u32);
+            h.u32(arccos_f64_sys(c) as u32)
+        })
+    });
     let pairs = || {
         let mut rng = Rng(0x2545_F491_4F6C_DD1D);
         (0..4_000_000u32).map(move |i| ((rng.next() as i32) >> (i % 32), (rng.next() as i32) >> ((i / 32) % 32)))
@@ -191,22 +203,26 @@ fn hashes() {
     run("util_calc_angle detfloat", &|h| pairs().for_each(|(a, o)| h.u32(util_calc_angle(a, o) as u32)));
     run("util_calc_angle system", &|h| pairs().for_each(|(a, o)| h.u32(angle_sys(a, o) as u32)));
     // Raw f64 bits of the transcendental results (stricter than the integer results).
-    run("raw f64 bits detfloat", &|h| (-R..=R).for_each(|x| {
-        let t = x as f64 * (1.0 / 4096.0) * PI2;
-        for v in [detfloat::sin(t), detfloat::cos(t), detfloat::atan2(x as f64, 1234.5), detfloat::acos(x as f64 / R as f64)] {
-            let b = v.to_bits();
-            h.u32(b as u32);
-            h.u32((b >> 32) as u32)
-        }
-    }));
-    run("raw f64 bits system", &|h| (-R..=R).for_each(|x| {
-        let t = x as f64 * (1.0 / 4096.0) * PI2;
-        for v in [t.sin(), t.cos(), (x as f64).atan2(1234.5), (x as f64 / R as f64).acos()] {
-            let b = v.to_bits();
-            h.u32(b as u32);
-            h.u32((b >> 32) as u32)
-        }
-    }));
+    run("raw f64 bits detfloat", &|h| {
+        (-R..=R).for_each(|x| {
+            let t = x as f64 * (1.0 / 4096.0) * PI2;
+            for v in [detfloat::sin(t), detfloat::cos(t), detfloat::atan2(x as f64, 1234.5), detfloat::acos(x as f64 / R as f64)] {
+                let b = v.to_bits();
+                h.u32(b as u32);
+                h.u32((b >> 32) as u32)
+            }
+        })
+    });
+    run("raw f64 bits system", &|h| {
+        (-R..=R).for_each(|x| {
+            let t = x as f64 * (1.0 / 4096.0) * PI2;
+            for v in [t.sin(), t.cos(), (x as f64).atan2(1234.5), (x as f64 / R as f64).acos()] {
+                let b = v.to_bits();
+                h.u32(b as u32);
+                h.u32((b >> 32) as u32)
+            }
+        })
+    });
     let (a, s) = view_tables(detfloat::acos, detfloat::sin);
     run("view tables detfloat", &|h| a.iter().chain(&s).for_each(|&v| h.u32(v)));
     let (a, s) = view_tables(f64::acos, f64::sin);

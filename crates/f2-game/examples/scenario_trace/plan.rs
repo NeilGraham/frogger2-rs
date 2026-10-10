@@ -947,7 +947,8 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts, sim_budget: u64) -> Exp
     let mut index: HashMap<(u32, u32, u64), usize> = HashMap::new();
     pl.wp = 0;
     let (l0, d0) = pl.ge_progress(g0);
-    let mut cells = vec![Cell { state: Box::new(g0.clone()), prev: [0; 4], t: 0, parent: None, seg: Vec::new(), visits: 0, saved: l0, dist: d0, rounds: 0, wp: 0 }];
+    let mut cells =
+        vec![Cell { state: Box::new(g0.clone()), prev: [0; 4], t: 0, parent: None, seg: Vec::new(), visits: 0, saved: l0, dist: d0, rounds: 0, wp: 0 }];
     index.insert(pl.ge_key(g0), 0);
     let mut sim: u64 = 0;
     let mut iter = 0u64;
@@ -1014,7 +1015,11 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts, sim_budget: u64) -> Exp
             if !ok {
                 break;
             }
-            if pl.kind == Kind::Single && pl.wp < pl.waypoints.len() && g.frogmove.curr_tile[0].is_some_and(|c| pl.waypoints[pl.wp].contains(&c.0)) && !is_dead(&g, 0) {
+            if pl.kind == Kind::Single
+                && pl.wp < pl.waypoints.len()
+                && g.frogmove.curr_tile[0].is_some_and(|c| pl.waypoints[pl.wp].contains(&c.0))
+                && !is_dead(&g, 0)
+            {
                 pl.wp += 1;
                 eprintln!("plan: waypoint stage {} reached at t={t}", pl.wp);
             }
@@ -1031,7 +1036,8 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts, sim_budget: u64) -> Exp
             }
             // A death right after a rescue (a baby on a deadly tile) still counts: go on
             // through the respawn.
-            let sacrificed = pl.kind == Kind::Single && g.frogger.player[0].lives > 1 && g.babyfrog.baby_list.iter().filter(|b| b.is_saved != 0).count() as u32 > saved0;
+            let sacrificed =
+                pl.kind == Kind::Single && g.frogger.player[0].lives > 1 && g.babyfrog.baby_list.iter().filter(|b| b.is_saved != 0).count() as u32 > saved0;
             if sacrificed {
             } else if (pl.kind == Kind::Single && g.frogger.player[0].lives < lives0) || (pl.active(&g) == active0 && pl.ge_dead(&g, active0)) {
                 break;
@@ -1042,7 +1048,18 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts, sim_budget: u64) -> Exp
             let key = pl.ge_key(&g);
             if !index.contains_key(&key) && cells.len() < max_cells && !(pl.kind == Kind::Single && is_dead(&g, 0)) {
                 let (saved, dist) = pl.ge_progress(&g);
-                cells.push(Cell { state: Box::new(g.clone()), prev, t, parent: Some(parent), seg: std::mem::take(&mut seg), visits: 0, saved, dist, rounds: pl.rounds, wp: pl.wp });
+                cells.push(Cell {
+                    state: Box::new(g.clone()),
+                    prev,
+                    t,
+                    parent: Some(parent),
+                    seg: std::mem::take(&mut seg),
+                    visits: 0,
+                    saved,
+                    dist,
+                    rounds: pl.rounds,
+                    wp: pl.wp,
+                });
                 parent = cells.len() - 1;
                 index.insert(key, parent);
             }
@@ -1057,11 +1074,26 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts, sim_budget: u64) -> Exp
         let best = (0..cells.len()).max_by(|&a, &b| (cells[a].saved, -cells[a].dist).partial_cmp(&(cells[b].saved, -cells[b].dist)).unwrap()).unwrap_or(0);
         let g = &cells[best].state;
         let p = &g.frogger.player[0];
-        eprintln!("plan: best cell t={} tile {:?} plat {:?} pos {:?} frog_state {:#x} lives {}", cells[best].t, g.frogmove.curr_tile[0], g.platform.curr_platform[0], g.frog_position(0), p.frog_state, p.lives);
+        eprintln!(
+            "plan: best cell t={} tile {:?} plat {:?} pos {:?} frog_state {:#x} lives {}",
+            cells[best].t,
+            g.frogmove.curr_tile[0],
+            g.platform.curr_platform[0],
+            g.frog_position(0),
+            p.frog_state,
+            p.lives
+        );
         for b in g.babyfrog.baby_list.iter().take(g.map.num_babies.max(0) as usize).filter(|b| b.is_saved == 0) {
             if let Some(e) = b.enemy.and_then(|e| g.enemies.enemy_list.array.get(e.idx())) {
                 let ap = b.baby.and_then(|a| g.actor2.actors.get(a)).map(|a| (a.actor.position, a.radius));
-                eprintln!("plan:   unsaved baby active {} flags {:#x} tile {:?} state {:?} actor {:?}", e.active, e.flags, e.in_tile, e.in_tile.map(|t| g.map.tile(t).state), ap);
+                eprintln!(
+                    "plan:   unsaved baby active {} flags {:#x} tile {:?} state {:?} actor {:?}",
+                    e.active,
+                    e.flags,
+                    e.in_tile,
+                    e.in_tile.map(|t| g.map.tile(t).state),
+                    ap
+                );
             }
         }
     }
@@ -1160,7 +1192,15 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
             for w in path.windows(2) {
                 let k = g0.map.tiles[w[0]].tile_ptrs.iter().position(|p| p.is_some_and(|p| p.idx() == w[1])).unwrap_or(9);
                 let t = g0.map.tile(TileId(w[1] as u32));
-                eprintln!("plan:   hop {} -> {} (state {} y {} normal {:?}) model {:?}", w[0], w[1], t.state, t.centre.vy, (g0.map.tiles[w[0]].normal.vx, g0.map.tiles[w[0]].normal.vy, g0.map.tiles[w[0]].normal.vz), if k < 4 { hop_edge(&g0, w[0], k) } else { None });
+                eprintln!(
+                    "plan:   hop {} -> {} (state {} y {} normal {:?}) model {:?}",
+                    w[0],
+                    w[1],
+                    t.state,
+                    t.centre.vy,
+                    (g0.map.tiles[w[0]].normal.vx, g0.map.tiles[w[0]].normal.vy, g0.map.tiles[w[0]].normal.vz),
+                    if k < 4 { hop_edge(&g0, w[0], k) } else { None }
+                );
             }
         }
         if std::env::var_os("F2_PLAN_DEBUG_SCRIPT").is_some() {
@@ -1175,7 +1215,13 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
                 let mut cur = g0.frogmove.curr_tile[0].map_or(0, |t| t.0);
                 let mut route = vec![(cur, g0.map.tile(TileId(cur)).state, g0.map.tile(TileId(cur)).centre.vy)];
                 while d[cur as usize] > 0 && d[cur as usize] < FAR && route.len() < 200 {
-                    let nx = g0.map.tiles[cur as usize].tile_ptrs.iter().flatten().map(|p| p.0).chain(pl.dist.rev.iter().enumerate().filter(|(_, r)| r.iter().any(|&(f, _)| f == cur)).map(|(i, _)| i as u32)).min_by_key(|&n| d[n as usize]);
+                    let nx = g0.map.tiles[cur as usize]
+                        .tile_ptrs
+                        .iter()
+                        .flatten()
+                        .map(|p| p.0)
+                        .chain(pl.dist.rev.iter().enumerate().filter(|(_, r)| r.iter().any(|&(f, _)| f == cur)).map(|(i, _)| i as u32))
+                        .min_by_key(|&n| d[n as usize]);
                     match nx {
                         Some(n) if d[n as usize] < d[cur as usize] => cur = n,
                         _ => break,
@@ -1185,7 +1231,13 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
                 eprintln!("plan:   route {route:?}");
             }
         }
-        eprintln!("plan: kind {kind:?} tiles {} (+{} map edges) frog tile {:?} baby tiles {t:?} dist {d:?} finish {}", g0.map.tiles.len(), pl.dist.extra_edges, g0.frogmove.curr_tile[0], pl.finish.len());
+        eprintln!(
+            "plan: kind {kind:?} tiles {} (+{} map edges) frog tile {:?} baby tiles {t:?} dist {d:?} finish {}",
+            g0.map.tiles.len(),
+            pl.dist.extra_edges,
+            g0.frogmove.curr_tile[0],
+            pl.finish.len()
+        );
         if !pl.finish.is_empty() {
             let fin = pl.finish.clone();
             let d: Vec<u32> = (0..n).map(|p| g0.frogmove.curr_tile[p].map_or(FAR, |c| pl.dist.to(&g0, &fin)[c.idx()])).collect();
@@ -1204,7 +1256,16 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
             if let Some(e) = b.enemy.and_then(|e| g0.enemies.enemy_list.array.get(e.idx())) {
                 let ap = b.baby.and_then(|a| g0.actor2.actors.get(a)).map(|a| a.actor.position);
                 let tc = e.in_tile.map(|t| g0.map.tile(t).centre);
-                eprintln!("plan:   baby enemy active {} flags {:#x} visible {} tile {:?} state {:?} pos {:?} tile centre {:?}", e.active, e.flags, e.visible, e.in_tile, e.in_tile.map(|t| g0.map.tile(t).state), ap, tc);
+                eprintln!(
+                    "plan:   baby enemy active {} flags {:#x} visible {} tile {:?} state {:?} pos {:?} tile centre {:?}",
+                    e.active,
+                    e.flags,
+                    e.visible,
+                    e.in_tile,
+                    e.in_tile.map(|t| g0.map.tile(t).state),
+                    ap,
+                    tc
+                );
             }
         }
     }

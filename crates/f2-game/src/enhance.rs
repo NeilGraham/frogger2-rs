@@ -61,7 +61,14 @@ impl Default for GameOptions {
 
 impl GameOptions {
     /// Retail behaviour.
-    pub const AUTHENTIC: GameOptions = GameOptions { profile: GameProfile::Authentic, infinite_lives: false, invulnerable: false, enemy_speed: ENEMY_SPEED_RETAIL, fix_tube_softlock: false, settings_menu: false };
+    pub const AUTHENTIC: GameOptions = GameOptions {
+        profile: GameProfile::Authentic,
+        infinite_lives: false,
+        invulnerable: false,
+        enemy_speed: ENEMY_SPEED_RETAIL,
+        fix_tube_softlock: false,
+        settings_menu: false,
+    };
     /// Enhanced profile defaults: fixes on, assists off.
     pub const ENHANCED: GameOptions = GameOptions { profile: GameProfile::Enhanced, fix_tube_softlock: true, ..GameOptions::AUTHENTIC };
 

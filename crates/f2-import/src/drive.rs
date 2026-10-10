@@ -42,10 +42,18 @@ fn sha(b: &[u8]) -> String {
 }
 
 /// Rips tracks 2–12 into `music/`; returns what happened. `rendition` selects the hashes.
-pub fn rip(r: &mut dyn CdReader, rendition: &str, tmp_root: &Path, opts: &Options, files: &mut BTreeMap<String, String>, out: &mut Vec<String>) -> io::Result<RipReport> {
+pub fn rip(
+    r: &mut dyn CdReader,
+    rendition: &str,
+    tmp_root: &Path,
+    opts: &Options,
+    files: &mut BTreeMap<String, String>,
+    out: &mut Vec<String>,
+) -> io::Result<RipReport> {
     let toc = r.read_toc()?;
     let mut rep = RipReport { drive: r.describe(), ..Default::default() };
-    let music: Vec<usize> = (0..toc.tracks.len()).filter(|&i| toc.tracks[i].audio && MUSIC_TRACKS.iter().any(|m| m.0 == u32::from(toc.tracks[i].number))).collect();
+    let music: Vec<usize> =
+        (0..toc.tracks.len()).filter(|&i| toc.tracks[i].audio && MUSIC_TRACKS.iter().any(|m| m.0 == u32::from(toc.tracks[i].number))).collect();
     let Some(&first) = music.first() else {
         log("The disc in the drive has no audio tracks");
         return Ok(rep);
@@ -55,10 +63,17 @@ pub fn rip(r: &mut dyn CdReader, rendition: &str, tmp_root: &Path, opts: &Option
     log(format!("Reading CD audio from {} ({} sectors, {:.0} MB)", rep.drive, count, count as f64 * RAW as f64 / 1e6));
     let mut area = Vec::with_capacity(count as usize * RAW as usize);
     let mut prog = Progress::new("read CD audio", u64::from(count));
-    let st = read_area(r, start, count, toc.leadout, &mut |b| {
-        area.extend_from_slice(b);
-        Ok(())
-    }, &mut |d| prog.set(u64::from(d)))?;
+    let st = read_area(
+        r,
+        start,
+        count,
+        toc.leadout,
+        &mut |b| {
+            area.extend_from_slice(b);
+            Ok(())
+        },
+        &mut |d| prog.set(u64::from(d)),
+    )?;
     prog.done();
     rep.retried_sectors = st.retried;
     rep.unreadable_sectors = st.unreadable;

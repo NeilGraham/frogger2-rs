@@ -19,8 +19,29 @@ pub const DIRS: [&str; 4] = ["n", "s", "e", "w"];
 /// `TILESTATE_*` names (`define.h:86`).
 pub fn tile_state_name(s: u32) -> &'static str {
     const N: [&str; 23] = [
-        "NORMAL", "DEADLY", "SINK", "ICE", "SUPERHOP", "JOIN", "SAFE", "FINISHLINE", "GRAPPLE", "SMASH", "BARRED", "FALL", "FROGGER1AREA", "FROGGER2AREA",
-        "FROGGER3AREA", "FROGGER4AREA", "DEADLYFALL", "HOT", "ELECTRIC", "NOSUPER", "PANTS", "NOSUPERHOT", "OCCUPIED",
+        "NORMAL",
+        "DEADLY",
+        "SINK",
+        "ICE",
+        "SUPERHOP",
+        "JOIN",
+        "SAFE",
+        "FINISHLINE",
+        "GRAPPLE",
+        "SMASH",
+        "BARRED",
+        "FALL",
+        "FROGGER1AREA",
+        "FROGGER2AREA",
+        "FROGGER3AREA",
+        "FROGGER4AREA",
+        "DEADLYFALL",
+        "HOT",
+        "ELECTRIC",
+        "NOSUPER",
+        "PANTS",
+        "NOSUPERHOT",
+        "OCCUPIED",
     ];
     match s {
         0x20..=0x23 => "CONVEYOR",
@@ -101,12 +122,8 @@ fn parse_num(s: &str) -> Result<i64, String> {
         Some(r) => (true, r),
         None => (false, t),
     };
-    let v = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        i64::from_str_radix(h, 16)
-    } else {
-        t.parse::<i64>()
-    }
-    .map_err(|_| format!("not a number: {s}"))?;
+    let v = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) { i64::from_str_radix(h, 16) } else { t.parse::<i64>() }
+        .map_err(|_| format!("not a number: {s}"))?;
     Ok(if neg { -v } else { v })
 }
 
@@ -127,7 +144,8 @@ impl LevelDoc {
         let g = f2_game::Game::new();
         let wvd = g.layout.world_visual_data.get(world as usize).ok_or_else(|| format!("no world {world}"))?;
         let lvd = wvd.level_visual_data.get(level as usize).ok_or_else(|| format!("no level {world}-{level}"))?;
-        let col_path = f2_game::bank_tables::collision_file_for_coll_bank(lvd.coll_bank).ok_or_else(|| format!("level {world}-{level} has no collision file"))?;
+        let col_path =
+            f2_game::bank_tables::collision_file_for_coll_bank(lvd.coll_bank).ok_or_else(|| format!("level {world}-{level} has no collision file"))?;
         let sce_path = f2_game::bank_tables::scenics_file_for_coll_bank(lvd.coll_bank).ok_or_else(|| format!("level {world}-{level} has no scenics file"))?;
         let (col_path, sce_path) = (vpath(col_path), vpath(sce_path));
         let ent_path = vpath(&f2_game::layout::entity_file_name(wvd.world_id, lvd.level_id));
@@ -139,7 +157,9 @@ impl LevelDoc {
         let bytes = data.read(&sce_path).ok_or_else(|| format!("missing {sce_path}"))?;
         let scenics = f2_formats::level::parse_scenics(&bytes).map_err(|e| format!("{sce_path}: {e}"))?;
         let (ents, had_entities) = match data.read(&ent_path) {
-            Some(b) if f2_formats::entity::Entities::version(&b) == Some(ENTITY_VERSION) => (EntityFile::parse(&b).map_err(|e| format!("{ent_path}: {e}"))?, true),
+            Some(b) if f2_formats::entity::Entities::version(&b) == Some(ENTITY_VERSION) => {
+                (EntityFile::parse(&b).map_err(|e| format!("{ent_path}: {e}"))?, true)
+            }
             _ => (EntityFile::new(true), false),
         };
         let fev = data.read(&fev_path);
@@ -770,7 +790,6 @@ impl LevelDoc {
 
     // ------------------------------------------------------------ scenics
 
-
     pub fn move_scenic(&mut self, i: usize, p: [i32; 3]) -> Result<(), String> {
         let s = self.scenics.get_mut(i).ok_or_else(|| format!("no scenic {i}"))?;
         s.pos = SVec { x: p[0] as i16, y: p[1] as i16, z: p[2] as i16, pad: s.pos.pad };
@@ -837,7 +856,8 @@ impl LevelDoc {
     /// Replaces the script source and compiles it (the `.fev` only changes when the
     /// compile succeeds). Returns warnings.
     pub fn set_script_source(&mut self, src: String) -> Result<Vec<String>, String> {
-        let out = f2_etc::compile(&self.fev_path.replace(".fev", ".etc"), src.as_bytes()).map_err(|d| d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n"))?;
+        let out = f2_etc::compile(&self.fev_path.replace(".fev", ".etc"), src.as_bytes())
+            .map_err(|d| d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n"))?;
         self.fev = Some(out.data);
         self.script_src = Some(src);
         self.dirty.script = true;

@@ -469,7 +469,10 @@ impl ObjectBank {
                     let past = if (a.saturating_sub(3)..a + 12).any(|v| img.relocs.contains(&v)) {
                         None
                     } else {
-                        (|| -> Result<Animation> { Ok(Animation { start: img.i16(a)?, end: img.i16(a + 2)?, speed: img.f32(a + 4)?, looped: img.i32(a + 8)? }) })().ok()
+                        (|| -> Result<Animation> {
+                            Ok(Animation { start: img.i16(a)?, end: img.i16(a + 2)?, speed: img.f32(a + 4)?, looped: img.i32(a + 8)? })
+                        })()
+                        .ok()
                     };
                     anim_past_end.push((id, past));
                     (0..n as u32)

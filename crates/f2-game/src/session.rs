@@ -73,7 +73,8 @@ impl Game {
         }
         if !config.scripts.is_empty() {
             for e in g.install_mod_scripts(&config.scripts) {
-                g.effects.push(crate::Effect::Log { text: format!("modscript: {e}") }); // P7b
+                g.effects.push(crate::Effect::Log { text: format!("modscript: {e}") });
+                // P7b
             }
         }
         g.common_init();
@@ -202,7 +203,7 @@ impl Game {
         }
         // LoadDemoFile for DEMO_MODE: done by `init_level` / `init_demo_level` (needs data).
         self.prepare_level_song(world, level, true); // PrepareSong (+ P7-1 registry track)
-        // UnPauseAudio(); SetMusicVolume(): host audio state.
+                                                     // UnPauseAudio(); SetMusicVolume(): host audio state.
 
         self.screen_fade(0, 255, 30);
         self.fadeout.keep_fade = false;

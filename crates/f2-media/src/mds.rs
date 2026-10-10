@@ -95,7 +95,8 @@ pub fn parse(b: &[u8]) -> Option<Vec<MdsTrack>> {
                     let fo = u32_at(b, footer)? as usize;
                     let wide = u32_at(b, footer + 4)? != 0;
                     let name = if wide {
-                        let units: Vec<u16> = b.get(fo..)?.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
+                        let units: Vec<u16> =
+                            b.get(fo..)?.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
                         String::from_utf16_lossy(&units)
                     } else {
                         String::from_utf8_lossy(b.get(fo..)?.split(|&c| c == 0).next()?).into_owned()

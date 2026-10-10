@@ -127,15 +127,7 @@ impl Game {
             ("event", format!("{:?}", self.event)),
             (
                 "script",
-                format!(
-                    "{:?}{:?}{}{}{}{}",
-                    s.script_flags,
-                    s.script_counters,
-                    s.line_number,
-                    s.vol_test,
-                    s.show_end_level_screen,
-                    s.script_buffer.is_some()
-                ),
+                format!("{:?}{:?}{}{}{}{}", s.script_flags, s.script_counters, s.line_number, s.vol_test, s.show_end_level_screen, s.script_buffer.is_some()),
             ),
             ("textover", format!("{} {} {:?}", self.textover.num_entries, self.textover.alloc, self.textover.block)),
             ("session", format!("{}", self.session.level_loads.len())),

@@ -27,10 +27,10 @@ use crate::frogger::{
 use crate::frogmove::*;
 use crate::general::{find_joined_tile_by_direction, find_joined_tile_by_direction_and_type};
 use crate::ids::{ActorId, EnemyId, TextOverlayId, TileId};
-use crate::textover::{Font, TEXTOVERLAY_SHADOW};
 use crate::layout::worldid;
 use crate::levplay::{PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_START, PAD_UP};
 use crate::map::SCALE;
+use crate::textover::{Font, TEXTOVERLAY_SHADOW};
 use crate::timer::Timer;
 use crate::Game;
 

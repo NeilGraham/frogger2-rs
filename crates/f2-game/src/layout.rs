@@ -582,8 +582,8 @@ impl Game {
     /// Port of `FreeAllLists` (Common/layout.c:1034).
     pub fn free_all_lists(&mut self) {
         self.stop_song(); // PC: StopSong()
-        // ResetBabies runs after FreeMap in the original; `numBabies` (kept in `map` here)
-        // is not cleared by FreeMap, so reset with the old count first.
+                          // ResetBabies runs after FreeMap in the original; `numBabies` (kept in `map` here)
+                          // is not cleared by FreeMap, so reset with the old count first.
         self.reset_babies();
         self.map = Default::default(); // FreeMap, FreeEntityBank, FreeScenic
         self.free_ambient_sound_list(); // ambient: FreeAmbientSoundList
@@ -695,12 +695,7 @@ impl Game {
         // wave E: InitSpecFXList, InitParticleList, PTTextureLoad
         self.init_spec_fx_list();
         self.particle.init_particle_list();
-        let banks: Vec<_> = out
-            .texture_banks
-            .iter()
-            .filter_map(|f| data.texture_bank(f))
-            .filter_map(|b| b.ok())
-            .collect();
+        let banks: Vec<_> = out.texture_banks.iter().filter_map(|f| data.texture_bank(f)).filter_map(|b| b.ok()).collect();
         self.pt_texture_load(&banks);
         self.init_baby_list(true);
         self.init_enemy_linked_list();

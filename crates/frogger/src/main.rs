@@ -32,12 +32,12 @@ mod app;
 mod book;
 mod controls;
 mod data;
-mod mods;
 mod editor;
 mod firstrun;
 mod fx;
-mod netplay;
 mod gameplay;
+mod mods;
+mod netplay;
 mod overlay;
 mod padscript;
 mod present;
@@ -669,7 +669,8 @@ impl WindowApp for Host {
                     p.set_preferred(&self.cfg.input.pad_devices);
                     // Slot order can change between runs: with remembered devices, start from
                     // scratch so each player finds their own pad.
-                    let start = if self.cfg.input.pad_devices.iter().any(|d| !d.is_empty()) { [f2_platform::Controller::Keyboard; 4] } else { mapper.controllers };
+                    let start =
+                        if self.cfg.input.pad_devices.iter().any(|d| !d.is_empty()) { [f2_platform::Controller::Keyboard; 4] } else { mapper.controllers };
                     mapper.controllers = p.reassign(&start);
                 }
                 eprintln!(
@@ -816,7 +817,10 @@ impl WindowApp for Host {
             app.rumble.clear();
         }
         let rq = &mut app.requests;
-        let save = std::mem::take(&mut rq.save_bindings) | std::mem::take(&mut rq.save_gameplay) | rq.save_volumes.take().is_some() | std::mem::take(&mut rq.save_config);
+        let save = std::mem::take(&mut rq.save_bindings)
+            | std::mem::take(&mut rq.save_gameplay)
+            | rq.save_volumes.take().is_some()
+            | std::mem::take(&mut rq.save_config);
         if std::mem::take(&mut rq.apply_vsync) {
             g.surface.config.present_mode = if app.cfg.video.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
             g.surface.surface.configure(&g.ctx.device, &g.surface.config);
@@ -1161,7 +1165,8 @@ mod tests {
         let ctx = GpuContext::new_headless().expect("headless GPU");
         let data = hello_mod_data(&root);
         assert_eq!(data.levels.levels.len(), 1);
-        let mut app = App::new(data.clone(), &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
+        let mut app =
+            App::new(data.clone(), &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
         app.push_steps([Step::Level(0, 1)]);
         app.update(Duration::ZERO, &f2_platform::KeyboardState::default(), &[], true);
         assert!(app.scene.is_some(), "hello-garden failed to load");
@@ -1180,7 +1185,14 @@ mod tests {
 
         let plain = garden1(&ctx, &root, 320, 240, Profile::Authentic, None, true);
         let modded = {
-            let mut app = App::new(hello_mod_data(&root), &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
+            let mut app = App::new(
+                hello_mod_data(&root),
+                &ctx.device,
+                &ctx.queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                AudioEngine::null(44100),
+                Config::default().input_mapper(),
+            );
             app.set_display(Profile::Authentic, DisplaySettings::ENHANCED);
             app.push_steps([Step::Level(0, 0)]);
             app.update(Duration::ZERO, &f2_platform::KeyboardState::default(), &[], true);

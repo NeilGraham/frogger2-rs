@@ -493,10 +493,21 @@ impl Game {
         self.hud.settings_text = None;
         if self.game_options().settings_menu {
             let s = self.settings_label();
-            self.hud.settings_text = self.textover.create_and_add_text_overlay(2048, 1860, &s, true, 255, Font::Normal, TEXTOVERLAY_SHADOW | TEXTOVERLAY_PAUSED);
+            self.hud.settings_text =
+                self.textover.create_and_add_text_overlay(2048, 1860, &s, true, 255, Font::Normal, TEXTOVERLAY_SHADOW | TEXTOVERLAY_PAUSED);
         }
         let h = &self.hud;
-        let ids = [h.controller_text, h.continue_text, h.xselect_text, h.pause_title_text, h.restart_text, h.quit_text, h.pos_text, h.levelname_text, h.settings_text];
+        let ids = [
+            h.controller_text,
+            h.continue_text,
+            h.xselect_text,
+            h.pause_title_text,
+            h.restart_text,
+            h.quit_text,
+            h.pos_text,
+            h.levelname_text,
+            h.settings_text,
+        ];
         for i in ids {
             self.textover.disable(i);
         }
@@ -909,11 +920,13 @@ impl Game {
 
         for i in 0..self.num_frogs_hud() {
             // The text is `penalString[i]`, refreshed below.
-            m.penalise_text[i] = self.textover.create_and_add_text_overlay(BACK_TEXT_X[i] as i16, BACK_TEXT_Y[i] as i16, "00", false, 255, Font::Normal, TEXTOVERLAY_SHADOW);
+            m.penalise_text[i] =
+                self.textover.create_and_add_text_overlay(BACK_TEXT_X[i] as i16, BACK_TEXT_Y[i] as i16, "00", false, 255, Font::Normal, TEXTOVERLAY_SHADOW);
             let ov = &mut self.overlays;
             if !overlay_name.is_empty() {
                 // PC size 256x256 (PSX: 4096x256).
-                m.penal_over[i] = ov.create_and_add_sprite_overlay((BACK_TEXT_X[i] - 256 - 64) as i16, BACK_TEXT_Y[i] as i16, Some(overlay_name), 256, 256, 255, 0);
+                m.penal_over[i] =
+                    ov.create_and_add_sprite_overlay((BACK_TEXT_X[i] - 256 - 64) as i16, BACK_TEXT_Y[i] as i16, Some(overlay_name), 256, 256, 255, 0);
                 if self.multi.multiplayer_mode == MULTIMODE_COLLECT {
                     if let Some(o) = ov.get_mut(m.penal_over[i]) {
                         o.r = 60;

@@ -31,9 +31,7 @@ fn editor(doc: LevelDoc) -> Editor {
 
 /// The first enemy whose model is not a placeholder blank.
 fn some_enemy(doc: &LevelDoc) -> usize {
-    (0..doc.ents.entities.items.len())
-        .find(|&i| matches!(&doc.ents.entities.items[i], Item::Actor(a) if a.kind == ActorKind::Enemy))
-        .expect("an enemy")
+    (0..doc.ents.entities.items.len()).find(|&i| matches!(&doc.ents.entities.items[i], Item::Actor(a) if a.kind == ActorKind::Enemy)).expect("an enemy")
 }
 
 /// Unedited documents write back every file byte-identically.

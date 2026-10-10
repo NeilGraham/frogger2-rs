@@ -72,9 +72,7 @@ impl DataSource for Data {
     fn texture_bank(&self, path: &str) -> Option<Result<TexBank, String>> {
         let raw = || {
             self.vfs.read(path).ok().map(|b| {
-                f2_formats::fla::maybe_decompress(b)
-                    .map_err(|e| format!("{path}: {e}"))
-                    .and_then(|b| TexBank::parse(&b).map_err(|e| format!("{path}: {e}")))
+                f2_formats::fla::maybe_decompress(b).map_err(|e| format!("{path}: {e}")).and_then(|b| TexBank::parse(&b).map_err(|e| format!("{path}: {e}")))
             })
         };
         if self.mods.is_empty() {
@@ -85,7 +83,10 @@ impl DataSource for Data {
             return v.clone();
         }
         let v = match bank_name(path, "textures", "fla") {
-            Some(bank) if !f2_modkit::is_backdrop(&bank) && (self.vfs.exists(path) || !f2_modkit::list_overrides(&self.vfs, "textures", &bank, &["png"]).is_empty()) => {
+            Some(bank)
+                if !f2_modkit::is_backdrop(&bank)
+                    && (self.vfs.exists(path) || !f2_modkit::list_overrides(&self.vfs, "textures", &bank, &["png"]).is_empty()) =>
+            {
                 Some(f2_modkit::tex_bank(&self.vfs, &bank).map(|l| self.loaded(path, l)).map_err(|e| e.to_string()))
             }
             _ => raw(),
@@ -113,11 +114,14 @@ impl DataSource for Data {
     }
 
     fn string_table(&self, path: &str) -> Option<Result<StringTable, String>> {
-        let is_language = f2_mods::normalize(path).is_some_and(|c| c.len() == 2 && c[0].eq_ignore_ascii_case("maps") && c[1].eq_ignore_ascii_case("language.fla"));
+        let is_language =
+            f2_mods::normalize(path).is_some_and(|c| c.len() == 2 && c[0].eq_ignore_ascii_case("maps") && c[1].eq_ignore_ascii_case("language.fla"));
         if self.mods.is_empty() || !is_language {
-            return self.vfs.read(path).ok().map(|b| {
-                f2_formats::fla::maybe_decompress(b).map_err(|e| e.to_string()).and_then(|b| StringTable::parse(&b).map_err(|e| e.to_string()))
-            });
+            return self
+                .vfs
+                .read(path)
+                .ok()
+                .map(|b| f2_formats::fla::maybe_decompress(b).map_err(|e| e.to_string()).and_then(|b| StringTable::parse(&b).map_err(|e| e.to_string())));
         }
         if let Some(v) = &self.cache.lock().unwrap().strings {
             return v.clone();

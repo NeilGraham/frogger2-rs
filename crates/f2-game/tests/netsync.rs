@@ -99,7 +99,13 @@ fn snapshot_restore_resimulate_is_exact() {
         reference.push((g.checksum(), g.trace_frame()));
     }
     let snap = snap.unwrap();
-    eprintln!("after 600: mode {} started {} frogs {:?} afc {}", g.game_state.mode, g.multi.started, g.trace_frame().players.iter().map(|p| p.curr_tile).collect::<Vec<_>>(), g.act_frame_count);
+    eprintln!(
+        "after 600: mode {} started {} frogs {:?} afc {}",
+        g.game_state.mode,
+        g.multi.started,
+        g.trace_frame().players.iter().map(|p| p.curr_tile).collect::<Vec<_>>(),
+        g.act_frame_count
+    );
     assert!(g.multi.started >= 1, "race never started");
 
     // Restore the snapshot into the advanced game and resimulate 300..600.

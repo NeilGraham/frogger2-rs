@@ -102,7 +102,10 @@ pub const REDUMP_PREGAPS: [u32; 13] = [0, 0, 149, 149, 149, 149, 149, 149, 0, 14
 pub enum Event {
     Log(String),
     /// `fraction` in 0..=1 of the named stage.
-    Progress { stage: String, fraction: f32 },
+    Progress {
+        stage: String,
+        fraction: f32,
+    },
 }
 
 /// Receives [`Event`]s from the importing thread.
@@ -393,7 +396,13 @@ pub fn open_source(src: Source, desc: &str) -> io::Result<Opened> {
     Ok(match src {
         Source::Disc(d) => {
             log(format!("Opening {} ({} tracks)", d.container, d.tracks.len()));
-            Opened { fs: Box::new(IsoFs::open(d.data_source()?, Names::PreferJoliet)?), kind: d.container.clone(), audio: Audio::Image(d), install: false, desc: desc.into() }
+            Opened {
+                fs: Box::new(IsoFs::open(d.data_source()?, Names::PreferJoliet)?),
+                kind: d.container.clone(),
+                audio: Audio::Image(d),
+                install: false,
+                desc: desc.into(),
+            }
         }
         Source::DiscRoot(p) => Opened { fs: Box::new(DirFs::open(&p)?), audio: Audio::None, kind: "disc-root".into(), install: false, desc: desc.into() },
         Source::Install(p) => Opened { fs: Box::new(DirFs::open(&p)?), audio: Audio::None, kind: "install".into(), install: true, desc: desc.into() },

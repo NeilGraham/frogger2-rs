@@ -131,7 +131,8 @@ impl Speedrun {
             }
             mode::LEVELCOMPLETE_MODE if prev != mode::LEVELCOMPLETE_MODE => {
                 if let (Some((w, l)), Some(start)) = (self.level.take(), self.run_start) {
-                    let s = Split { world: w, level: l, igt: self.level_igt, total_igt: self.total_igt, rta: now - start, best: self.best.get(&(w, l)).copied() };
+                    let s =
+                        Split { world: w, level: l, igt: self.level_igt, total_igt: self.total_igt, rta: now - start, best: self.best.get(&(w, l)).copied() };
                     let b = self.best.entry((w, l)).or_insert(s.igt);
                     *b = (*b).min(s.igt);
                     self.write_split(&s);
@@ -298,7 +299,13 @@ impl GameplayUi {
                     2 => flip(&mut gp.invulnerable),
                     3 => {
                         let s = gp.enemy_speed.clamp(ENEMY_SPEED_MIN, 100);
-                        gp.enemy_speed = if left { s.saturating_sub(25).max(ENEMY_SPEED_MIN) } else if s >= 100 { ENEMY_SPEED_MIN } else { s + 25 };
+                        gp.enemy_speed = if left {
+                            s.saturating_sub(25).max(ENEMY_SPEED_MIN)
+                        } else if s >= 100 {
+                            ENEMY_SPEED_MIN
+                        } else {
+                            s + 25
+                        };
                     }
                     4 => flip(&mut gp.skip_fmv_any_key),
                     5 => flip(&mut gp.skip_intro_logos),
@@ -308,7 +315,17 @@ impl GameplayUi {
                     9 if enter => return GAct::LoadSlot,
                     9 => {
                         let s = gp.save_slot.clamp(1, NUM_SLOTS);
-                        gp.save_slot = if left { if s == 1 { NUM_SLOTS } else { s - 1 } } else if s == NUM_SLOTS { 1 } else { s + 1 };
+                        gp.save_slot = if left {
+                            if s == 1 {
+                                NUM_SLOTS
+                            } else {
+                                s - 1
+                            }
+                        } else if s == NUM_SLOTS {
+                            1
+                        } else {
+                            s + 1
+                        };
                     }
                     _ if enter => return GAct::SaveNow,
                     _ => return GAct::None,
@@ -365,7 +382,13 @@ impl LevelSelectUi {
     pub fn build(g: &Game) -> LevelSelectUi {
         let mut entries = Vec::new();
         let name = |w: u32, l: u32| -> String {
-            let s = g.layout.world_visual_data.get(w as usize).and_then(|wv| wv.level_visual_data.get(l as usize)).map(|lv| g.language.gamestring(lv.description_str).trim().to_string()).unwrap_or_default();
+            let s = g
+                .layout
+                .world_visual_data
+                .get(w as usize)
+                .and_then(|wv| wv.level_visual_data.get(l as usize))
+                .map(|lv| g.language.gamestring(lv.description_str).trim().to_string())
+                .unwrap_or_default();
             if s.is_empty() {
                 format!("world {w} level {l}")
             } else {

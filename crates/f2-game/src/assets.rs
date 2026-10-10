@@ -40,9 +40,7 @@ pub trait DataSource {
     /// `MAPS\LANGUAGE.FLA` (`gameTextInit`), decompressed and parsed.
     fn string_table(&self, path: &str) -> Option<Result<f2_formats::lang::StringTable, String>> {
         self.read(path).map(|b| {
-            f2_formats::fla::maybe_decompress(b)
-                .map_err(|e| e.to_string())
-                .and_then(|b| f2_formats::lang::StringTable::parse(&b).map_err(|e| e.to_string()))
+            f2_formats::fla::maybe_decompress(b).map_err(|e| e.to_string()).and_then(|b| f2_formats::lang::StringTable::parse(&b).map_err(|e| e.to_string()))
         })
     }
 }
@@ -201,12 +199,12 @@ impl ModelTable {
                     actor_radius,
                     obj_sprites,
                     xform_tree: std::iter::once(&m.root).chain(m.root_siblings.iter()).map(crate::view::XNode::from_object).collect(),
-                    anim_past_end: bank
-                        .anim_past_end
-                        .iter()
-                        .find(|e| e.0 == m.id)
-                        .and_then(|e| e.1.clone())
-                        .map(|a| MdxAnimation { anim_start: a.start, anim_end: a.end, speed: a.speed, looped: a.looped }),
+                    anim_past_end: bank.anim_past_end.iter().find(|e| e.0 == m.id).and_then(|e| e.1.clone()).map(|a| MdxAnimation {
+                        anim_start: a.start,
+                        anim_end: a.end,
+                        speed: a.speed,
+                        looped: a.looped,
+                    }),
                 })
             });
         }

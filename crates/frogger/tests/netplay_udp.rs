@@ -45,7 +45,24 @@ fn udp_two_processes_600_ticks() {
     let (ws, ls) = (w.to_string(), l.to_string());
     let data = root.to_str().unwrap();
     let mut host = Command::new(exe)
-        .args(["--headless", "--data", data, "--host", "--port", "0", "--host-addr", "127.0.0.1", "--multi", &ws, &ls, "2", "--frames", "600", "--pad-seed", "11"])
+        .args([
+            "--headless",
+            "--data",
+            data,
+            "--host",
+            "--port",
+            "0",
+            "--host-addr",
+            "127.0.0.1",
+            "--multi",
+            &ws,
+            &ls,
+            "2",
+            "--frames",
+            "600",
+            "--pad-seed",
+            "11",
+        ])
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn host");

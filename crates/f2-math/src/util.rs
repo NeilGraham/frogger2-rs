@@ -101,7 +101,11 @@ fn round_f32_tail(p: f64, e: f64) -> f32 {
     } else {
         f32::from_bits(f.to_bits() - 1)
     };
-    if d == (next as f64 - f as f64) * 0.5 { next } else { f }
+    if d == (next as f64 - f as f64) * 0.5 {
+        next
+    } else {
+        f
+    }
 }
 
 /// x87 PC24 `fmul`: `a*b` rounded once to `f32` precision.
@@ -119,7 +123,13 @@ pub fn div_pc24(a: f64, b: f64) -> f32 {
     let (p, e) = two_prod(q, b);
     let r = (a - p) - e;
     // True quotient = q + r/b; only the sign of the tail matters for the rounding.
-    let tail = if r == 0.0 { 0.0 } else if (r > 0.0) == (b > 0.0) { f64::MIN_POSITIVE } else { -f64::MIN_POSITIVE };
+    let tail = if r == 0.0 {
+        0.0
+    } else if (r > 0.0) == (b > 0.0) {
+        f64::MIN_POSITIVE
+    } else {
+        -f64::MIN_POSITIVE
+    };
     round_f32_tail(q, tail)
 }
 

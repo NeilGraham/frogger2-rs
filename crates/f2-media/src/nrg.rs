@@ -87,7 +87,11 @@ pub fn tracks(img: Backing) -> io::Result<Vec<Track>> {
                 for (k, blk) in body[22..].chunks_exact(per).enumerate() {
                     let sector_size = be16(blk, 12);
                     let mode = blk[14];
-                    let (i0, i1, end) = if wide { (be64(blk, 18), be64(blk, 26), be64(blk, 34)) } else { (u64::from(be32(blk, 18)), u64::from(be32(blk, 22)), u64::from(be32(blk, 26))) };
+                    let (i0, i1, end) = if wide {
+                        (be64(blk, 18), be64(blk, 26), be64(blk, 34))
+                    } else {
+                        (u64::from(be32(blk, 18)), u64::from(be32(blk, 22)), u64::from(be32(blk, 26)))
+                    };
                     let (kind, sub) = kind_of(mode, sector_size)?;
                     let stride = u64::from(sector_size);
                     let mut t = Track::new(first + k as u32, kind, img.clone(), i1, (end.saturating_sub(i1) / stride) as u32);
@@ -100,7 +104,8 @@ pub fn tracks(img: Backing) -> io::Result<Vec<Track>> {
                 let wide = id == b"ETN2";
                 let per = if wide { 32 } else { 20 };
                 for blk in body.chunks_exact(per) {
-                    let (off, length, mode) = if wide { (be64(blk, 0), be64(blk, 8), be32(blk, 16)) } else { (u64::from(be32(blk, 0)), u64::from(be32(blk, 4)), be32(blk, 8)) };
+                    let (off, length, mode) =
+                        if wide { (be64(blk, 0), be64(blk, 8), be32(blk, 16)) } else { (u64::from(be32(blk, 0)), u64::from(be32(blk, 4)), be32(blk, 8)) };
                     let size = size_of_mode(mode as u8);
                     let (kind, sub) = kind_of(mode as u8, size)?;
                     let mut t = Track::new(out.len() as u32 + 1, kind, img.clone(), off, (length / u64::from(size)) as u32);

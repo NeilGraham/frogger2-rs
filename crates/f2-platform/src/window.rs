@@ -32,7 +32,16 @@ pub struct WindowConfig {
 
 impl Default for WindowConfig {
     fn default() -> Self {
-        WindowConfig { title: "Frogger 2".into(), width: 640, height: 480, mode: WindowMode::Windowed, resolution: None, refresh_mhz: None, position: None, resizable: true }
+        WindowConfig {
+            title: "Frogger 2".into(),
+            width: 640,
+            height: 480,
+            mode: WindowMode::Windowed,
+            resolution: None,
+            refresh_mhz: None,
+            position: None,
+            resizable: true,
+        }
     }
 }
 
@@ -63,7 +72,8 @@ fn monitor(window: &Window) -> Option<winit::monitor::MonitorHandle> {
 /// duplicates (bit depths).
 pub fn video_modes(window: &Window) -> Vec<VideoMode> {
     let Some(m) = monitor(window) else { return Vec::new() };
-    let mut v: Vec<VideoMode> = m.video_modes().map(|h| VideoMode { width: h.size().width, height: h.size().height, refresh_mhz: h.refresh_rate_millihertz() }).collect();
+    let mut v: Vec<VideoMode> =
+        m.video_modes().map(|h| VideoMode { width: h.size().width, height: h.size().height, refresh_mhz: h.refresh_rate_millihertz() }).collect();
     v.sort_by_key(|m| std::cmp::Reverse((m.width * m.height, m.width, m.refresh_mhz)));
     v.dedup();
     v
@@ -130,7 +140,9 @@ pub fn apply_mode(window: &Window, mode: WindowMode, resolution: Option<[u32; 2]
             };
             let modes = video_modes(window);
             let want = pick_video_mode(&modes, monitor_mode(window), resolution, refresh_mhz);
-            let handle = want.and_then(|v| m.video_modes().find(|h| h.size().width == v.width && h.size().height == v.height && h.refresh_rate_millihertz() == v.refresh_mhz));
+            let handle = want.and_then(|v| {
+                m.video_modes().find(|h| h.size().width == v.width && h.size().height == v.height && h.refresh_rate_millihertz() == v.refresh_mhz)
+            });
             match (want, handle) {
                 (Some(v), Some(h)) => {
                     window.set_fullscreen(Some(Fullscreen::Exclusive(h)));
@@ -260,10 +272,8 @@ impl<A: WindowApp> ApplicationHandler for Runner<A> {
         if self.window.is_some() {
             return;
         }
-        let mut attrs = Window::default_attributes()
-            .with_title(self.cfg.title.clone())
-            .with_inner_size(initial_size(&self.cfg))
-            .with_resizable(self.cfg.resizable);
+        let mut attrs =
+            Window::default_attributes().with_title(self.cfg.title.clone()).with_inner_size(initial_size(&self.cfg)).with_resizable(self.cfg.resizable);
         if let Some([x, y]) = self.cfg.position {
             attrs = attrs.with_position(PhysicalPosition::new(x, y));
         }

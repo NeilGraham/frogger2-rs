@@ -19,13 +19,13 @@ use crate::effects::Effect;
 use crate::frogger::*;
 use crate::frogmove::FROGSTATUS_ISDEAD;
 use crate::ids::{ActorId, TextOverlayId};
-use crate::textover::Font;
 use crate::language::str_id::*;
 use crate::language::{c_sprintf, FmtArg};
 use crate::layout::{worldid, LEVELID_FRONTEND1, LEVEL_CLOSED, LEVEL_OPEN, WORLD_CLOSED, WORLD_OPEN};
 use crate::levplay::{PAD_CROSS, PAD_DOWN, PAD_UP};
 use crate::multi::{MULTIMODE_BATTLE, MULTIMODE_COLLECT, MULTIMODE_RACE};
 use crate::story::{FMV_BLITZ_LOGO, FMV_HASBRO_LOGO, FMV_INTRO, FMV_VICTORY, NUM_STORY_LEVELS, STORY_SEQUENCE};
+use crate::textover::Font;
 use crate::timer::Timer;
 use crate::Game;
 

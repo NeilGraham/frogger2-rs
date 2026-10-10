@@ -136,6 +136,12 @@ fn mounted_iso_imports() {
     if image.is_some() {
         assert_eq!(m1.source_kind, "iso");
     }
-    eprintln!("PASS mounted ISO: {} files, {} videos, music: {} ({})", m1.files.len(), m1.videos.len(), m1.music_source, m1.music_note.as_deref().unwrap_or(""));
+    eprintln!(
+        "PASS mounted ISO: {} files, {} videos, music: {} ({})",
+        m1.files.len(),
+        m1.videos.len(),
+        m1.music_source,
+        m1.music_note.as_deref().unwrap_or("")
+    );
     std::fs::remove_dir_all(&tmp).ok();
 }

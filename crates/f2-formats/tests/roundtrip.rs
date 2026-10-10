@@ -95,10 +95,7 @@ fn level_writers_roundtrip_retail() {
         }
         counts[4] += 1;
     }
-    eprintln!(
-        "round-tripped col {} sce {} entity {} (skipped {stale} non-v16) sam {} fev {}",
-        counts[0], counts[1], counts[2], counts[3], counts[4]
-    );
+    eprintln!("round-tripped col {} sce {} entity {} (skipped {stale} non-v16) sam {} fev {}", counts[0], counts[1], counts[2], counts[3], counts[4]);
     assert!(counts.iter().all(|&c| c > 0));
     assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
 }

@@ -122,7 +122,14 @@ fn main() {
     };
     match f2_import::import(&src, &root, &opts) {
         Ok(m) => {
-            eprintln!("Imported {} ({} files, {} videos, {} music tracks, music: {})", m.title, m.files.len(), m.videos.len(), m.music_tracks.len(), m.music_source);
+            eprintln!(
+                "Imported {} ({} files, {} videos, {} music tracks, music: {})",
+                m.title,
+                m.files.len(),
+                m.videos.len(),
+                m.music_tracks.len(),
+                m.music_source
+            );
             if let Some(r) = &m.rip {
                 eprintln!("Drive rip: {}", r.status());
             }

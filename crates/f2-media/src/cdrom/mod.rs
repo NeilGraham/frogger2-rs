@@ -104,7 +104,9 @@ pub enum DriveKind {
     Physical,
     /// A virtual drive (Windows Explorer "Mount", Daemon Tools…). `image` is the backing
     /// file when it could be determined.
-    Virtual { image: Option<PathBuf> },
+    Virtual {
+        image: Option<PathBuf>,
+    },
 }
 
 /// One optical drive.
@@ -157,9 +159,7 @@ impl DriveInfo {
 
 pub(crate) fn looks_like_frogger(root: Option<&std::path::Path>, label: Option<&str>) -> bool {
     label.is_some_and(|l| l.trim().eq_ignore_ascii_case("FROGGER2"))
-        || root.is_some_and(|r| {
-            crate::disc::find_case_insensitive(r, "FROGGER2").and_then(|d| crate::disc::find_case_insensitive(&d, "DATA1.CAB")).is_ok()
-        })
+        || root.is_some_and(|r| crate::disc::find_case_insensitive(r, "FROGGER2").and_then(|d| crate::disc::find_case_insensitive(&d, "DATA1.CAB")).is_ok())
 }
 
 /// Lists optical drives (empty on platforms without support).
@@ -186,7 +186,10 @@ pub fn drive_for_path(path: &std::path::Path) -> Option<DriveInfo> {
     let dev_norm = |d: &str| d.replace('/', "\\").trim_end_matches('\\').to_ascii_uppercase();
     let canon = std::fs::canonicalize(path).ok();
     list_drives().into_iter().find(|d| {
-        dev_norm(&d.device) == s || d.root.as_ref().is_some_and(|r| dev_norm(&r.to_string_lossy()) == s || canon.as_ref() == Some(r) || std::fs::canonicalize(r).ok() == canon && canon.is_some())
+        dev_norm(&d.device) == s
+            || d.root
+                .as_ref()
+                .is_some_and(|r| dev_norm(&r.to_string_lossy()) == s || canon.as_ref() == Some(r) || std::fs::canonicalize(r).ok() == canon && canon.is_some())
     })
 }
 
@@ -226,7 +229,14 @@ pub const SECTOR_ATTEMPTS: u32 = 5;
 /// tracks). A failing batch is retried once, then the drive is slowed down and the
 /// batch re-read sector by sector with [`SECTOR_ATTEMPTS`] attempts each; sectors
 /// that still fail are zero-filled and counted. `progress` gets sectors done.
-pub fn read_area(r: &mut dyn CdReader, start: i64, count: u32, leadout: u32, sink: &mut dyn FnMut(&[u8]) -> io::Result<()>, progress: &mut dyn FnMut(u32)) -> io::Result<ReadStats> {
+pub fn read_area(
+    r: &mut dyn CdReader,
+    start: i64,
+    count: u32,
+    leadout: u32,
+    sink: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    progress: &mut dyn FnMut(u32),
+) -> io::Result<ReadStats> {
     let mut st = ReadStats::default();
     let batch = r.max_batch().max(1);
     let mut buf = vec![0u8; batch as usize * RAW as usize];
@@ -427,7 +437,11 @@ mod tests {
         t2.pregap = 2;
         let mut t3 = Track::new(3, TrackKind::Audio, b.clone(), 27 * 2352, 13);
         t3.pregap = 2;
-        Disc { path: p, container: "test".into(), tracks: vec![Track::new(1, TrackKind::Data(crate::sector::RawFormat::Raw2352, crate::sector::TrackMode::Mode1), b, 0, 10), t2, t3] }
+        Disc {
+            path: p,
+            container: "test".into(),
+            tracks: vec![Track::new(1, TrackKind::Data(crate::sector::RawFormat::Raw2352, crate::sector::TrackMode::Mode1), b, 0, 10), t2, t3],
+        }
     }
 
     fn sha(b: &[u8]) -> String {
@@ -472,10 +486,17 @@ mod tests {
             let margin = 3i64;
             let start = 10 - margin;
             let mut area = Vec::new();
-            let st = read_area(&mut d, start, 15 + 2 * margin as u32, toc.leadout, &mut |b| {
-                area.extend_from_slice(b);
-                Ok(())
-            }, &mut |_| {})
+            let st = read_area(
+                &mut d,
+                start,
+                15 + 2 * margin as u32,
+                toc.leadout,
+                &mut |b| {
+                    area.extend_from_slice(b);
+                    Ok(())
+                },
+                &mut |_| {},
+            )
             .unwrap();
             // The failing 20-sector batch was re-read sector by sector.
             assert_eq!(st.retried, 20, "offset {off}");

@@ -8,6 +8,7 @@ pub use settings::{nav as settings_nav, FpsMeter, Page as SettingsPage, Settings
 use crate::controls::{Act, ControlsUi};
 use crate::data::Data;
 use crate::gameplay::{GAct, GameplayUi, LevelChoice, LevelSelectUi, Speedrun, Tab};
+use crate::netplay::{NetNote, NetPlay};
 use crate::overlay::{GameFonts, TileScroll};
 use crate::render::{self, FlyCam, LevelScene, Snap};
 use crate::video::VideoPlayer;
@@ -16,8 +17,9 @@ use f2_engine::{Camera, Font, FontId, Renderer, TexHandle};
 use f2_game::define::{mode, SINGLEPLAYER};
 use f2_game::ids::ActorId;
 use f2_game::{Effect, Game, TickInput};
-use f2_platform::{dik, Bindings, Gameplay, ControllerFamily, DisplaySettings, HopBuffer, InputMapper, KeyboardState, PadData, Profile, RawEvent, RawPad, TextureFilter};
-use crate::netplay::{NetNote, NetPlay};
+use f2_platform::{
+    dik, Bindings, ControllerFamily, DisplaySettings, Gameplay, HopBuffer, InputMapper, KeyboardState, PadData, Profile, RawEvent, RawPad, TextureFilter,
+};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -579,7 +581,8 @@ impl App {
                 crate::editor::Request::Reload { play } => {
                     let Some(ed) = &self.editor else { return };
                     let (w, l) = (ed.doc.world, ed.doc.level);
-                    let data: std::sync::Arc<dyn f2_game::assets::DataSource + Send + Sync> = std::sync::Arc::new(ed.doc.overlay(std::sync::Arc::new(self.data.clone())));
+                    let data: std::sync::Arc<dyn f2_game::assets::DataSource + Send + Sync> =
+                        std::sync::Arc::new(ed.doc.overlay(std::sync::Arc::new(self.data.clone())));
                     let g = &mut self.game;
                     g.session.data = Some(data.clone());
                     g.game_state.mode = mode::INGAME_MODE;
@@ -616,7 +619,8 @@ impl App {
         if let Err(e) = std::fs::write(&path, &src) {
             return ed.msg(format!("error: {}: {e}", path.display()));
         }
-        let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| if cfg!(windows) { "notepad".into() } else { "vi".into() });
+        let editor =
+            std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| if cfg!(windows) { "notepad".into() } else { "vi".into() });
         let mut parts = editor.split_whitespace();
         let status = std::process::Command::new(parts.next().unwrap_or("vi")).args(parts).arg(&path).status();
         match status {
@@ -1399,11 +1403,17 @@ impl App {
                     self.audio.update_voice(v, volume, pitch as i16, pos.map(sv), radius);
                 }
             }
-            Effect::PlayMusic { track, looped } => match self.data.music_track(track).filter(|p| !self.data.mods.is_empty() && Some(p) != self.audio.music_path(track).as_ref()) {
-                // A mod's track (topmost VFS layer).
-                Some(p) => self.audio.play_music_stream(f2_audio::wav::WavStream::open_any(&p).map_err(|e| eprintln!("frogger: {}: {e}", p.display())).ok(), track, looped),
-                None => self.audio.play_music(track, looped),
-            },
+            Effect::PlayMusic { track, looped } => {
+                match self.data.music_track(track).filter(|p| !self.data.mods.is_empty() && Some(p) != self.audio.music_path(track).as_ref()) {
+                    // A mod's track (topmost VFS layer).
+                    Some(p) => self.audio.play_music_stream(
+                        f2_audio::wav::WavStream::open_any(&p).map_err(|e| eprintln!("frogger: {}: {e}", p.display())).ok(),
+                        track,
+                        looped,
+                    ),
+                    None => self.audio.play_music(track, looped),
+                }
+            }
             Effect::StopMusic => self.audio.stop_music(),
             Effect::PlayVideo { name } => {
                 use f2_game::story::{FMV, FMV_BLITZ_LOGO, FMV_HASBRO_LOGO};

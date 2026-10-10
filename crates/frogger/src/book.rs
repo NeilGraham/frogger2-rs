@@ -7,7 +7,7 @@
 use f2_engine::textures::Image;
 use f2_engine::{Font, Renderer};
 use f2_game::language::{c_sprintf, FmtArg};
-use f2_game::menus::strs::{STR_CHAPTER, STR_CHAPTER_1a};
+use f2_game::menus::strs::{STR_CHAPTER_1a, STR_CHAPTER};
 use f2_game::menus::{BOOK_NUM_PAGES, CHAPTER_PIC};
 use f2_game::Game;
 
