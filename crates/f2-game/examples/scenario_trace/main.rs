@@ -329,6 +329,14 @@ fn main() -> Result<(), String> {
     while n < max_ticks {
         // LoopFunc sets actFrameCount before the (hooked) GameLoop, where f2fix writes padData.
         let (prev, held) = keys.step(g.act_frame_count.wrapping_add(1));
+        // F2_RANDOM_LOG=SEQ,..: log every Random() call (with its caller) of those lines.
+        if let Ok(t) = std::env::var("F2_RANDOM_LOG") {
+            let on = t.split(',').any(|x| x.parse::<u32>().ok() == Some(n));
+            f2_math::maths::RANDOM_LOG.store(on, std::sync::atomic::Ordering::Relaxed);
+            if on {
+                eprintln!("--- line {n} (afc {})", g.act_frame_count.wrapping_add(1));
+            }
+        }
         if !tick_first(&mut g, prev, held) {
             break; // f2fix: level left -> no line, run ends (exit.level_end)
         }

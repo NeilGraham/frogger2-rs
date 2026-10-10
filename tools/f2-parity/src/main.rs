@@ -26,8 +26,9 @@
 //! never reaches: single-player levels completed (every baby saved, the level-complete
 //! screen, continue, `SaveGame`, the next start) and local multiplayer matches played to a
 //! match winner (race laps finished, battle/collect rounds won, back to the frontend).
-//! Their scripts are planned with the Rust simulation itself (`scenario_trace --plan`, a
-//! receding-horizon search over the deterministic sim) and committed in
+//! Their scripts are planned with the Rust simulation itself (`scenario_trace --plan`: an
+//! archive search (Go-Explore) over the deterministic sim for single player, race and
+//! collect, receding-horizon random shooting for battle) and committed in
 //! `tools/f2-parity/finish/` (`manifest.json` + `.key`), so the corpus does not move when
 //! the simulation changes; `f2-parity plan [--levels fin-..]` regenerates them. The report
 //! adds per case the end state seen in each trace (level complete, babies, next level,
@@ -698,6 +699,10 @@ fn run_oracle(ctx: &Ctx, dll: &Path, c: &Case) -> Result<usize, String> {
         let i = l.find(", fogStore ")?;
         l[i + 11..].split(',').next()?.trim().parse().ok()
     });
+    if c.players >= 2 && fog_store.is_none() {
+        // An f2fix.dll without `start.multi` silently starts the level single-player.
+        return Err(format!("no multiplayer start in {} (f2fix.dll too old? tools/run/build_f2fix.sh)", run.join("f2fix.log").display()));
+    }
     let (tp, mp) = oracle_path(ctx, c);
     write(&tp, text.as_bytes())?;
     // savegame.dat the game wrote (run.py collects it), for the finish cases.

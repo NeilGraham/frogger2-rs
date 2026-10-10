@@ -3,7 +3,13 @@
 //! and save; local multiplayer: rounds until a match winner and back to the frontend),
 //! by searching with the simulation itself.
 //!
-//! Receding-horizon random shooting: from the committed state, `K` candidate input
+//! Single player, race and collect: Go-Explore ([`go_explore`]): an archive of distinct
+//! situations (cells: the driven frog's tile/platform, babies saved, script flags, rounds)
+//! with their game states; promising, rarely tried cells are revisited and explored with
+//! random hops. In a race the frogs run one at a time (the first one not finished; the
+//! idle ones die off screen and respawn next to the leader), so each run is a single-frog
+//! problem. Battle, and anything the archive search gives up on, uses receding-horizon
+//! random shooting: from the committed state, `K` candidate input
 //! sequences of `H` ticks are simulated on clones of the game and scored; the first `C`
 //! ticks of the best are committed (replayed on the committed game) and the search
 //! repeats. Candidates are hop presses (a direction, optionally with CROSS for a superhop)
@@ -223,6 +229,8 @@ struct Planner {
     visited: Vec<bool>,
     /// Score per newly visited tile.
     explore: f64,
+    /// Rounds finished on the archive search's current path.
+    rounds: u32,
 }
 
 /// Outcome of a candidate.
@@ -319,7 +327,8 @@ impl Planner {
         while v.len() < len {
             let roll = rng.range(0, 99);
             if roll < 12 && kind != Kind::Battle {
-                let w = rng.range(4, 24);
+                // Mostly short pauses; sometimes a long one (lifts, babies on moving paths).
+                let w = if roll < 2 { rng.range(60, 300) } else { rng.range(4, 24) };
                 v.extend(std::iter::repeat_n(0, w as usize));
                 continue;
             }
@@ -336,6 +345,83 @@ impl Planner {
         }
         v.truncate(len);
         v
+    }
+
+    /// The frog the archive search drives: player 0, or in a race the first frog that
+    /// has not finished yet (the others idle; left behind, they die off screen and
+    /// respawn next to the leader, so each frog's run is a single-frog problem).
+    fn active(&self, g: &Game) -> usize {
+        match self.kind {
+            Kind::Race => (0..self.n).find(|&p| g.multi.mpl[p].ready == 0).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    /// Archive search progress: (level, distance) — higher level first, then nearer.
+    fn ge_progress(&mut self, g: &Game) -> (u32, f64) {
+        match self.kind {
+            Kind::Single => {
+                let saved = g.babyfrog.baby_list.iter().filter(|b| b.is_saved != 0).count() as u32;
+                let t = baby_targets(g);
+                (saved, self.player_dist(g, 0, &t))
+            }
+            Kind::Race => {
+                // Rounds (draws included) rather than wins, so a drawn round is progress too.
+                let wins = self.rounds;
+                let ready = (0..self.n).filter(|&p| g.multi.mpl[p].ready != 0).count() as u32;
+                // All ready = the round just ended (already counted in `rounds`); the level
+                // must not drop when the next round resets `ready`.
+                let ready = if ready == self.n as u32 { 0 } else { ready };
+                let a = self.active(g);
+                let fin = self.finish.clone();
+                let d = if g.game_state.mode == INGAME_MODE && g.multi.mpl[a].ready == 0 { self.player_dist(g, a, &fin) } else { 0.0 };
+                (wins * 8 + ready, d)
+            }
+            _ => {
+                let t = baby_targets(g);
+                ((g.multi.mpl[0].wins.max(0) as u32) * 8 + g.multi.mpl[0].score.max(0) as u32, self.player_dist(g, 0, &t))
+            }
+        }
+    }
+
+    /// Dead for the archive search: in collect a frog that picked up a baby waits on the
+    /// respawn timer, which is progress, not a death.
+    fn ge_dead(&self, g: &Game, p: usize) -> bool {
+        match self.kind {
+            Kind::Collect => g.frogger.player[p].frog_state & FROGSTATUS_ISDEAD != 0,
+            _ => is_dead(g, p),
+        }
+    }
+
+    fn ge_key(&mut self, g: &Game) -> (u32, u32, u64) {
+        match self.kind {
+            Kind::Single => cell_key(g),
+            _ => {
+                let a = self.active(g);
+                let (lvl, _) = self.ge_progress(g);
+                let tile = g.frogmove.curr_tile[a].map_or(u32::MAX, |t| t.0);
+                let mut mask = 0u64;
+                for (i, b) in g.babyfrog.baby_list.iter().enumerate() {
+                    if b.is_saved != 0 {
+                        mask |= 1 << i;
+                    }
+                }
+                // Countdowns, round ends and win screens: nothing moves, so time itself
+                // must make new cells (else no candidate gets past them).
+                let wait = if g.multi.started != 2 || g.game_state.mode != INGAME_MODE || g.multi.end_timer.time != 0 {
+                    u64::from(g.act_frame_count / 32 + 1)
+                } else {
+                    0
+                };
+                (tile, lvl, (a as u64) << 32 | mask | u64::from(g.game_state.mode) << 40 | wait << 44)
+            }
+        }
+    }
+
+    fn ge_input(&mut self, g: &Game, b: u16, t: usize) -> [u16; 4] {
+        let mut held = if self.random.is_empty() { [0; 4] } else { self.rival_input(t) };
+        held[self.active(g)] = b;
+        held
     }
 
     fn rival_input(&mut self, t: usize) -> [u16; 4] {
@@ -365,6 +451,8 @@ struct Cell {
     visits: u32,
     saved: u32,
     dist: f64,
+    /// Multiplayer rounds finished (wins and draws) on the way to this cell.
+    rounds: u32,
 }
 
 fn cell_key(g: &Game) -> (u32, u32, u64) {
@@ -376,8 +464,21 @@ fn cell_key(g: &Game) -> (u32, u32, u64) {
         }
     }
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |v: u64| h = (h ^ v).wrapping_mul(0x100_0000_01b3);
     for &b in g.script.script_flags.iter() {
-        h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+        mix(u64::from(b));
+    }
+    for &c in g.script.script_counters.iter() {
+        mix(c as u16 as u64);
+    }
+    // On a platform the tile alone does not tell where the frog is (moving platforms,
+    // lifts): add the platform and the coarse position.
+    if let Some(p) = g.platform.curr_platform[0] {
+        let pos = g.frog_position(0);
+        mix(0x1000 + u64::from(p.0));
+        mix((pos.vx >> 8) as u64);
+        mix((pos.vy >> 8) as u64);
+        mix((pos.vz >> 8) as u64);
     }
     (tile, mask, h)
 }
@@ -419,12 +520,12 @@ fn under_par(g: &Game) -> Option<u32> {
 }
 
 fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
-    const MAX_CELLS: usize = 6000;
+    let max_cells: usize = std::env::var("F2_PLAN_MAX_CELLS").ok().and_then(|s| s.parse().ok()).unwrap_or(6000);
     let sim_budget: u64 = std::env::var("F2_PLAN_SIM_BUDGET").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000_000);
     let mut index: HashMap<(u32, u32, u64), usize> = HashMap::new();
-    let d0 = { let t = baby_targets(g0); pl.player_dist(g0, 0, &t) };
-    let mut cells = vec![Cell { state: Box::new(g0.clone()), prev: [0; 4], t: 0, parent: None, seg: Vec::new(), visits: 0, saved: 0, dist: d0 }];
-    index.insert(cell_key(g0), 0);
+    let (l0, d0) = pl.ge_progress(g0);
+    let mut cells = vec![Cell { state: Box::new(g0.clone()), prev: [0; 4], t: 0, parent: None, seg: Vec::new(), visits: 0, saved: l0, dist: d0, rounds: 0 }];
+    index.insert(pl.ge_key(g0), 0);
     let mut sim: u64 = 0;
     let mut iter = 0u64;
     let path_of = |cells: &Vec<Cell>, mut i: usize, tail: Vec<[u16; 4]>| -> Vec<[u16; 4]> {
@@ -466,13 +567,22 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
         let mut prev = cells[i].prev;
         let mut t = cells[i].t;
         let lives0 = g.frogger.player[0].lives;
+        let active0 = pl.active(&g);
+        pl.rounds = cells[i].rounds;
+        let saved0 = cells[i].saved;
         let len = pl.rng.range(40, 160) as usize;
-        let seq = Planner::random_seq(&mut pl.rng, len, Kind::Single);
+        let seq = Planner::random_seq(&mut pl.rng, len, if pl.kind == Kind::Battle { Kind::Battle } else { Kind::Single });
         let mut parent = i;
         let mut seg: Vec<[u16; 4]> = Vec::new();
         for b in seq {
-            let held = [b, 0, 0, 0];
+            let held = pl.ge_input(&g, b, t);
+            let n = pl.n;
+            let all_ready = |g: &Game| g.game_state.mode == INGAME_MODE && (0..n).all(|p| g.multi.mpl[p].ready != 0);
+            let before = all_ready(&g);
             let ok = step(&mut g, prev, held);
+            if !before && all_ready(&g) {
+                pl.rounds += 1; // a race round ended (won or drawn)
+            }
             sim += 1;
             prev = held;
             t += 1;
@@ -482,24 +592,29 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
             }
             if pl.goal(&g) {
                 eprintln!("plan: go-explore goal at t={t} after {iter} iterations, {sim} sim ticks, {} cells", cells.len());
+                if pl.kind != Kind::Single {
+                    return Explore::Found(path_of(&cells, parent, seg));
+                }
                 if let Some(d) = under_par(&g) {
                     eprintln!("plan: under par by {d} ticks");
                     return Explore::TooFast(d);
                 }
                 return Explore::Found(path_of(&cells, parent, seg));
             }
-            if g.frogger.player[0].lives < lives0 || is_dead(&g, 0) {
+            // A death right after a rescue (a baby on a deadly tile) still counts: go on
+            // through the respawn.
+            let sacrificed = pl.kind == Kind::Single && g.frogger.player[0].lives > 1 && g.babyfrog.baby_list.iter().filter(|b| b.is_saved != 0).count() as u32 > saved0;
+            if sacrificed {
+            } else if (pl.kind == Kind::Single && g.frogger.player[0].lives < lives0) || (pl.active(&g) == active0 && pl.ge_dead(&g, active0)) {
                 break;
             }
             if t as u32 >= o.budget {
                 break;
             }
-            let key = cell_key(&g);
-            if !index.contains_key(&key) && cells.len() < MAX_CELLS {
-                let tg = baby_targets(&g);
-                let dist = pl.player_dist(&g, 0, &tg);
-                let saved = key.1.count_ones();
-                cells.push(Cell { state: Box::new(g.clone()), prev, t, parent: Some(parent), seg: std::mem::take(&mut seg), visits: 0, saved, dist });
+            let key = pl.ge_key(&g);
+            if !index.contains_key(&key) && cells.len() < max_cells && !(pl.kind == Kind::Single && is_dead(&g, 0)) {
+                let (saved, dist) = pl.ge_progress(&g);
+                cells.push(Cell { state: Box::new(g.clone()), prev, t, parent: Some(parent), seg: std::mem::take(&mut seg), visits: 0, saved, dist, rounds: pl.rounds });
                 parent = cells.len() - 1;
                 index.insert(key, parent);
             }
@@ -509,6 +624,19 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
         }
     }
     eprintln!("plan: go-explore gave up ({sim} sim ticks, {} cells)", cells.len());
+    if std::env::var_os("F2_PLAN_DEBUG").is_some() {
+        // The most advanced cell: where the frog is and what is left.
+        let best = (0..cells.len()).max_by(|&a, &b| (cells[a].saved, -cells[a].dist).partial_cmp(&(cells[b].saved, -cells[b].dist)).unwrap()).unwrap_or(0);
+        let g = &cells[best].state;
+        let p = &g.frogger.player[0];
+        eprintln!("plan: best cell t={} tile {:?} plat {:?} pos {:?} frog_state {:#x} lives {}", cells[best].t, g.frogmove.curr_tile[0], g.platform.curr_platform[0], g.frog_position(0), p.frog_state, p.lives);
+        for b in g.babyfrog.baby_list.iter().take(g.map.num_babies.max(0) as usize).filter(|b| b.is_saved == 0) {
+            if let Some(e) = b.enemy.and_then(|e| g.enemies.enemy_list.array.get(e.idx())) {
+                let ap = b.baby.and_then(|a| g.actor2.actors.get(a)).map(|a| (a.actor.position, a.radius));
+                eprintln!("plan:   unsaved baby active {} flags {:#x} tile {:?} state {:?} actor {:?}", e.active, e.flags, e.in_tile, e.in_tile.map(|t| g.map.tile(t).state), ap);
+            }
+        }
+    }
     Explore::GaveUp
 }
 
@@ -570,11 +698,33 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
         rival_tape: Vec::new(),
         visited: vec![false; g0.map.tiles.len()],
         explore: 0.0,
+        rounds: 0,
     };
     if std::env::var_os("F2_PLAN_DEBUG").is_some() {
         let t = baby_targets(&g0);
         let d: Vec<u32> = t.iter().map(|&x| pl.dist.to(&[x]).get(g0.frogmove.curr_tile[0].map_or(0, |c| c.idx())).copied().unwrap_or(FAR)).collect();
         eprintln!("plan: kind {kind:?} tiles {} frog tile {:?} baby tiles {t:?} dist {d:?} finish {}", g0.map.tiles.len(), g0.frogmove.curr_tile[0], pl.finish.len());
+        if !pl.finish.is_empty() {
+            let fin = pl.finish.clone();
+            let d: Vec<u32> = (0..n).map(|p| g0.frogmove.curr_tile[p].map_or(FAR, |c| pl.dist.to(&fin)[c.idx()])).collect();
+            let mut states = std::collections::BTreeMap::new();
+            for t in &g0.map.tiles {
+                *states.entry(t.state).or_insert(0) += 1;
+            }
+            eprintln!("plan: finish dist {d:?} tile states {states:?}");
+        }
+        if std::env::var_os("F2_PLAN_DEBUG_SCRIPT").is_some() {
+            if let Some(s) = &g0.script.script_buffer {
+                eprintln!("plan: script {:#?}", s.commands);
+            }
+        }
+        for b in g0.babyfrog.baby_list.iter().take(g0.map.num_babies.max(0) as usize) {
+            if let Some(e) = b.enemy.and_then(|e| g0.enemies.enemy_list.array.get(e.idx())) {
+                let ap = b.baby.and_then(|a| g0.actor2.actors.get(a)).map(|a| a.actor.position);
+                let tc = e.in_tile.map(|t| g0.map.tile(t).centre);
+                eprintln!("plan:   baby enemy active {} flags {:#x} visible {} tile {:?} state {:?} pos {:?} tile centre {:?}", e.active, e.flags, e.visible, e.in_tile, e.in_tile.map(|t| g0.map.tile(t).state), ap, tc);
+            }
+        }
     }
 
     let mut g = g0;
@@ -602,7 +752,7 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
 
     // Single player: archive search first (puzzles, platforms); the receding-horizon loop
     // below only runs when it gives up.
-    if kind == Kind::Single {
+    if matches!(kind, Kind::Single | Kind::Race | Kind::Collect) {
         // Under par: wait at the start (the whole search then runs from the later start).
         let mut wait = 0u32;
         let mut found = None;
@@ -657,9 +807,26 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
             }
             cands.push(c1);
         }
+        // Several planned frogs: half of the candidates vary one frog only (the others
+        // keep the previous winner), so a good move of one frog is not lost to the noise
+        // of the others.
+        let planned = pl.planned.clone();
+        let mut ci = 0usize;
         while cands.len() < k {
+            ci += 1;
+            let only = if planned.len() > 1 && ci % 2 == 0 { Some(planned[(ci / 2) % planned.len()]) } else { None };
             let mut s = rival.clone();
-            for &p in &pl.planned.clone() {
+            if only.is_some() && !prev_best.is_empty() {
+                for (i, row) in s.iter_mut().enumerate() {
+                    for &p in &planned {
+                        row[p] = prev_best.get(i).map_or(0, |r| r[p]);
+                    }
+                }
+            }
+            for &p in &planned {
+                if only.is_some_and(|o| o != p) {
+                    continue;
+                }
                 let seq = Planner::random_seq(&mut pl.rng, h, kind);
                 for (i, b) in seq.into_iter().enumerate() {
                     s[i][p] = b;
@@ -739,7 +906,6 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
                 }
             }
             if !commit(&mut g, held, &mut prev, &mut recs, &mut t) {
-                alive = false;
                 end_note.push_str(" frontend");
                 break;
             }
