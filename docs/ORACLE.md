@@ -322,10 +322,10 @@ cargo run -p f2-parity -- check --update   # record improvements in tools/f2-par
   end state or save stops matching. Needs an `f2fix.dll` with `start.multi`
   (`tools/run/build_f2fix.sh`; f2-parity now refuses a multiplayer trace without a
   multiplayer start — an old DLL silently ran them single-player).
-  Status 2026-10-09: **33 cases baselined, every end state and save identical**:
+  Status 2026-10-09: **34 cases baselined, every end state and save identical**:
   all 16 multiplayer cases (race 1-3/3-0, battle 5-3..5, collect 7-10..12, 2 and 4 frogs)
-  identical for the whole run, `mp` section and win screens included; 17 single-player
-  levels (0-0, 2-1, 2-2, 4-1, 4-2, 5-1, 6-0, 7-0..7-9) complete with the oracle's
+  identical for the whole run, `mp` section and win screens included; 18 single-player
+  levels (0-0, 1-1, 2-1, 2-2, 4-1, 4-2, 5-1, 6-0, 7-0..7-9) complete with the oracle's
   level-complete afc, the next start and a byte-identical `savegame.dat` (retro levels
   7-x write none on either side). 15 of them are identical throughout; two have a
   cosmetic-RNG divergence that does not change the outcome:
@@ -334,8 +334,11 @@ cargo run -p f2-parity -- check --update   # record improvements in tools/f2-par
   - `fin-4-1` @8763 (level-complete screen, CROSS held): Rust draws one more `Random(1000)`
     (frontend.c:1990 celebrate check: Rust's frog is in looping `FROG_ANIM_BREATHE` one
     tick before the exe's; anim queue timing in `RunLevelComplete`).
+  - `fin-1-1` @10693 (level-complete screen, 510 ticks after `complete`): Rust 31 draws,
+    the exe 20 — a sparkle re-initialised (frontend.c:1910, `draw == 0` after `DEC_ALPHA`)
+    plus the celebrate check; same `RunLevelComplete` cosmetic area as `fin-4-1`.
   Not finished by the planner yet (puzzle levels; the static tile graph does not see
-  switches/teleports/lifts): 1-0, 1-1, 1-2, 2-0, 4-0, 5-0, 5-2, 6-1, 6-2 (6-2 has no
+  switches/teleports/lifts): 1-0, 1-2, 2-0, 4-0, 5-0, 5-2, 6-1, 6-2 (6-2 has no
   babies: it ends by script, `EndLevel` after a tube platform ride). Their manifest
   entries hold the partial 60000-tick plans (`goal no`) and are not baselined.
 - To investigate a divergence take oracle snapshots at the tick

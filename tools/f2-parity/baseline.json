@@ -267,6 +267,13 @@
       "end_match": true,
       "save": "identical"
     },
+    "fin-1-1": {
+      "matched": 10692,
+      "oracle_ticks": 10976,
+      "end": "complete@10183 babies 5/5 next 1-1@10735",
+      "end_match": true,
+      "save": "identical"
+    },
     "fin-1-3-mp2": {
       "matched": 21335,
       "oracle_ticks": 21335,

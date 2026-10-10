@@ -28,11 +28,11 @@
       "level": 1,
       "players": 0,
       "mp_mode": 0,
-      "ticks": 60000,
+      "ticks": 10976,
       "key": "1-1.key",
-      "seed": 1,
+      "seed": 3,
       "rivals": "auto",
-      "plan": "kind Single players 1 goal no ticks 60000 afc 60000 babies 0 wins [0] match_winner -1"
+      "plan": "kind Single players 1 goal @9999 ticks 10976 afc 240 babies 0 wins [0] match_winner -1 moved-on@10736 level 1-1"
     },
     "fin-1-2": {
       "world": 1,
