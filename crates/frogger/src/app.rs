@@ -40,6 +40,8 @@ pub enum Step {
     /// Level select / practice (P6-1): a story chapter or an arcade level through a game
     /// session, as the F10 level-select page starts it.
     Choice(LevelChoice),
+    /// The level editor on a level (`--editor`).
+    Editor(u32, u32),
 }
 
 /// Host-only toggles requested by hotkeys, applied by the window layer.
@@ -150,6 +152,13 @@ pub struct App {
     tab: Tab,
     gameplay_ui: GameplayUi,
     level_ui: LevelSelectUi,
+    // ---- P7 level editor
+    /// The level editor (`--editor`), when active.
+    pub editor: Option<crate::editor::Editor>,
+    /// Mod folder / id the editor saves to (`--mods-dir`, first `--mods`/`--mod` id).
+    pub editor_mods: Option<(std::path::PathBuf, String)>,
+    /// Commands run once the editor has loaded (`--editor-cmd`).
+    pub editor_cmds: Vec<String>,
 }
 
 /// `--host` / `--join` request from the command line.
@@ -231,6 +240,9 @@ impl App {
             tab: Tab::default(),
             gameplay_ui: GameplayUi::default(),
             level_ui: LevelSelectUi::default(),
+            editor: None,
+            editor_mods: None,
+            editor_cmds: Vec::new(),
         };
         if !app.data.levels.is_empty() {
             app.game.install_level_registry(app.data.levels.clone()); // mod levels (P7-1)
@@ -409,6 +421,12 @@ impl App {
                         Err(e) => eprintln!("frogger: demo {w}-{l}: {e}"),
                     }
                 }
+                Step::Editor(w, l) => {
+                    if let Err(e) = self.start_editor(w, l) {
+                        eprintln!("frogger: editor {w}-{l}: {e}");
+                        self.status = format!("editor {w}-{l} failed: {e}");
+                    }
+                }
                 Step::Multi(w, l, n) => {
                     if let Err(e) = self.start_multi(w, l, n) {
                         eprintln!("frogger: multiplayer level {w}-{l}: {e}");
@@ -453,6 +471,119 @@ impl App {
         self.dispatch_effects();
         self.load_scene(world, level, &assets);
         Ok(())
+    }
+
+    /// Loads a level and opens the editor on its files (simulation paused).
+    pub fn start_editor(&mut self, world: u32, level: u32) -> Result<(), String> {
+        self.start_level(world, level)?;
+        let doc = crate::editor::doc::LevelDoc::load(&self.data, world, level)?;
+        let cam = FlyCam::from_camera(&render::game_camera(&self.game));
+        let mut ed = crate::editor::Editor::new(doc, cam);
+        if let Some((dir, id)) = &self.editor_mods {
+            ed.mods_dir = dir.clone();
+            ed.mod_id = id.clone();
+        }
+        let start = ed.doc.col.player_start[0].max(0) as usize;
+        ed.look_at_tile(start);
+        for c in std::mem::take(&mut self.editor_cmds) {
+            ed.run(&c);
+        }
+        self.editor = Some(ed);
+        self.process_editor_requests();
+        Ok(())
+    }
+
+    /// Opens the editor on the loaded level (keeping the camera), or closes it.
+    pub fn toggle_editor(&mut self) {
+        if self.editor.take().is_some() {
+            self.status.clear();
+            return;
+        }
+        let Some(scene) = &self.scene else { return };
+        let (w, l) = (scene.world, scene.level);
+        match crate::editor::doc::LevelDoc::load(&self.data, w, l) {
+            Ok(doc) => {
+                let cam = self.last_cam.as_ref().map(FlyCam::from_camera).unwrap_or_else(|| FlyCam::from_camera(&render::game_camera(&self.game)));
+                let mut ed = crate::editor::Editor::new(doc, cam);
+                if let Some((dir, _)) = &self.editor_mods {
+                    ed.mods_dir = dir.clone();
+                }
+                self.free_cam = None;
+                self.editor = Some(ed);
+            }
+            Err(e) => self.status = format!("editor: {e}"),
+        }
+    }
+
+    /// Whether the editor is open and the simulation paused.
+    pub fn editing(&self) -> bool {
+        self.editor.as_ref().is_some_and(|e| !e.playing)
+    }
+
+    /// Reloads / opens `$EDITOR` as the editor asked.
+    pub fn process_editor_requests(&mut self) {
+        let Some(ed) = &mut self.editor else { return };
+        let reqs = std::mem::take(&mut ed.requests);
+        for r in reqs {
+            match r {
+                crate::editor::Request::Reload { play } => {
+                    let Some(ed) = &self.editor else { return };
+                    let (w, l) = (ed.doc.world, ed.doc.level);
+                    let data: std::sync::Arc<dyn f2_game::assets::DataSource + Send + Sync> = std::sync::Arc::new(ed.doc.overlay(std::sync::Arc::new(self.data.clone())));
+                    let g = &mut self.game;
+                    g.session.data = Some(data.clone());
+                    g.game_state.mode = mode::INGAME_MODE;
+                    g.game_state.multi = SINGLEPLAYER;
+                    g.frogger.num_frogs = 1;
+                    match g.load_level(w, l, &*data) {
+                        Ok(assets) => {
+                            self.dispatch_effects();
+                            self.load_scene(w, l, &assets);
+                            let ed = self.editor.as_mut().unwrap();
+                            ed.msg(if play { "play-test: level reloaded from the edited files" } else { "level reloaded from the edited files" });
+                        }
+                        Err(e) => {
+                            let ed = self.editor.as_mut().unwrap();
+                            ed.playing = false;
+                            ed.msg(format!("error: reload failed: {e}"));
+                        }
+                    }
+                }
+                crate::editor::Request::EditScript => self.edit_script_external(),
+            }
+        }
+    }
+
+    /// `script edit`: writes the source to a temp file, runs `$VISUAL`/`$EDITOR`
+    /// (blocking) and compiles the result.
+    fn edit_script_external(&mut self) {
+        let Some(ed) = &mut self.editor else { return };
+        let src = match ed.doc.script_source() {
+            Ok(s) => s.to_string(),
+            Err(e) => return ed.msg(format!("error: {e}")),
+        };
+        let path = std::env::temp_dir().join(format!("f2-editor-script-{}-{}.etc", ed.doc.world, ed.doc.level));
+        if let Err(e) = std::fs::write(&path, &src) {
+            return ed.msg(format!("error: {}: {e}", path.display()));
+        }
+        let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| if cfg!(windows) { "notepad".into() } else { "vi".into() });
+        let mut parts = editor.split_whitespace();
+        let status = std::process::Command::new(parts.next().unwrap_or("vi")).args(parts).arg(&path).status();
+        match status {
+            Ok(st) if st.success() => match std::fs::read_to_string(&path) {
+                Ok(new) if new == src => ed.msg("script unchanged"),
+                Ok(new) => match ed.doc.set_script_source(new) {
+                    Ok(w) => ed.msg(format!("script compiled ({} warnings); R reloads", w.len())),
+                    Err(e) => ed.msg(format!("error: script does not compile (kept the old .fev):\n{e}")),
+                },
+                Err(e) => ed.msg(format!("error: {e}")),
+            },
+            Ok(st) => ed.msg(format!("error: {editor} exited with {st}")),
+            Err(e) => ed.msg(format!("error: running {editor}: {e} (set $EDITOR)")),
+        }
+        // Tell the user where the edited copy lives.
+        ed.msg(format!("script source: {}", path.display()));
+        self.acc = Duration::ZERO;
     }
 
     /// Local multiplayer on `world`/`level` with `n` frogs (what `GoMulti`, options.c:966,
@@ -794,6 +925,16 @@ impl App {
     /// Hotkeys handled by the host (not the game).
     fn hotkeys(&mut self, pressed: &[u8]) {
         for &k in pressed {
+            if let Some(ed) = &self.editor {
+                // The editor owns the keyboard while editing (Esc quits unless typing).
+                let typing = ed.prompt.is_some();
+                if !ed.playing && (typing || !matches!(k, dik::ESCAPE | dik::F11)) {
+                    continue;
+                }
+                if ed.playing && k == dik::P {
+                    continue;
+                }
+            }
             if self.controls.is_some() {
                 let capturing = self.controls.as_ref().is_some_and(|c| c.rebind.is_some());
                 if k == dik::TAB && !capturing {
@@ -864,6 +1005,21 @@ impl App {
 
         if let Some(fc) = &mut self.free_cam {
             fc.update(kb, dt.as_secs_f32());
+        }
+        // Dev builds: Ctrl+E opens / closes the editor on the current level.
+        let ctrl = kb.is_down(dik::LCONTROL) || kb.is_down(dik::RCONTROL);
+        if cfg!(debug_assertions) && ctrl && kb.pressed.contains(&dik::E) && self.editor.as_ref().is_none_or(|e| e.prompt.is_none()) {
+            self.toggle_editor();
+        }
+        if let Some(ed) = &mut self.editor {
+            ed.input(kb, dt.as_secs_f32());
+            self.process_editor_requests();
+        }
+        if self.editing() {
+            // Simulation paused while editing.
+            self.kb.pressed.clear();
+            self.acc = Duration::ZERO;
+            return;
         }
 
         self.acc += dt.min(MAX_CATCHUP);
@@ -1217,6 +1373,7 @@ impl App {
             cam: render::game_camera(&self.game),
             far_clip: 1200.0,
             show_tiles: self.show_tiles,
+            world_only: self.editing(),
             fonts: self.game_fonts,
             authentic,
             backdrop,
@@ -1224,9 +1381,10 @@ impl App {
         };
         if let Some(scene) = &self.scene {
             let gcam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);
-            ctx.cam = match &self.free_cam {
-                Some(fc) => fc.camera(),
-                None => gcam,
+            ctx.cam = match (&self.free_cam, &self.editor) {
+                (_, Some(ed)) if !ed.playing => ed.cam.camera(),
+                (Some(fc), _) => fc.camera(),
+                _ => gcam,
             };
             self.last_cam = Some(ctx.cam);
             ctx.far_clip = render::far_clip(&self.game, scene) * d.draw_distance;
@@ -1247,8 +1405,15 @@ impl App {
             let s = ctx.cam.source;
             self.audio.set_listener(Listener { cam_source: s.map(|x| (x * 10.0 * 4096.0) as i32), view: self.r.view.v_matrix });
         }
-        self.draw_hud();
-        if self.qol() && self.gameplay.speedrun_timer && self.controls.is_none() {
+        if self.scene.is_some() {
+            if let Some(ed) = &mut self.editor {
+                ed.draw(&mut self.r, self.font_id, w, h);
+            }
+        }
+        if !self.editing() {
+            self.draw_hud();
+        }
+        if self.qol() && self.gameplay.speedrun_timer && self.controls.is_none() && !self.editing() {
             if let Some(font) = self.font_id {
                 let ow = self.r.output_size().0 as f32;
                 let mut y = 72.0;

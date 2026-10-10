@@ -226,6 +226,8 @@ Mods are layered over the retail data (files, scripts, extra levels). Enable the
 `config.toml` (`[mods] enabled = ["id", ...]`) or per run with `frogger --mods a,b`
 (`--mods ""` = none) and `--mods-dir DIR`. See [modding.md](modding.md) for the mod format and
 `f2-modkit` in [TOOLS.md](TOOLS.md) to create and check mods.
+`frogger --editor --level W L [--mod ID]` opens the level editor and saves the edited level as
+a mod (modding.md, "Level editor"); `--mod ID` is an alias of `--mods` that can be repeated.
 
 ## Troubleshooting
 

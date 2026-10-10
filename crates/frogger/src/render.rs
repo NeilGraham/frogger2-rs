@@ -262,6 +262,8 @@ pub struct DrawCtx<'a> {
     /// The level's far plane times the draw-distance option.
     pub far_clip: f32,
     pub show_tiles: bool,
+    /// Level editor: the world only (no fades, HUD overlays or text).
+    pub world_only: bool,
     pub fonts: Option<GameFonts>,
     pub authentic: bool,
     /// The loaded full-screen backdrop (`game.backdrop.backdrop`).
@@ -325,6 +327,9 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
         }
     }
 
+    if ctx.world_only {
+        return;
+    }
     if !game.fadeout.fade_text {
         overlay::draw_screen_transition(r, game);
     }
@@ -402,7 +407,7 @@ fn draw_actor_list(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &
     }
 }
 
-fn tl(sx: f32, sy: f32, vz: f32, c: [u8; 4]) -> TlVertex {
+pub(crate) fn tl(sx: f32, sy: f32, vz: f32, c: [u8; 4]) -> TlVertex {
     TlVertex {
         sx,
         sy,
@@ -427,28 +432,39 @@ fn push_world_tri(r: &mut Renderer, p: [V3; 3], color: [u8; 4]) {
 
 /// Debug overlay (F2): one translucent quad per collision tile, coloured by state.
 fn draw_tiles(r: &mut Renderer, game: &Game) {
-    let half = 7.0;
     for t in &game.map.tiles {
-        let c = sv_to_render(&t.centre);
-        let n = norm(sv_dir(&t.normal));
-        let d = sv_dir(&t.dir_vector[0]);
-        let a = if dot(d, d) < 1e-6 { norm(cross(n, [1.0, 0.0, 0.0])) } else { norm(sub(d, mul(n, dot(d, n)))) };
-        let b = cross(n, a);
-        let o = add(c, mul(n, 1.5));
-        let q = [
-            add(o, add(mul(a, half), mul(b, half))),
-            add(o, sub(mul(a, half), mul(b, half))),
-            sub(o, add(mul(a, half), mul(b, half))),
-            add(o, sub(mul(b, half), mul(a, half))),
-        ];
+        let geo = TileGeo { centre: sv_to_render(&t.centre), normal: sv_dir(&t.normal), dir: sv_dir(&t.dir_vector[0]) };
         let mut col = tile_color(t.state);
         col[3] = 150;
-        push_world_tri(r, [q[0], q[1], q[2]], col);
-        push_world_tri(r, [q[2], q[3], q[0]], col);
+        draw_tile_quad(r, &geo, 7.0, col);
     }
 }
 
-fn tile_color(s: u32) -> [u8; 4] {
+/// A tile's frame in render units: centre, unit normal, first direction vector.
+pub(crate) struct TileGeo {
+    pub centre: V3,
+    pub normal: V3,
+    pub dir: V3,
+}
+
+/// A translucent square of half-size `half` lying on the tile.
+pub(crate) fn draw_tile_quad(r: &mut Renderer, t: &TileGeo, half: f32, col: [u8; 4]) {
+    let n = norm(t.normal);
+    let d = t.dir;
+    let a = if dot(d, d) < 1e-6 { norm(cross(n, [1.0, 0.0, 0.0])) } else { norm(sub(d, mul(n, dot(d, n)))) };
+    let b = cross(n, a);
+    let o = add(t.centre, mul(n, 1.5));
+    let q = [
+        add(o, add(mul(a, half), mul(b, half))),
+        add(o, sub(mul(a, half), mul(b, half))),
+        sub(o, add(mul(a, half), mul(b, half))),
+        add(o, sub(mul(b, half), mul(a, half))),
+    ];
+    push_world_tri(r, [q[0], q[1], q[2]], col);
+    push_world_tri(r, [q[2], q[3], q[0]], col);
+}
+
+pub(crate) fn tile_color(s: u32) -> [u8; 4] {
     match s {
         0 => [60, 200, 60, 255],
         1 => [230, 30, 30, 255],

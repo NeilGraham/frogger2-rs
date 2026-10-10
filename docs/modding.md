@@ -83,7 +83,7 @@ world assignment. We will:
   `Game::install_level_registry`). `load_level` takes file names from the registry entry and
   falls back to the original switch tables, so no game code is patched. Files resolve
   through the mod VFS, so a level may reuse retail files by name.
-- Not yet: editor revival, text level formats, Blender workflow; new levels are not listed
+- Not yet: text level formats, Blender workflow; new levels are not listed
   in the frontend menus (raising `numLevels` would change the save-game layout) — start them
   with `frogger --level W L` or reach them through `next` of another level.
 
@@ -136,6 +136,27 @@ with its own ETC script; no game assets):
 f2-modkit pack examples/mods/hello-mod --rendition game-data/usa
 frogger --mods hello-mod --mods-dir examples/mods --level 0 1
 ```
+
+### Level editor (P7, `crates/frogger/src/editor/`)
+
+`frogger --editor --level W L [--mods ID | --mod ID] [--mods-dir DIR] [--editor-cmd "CMD; CMD"]` (Ctrl+E toggles
+it on the current level in dev builds). The simulation pauses; a free camera (WASD/QE, arrows,
+Shift) flies over the level. Modes (keys 1-5): **tiles** (graph colour-coded by state, links as
+half-way lines coloured per slot n/s/e/w; PgUp/PgDn state, L/U link/unlink towards the pointer,
+Ins extrude a new linked tile, Del delete with every tile reference renumbered), **entities**
+(markers: enemy red, platform blue, placeholder grey, garib yellow, camera case magenta; Tab/Space
+select, M move to the pointer tile — paths and camera tile groups move as a whole, N/G/C new
+enemy/garib/camera case, Del), **paths** (`[`/`]` node, N add, M move, Del, PgUp/PgDn speed),
+**scenics** (M, Ins copy, Del), **script** (decompiled ETC source view; O opens `$EDITOR`, the
+result is compiled with `f2-etc` and the `.fev` only changes when it compiles). Enter opens a
+command line (`help` lists commands; `set FIELD VALUE` edits any field of the selection, e.g.
+`set speed 2.5`, `set flags 0x10`, `set model bfly.obe`). P play-tests the level from the edited
+files in memory, R reloads it paused. `save [ID]` writes the changed files in the retail formats to
+`<mods dir>/<ID>/game/{collision,scenics,maps}/…` (mods dir = `--mods-dir`, else `[mods] dir`, else the platform default) (+ `mod.toml` when missing and the `.etc` source next to
+the `.fev`); `frogger --mods ID --level W L` plays it (`--mod ID` is an alias that can be repeated). Writers in `f2-formats`
+(`Collision::write`, `write_scenics`, `EntityFile::write` incl. the low bits the loader drops,
+`SamFile::write`, `Script::write`) reproduce every retail file byte-for-byte
+(`crates/f2-formats/tests/roundtrip.rs`).
 
 ## 4. Behaviour scripting (Phase 7b)
 

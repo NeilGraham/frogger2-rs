@@ -18,6 +18,8 @@
 //! hosts an N-player match and prints a join code; `frogger --join CODE` joins it. With
 //! `--headless --frames F` both run F ticks of scripted pads (`--pad-seed S`) without a window
 //! and print the final state checksum (`NETPLAY_FINAL ...`).
+//! `--editor [--level W L]` opens the level editor (`src/editor/`; Ctrl+E toggles it in
+//! dev builds); `--mod ID` / `--mods-dir DIR` stack mods over the data.
 //! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 fullscreen, Esc quit (Enter/Esc skip videos);
 //! Keys: F1 free camera, F2 tile overlay, F10 settings (controls / gameplay / level select;
 //! Tab switches page), F11 fullscreen, Esc quit (Enter/Esc skip videos; any key in the
@@ -30,6 +32,7 @@ mod book;
 mod controls;
 mod data;
 mod mods;
+mod editor;
 mod fx;
 mod netplay;
 mod gameplay;
@@ -81,6 +84,8 @@ struct Args {
     /// `--mods a,b` (replaces `[mods] enabled`; `--mods ""` = none).
     mods: Option<Vec<String>>,
     mods_dir: Option<PathBuf>,
+    editor: bool,
+    editor_cmds: Vec<String>,
 }
 
 fn usage() -> ! {
@@ -90,9 +95,10 @@ fn usage() -> ! {
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
          \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
          online: --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS | --join CODE  [--pad-seed S (headless)]\n\
-         mods: [--mods ID,ID...] (default: config [mods] enabled; \"\" = none) [--mods-dir DIR]\n\
+         mods: [--mods ID,ID...] [--mod ID]... (default: config [mods] enabled; \"\" = none) [--mods-dir DIR]\n\
          practice: [--practice WORLD LEVEL | --story CHAPTER] (level select through a game session)\n\
          \x20      [--screenshot-settings controls|gameplay|levels] (headless: F10 page in the screenshot)\n\
+         editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 settings (Tab: controls/gameplay/level select), F11 fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -133,6 +139,8 @@ fn parse_args() -> Args {
         pad_seed: 1,
         mods: None,
         mods_dir: None,
+        editor: false,
+        editor_cmds: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
@@ -155,6 +163,9 @@ fn parse_args() -> Args {
             "--pad-seed" => a.pad_seed = num(it.next()),
             "--mods" => a.mods = Some(it.next().unwrap_or_else(|| usage()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
             "--mods-dir" => a.mods_dir = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--mod" => a.mods.get_or_insert_with(Vec::new).push(it.next().unwrap_or_else(|| usage())), // alias of --mods (stacks)
+            "--editor" => a.editor = true,
+            "--editor-cmd" => a.editor_cmds.push(it.next().unwrap_or_else(|| usage())),
             "--video" => a.video = Some(it.next().unwrap_or_else(|| usage())),
             "--boot" => a.boot = true,
             "--multi" => {
@@ -263,6 +274,10 @@ fn main() {
 
     let steps: Vec<Step> = match args.level {
         _ if net.is_some() => Vec::new(),
+        l if args.editor => {
+            let (w, l) = l.unwrap_or((0, 0));
+            vec![Step::Editor(w, l)]
+        }
         _ if args.video.is_some() => vec![Step::Video(args.video.clone().unwrap())],
         _ if args.frontend => vec![Step::Frontend],
         _ if args.choice.is_some() => vec![Step::Choice(args.choice.unwrap())],
@@ -311,6 +326,14 @@ fn make_audio(cfg: &Config, mute: bool) -> AudioEngine {
     a
 }
 
+/// Where the editor saves: `--mods-dir` (else config `[mods] dir`), and the first `--mods`/`--mod` id
+/// (else `level-W-L`).
+fn editor_target(args: &Args, cfg: &Config) -> (PathBuf, String) {
+    let (w, l) = args.level.unwrap_or((0, 0));
+    let dir = args.mods_dir.clone().unwrap_or_else(|| cfg.mods_dir());
+    (dir, args.mods.as_ref().and_then(|m| m.first().cloned()).unwrap_or_else(|| format!("level-{w}-{l}")))
+}
+
 // ------------------------------------------------------------------ headless
 
 /// `--headless` with `--host`/`--join`: an online match without window or GPU.
@@ -334,6 +357,8 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.set_input(cfg.bindings(), cfg.input.deadzone, cfg.hop_buffer_frames(Profile::Enhanced));
     app.hud_probe = args.hud_probe;
     app.set_gameplay(cfg.gameplay.clone(), None);
+    app.editor_mods = Some(editor_target(args, cfg));
+    app.editor_cmds = args.editor_cmds.clone();
     // Headless runs only read a save given explicitly and never write one.
     app.save_data = match (&args.save, args.dev_unlock) {
         (_, true) => Some(dev_unlock_save()),
@@ -355,6 +380,10 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     // Debug: `F2_SHOT_UNTIL=tongue|ring|decal|lightning` stops at the first tick showing it.
     let until = std::env::var("F2_SHOT_UNTIL").ok();
     for _ in 0..frames {
+        if app.editing() {
+            // The editor pauses the simulation.
+            break;
+        }
         let shots: Vec<PathBuf> = app.pad_script.as_ref().map_or(Vec::new(), |s| s.shots_at(app.ticks).cloned().collect());
         for out in shots {
             app.draw(w, h);
@@ -437,6 +466,8 @@ struct Host {
     dev_unlock: bool,
     steps: Vec<Step>,
     net: Option<NetRequest>,
+    /// Editor save target and start-up commands.
+    editor_setup: ((PathBuf, String), Vec<String>),
     app: Option<App>,
     gfx: Option<Gfx>,
     gamepads: Option<Gamepads>,
@@ -490,6 +521,8 @@ impl WindowApp for Host {
                     }
                 }
                 app.hud_probe = self.hud_probe;
+                app.editor_mods = Some(self.editor_setup.0.clone());
+                app.editor_cmds = std::mem::take(&mut self.editor_setup.1);
                 app.pad_script = self.pad_script.take();
                 app.save_path = Some(self.save_path.clone());
                 if self.dev_unlock {
@@ -512,6 +545,18 @@ impl WindowApp for Host {
             Err(e) => self.error = Some(e),
         }
         self.last = Instant::now();
+    }
+
+    fn event(&mut self, _w: &Arc<window::Window>, event: &winit::event::WindowEvent) -> Flow {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        if let Some(ed) = self.app.as_mut().and_then(|a| a.editor.as_mut()) {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => ed.mouse(Some((position.x as f32, position.y as f32)), false),
+                WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => ed.mouse(None, true),
+                _ => {}
+            }
+        }
+        Flow::Continue
     }
 
     fn resized(&mut self, _w: &Arc<window::Window>, size: winit::dpi::PhysicalSize<u32>) {
@@ -635,6 +680,7 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>, net:
     }
     wc.fullscreen |= args.fullscreen;
     wc.title = "Frogger 2: Swampy's Revenge".into();
+    let editor_setup = (editor_target(args, &cfg), args.editor_cmds.clone());
     let host = Host {
         data: Some(data),
         mute: args.mute,
@@ -649,6 +695,7 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>, net:
         cfg,
         steps,
         net,
+        editor_setup,
         app: None,
         gfx: None,
         gamepads: None,

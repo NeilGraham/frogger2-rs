@@ -141,7 +141,7 @@ impl Data {
         self.vfs.read(path).map_err(|e| format!("{path}: {e}"))
     }
 
-    fn new(vfs: Vfs, rendition: PathBuf) -> Data {
+    pub(crate) fn new(vfs: Vfs, rendition: PathBuf) -> Data {
         Data { vfs: Arc::new(vfs), rendition, mods: Vec::new(), levels: Default::default(), cache: Default::default() }
     }
 
