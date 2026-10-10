@@ -10,8 +10,8 @@
 *.BIK
 
 # Reference checkouts (cloned separately; see research/source-tree.md)
-/frogger2-vss/
-/onstream-data-recovery/
+/frogger2-vss
+/onstream-data-recovery
 /frogger2-pc/
 
 # Imported asset store produced by `f2-import` (local only)
