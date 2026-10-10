@@ -741,6 +741,16 @@ name = "f2-net"
 version = "0.1.0"
 
 [[package]]
+name = "f2-parity"
+version = "0.1.0"
+dependencies = [
+ "f2-trace",
+ "serde",
+ "serde_json",
+ "sha1",
+]
+
+[[package]]
 name = "f2-platform"
 version = "0.1.0"
 dependencies = [

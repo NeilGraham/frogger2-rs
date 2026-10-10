@@ -1,0 +1,112 @@
+{
+  "generator": "f2-parity-gen-1",
+  "seed": 1,
+  "ticks": 1800,
+  "trace_version": 2,
+  "levels": {
+    "0-0": {
+      "matched": 575,
+      "oracle_ticks": 1800
+    },
+    "1-0": {
+      "matched": 1658,
+      "oracle_ticks": 1658
+    },
+    "1-1": {
+      "matched": 128,
+      "oracle_ticks": 1800
+    },
+    "1-2": {
+      "matched": 1013,
+      "oracle_ticks": 1800
+    },
+    "2-0": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "2-1": {
+      "matched": 854,
+      "oracle_ticks": 1800
+    },
+    "2-2": {
+      "matched": 234,
+      "oracle_ticks": 1687
+    },
+    "4-0": {
+      "matched": 855,
+      "oracle_ticks": 1787
+    },
+    "4-1": {
+      "matched": 186,
+      "oracle_ticks": 1525
+    },
+    "4-2": {
+      "matched": 0,
+      "oracle_ticks": 1800
+    },
+    "5-0": {
+      "matched": 1083,
+      "oracle_ticks": 1083
+    },
+    "5-1": {
+      "matched": 316,
+      "oracle_ticks": 1800
+    },
+    "5-2": {
+      "matched": 965,
+      "oracle_ticks": 965
+    },
+    "6-0": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "6-1": {
+      "matched": 1800,
+      "oracle_ticks": 1800
+    },
+    "6-2": {
+      "matched": 821,
+      "oracle_ticks": 1601
+    },
+    "7-0": {
+      "matched": 1577,
+      "oracle_ticks": 1577
+    },
+    "7-1": {
+      "matched": 1487,
+      "oracle_ticks": 1487
+    },
+    "7-2": {
+      "matched": 1539,
+      "oracle_ticks": 1800
+    },
+    "7-3": {
+      "matched": 316,
+      "oracle_ticks": 1800
+    },
+    "7-4": {
+      "matched": 246,
+      "oracle_ticks": 1800
+    },
+    "7-5": {
+      "matched": 1259,
+      "oracle_ticks": 1259
+    },
+    "7-6": {
+      "matched": 1612,
+      "oracle_ticks": 1612
+    },
+    "7-7": {
+      "matched": 170,
+      "oracle_ticks": 1679
+    },
+    "7-8": {
+      "matched": 797,
+      "oracle_ticks": 1221
+    },
+    "7-9": {
+      "matched": 384,
+      "oracle_ticks": 1574
+    }
+  }
+}
