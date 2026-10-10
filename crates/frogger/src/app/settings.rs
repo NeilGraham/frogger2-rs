@@ -1311,6 +1311,10 @@ impl App {
         let lines = [format!("{:.0} FPS", self.fps.fps), format!("{:.1} ms  sim 60 Hz", self.fps.ms)];
         let lh = small.height as f32 * k + 2.0;
         let pad = 8.0 * k;
+        // The game's HUD icons (lives, time/coin, counters) occupy every corner (anchored to
+        // the real screen edges in enhanced widescreen), about 80 font pixels tall, so the
+        // counter sits just below the top HUD row / above the bottom HUD row.
+        let hud = 84.0 * k;
         for (i, l) in lines.iter().enumerate() {
             let w = small.string_width(l.as_bytes(), k) as f32;
             let x = match corner {
@@ -1318,8 +1322,8 @@ impl App {
                 _ => ow as f32 - pad - w,
             };
             let y = match corner {
-                FpsCorner::TopLeft | FpsCorner::TopRight => pad + i as f32 * lh,
-                _ => oh as f32 - pad - (lines.len() - i) as f32 * lh,
+                FpsCorner::TopLeft | FpsCorner::TopRight => hud + i as f32 * lh,
+                _ => oh as f32 - hud - (lines.len() - i) as f32 * lh,
             };
             r.draw_text(fonts.small, x + k, y + k, l, [0, 0, 0, 180], k, None);
             r.draw_text(fonts.small, x, y, l, if i == 0 { [255, 255, 0, 255] } else { [255, 255, 255, 255] }, k, None);

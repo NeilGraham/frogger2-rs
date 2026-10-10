@@ -377,7 +377,14 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.set_gameplay(cfg.gameplay.clone(), None);
     let mut hcfg = cfg.clone();
     if args.show_fps {
-        hcfg.video.show_fps = f2_platform::FpsCorner::TopRight;
+        // F2_FPS_CORNER=tl|bl|br|tr picks the corner for headless screenshots.
+        use f2_platform::FpsCorner as C;
+        hcfg.video.show_fps = match std::env::var("F2_FPS_CORNER").as_deref() {
+            Ok("tl") => C::TopLeft,
+            Ok("bl") => C::BottomLeft,
+            Ok("br") => C::BottomRight,
+            _ => C::TopRight,
+        };
     }
     app.set_config(hcfg);
     app.win = app::WinInfo { size: (w, h), ..Default::default() };

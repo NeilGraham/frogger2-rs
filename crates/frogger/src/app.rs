@@ -1503,7 +1503,7 @@ impl App {
             cam: render::game_camera(&self.game),
             far_clip: 1200.0,
             show_tiles: self.show_tiles,
-            world_only: self.editing(),
+            world_only: self.editing() || self.settings.is_some(),
             fonts: self.game_fonts,
             authentic,
             backdrop,
