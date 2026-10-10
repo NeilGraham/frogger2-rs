@@ -8,7 +8,10 @@ use crate::addr::NetAddr;
 use crate::{Frame, SessionConfig, SyncMode, MAX_PLAYERS};
 
 pub const MAGIC: u16 = 0x4EF2;
-pub const VERSION: u8 = 1;
+/// 2: `Start` carries `app_data`.
+pub const VERSION: u8 = 2;
+/// Maximum size of [`StartMsg::app_data`].
+pub const MAX_APP_DATA: usize = 255;
 pub const HEADER_LEN: usize = 8;
 /// Maximum inputs per `Input` / `SpectatorInputs` message (keeps datagrams well under 1200 B).
 pub const MAX_INPUTS_PER_PACKET: usize = 120;
@@ -99,6 +102,9 @@ pub struct StartMsg<A> {
     pub your_slot: u8,
     /// Every player slot and where to reach it.
     pub players: Vec<(u8, PeerLoc<A>)>,
+    /// Opaque application data from the host (match set-up: level, mode, data check), at
+    /// most [`MAX_APP_DATA`] bytes.
+    pub app_data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,6 +200,9 @@ pub fn encode<A: NetAddr>(nonce: u16, seq: u16, msg: &Msg<A>) -> Vec<u8> {
                     }
                 }
             }
+            let n = s.app_data.len().min(MAX_APP_DATA);
+            w.u8(n as u8);
+            w.0.extend_from_slice(&s.app_data[..n]);
         }
         Msg::Input { slot, ack_frame, start_frame, inputs } => {
             w.u8(5);
@@ -288,7 +297,12 @@ pub fn decode<A: NetAddr>(data: &[u8]) -> Option<(u16, u16, Msg<A>)> {
                 };
                 players.push((slot, loc));
             }
-            Msg::Start(StartMsg { config, your_slot, players })
+            let n = r.u8()? as usize;
+            let mut app_data = Vec::with_capacity(n);
+            for _ in 0..n {
+                app_data.push(r.u8()?);
+            }
+            Msg::Start(StartMsg { config, your_slot, players, app_data })
         }
         5 => {
             let slot = r.u8()?;
@@ -348,6 +362,7 @@ mod tests {
                 config: SessionConfig::default(),
                 your_slot: 2,
                 players: vec![(0, PeerLoc::Sender), (1, PeerLoc::Addr(a)), (2, PeerLoc::Addr(b))],
+                app_data: vec![9, 8, 7],
             }),
             Msg::Input { slot: 1, ack_frame: -1, start_frame: 77, inputs: vec![1, 2, 0xFFFF] },
             Msg::InputAck { ack_frame: 1234 },

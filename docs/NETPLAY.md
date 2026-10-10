@@ -1,8 +1,9 @@
 # Netplay (`crates/f2-net`)
 
-Status: foundation (P6-2). The crate is self-contained (no dependencies, no `f2-game` dependency)
-and tested with a toy deterministic simulation. Wiring into `f2-game`/`frogger` is a follow-up
-task; the requirements it places on the simulation are listed in §6.
+Status: integrated (P6-2). The crate is self-contained (no dependencies, no `f2-game` dependency)
+and tested with a toy deterministic simulation; `frogger` drives it with the real game
+(`crates/frogger/src/netplay.rs`, §8), `f2-game` provides snapshots/checksums/resimulation
+(`crates/f2-game/src/netsync.rs`, §6). Floating-point policy for cross-platform play: §9.
 
 ## 1. Overview
 
@@ -91,14 +92,14 @@ rendered frame. It also verifies the host's checksums. A spectator further behin
 
 ## 3. Protocol
 
-Header (8 bytes, LE): `u16 magic 0x4EF2 | u8 version 1 | u16 session nonce | u16 seq | u8 kind`.
+Header (8 bytes, LE): `u16 magic 0x4EF2 | u8 version 2 | u16 session nonce | u16 seq | u8 kind`.
 
 | Kind | Message | Notes |
 |---|---|---|
 | 1 | `Join { spectator }` | joiner → host, resent every 100 ms until `Start`; nonce 0 = "any" |
 | 2 | `Welcome { slot }` | 0xFF = spectator |
 | 3 | `Reject { reason }` | 1 = full, 2 = already started |
-| 4 | `Start { config, your_slot, players[(slot, Sender \| addr)] }` | host's config wins |
+| 4 | `Start { config, your_slot, players[(slot, Sender \| addr)], app_data[≤255] }` | host's config wins; `app_data` = `HostLobby::set_app_data` (frogger: match set-up) |
 | 5 | `Input { slot, ack_frame, start_frame, pads[≤120] }` | all unacked local pads (redundant) |
 | 6 | `InputAck { ack_frame }` | spectator → host |
 | 7 | `Quality { frame_advantage, ping, cs_frame, cs }` | every 200 ms; ping + time sync + latest checksum |
@@ -226,10 +227,105 @@ trace tooling in `tools/f2-trace` can diff them).
   `lobby_rejects_when_full`, `udp_two_players_with_join_code` (real sockets on 127.0.0.1),
   plus wire/join-code/loopback/duplicate-window unit tests.
 
-## 8. Limitations / future work
+### Implementation status of §6 (P6-2)
+
+1. `Game: Clone` (one derive; `SessionState` got `Clone`). Models are `Arc<ModelInfo>`, the data
+   source and script buffer were already `Arc`s; measured on a 4-frog race level after 300 ticks
+   (`cargo test -p f2-game --release --test netsync -- --nocapture`): **snapshot 0.05 ms,
+   restore 0.05–0.07 ms, checksum 0.11–0.13 ms, tick 0.007 ms** (debug build: 0.16 / 0.18 /
+   1.3 / 0.1 ms). No further `Arc`-ing was needed.
+2. Audit: the only process-wide data in `f2-game` are constant tables and the `view.rs` acos/sin
+   table cache (`OnceLock`, pure). Host-side inputs to the simulation are `specfx.view` (the
+   `IsPointVisible` transform, recomputed from game state after every tick by the netplay
+   wrapper exactly as the window host does) and `textover.metrics` (font widths from the data;
+   part of the start-state fingerprint). The test `snapshot_restore_resimulate_is_exact` also
+   ticks a clone in lockstep with its original and compares effects + checksums.
+5. `Game::tick_resimulate` = `tick` that drops the effects it produced. The wrapper calls it for
+   every frame below the highest frame simulated so far, so each frame's effects reach the
+   platform exactly once (on its first simulation; mispredicted sounds are not retracted, and
+   sounds that only a corrected simulation would play are skipped — the usual GGPO trade-off).
+   Saves are naturally absent (no save points in multiplayer levels).
+6. Same start: the host sends `MatchSetup { world, level, frogs, fingerprint }` in the lobby's
+   `Start.app_data` (wire version 2); the fingerprint hashes the start state checksum and the font
+   metrics, and a joiner whose own start state differs refuses to play ("game data differs").
+7. `Game::checksum()`: a fixed-key 64-bit streaming hash implemented as a minimal
+   `serde::Serializer` (`StateHasher`) over every serde-derived sub-state in a fixed order (floats
+   by bit pattern), plus the `Debug` text of the few sub-states without serde derives (`memload`,
+   `event`, `script` minus the buffer, `textover` minus metrics). Excluded: effects, models,
+   level files, game text, data source. `Game::checksum_parts()` gives per-sub-state hashes for
+   desync dumps.
+8. Pause menu / win screens / "quit" are pad-driven inside `tick`; quitting to the frontend ends
+   the online match ("match over") and the game continues offline.
+
+## 8. Integration in `frogger`
+
+```text
+frogger --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS   # prints a join code
+frogger --join CODE                                                      # or host:port
+frogger --headless --frames F [--pad-seed S] (--host ... | --join CODE) # GPU-less scripted run
+```
+
+* `NetGame` implements `f2_net::Simulation` (orphan rule: the wrapper lives in `frogger`, `f2-game`
+  stays independent of `f2-net`). `tick` = `Game::tick`/`tick_resimulate` + view update;
+  `Snapshot = (Game, frame)`; checksum frames also keep the state (last 8) for desync dumps.
+* `NetPlay<T: Transport>` drives lobby → session for the window host, the headless runner and the
+  tests. The host auto-starts when PLAYERS have joined (host = slot 0 = player 1; joiners get
+  slots 1.. in join order = their frog/pad slot). The local device's player-1 pad is sent as the
+  local slot's pad (the enhanced hop buffer uses the local slot's frog state).
+* Window host: `App` swaps its `game` into the wrapper around each `advance`, dispatches only the
+  new frame's effects, and draws a text overlay: join code and joined players in the lobby,
+  per-player ping, rollback and stall counts in the match. Time-sync waits and prediction stalls
+  skip the tick (rendering continues).
+* **Desync** → the match ends with a message naming the frame and both checksums, and
+  `netplay-desync-f<frame>-p<slot>.txt` (per-sub-state checksums + the trace line of that frame's
+  state) is written to the temp directory on each peer; diff the two files.
+* **Disconnect** (no packets for 5 s) → "player N disconnected: match ended"; after 5 s the window
+  host returns to the frontend. Headless runs exit with an error.
+* The join code holds the LAN address of the default route (`--host-addr` overrides it, e.g. the
+  public or VPN address).
+
+Tests (game data required, skipped otherwise):
+
+* `cargo test -p f2-game --test netsync` — snapshot at tick 300 of a 600-tick 4-frog race, restore
+  and resimulate: identical checksum and oracle trace on every tick; clone-in-lockstep; costs.
+* `cargo test -p frogger netplay` — `loopback_two_peers_100ms_5pct_loss`: two threads, lobby +
+  3600 ticks of scripted pads on a race level over the loopback network (100 ms one-way, 10 ms
+  jitter, 5 % loss, 1 % duplicates, virtual clock): ~1000 rollbacks per peer (max depth 8),
+  59 checksums compared per peer, all equal, identical final state (≈ 4 s, debug).
+* `cargo test -p frogger --test netplay_udp` — two real `frogger --headless` processes on
+  127.0.0.1 (join code from the host's stdout), 600 ticks, identical `NETPLAY_FINAL` checksums.
+
+## 9. Floating point across OS/CPU
+
+`f2-game` is integer/fixed-point except for these float paths:
+
+| Path | Operations | Cross-platform risk |
+|---|---|---|
+| `f2_math::util::{rsin, rcos, util_calc_angle}` | `f64::sin/cos/atan2` → `ftol32` | **libm** (platform C library: glibc vs UCRT vs Apple). Last-ulp differences flip the truncated integer only when the exact value is within 1 ulp of an integer — rare but possible. |
+| `f2_math::arccos` (24-bit x87 emulation) | `f64::acos`, rounded to `f32`, then `ftol32` | **libm** `acos`; the f32 rounding hides most ulp differences but not all. |
+| `f2-game/src/view.rs` | f32 matrices/quaternions, `f32::sqrt`; acos/sin tables built once with `f64::acos/sin` → `f32` | basic IEEE ops + `sqrt` are exact everywhere (SSE2/NEON, no FMA contraction in Rust); table init uses **libm**. |
+| `tongue.rs`, `specfx.rs` view checks, host `spec_fx_view` (`f2_engine::gu_look_at`) | f32 `+ − × ÷ sqrt` | none (IEEE-exact) on x86-64 / aarch64; would differ on x87-only targets (i586). |
+| `actor2.rs` | one `sqrt` | none. |
+
+Policy:
+
+* **Same-binary play is safe** (same OS + same build ⇒ same libm results). The start-state
+  fingerprint does not catch libm differences, the per-60-frame checksums do.
+* For **cross-OS / cross-CPU** play, route `sin/cos/atan2/acos` through a pure-Rust
+  implementation (the `libm` crate — already in the dependency tree — or tables generated at
+  build time) in `f2-math` and `view.rs`; verify with the oracle parity suite (the retail exe
+  uses MSVC's x87 `acos`, so the results must stay bit-identical to today's on Windows).
+* Never enable fast-math, FMA contraction (`-C target-feature=+fma` is fine only because Rust
+  never contracts `a*b+c` implicitly; do not introduce `mul_add`) or x87 targets.
+* Until then, the lobby should only pair identical OS families (a future `Start` extension can
+  carry an OS/arch tag next to the data fingerprint).
+
+## 10. Limitations / future work
 
 * No NAT traversal or relay server; no IPv6-to-IPv4 bridging.
 * A disconnect ends the match (no agreed "disconnect frame" continuation).
+* The frogger host starts only when the lobby is full (no early start with fewer frogs) and has no
+  in-game lobby menu yet (command line only); spectators are not wired into `frogger`.
 * RTT is quantised by the 60 Hz poll rate (+ up to one frame).
 * No encryption/authentication beyond the 16-bit session nonce (LAN/friends trust model).
 * Only one local player per peer (couch + online mixing would need several local slots).

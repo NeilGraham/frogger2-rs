@@ -9,12 +9,13 @@ use crate::video::VideoPlayer;
 use f2_audio::{AudioEngine, Listener, Play, VoiceId};
 use f2_engine::{Camera, Font, FontId, Renderer, TexHandle};
 use f2_formats::objbank::ObjectBank;
-use f2_game::define::{mode, MULTILOCAL, SINGLEPLAYER};
+use f2_game::define::{mode, SINGLEPLAYER};
 use f2_game::ids::ActorId;
 use f2_game::{Effect, Game, TickInput};
 use f2_platform::{dik, Bindings, ControllerFamily, DisplaySettings, HopBuffer, InputMapper, KeyboardState, PadData, Profile, RawEvent, RawPad, TextureFilter};
+use crate::netplay::{NetNote, NetPlay};
 use std::collections::{HashMap, VecDeque};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// One logical frame (`gameSpeed == 4096`).
 pub const TICK: Duration = Duration::from_nanos(1_000_000_000 / 60);
@@ -126,6 +127,20 @@ pub struct App {
     /// The texture last copied onto the arcade screen (`menus.arcade_screen_copy`) and
     /// the source image it came from.
     arcade_copied: Option<(String, TexHandle)>,
+    // netplay (P6-2)
+    /// Online match (lobby / running / ended), `--host` / `--join`.
+    pub net: Option<NetPlay<f2_net::UdpTransport>>,
+    /// Clock of the netplay session.
+    net_t0: Instant,
+    /// After a match ended abnormally: when to return to the frontend.
+    net_leave_at: Option<Instant>,
+}
+
+/// `--host` / `--join` request from the command line.
+#[derive(Clone, Debug)]
+pub enum NetRequest {
+    Host { world: u32, level: u32, players: u8, port: u16, ip: Option<std::net::IpAddr> },
+    Join { code: String },
 }
 
 impl App {
@@ -191,6 +206,9 @@ impl App {
             save_data: None,
             pad_script: None,
             arcade_copied: None,
+            net: None,
+            net_t0: Instant::now(),
+            net_leave_at: None,
         };
         app.rebuild_renderer();
         app.install_game_hooks();
@@ -415,16 +433,7 @@ impl App {
     /// Local multiplayer on `world`/`level` with `n` frogs (what `GoMulti`, options.c:966,
     /// sets up before `InitLevel`): one screen, the camera framing all frogs.
     pub fn start_multi(&mut self, world: u32, level: u32, n: i32) -> Result<(), String> {
-        let g = &mut self.game;
-        g.session.data = Some(std::sync::Arc::new(self.data.clone()));
-        g.game_state.mode = mode::INGAME_MODE;
-        g.game_state.multi = MULTILOCAL;
-        g.frogger.num_frogs = n.clamp(2, 4);
-        g.multi.multiplayer_mode = f2_game::multi::MULTI_GAME_TYPES.get(world as usize).copied().filter(|&m| m != 0).unwrap_or(f2_game::multi::MULTIMODE_RACE);
-        for i in 0..4 {
-            g.frogger.player[i].character = i as _;
-        }
-        let assets = g.load_level(world, level, &self.data)?;
+        let assets = crate::netplay::setup_multi(&mut self.game, &self.data, world, level, n)?;
         self.dispatch_effects();
         self.load_scene(world, level, &assets);
         Ok(())
@@ -683,6 +692,10 @@ impl App {
             }
         }
         self.next_step();
+        if self.net.is_some() {
+            self.net_update(dt, joypads);
+            return;
+        }
         if self.video.is_some() || (self.scene.is_none() && !self.has_session()) {
             self.kb.pressed.clear();
             return;
@@ -708,6 +721,21 @@ impl App {
     pub fn tick(&mut self, raw: &[Option<RawPad>]) {
         self.prev = render::snapshot(&self.game);
         self.prev_cam = Some(render::game_camera(&self.game));
+        let pads = self.read_pads(raw);
+        self.game.tick(TickInput { pads });
+        self.ticks += 1;
+        self.dispatch_effects();
+        self.process_level_loads();
+        self.grab_textures();
+        self.update_game_view();
+        if self.game.backdrop.tiled_backdrop.is_some() {
+            self.tile_scroll.step(self.game.game_speed);
+        }
+    }
+
+    /// This tick's pads from the local devices (keyboard, joypads, hop buffer, pad script).
+    /// Online, pad 0 is the local player's (game slot `net.local_slot`).
+    fn read_pads(&mut self, raw: &[Option<RawPad>]) -> [u16; 4] {
         let mut kb = std::mem::take(&mut self.kb);
         if self.free_cam.is_some() {
             // The free camera owns the keyboard.
@@ -717,9 +745,10 @@ impl App {
         let joypads = self.bindings.joypad_states(&self.mapper.controllers, raw, self.deadzone);
         self.mapper.process(&mut self.pad, &kb, &joypads);
         let window = if self.profile == Profile::Enhanced { self.hop_frames } else { 0 };
+        let net_slot = self.net.as_ref().filter(|n| n.is_running()).map(|n| n.local_slot as usize);
         for i in 0..4 {
             self.hop[i].window = window;
-            let can = self.can_accept_hop(i);
+            let can = self.can_accept_hop(if i == 0 { net_slot.unwrap_or(0) } else { i });
             let p = self.hop[i].apply(self.pad.pad(i), can);
             self.pad.set_pad(i, p);
         }
@@ -732,14 +761,118 @@ impl App {
         if let Some(b) = self.pad_override {
             pads[0] = b;
         }
-        self.game.tick(TickInput { pads });
-        self.ticks += 1;
-        self.dispatch_effects();
-        self.process_level_loads();
-        self.grab_textures();
-        self.update_game_view();
-        if self.game.backdrop.tiled_backdrop.is_some() {
-            self.tile_scroll.step(self.game.game_speed);
+        pads
+    }
+
+    // ------------------------------------------------------------ netplay
+
+    /// Starts hosting / joining an online match.
+    pub fn start_net(&mut self, req: NetRequest) -> Result<(), String> {
+        self.net_t0 = Instant::now();
+        match req {
+            NetRequest::Host { world, level, players, port, ip } => {
+                self.fresh_game();
+                self.start_multi(world, level, players as i32)?;
+                self.net = Some(crate::netplay::udp_host(self.game.clone(), world, level, players, port, ip)?);
+            }
+            NetRequest::Join { code } => self.net = Some(crate::netplay::udp_join(&code)?),
+        }
+        Ok(())
+    }
+
+    /// The pristine game every peer starts a match from (`Game::new` + host hooks).
+    fn fresh_game(&mut self) {
+        self.game = Game::new();
+        self.install_game_hooks();
+    }
+
+    /// One presented frame of an online match: network, then fixed 60 Hz ticks.
+    fn net_update(&mut self, dt: Duration, joypads: &[Option<RawPad>]) {
+        if let Some(t) = self.net_leave_at {
+            if Instant::now() >= t {
+                self.net_leave_at = None;
+                self.net = None;
+                self.status.clear();
+                self.start_frontend();
+            }
+            return;
+        }
+        let now = self.net_t0.elapsed().as_millis() as u64;
+        let notes = self.net.as_mut().map(|n| n.poll(now)).unwrap_or_default();
+        for n in notes {
+            self.net_note(n);
+        }
+        if !self.net.as_ref().is_some_and(|n| n.is_running()) || self.video.is_some() {
+            self.kb.pressed.clear();
+            self.acc = Duration::ZERO;
+            return;
+        }
+        self.acc += dt.min(MAX_CATCHUP);
+        while self.acc >= TICK {
+            self.acc -= TICK;
+            self.net_tick(joypads);
+            if !self.net.as_ref().is_some_and(|n| n.is_running()) {
+                break;
+            }
+        }
+    }
+
+    fn net_note(&mut self, n: NetNote) {
+        match n {
+            NetNote::Started { setup, slot, players } => {
+                eprintln!("frogger: online match: level {}-{}, {players} players, we are P{}", setup.world, setup.level, slot + 1);
+                if slot != 0 {
+                    // Joiner: build the start state the host described.
+                    self.fresh_game();
+                    let res = self.start_multi(setup.world, setup.level, setup.frogs as i32);
+                    let Some(net) = self.net.as_mut() else { return };
+                    match res {
+                        Ok(()) => {
+                            let _ = net.accept_game(self.game.clone());
+                        }
+                        Err(e) => {
+                            let n = net.end(format!("level {}-{}: {e}", setup.world, setup.level));
+                            self.net_note(n);
+                            return;
+                        }
+                    }
+                }
+                self.acc = Duration::ZERO;
+            }
+            NetNote::Ended { reason } => {
+                if reason == "match over" {
+                    // The game went back to the frontend by itself: continue offline.
+                    self.net = None;
+                } else {
+                    self.status = format!("online: {reason}");
+                    self.net_leave_at = Some(Instant::now() + Duration::from_secs(5));
+                }
+            }
+        }
+    }
+
+    /// One online tick: the local pad goes to the session, which simulates (and corrects
+    /// mispredicted frames of) the match; effects of the new frame are dispatched.
+    fn net_tick(&mut self, raw: &[Option<RawPad>]) {
+        let prev = render::snapshot(&self.game);
+        let prev_cam = render::game_camera(&self.game);
+        let pads = self.read_pads(raw);
+        let Some(net) = self.net.as_mut() else { return };
+        std::mem::swap(&mut self.game, &mut net.sim.game);
+        let (step, note) = net.step(pads[0]);
+        std::mem::swap(&mut self.game, &mut net.sim.game);
+        if let crate::netplay::Step::Advanced { .. } = step {
+            self.prev = prev;
+            self.prev_cam = Some(prev_cam);
+            self.ticks += 1;
+            self.dispatch_effects();
+            self.process_level_loads();
+            if self.game.backdrop.tiled_backdrop.is_some() {
+                self.tile_scroll.step(self.game.game_speed);
+            }
+        }
+        if let Some(n) = note {
+            self.net_note(n);
         }
     }
 
@@ -948,6 +1081,9 @@ impl App {
         if !self.status.is_empty() {
             lines.push(self.status.clone());
         }
+        if let Some(n) = &self.net {
+            lines.extend(n.overlay_lines());
+        }
         if let Some((m, _)) = &self.osd {
             lines.push(m.clone());
         }
@@ -990,7 +1126,7 @@ impl App {
 
     /// Whether there is anything left to do (videos/levels).
     pub fn idle(&self) -> bool {
-        self.video.is_none() && self.scene.is_none() && self.steps.is_empty() && !self.has_session()
+        self.video.is_none() && self.scene.is_none() && self.steps.is_empty() && !self.has_session() && self.net.is_none()
     }
 
     /// Whether the game runs its own flow (title, FMVs, frontend) from a session.

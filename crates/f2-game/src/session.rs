@@ -44,7 +44,7 @@ impl SessionConfig {
 }
 
 /// Session state (not a C global: the port's link between the simulation and level files).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SessionState {
     pub data: Option<Arc<dyn DataSource + Send + Sync>>,
     /// Levels loaded since the host last called [`Game::take_level_loads`].
