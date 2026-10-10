@@ -16,3 +16,6 @@ f2-formats = { path = "../f2-formats" }
 sha1.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+zip.workspace = true

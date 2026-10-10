@@ -691,6 +691,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "zip",
 ]
 
 [[package]]
@@ -869,7 +870,9 @@ dependencies = [
  "f2-etc",
  "f2-formats",
  "f2-game",
+ "f2-import",
  "f2-math",
+ "f2-media",
  "f2-modkit",
  "f2-mods",
  "f2-net",
