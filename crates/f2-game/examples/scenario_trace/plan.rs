@@ -942,9 +942,8 @@ fn under_par(g: &Game) -> Option<u32> {
     None
 }
 
-fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
+fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts, sim_budget: u64) -> Explore {
     let max_cells: usize = std::env::var("F2_PLAN_MAX_CELLS").ok().and_then(|s| s.parse().ok()).unwrap_or(6000);
-    let sim_budget: u64 = std::env::var("F2_PLAN_SIM_BUDGET").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000_000);
     let mut index: HashMap<(u32, u32, u64), usize> = HashMap::new();
     pl.wp = 0;
     let (l0, d0) = pl.ge_progress(g0);
@@ -1245,7 +1244,8 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
                 step(&mut root, [0; 4], [0; 4]);
             }
             pl.visited = vec![false; root.map.tiles.len()];
-            match go_explore(&mut pl, &root, o) {
+            let budget: u64 = std::env::var("F2_PLAN_SIM_BUDGET").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000_000);
+            match go_explore(&mut pl, &root, o, budget) {
                 Explore::Found(p) => {
                     let mut v = vec![[0u16; 4]; wait as usize];
                     v.extend(p);
@@ -1256,7 +1256,35 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
                     // Pad the found route with idle ticks somewhere along it (latest
                     // first), so the level is not finished under par; else restart the
                     // search from a later start.
-                    if let Some(v) = pad_for_par(&pl, &root, &p, d + 120) {
+                    let mut fixed = pad_for_par(&pl, &root, &p, d + 120);
+                    // Else wait somewhere along the route and search the rest again from
+                    // there (a short search: the goal is near).
+                    let mut at = p.len();
+                    while fixed.is_none() && at > 300 {
+                        at -= 300;
+                        let mut g2 = root.clone();
+                        let mut prev2 = [0u16; 4];
+                        let mut ok = true;
+                        for &h in &p[..at] {
+                            ok &= step(&mut g2, prev2, h);
+                            prev2 = h;
+                        }
+                        for _ in 0..d + 120 {
+                            ok &= step(&mut g2, prev2, [0; 4]);
+                            prev2 = [0; 4];
+                        }
+                        if !ok || is_dead(&g2, 0) || prev2 != [0; 4] {
+                            continue;
+                        }
+                        eprintln!("plan: re-search from t={at} + {} idle ticks", d + 120);
+                        if let Explore::Found(rest) = go_explore(&mut pl, &g2, o, 3_000_000) {
+                            let mut v = p[..at].to_vec();
+                            v.extend(std::iter::repeat_n([0u16; 4], (d + 120) as usize));
+                            v.extend(rest);
+                            fixed = Some(v);
+                        }
+                    }
+                    if let Some(v) = fixed {
                         let mut w = vec![[0u16; 4]; wait as usize];
                         w.extend(v);
                         found = Some(w);
