@@ -205,8 +205,11 @@ impl Game {
                 self.specfx.fx_mut(f).spin = 25;
                 self.set_fx_colour(fx, 191, 255, 0);
             }
-            // moolardCheat ("mullard" sample) is never set in a normal game.
-            self.play_voice(pl, "frogcroak");
+            if self.layout.moolard_cheat {
+                self.play_sample(f2_formats::crc::crc("mullard"), None, 0, crate::anim::SAMPLE_VOLUME, -1);
+            } else {
+                self.play_voice(pl, "frogcroak");
+            }
         }
 
         let afc = self.act_frame_count;

@@ -240,7 +240,7 @@ impl Game {
                     let (cz, co) = (self.hud.arcade_hud.coin_zoom, self.hud.arcade_hud.coins_over);
                     let (ox, oy) = self.overlays.get(co).map_or((0, 0), |o| (o.x_pos, o.y_pos));
                     let fpos = self.frogger.frog[p].map(|a| self.actor2.actors[a].actor.position).unwrap_or_default();
-                    // TransformPoint: TODO(port) needs the view transform (multi.rs transform_point).
+                    // TransformPoint (view.rs).
                     let (sx, sy) = self.transform_point(&fpos);
                     if let Some(o) = self.overlays.get_mut(cz) {
                         o.draw = 1;
@@ -565,11 +565,11 @@ impl Game {
             // the C frees the array element and returns NULL, is not modelled).
             let ps = self.sprite.allocate_sprites(1);
             self.garib_mut(id).pool_sprite = ps;
-            // TODO(port): cheatCombos[CHEAT_MAD_GARIBS] -> "RGARIB01".
+            let texture = if self.cheat_mad_garibs() { "RGARIB01" } else { "SCOIN0001" };
             let (r, g, b) = if garib_type == GOLDCOIN_GARIB { (255, 255, 0) } else { (255, 255, 255) };
             let angle = self.rng.random(4096) as i16;
             let s = GaribSprite {
-                texture: "SCOIN0001".to_string(),
+                texture: texture.to_string(),
                 pos,
                 scale_x: 0,
                 scale_y: 0,

@@ -16,7 +16,7 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 
 | C/C++ file | LOC | Rust target | Status | Notes |
 |---|---:|---|---|---|
-| `Common/DefData.c` | 41 | (none) | todo | default hi-score names (`scoreName`); no Rust equivalent (see PORT-GAPS) |
+| `Common/DefData.c` | 41 | f2-game::defdata | ported | dead data (`scoreName`, `hiScoreData`, `saveSlots` unreferenced) |
 | `Common/E3_Demo.c` | 255 | (skip: E3 build) | skip | `E3_LEVELSELECT_MODE` is dead in retail (frontend.rs:458) |
 | `Common/actor2.c` | 1254 | f2-game::actor2 + f2-engine | ported | `DrawActorList`/`GetHeadMatrix` replaced by the wgpu renderer |
 | `Common/anim.c` | 511 | f2-game::anim | ported |  |
@@ -32,18 +32,18 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 | `Common/flatpack.c` | 340 | (PSX only: skip) | skip |  |
 | `Common/frogger.c` | 295 | f2-game::frogger | ported |  |
 | `Common/frogmove.c` | 2190 | f2-game::frogmove | ported |  |
-| `Common/frontend.c` | 2048 | f2-game::frontend | partial | multiplayer HUD hooks (countdown, trophies, penalty slides) TODO; `CreateOverlaysFromLogo`, `SlideTextOverlayToPos` absent |
+| `Common/frontend.c` | 2048 | f2-game::frontend | ported | multiplayer win screens on the real overlays; level-complete/game-over texts still `UiOverlay` stand-ins (PORT-GAPS P2) |
 | `Common/game.c` | 759 | f2-game::game + session | ported | game loop / level init flow in `game.rs` and `session.rs` |
 | `Common/general.c` | 485 | f2-game::general | ported | `cmemcpy`/`lmemcpy`/`smemcpy` not needed |
-| `Common/hud.c` | 1184 | f2-game::hud | partial | `InitMultiHUD`, `EnableMultiHUD`, `DisableMultiHUD`, `UpDateMultiplayerInfo` missing; `SetTimeForLevel`, game-over `PrepareSong` TODO |
+| `Common/hud.c` | 1184 | f2-game::hud | ported | multiplayer HUD included |
 | `Common/language.c` | 243 | f2-game::language | ported |  |
-| `Common/layout.c` | 1329 | f2-game::layout + session | partial | `UpdateCompletedLevel` absent; audio list init/free, `InitTiming`, `StoryStartLevel`, moolard cheat are TODO (layout.rs:570-769) |
+| `Common/layout.c` | 1329 | f2-game::layout + session | ported | `InitTiming` has no state (fixed 60 Hz); `InitSpriteSortArray` is renderer state |
 | `Common/levplay.c` | 173 | f2-game::levplay | ported |  |
 | `Common/map.c` | 847 | f2-game::map (+ f2-formats) | ported |  |
 | `Common/maths.c` | 1848 | f2-math::maths | ported | PSX matrix-stack helpers not needed |
 | `Common/memload.c` | 504 | f2-game::memload (+ f2-formats::entity) | ported | `MemLoadEvents`/`MemLoadString` folded into f2-formats |
 | `Common/menus.c` | 2177 | f2-game::menus | ported | pause menu, cheats, frontend loop, `CheckForExtras` |
-| `Common/multi.c` | 1821 | f2-game::multi | partial | all game logic ported; HUD calls TODO (multi.rs:343,807,1466,1469); `TransformPoint` returns origin (multi.rs:811) |
+| `Common/multi.c` | 1821 | f2-game::multi | ported | no retail trace for local multiplayer yet (PORT-GAPS) |
 | `Common/newpsx.c` | 55 | (PSX only: skip) | skip |  |
 | `Common/options.c` | 3253 | f2-game::options | ported | `RunTeaserScreens`/`ToggleStereo` unused on PC; Gouraud helpers done in-line |
 | `Common/overlays.c` | 150 | f2-game::overlays | ported |  |
@@ -52,14 +52,14 @@ Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 | `Common/platform.c` | 1243 | f2-game::platform | ported |  |
 | `Common/ptexture.c` | 497 | f2-game::ptexture | ported |  |
 | `Common/savegame.c` | 180 | f2-game::savegame | ported |  |
-| `Common/script.c` | 1432 | f2-game::script | partial | all commands ported; `TrainingHint` call still only logs (script.rs:717) |
+| `Common/script.c` | 1432 | f2-game::script | ported | all commands ported |
 | `Common/sndview.c` | 25 | (debug: skip) | skip |  |
 | `Common/specfx.c` | 2457 | f2-game::specfx | ported |  |
 | `Common/sprite.c` | 502 | f2-game::sprite | ported | `Print*Sprite` drawing replaced by `frogger::fx` |
 | `Common/story.c` | 92 | f2-game::story | ported |  |
 | `Common/textover.c` | 453 | f2-game::textover | ported | `PrintText*` drawing replaced by `frogger::overlay` |
 | `Common/tongue.c` | 822 | f2-game::tongue | ported | `CalcTongueNodes` done in the renderer |
-| `Common/training.c` | 148 | f2-game::training | ported | script call site only logs (see script.c) |
+| `Common/training.c` | 148 | f2-game::training | ported | hints from the level script (`EV_HINT`) |
 | `Common/types.c` | 37 | f2-math::types | ported |  |
 | `PC/Main.cpp` | 1025 | frogger (bin: main/app) + f2-platform | replaced | window, loop, args; registry/CD-check/installer dropped |
 | `PC/actor.cpp` | 293 | f2-game::pc_actor | ported |  |

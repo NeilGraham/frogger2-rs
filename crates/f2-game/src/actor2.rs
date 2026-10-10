@@ -463,9 +463,8 @@ impl Game {
         self.actor2.act_list.ids(&self.actor2.actors).into_iter().filter(|&id| self.actor2.actors[id].actor.actual_actor.list_num == list).collect()
     }
 
-    // TODO(port): TeleportActorToTile (Common/actor2.c:1230) needs player/currTile/
-    // currPlatform/frogFacing/camFacing state (frogger.c, frogmove.c, cam.c waves).
-    // TODO(port): ResetUniqueActorList - declared only, no PC definition.
+    // TeleportActorToTile (Common/actor2.c:1230) is ported in evenfunc.rs.
+    // ResetUniqueActorList: declared only, no PC definition (nothing to port).
 }
 
 #[cfg(test)]

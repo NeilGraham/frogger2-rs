@@ -467,11 +467,17 @@ pub struct LayoutState {
     pub num_levels_played: i32,
     /// `loadingLevel`.
     pub loading_level: bool,
+    /// `moolardCheat` (layout.c:111): the croak plays the "mullard" sample.
+    #[serde(default)]
+    pub moolard_cheat: bool,
 }
+
+/// The file whose presence turns on `moolardCheat` (layout.c:968, relative to the data root).
+pub const MOOLARD_CHEAT_FILE: &str = "m\\u\\l\\l\\a\\r\\d\\is_my_daddy.txt";
 
 impl Default for LayoutState {
     fn default() -> Self {
-        LayoutState { world_visual_data: ORIG_WORLD_VISUAL_DATA, num_levels_played: 0, loading_level: false }
+        LayoutState { world_visual_data: ORIG_WORLD_VISUAL_DATA, num_levels_played: 0, loading_level: false, moolard_cheat: false }
     }
 }
 
@@ -565,11 +571,17 @@ impl Game {
         Ok(())
     }
 
-    /// Port of `FreeAllLists` (Common/layout.c:1034) for the state ported so far.
+    /// Port of `UpdateCompletedLevel` (Common/layout.c:606): opens the next level of the
+    /// world. Unused in retail (its one call, script.c:1212, is commented out).
+    pub fn update_completed_level(&mut self, world_id: u32, level_id: u32) {
+        if level_id < 3 {
+            self.layout.world_visual_data[world_id as usize].level_visual_data[level_id as usize + 1].level_open = LEVEL_OPEN;
+        }
+    }
+
+    /// Port of `FreeAllLists` (Common/layout.c:1034).
     pub fn free_all_lists(&mut self) {
-        // TODO(port): StopSong, FreeAmbientSoundList (audio),
-        // FreeSpecFXList, FreeMultiplayer, FreeParticleList,
-        // overlay/sprite lists (later waves).
+        self.stop_song(); // PC: StopSong()
         // ResetBabies runs after FreeMap in the original; `numBabies` (kept in `map` here)
         // is not cleared by FreeMap, so reset with the old count first.
         self.reset_babies();
@@ -641,10 +653,11 @@ impl Game {
         self.last_act_frame_count = 0;
         self.act_frame_count = 0;
         self.frame_count = 1;
-        // TODO(port): InitTiming(60); StoryStartLevel() in story mode.
+        // InitTiming(60) resets the MDX wall-clock frame timer: the port runs fixed 60 Hz
+        // ticks (no state). StoryStartLevel() ran in `init_level_after_free`.
         // wave E: InitSpriteList
         self.sprite.init_sprite_list();
-        // TODO(port): InitSpriteSortArray (renderer), InitSampleList, InitAmbientSoundList.
+        // InitSpriteSortArray is renderer state; InitSampleList/InitAmbientSoundList below.
 
         // ------ Load data from disk ------------
         if let Some(f) = texture_bank_file(INGAMEGENERIC_TEX_BANK) {
@@ -761,12 +774,16 @@ impl Game {
                 self.game_state.multi = crate::define::SINGLEPLAYER;
             }
         }
-        // TODO(port): InitTiming(60).
+        // InitTiming(60): no state in the port (fixed 60 Hz ticks).
         self.act_frame_count = 0;
         // ambient: un_pause_audio (PrepareSong happens in init_level_finish)
         self.un_pause_audio();
         // drawLandscape, ScreenFade, InitTrainingMode (FRONTEND4) / train = 0, PrepareSong.
-        // TODO(port): moolard cheat file.
+        // PC: `if (fileLoad("m\\u\\l\\l\\a\\r\\d\\is_my_daddy.txt")) moolardCheat = 1;`
+        // probed in the game data root (never reset).
+        if data.read(MOOLARD_CHEAT_FILE).is_some() {
+            self.layout.moolard_cheat = true;
+        }
         self.init_level_finish(world, level);
         self.frogger.player[0].old_lives = self.frogger.player[0].lives;
         self.game.start_cam = 1;

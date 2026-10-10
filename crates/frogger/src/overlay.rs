@@ -185,7 +185,6 @@ fn ui_overlays(game: &Game) -> Vec<&UiOverlay> {
         &f.extra_icon,
         &f.coin_icon,
         &f.b_icon,
-        &f.the_end_text,
         &f.game_over_text,
     ]
     .into_iter()
@@ -196,13 +195,6 @@ fn ui_overlays(game: &Game) -> Vec<&UiOverlay> {
     v.extend(f.o_text.iter().flatten());
     v.extend(f.sparkles.iter().flatten());
     v.extend(f.flying_coins.iter());
-    v.extend(f.menu_text.iter().flatten());
-    if let Some(w) = &f.mg_win {
-        v.extend(w.count_text_over.iter().flatten());
-    }
-    if let Some(t) = &game.training.train {
-        v.extend(std::iter::once(&t.bg).chain(t.txtover.iter()).flatten());
-    }
     v
 }
 
