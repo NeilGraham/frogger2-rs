@@ -1024,8 +1024,10 @@ impl App {
 
         self.acc += dt.min(MAX_CATCHUP);
         while self.acc >= TICK {
+            // Consume the tick before running it: a tick that loads a level or starts a
+            // video resets `acc` to zero, and subtracting afterwards would underflow.
+            self.acc = self.acc.saturating_sub(TICK);
             self.tick(joypads);
-            self.acc -= TICK;
             if self.video.is_some() {
                 // FMVPLAY_MODE: the simulation waits for the video.
                 self.acc = Duration::ZERO;
@@ -1141,7 +1143,7 @@ impl App {
         }
         self.acc += dt.min(MAX_CATCHUP);
         while self.acc >= TICK {
-            self.acc -= TICK;
+            self.acc = self.acc.saturating_sub(TICK);
             self.net_tick(joypads);
             if !self.net.as_ref().is_some_and(|n| n.is_running()) {
                 break;
