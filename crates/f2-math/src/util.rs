@@ -2,11 +2,11 @@
 //! (Common/newpsx.h), `rsin`/`rcos` (PC/libgte.h), `utilCalcAngle` (PC/islutil.h), and the
 //! MSVC6 float->int conversion (`_ftol`).
 //!
-//! Float caveat: the retail exe (MSVC 6, x87) evaluates these in x87 registers. We model the
-//! default MSVC CRT precision control (53-bit, identical to `f64`). If Direct3D switched
-//! the FPU to 24-bit precision at runtime, or where the CRT `sin`/`cos`/`acos`/`atan2`
-//! (x87 `fsin`/`fpatan`) differ from libm by an ulp, the truncated results may differ in
-//! rare cases; the trace oracle is authoritative for those.
+//! Floats: the retail exe (MSVC 6, x87) runs under Direct3D's 24-bit precision control.
+//! `rsin`/`rcos`/`utilCalcAngle` (and `arccos` in maths.rs) emulate that exactly with
+//! IEEE `f64` operations and the pure-Rust [`crate::detfloat`] functions, so they are
+//! bit-identical on every OS/CPU and match the host's real x87 on all audited inputs
+//! (all 2^32 `rsin`/`rcos` arguments; see docs/DECISIONS.md, docs/NETPLAY.md §9).
 
 use crate::detfloat;
 use crate::fixed::Fixed;

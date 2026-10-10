@@ -12,16 +12,28 @@
 //! cargo run --release -p f2-math --example float_audit -- dump-trig R | dump-acos
 //! ```
 
-use f2_math::{arccos, arccos_f64, detfloat, ftol32, rcos, rsin, util_calc_angle, PI2};
+use f2_math::{arccos, arccos_f64, detfloat, div_pc24, ftol32, mul_pc24, rcos, rcos_f64, rsin, rsin_f64, util_calc_angle, util_calc_angle_f64, PI2};
 
-// ---- the pre-detfloat formulas, on the platform libm -------------------------------------
+// ---- the same formulas (x87 PC24 and 53-bit), on the platform libm ------------------------
+fn arg_pc24(x: i32) -> f64 {
+    mul_pc24((x as f32 * (1.0 / 4096.0)) as f64, PI2) as f64
+}
 fn rsin_sys(x: i32) -> i32 {
-    ftol32((x as f64 * (1.0 / 4096.0) * PI2).sin() * 4096.0)
+    ftol32((arg_pc24(x).sin() as f32) as f64 * 4096.0)
 }
 fn rcos_sys(x: i32) -> i32 {
-    ftol32((x as f64 * (1.0 / 4096.0) * PI2).cos() * 4096.0)
+    ftol32((arg_pc24(x).cos() as f32) as f64 * 4096.0)
 }
 fn angle_sys(adj: i32, opp: i32) -> i32 {
+    ftol32(div_pc24((adj as f64).atan2(opp as f64), 6.283185308) as f64 * 4096.0)
+}
+fn rsin_f64_sys(x: i32) -> i32 {
+    ftol32((x as f64 * (1.0 / 4096.0) * PI2).sin() * 4096.0)
+}
+fn rcos_f64_sys(x: i32) -> i32 {
+    ftol32((x as f64 * (1.0 / 4096.0) * PI2).cos() * 4096.0)
+}
+fn angle_f64_sys(adj: i32, opp: i32) -> i32 {
     ftol32(((adj as f64).atan2(opp as f64) / 6.283185308) * 4096.0)
 }
 fn arccos_sys(cos: i32) -> i32 {
@@ -109,6 +121,7 @@ fn audit(full: bool) -> u64 {
     let tag = if full { "all i32" } else { "|x| <= 2^22" };
     bad += report(&format!("rsin ({tag})"), (hi - lo + 1) as u64, par_check(lo, hi, |x| rsin(x) == rsin_sys(x)));
     bad += report(&format!("rcos ({tag})"), (hi - lo + 1) as u64, par_check(lo, hi, |x| rcos(x) == rcos_sys(x)));
+    bad += report(&format!("rsin_f64/rcos_f64 ({tag})"), (hi - lo + 1) as u64, par_check(lo, hi, |x| rsin_f64(x) == rsin_f64_sys(x) && rcos_f64(x) == rcos_f64_sys(x)));
 
     // arccos: |cos| > 4096 is NaN -> 0 on both; check a margin past the domain.
     bad += report("arccos (24-bit, cos in -8192..=8192)", 16385, par_check(-8192, 8192, |c| arccos(c) == arccos_sys(c)));
@@ -120,7 +133,7 @@ fn audit(full: bool) -> u64 {
     bad += report(
         "util_calc_angle (all pairs |adj|,|opp| <= 2048)",
         ((2 * r + 1) * (2 * r + 1)) as u64,
-        par_check(-r, r, |a| (-r as i32..=r as i32).all(|o| util_calc_angle(a, o) == angle_sys(a, o))),
+        par_check(-r, r, |a| (-r as i32..=r as i32).all(|o| util_calc_angle(a, o) == angle_sys(a, o) && util_calc_angle_f64(a, o) == angle_f64_sys(a, o))),
     );
     let samples = 50_000_000u64;
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
@@ -129,7 +142,7 @@ fn audit(full: bool) -> u64 {
         let shift = (i % 32) as u32; // magnitudes 2^0 .. 2^31
         let a = (rng.next() as i32) >> shift;
         let o = (rng.next() as i32) >> ((rng.next() % 32) as u32);
-        if util_calc_angle(a, o) != angle_sys(a, o) {
+        if util_calc_angle(a, o) != angle_sys(a, o) || util_calc_angle_f64(a, o) != angle_f64_sys(a, o) {
             cnt += 1;
             if first.len() < 20 {
                 first.push(a);
