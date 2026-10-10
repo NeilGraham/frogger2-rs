@@ -31,6 +31,8 @@ pub struct StartInfo<A> {
     pub host: A,
     /// Other players (for a spectator: empty — it only talks to the host).
     pub peers: Vec<(PeerKind, A)>,
+    /// The host's [`HostLobby::set_app_data`].
+    pub app_data: Vec<u8>,
 }
 
 /// The hosting side of a lobby. The host is always player slot 0.
@@ -44,6 +46,7 @@ pub struct HostLobby<T: Transport> {
     spectators: Vec<Peer<T::Addr>>,
     events: Vec<LobbyEvent<T::Addr>>,
     stats: NetStats,
+    app_data: Vec<u8>,
 }
 
 impl<T: Transport> HostLobby<T> {
@@ -65,7 +68,20 @@ impl<T: Transport> HostLobby<T> {
             spectators: Vec::new(),
             events: Vec::new(),
             stats: NetStats::default(),
+            app_data: Vec::new(),
         })
+    }
+
+    /// Opaque data sent to every participant in `Start` (e.g. the match set-up), at most
+    /// [`crate::wire::MAX_APP_DATA`] bytes (longer data is truncated).
+    pub fn set_app_data(&mut self, data: Vec<u8>) {
+        self.app_data = data;
+        self.app_data.truncate(wire::MAX_APP_DATA);
+    }
+
+    /// Joined players `(slot, address)`, excluding the host (slot 0).
+    pub fn players(&self) -> Vec<(u8, T::Addr)> {
+        self.players.iter().map(|(s, p)| (*s, p.addr)).collect()
     }
 
     pub fn nonce(&self) -> u16 {
@@ -133,7 +149,7 @@ impl<T: Transport> HostLobby<T> {
         let start_for = |your_slot: u8, to: Option<T::Addr>| -> Msg<T::Addr> {
             let mut players = vec![(0u8, PeerLoc::Sender)];
             players.extend(table.iter().filter(|(_, a)| Some(*a) != to).map(|(s, a)| (*s, PeerLoc::Addr(*a))));
-            Msg::Start(StartMsg { config: config.clone(), your_slot, players })
+            Msg::Start(StartMsg { config: config.clone(), your_slot, players, app_data: self.app_data.clone() })
         };
         let mut starts = Vec::new();
         for (slot, p) in &mut self.players {
@@ -231,7 +247,7 @@ impl<T: Transport> JoinLobby<T> {
         } else {
             Vec::new()
         };
-        StartInfo { config: s.config, nonce: self.nonce, local_slot, host: self.host, peers }
+        StartInfo { config: s.config, nonce: self.nonce, local_slot, host: self.host, peers, app_data: s.app_data }
     }
 
     /// Build the player session from a `Started` status.

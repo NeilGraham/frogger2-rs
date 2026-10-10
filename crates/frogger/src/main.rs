@@ -12,6 +12,11 @@
 //! `--pad-script FILE` drives player 1's pad: lines `TICK BUTTONS` hold the buttons
 //! (`cross+up`, `none`, or a hex mask) from that tick on; `TICK shot FILE.png` writes a
 //! screenshot before that tick (headless).
+//!
+//! Online play (`docs/NETPLAY.md`): `frogger --host [--port N] [--host-addr IP] --multi W L N`
+//! hosts an N-player match and prints a join code; `frogger --join CODE` joins it. With
+//! `--headless --frames F` both run F ticks of scripted pads (`--pad-seed S`) without a window
+//! and print the final state checksum (`NETPLAY_FINAL ...`).
 //! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 fullscreen, Esc quit (Enter/Esc skip videos);
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
@@ -21,12 +26,13 @@ mod book;
 mod controls;
 mod data;
 mod fx;
+mod netplay;
 mod overlay;
 mod padscript;
 mod render;
 mod video;
 
-use app::{App, Step};
+use app::{App, NetRequest, Step};
 use f2_audio::AudioEngine;
 use f2_engine::{GpuContext, WindowSurface};
 use f2_platform::bindings::auto_assign;
@@ -59,6 +65,11 @@ struct Args {
     video: Option<String>,
     save: Option<PathBuf>,
     dev_unlock: bool,
+    host: bool,
+    port: u16,
+    host_addr: Option<std::net::IpAddr>,
+    join: Option<String>,
+    pad_seed: u32,
 }
 
 fn usage() -> ! {
@@ -67,6 +78,7 @@ fn usage() -> ! {
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
          \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
+         online: --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS | --join CODE  [--pad-seed S (headless)]\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 controls, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -98,6 +110,11 @@ fn parse_args() -> Args {
         video: None,
         save: None,
         dev_unlock: false,
+        host: false,
+        port: netplay::DEFAULT_PORT,
+        host_addr: None,
+        join: None,
+        pad_seed: 1,
     };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
@@ -113,6 +130,11 @@ fn parse_args() -> Args {
             "--frontend" => a.frontend = true,
             "--save" => a.save = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--dev-unlock" => a.dev_unlock = true,
+            "--host" => a.host = true,
+            "--port" => a.port = num(it.next()).try_into().unwrap_or_else(|_| usage()),
+            "--host-addr" => a.host_addr = Some(it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
+            "--join" => a.join = Some(it.next().unwrap_or_else(|| usage())),
+            "--pad-seed" => a.pad_seed = num(it.next()),
             "--video" => a.video = Some(it.next().unwrap_or_else(|| usage())),
             "--boot" => a.boot = true,
             "--multi" => {
@@ -179,7 +201,28 @@ fn main() {
     };
     eprintln!("frogger: data {}", data.rendition.display());
 
+    let net = match (&args.join, args.host) {
+        (Some(_), true) => usage(),
+        (Some(code), false) => Some(NetRequest::Join { code: code.clone() }),
+        (None, true) => {
+            let Some((world, level, players)) = args.multi else {
+                eprintln!("frogger: --host needs --multi WORLD LEVEL PLAYERS");
+                std::process::exit(2);
+            };
+            Some(NetRequest::Host { world, level, players: players.clamp(2, 4) as u8, port: args.port, ip: args.host_addr })
+        }
+        (None, false) => None,
+    };
+    if let (Some(req), true) = (&net, args.headless) {
+        if let Err(e) = headless_net(&data, req.clone(), &args) {
+            eprintln!("frogger: netplay: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let steps: Vec<Step> = match args.level {
+        _ if net.is_some() => Vec::new(),
         _ if args.video.is_some() => vec![Step::Video(args.video.clone().unwrap())],
         _ if args.frontend => vec![Step::Frontend],
         _ if args.boot => vec![Step::Boot],
@@ -196,7 +239,7 @@ fn main() {
         // The game's own start-up: title, logo FMVs, frontend.
         None => vec![Step::Boot],
     };
-    let res = if args.headless { headless(data, &cfg, &args, steps) } else { run_window(data, cfg, &args, steps) };
+    let res = if args.headless { headless(data, &cfg, &args, steps) } else { run_window(data, cfg, &args, steps, net) };
     if let Err(e) = res {
         eprintln!("frogger: {e}");
         std::process::exit(1);
@@ -228,6 +271,18 @@ fn make_audio(cfg: &Config, mute: bool) -> AudioEngine {
 }
 
 // ------------------------------------------------------------------ headless
+
+/// `--headless` with `--host`/`--join`: an online match without window or GPU.
+fn headless_net(data: &data::Data, req: NetRequest, args: &Args) -> Result<(), String> {
+    let net = match req {
+        NetRequest::Host { world, level, players, port, ip } => {
+            let g = netplay::new_match_game(data, world, level, players)?;
+            netplay::udp_host(g, world, level, players, port, ip)?
+        }
+        NetRequest::Join { code } => netplay::udp_join(&code)?,
+    };
+    netplay::run_headless(data, net, args.frames, args.pad_seed).map(|_| ())
+}
 
 /// CI smoke mode: runs N ticks without a window (muted) and renders the last frame offscreen.
 fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Result<(), String> {
@@ -336,6 +391,7 @@ struct Host {
     save_path: PathBuf,
     dev_unlock: bool,
     steps: Vec<Step>,
+    net: Option<NetRequest>,
     app: Option<App>,
     gfx: Option<Gfx>,
     gamepads: Option<Gamepads>,
@@ -396,6 +452,11 @@ impl WindowApp for Host {
                     app.save_path = None;
                 }
                 app.push_steps(std::mem::take(&mut self.steps));
+                if let Some(req) = self.net.take() {
+                    if let Err(e) = app.start_net(req) {
+                        self.error = Some(format!("online: {e}"));
+                    }
+                }
                 self.app = Some(app);
                 self.gfx = Some(g);
             }
@@ -510,7 +571,7 @@ impl WindowApp for Host {
     }
 }
 
-fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>) -> Result<(), String> {
+fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>, net: Option<NetRequest>) -> Result<(), String> {
     let mut wc = WindowConfig::from_config(&cfg);
     if let Some((w, h)) = args.size {
         wc.width = w;
@@ -531,6 +592,7 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>) -> R
         fullscreen: wc.fullscreen,
         cfg,
         steps,
+        net,
         app: None,
         gfx: None,
         gamepads: None,

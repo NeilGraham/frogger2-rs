@@ -19,4 +19,5 @@ f2-bink = { path = "../f2-bink" }
 f2-mods = { path = "../f2-mods" }
 f2-formats = { path = "../f2-formats" }
 f2-math = { path = "../f2-math" }
+f2-net = { path = "../f2-net" }
 wgpu = "=30.0.1"

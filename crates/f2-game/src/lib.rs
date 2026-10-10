@@ -42,6 +42,7 @@ pub mod mdx_actor;
 pub mod memload;
 pub mod menus; // wave G
 pub mod multi;
+pub mod netsync; // P6-2 netplay: snapshot / checksum / resimulate
 pub mod options; // wave G
 pub mod overlays; // wave E
 pub mod particle; // wave E
@@ -76,7 +77,10 @@ pub struct TickInput {
 }
 
 /// The whole simulation state (all former globals).
-#[derive(Default)]
+///
+/// `Clone` is the netplay/rollback snapshot (`netsync.rs`): immutable data (models, level
+/// files, the data source) is shared behind `Arc`s.
+#[derive(Clone, Default)]
 pub struct Game {
     /// `gameState` (`Common/game.c`).
     pub game_state: GameStateStruct,
