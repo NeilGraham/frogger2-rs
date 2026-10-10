@@ -35,11 +35,13 @@ pub struct SessionConfig {
     pub language: i32,
     /// Content of `SaveData\savegame.dat`, if present (`LoadGame`).
     pub save_data: Option<Vec<u8>>,
+    /// P7-1 (mods): levels/strings added by mods; empty = authentic.
+    pub extra_levels: crate::levels::LevelRegistry,
 }
 
 impl SessionConfig {
     pub fn new(data: Arc<dyn DataSource + Send + Sync>) -> SessionConfig {
-        SessionConfig { data, language: LANG_DEFAULT, save_data: None }
+        SessionConfig { data, language: LANG_DEFAULT, save_data: None, extra_levels: Default::default() }
     }
 }
 
@@ -49,6 +51,8 @@ pub struct SessionState {
     pub data: Option<Arc<dyn DataSource + Send + Sync>>,
     /// Levels loaded since the host last called [`Game::take_level_loads`].
     pub level_loads: Vec<LevelLoad>,
+    /// P7-1 (mods): installed level registry ([`Game::install_level_registry`]).
+    pub levels: crate::levels::LevelRegistry,
 }
 
 impl Game {
@@ -59,6 +63,9 @@ impl Game {
         g.load_game_text(&*config.data, config.language);
         g.session.data = Some(config.data.clone());
         g.load_game(config.save_data.as_deref());
+        if !config.extra_levels.is_empty() {
+            g.install_level_registry(config.extra_levels.clone()); // P7-1
+        }
         g.common_init();
         g
     }
@@ -184,7 +191,7 @@ impl Game {
             self.training.train = None;
         }
         // LoadDemoFile for DEMO_MODE: done by `init_level` / `init_demo_level` (needs data).
-        self.prepare_song(world as i16, true);
+        self.prepare_level_song(world, level, true); // PrepareSong (+ P7-1 registry track)
         // UnPauseAudio(); SetMusicVolume(): host audio state.
 
         self.screen_fade(0, 255, 30);

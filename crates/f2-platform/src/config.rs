@@ -21,6 +21,18 @@ pub struct Config {
     /// Selected imported rendition (e.g. `usa`, `eu`); `None` = first installed.
     pub rendition: Option<String>,
     pub input: Input,
+    /// `[mods]`: enabled mods (`docs/modding.md`).
+    pub mods: Mods,
+}
+
+/// `[mods]`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Mods {
+    /// Mod ids in load order (later mods win).
+    pub enabled: Vec<String>,
+    /// Directory holding the mods; `None` = [`crate::paths::default_mods_dir`].
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -236,6 +248,7 @@ impl Default for Config {
             data_root: None,
             rendition: None,
             input: Input::default(),
+            mods: Mods::default(),
         }
     }
 }
@@ -276,6 +289,11 @@ impl Config {
 
     pub fn data_root(&self) -> PathBuf {
         self.data_root.clone().unwrap_or_else(crate::paths::default_data_root)
+    }
+
+    /// The mods directory (`[mods] dir`, else [`crate::paths::default_mods_dir`]).
+    pub fn mods_dir(&self) -> PathBuf {
+        self.mods.dir.clone().unwrap_or_else(crate::paths::default_mods_dir)
     }
 
     /// The keymap; an invalid one falls back to the defaults (like a rubbish registry value).

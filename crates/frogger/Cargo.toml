@@ -17,6 +17,8 @@ f2-platform = { path = "../f2-platform", features = ["window", "gamepad"] }
 f2-audio = { path = "../f2-audio" }
 f2-bink = { path = "../f2-bink" }
 f2-mods = { path = "../f2-mods" }
+f2-modkit = { path = "../f2-modkit" }
+f2-etc = { path = "../../tools/f2-etc" }
 f2-formats = { path = "../f2-formats" }
 f2-math = { path = "../f2-math" }
 wgpu = "=30.0.1"

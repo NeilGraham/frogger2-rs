@@ -35,6 +35,7 @@ pub mod hud; // wave E
 pub mod ids;
 pub mod language;
 pub mod layout;
+pub mod levels; // P7-1 mods: level registry
 pub mod levplay;
 pub mod list;
 pub mod map;

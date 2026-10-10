@@ -3,6 +3,7 @@
 //! ```text
 //! frogger [--data DIR] [--mute] [--level W L | --frontend | --multi W L N] [--size WxH] [--fullscreen] [display options]
 //! frogger --headless --frames N [--level W L | --frontend | --multi W L N] [--size WxH] --screenshot out.png [display options]
+//! mods: [--mods ID,ID...] [--mods-dir DIR] (default: config.toml [mods]; see docs/modding.md)
 //! display options: --profile authentic|enhanced, --msaa N, --render-scale S, --hud-probe
 //! ```
 //! No arguments (windowed) runs the game's own start-up (`--boot`: title, logo FMVs,
@@ -20,6 +21,7 @@ mod app;
 mod book;
 mod controls;
 mod data;
+mod mods;
 mod fx;
 mod overlay;
 mod padscript;
@@ -59,6 +61,9 @@ struct Args {
     video: Option<String>,
     save: Option<PathBuf>,
     dev_unlock: bool,
+    /// `--mods a,b` (replaces `[mods] enabled`; `--mods ""` = none).
+    mods: Option<Vec<String>>,
+    mods_dir: Option<PathBuf>,
 }
 
 fn usage() -> ! {
@@ -67,6 +72,7 @@ fn usage() -> ! {
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
          \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
+         mods: [--mods ID,ID...] (default: config [mods] enabled; \"\" = none) [--mods-dir DIR]\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 controls, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -98,6 +104,8 @@ fn parse_args() -> Args {
         video: None,
         save: None,
         dev_unlock: false,
+        mods: None,
+        mods_dir: None,
     };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
@@ -113,6 +121,8 @@ fn parse_args() -> Args {
             "--frontend" => a.frontend = true,
             "--save" => a.save = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--dev-unlock" => a.dev_unlock = true,
+            "--mods" => a.mods = Some(it.next().unwrap_or_else(|| usage()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+            "--mods-dir" => a.mods_dir = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--video" => a.video = Some(it.next().unwrap_or_else(|| usage())),
             "--boot" => a.boot = true,
             "--multi" => {
@@ -170,7 +180,7 @@ fn main() {
     if let Some(s) = args.render_scale {
         cfg.display.render_scale = Some(s);
     }
-    let data = match data::Data::locate(&cfg, args.data.clone()) {
+    let mut data = match data::Data::locate(&cfg, args.data.clone()) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("frogger: {e}");
@@ -178,6 +188,12 @@ fn main() {
         }
     };
     eprintln!("frogger: data {}", data.rendition.display());
+    let mod_ids = args.mods.clone().unwrap_or_else(|| cfg.mods.enabled.clone());
+    let mods_dir = args.mods_dir.clone().unwrap_or_else(|| cfg.mods_dir());
+    if let Err(e) = data.enable_mods(&mods_dir, &mod_ids) {
+        eprintln!("frogger: {e}");
+        std::process::exit(1);
+    }
 
     let steps: Vec<Step> = match args.level {
         _ if args.video.is_some() => vec![Step::Video(args.video.clone().unwrap())],
@@ -613,6 +629,58 @@ mod tests {
             let _ = std::fs::remove_file(&out);
             assert!(a == b, "authentic render differs from baseline {}", PathBuf::from(base).display());
         }
+    }
+
+    fn hello_mod_data(root: &std::path::Path) -> data::Data {
+        let mut d = data::Data::locate(&Config::default(), Some(root.to_path_buf())).expect("data");
+        let mods = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mods"));
+        d.enable_mods(&mods, &["hello-mod".to_string()]).expect("hello-mod");
+        d
+    }
+
+    /// The example mod (`examples/mods/hello-mod`): its level 0-1 loads through the level
+    /// registry with the ETC script compiled at load, its text override applies, and
+    /// Garden 1 (untouched by the mod) renders exactly as without mods, so the effective
+    /// banks from `f2-modkit` equal the retail ones.
+    #[test]
+    fn hello_mod_pipeline() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let data = hello_mod_data(&root);
+        assert_eq!(data.levels.levels.len(), 1);
+        let mut app = App::new(data.clone(), &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
+        app.push_steps([Step::Level(0, 1)]);
+        app.update(Duration::ZERO, &f2_platform::KeyboardState::default(), &[], true);
+        assert!(app.scene.is_some(), "hello-garden failed to load");
+        for _ in 0..30 {
+            app.tick(&[]);
+        }
+        let g = &app.game;
+        let lvd = g.layout.world_visual_data[0].level_visual_data[1];
+        assert_eq!(lvd.fog, [96, 64, 160u8 as i8]);
+        assert_eq!(g.gamestring(lvd.description_str), "Hello Garden");
+        assert_eq!(g.language.gamestring_by_id("STR_START_GAME"), "Hello, Start!");
+        // `Fog(96, 64, 160, 5, 60)` at the top of script.etc ran.
+        assert_eq!((g.frogger.fog.r, g.frogger.fog.g, g.frogger.fog.b, g.frogger.fog.max), (96, 64, 160, 6000));
+        assert!(g.level_files.script.is_some());
+        assert!(g.map.tiles.len() > 100);
+
+        let plain = garden1(&ctx, &root, 320, 240, Profile::Authentic, None, true);
+        let modded = {
+            let mut app = App::new(hello_mod_data(&root), &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
+            app.set_display(Profile::Authentic, DisplaySettings::ENHANCED);
+            app.push_steps([Step::Level(0, 0)]);
+            app.update(Duration::ZERO, &f2_platform::KeyboardState::default(), &[], true);
+            for _ in 0..120 {
+                app.tick(&[]);
+            }
+            app.draw(320, 240);
+            app.r.render_to_image(app.clear_color()).expect("render")
+        };
+        assert!(plain.pixels == modded.pixels, "Garden 1 differs with hello-mod enabled");
     }
 
     /// Enhanced widescreen keeps the image unstretched: with Hor+ the centred 1440×1080

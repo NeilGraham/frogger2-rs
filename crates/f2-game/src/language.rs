@@ -73,11 +73,14 @@ pub struct LanguageState {
     pub game_text_str: Vec<String>,
     /// `STR_*` id names of `game_text_str` (for code that stores string ids by name).
     pub game_text_ids: Vec<String>,
+    /// P7-1 (mods): strings registered by level manifests (`crate::levels`), addressed as
+    /// `GAMESTRING(LANG_NUM_STRINGS + i)`. Empty in the authentic game.
+    pub extra_strings: Vec<String>,
 }
 
 impl Default for LanguageState {
     fn default() -> Self {
-        LanguageState { game_text_lang: LANG_DEFAULT, game_text_str: Vec::new(), game_text_ids: Vec::new() }
+        LanguageState { game_text_lang: LANG_DEFAULT, game_text_str: Vec::new(), game_text_ids: Vec::new(), extra_strings: Vec::new() }
     }
 }
 
@@ -111,6 +114,8 @@ impl LanguageState {
     pub fn gamestring(&self, n: i32) -> &str {
         if n > 0 && (n as usize) < LANG_NUM_STRINGS {
             self.game_text_str.get(n as usize).map_or("", |s| s.as_str())
+        } else if let Some(s) = (n as usize).checked_sub(LANG_NUM_STRINGS).and_then(|i| self.extra_strings.get(i)).filter(|_| n > 0) {
+            s // P7-1: mod level strings
         } else {
             OUT_OF_RANGE_STRING
         }
@@ -133,11 +138,7 @@ impl Game {
     /// Loads the game text: `gameTextInit("MAPS\LANGUAGE.FLA", LANG_NUM_STRINGS,
     /// LANG_NUMLANGS, lang)`. Logs and leaves the text empty if the file is missing.
     pub fn load_game_text(&mut self, data: &dyn DataSource, lang: i32) {
-        let table = data
-            .read(LANGUAGE_FILE)
-            .ok_or_else(|| format!("missing {LANGUAGE_FILE}"))
-            .and_then(|b| f2_formats::fla::maybe_decompress(b).map_err(|e| e.to_string()))
-            .and_then(|b| StringTable::parse(&b).map_err(|e| e.to_string()));
+        let table: Result<StringTable, String> = data.string_table(LANGUAGE_FILE).unwrap_or_else(|| Err(format!("missing {LANGUAGE_FILE}")));
         match table {
             Ok(t) => self.language.game_text_init(&t, LANG_NUM_STRINGS, lang),
             Err(e) => {

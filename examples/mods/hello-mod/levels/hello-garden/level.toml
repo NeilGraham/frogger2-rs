@@ -1,0 +1,22 @@
+# A new level in worldVisualData slot 0-1 (Garden world, second slot; empty in retail).
+# Play it with:  frogger --mods hello-mod --mods-dir examples/mods --level 0 1
+world = 0
+level = 1
+
+# Start from the retail Garden 1 row: its collision, scenics, entities, banks and sfx map
+# are reused *by name* from the imported game data (nothing is copied into the mod).
+base = [0, 0]
+
+name = "Hello Garden"
+# Dusk sky (fog / clear colour) and a shorter draw distance.
+fog = [96, 64, 160]
+fog_near = 500
+fog_far = 700
+far_clip = 6000
+par_time = 450
+# After completion go back to Garden 1 (world 0, level 0).
+next = [0, 0]
+
+[files]
+# Event script as ETC source, compiled by the game at load time (f2-etc).
+script = "./script.etc"

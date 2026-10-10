@@ -11,6 +11,7 @@
 //! <path>         -> <rendition>/game/<path>   (and mods/<m>/game/<path>)
 //! music/<path>   -> <rendition>/music/<path>  (and mods/<m>/music/<path>)
 //! video/<path>   -> <rendition>/video/<path>  (and mods/<m>/video/<path>)
+//! levels/<path>  -> mods/<m>/levels/<path>     (mod level packages only)
 //! ```
 //!
 //! Per-entry overrides (loose replacements for single entries of a container)
@@ -284,6 +285,8 @@ impl Vfs {
             let (dir, m) = available.iter().find(|(_, m)| m.id == *id).ok_or_else(|| ModError::NotFound(id.to_string()))?;
             m.check_compatible()?;
             self.add_rendition_layers(&format!("mod:{}", m.id), dir);
+            // Level packages (`levels/<id>/level.toml` + files), see `docs/modding.md` §3.
+            self.mount(format!("mod:{}/levels", m.id), "levels", dir.join("levels"));
             loaded.push(m.clone());
         }
         Ok(loaded)

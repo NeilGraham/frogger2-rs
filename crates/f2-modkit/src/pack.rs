@@ -146,6 +146,15 @@ pub fn validate(mod_dir: &Path, rendition: Option<&Path>) -> PackReport {
                     r.errors.push(format!("{shown}: {e}"));
                 }
             }
+            ["game", "maps", f] if matches!(ext, "etc" | "fes") => {
+                r.count("script sources");
+                let stem = f.rsplit_once('.').map_or("", |x| x.0);
+                if !stem.starts_with("script-") {
+                    r.warnings.push(format!("{shown}: only maps/script-W-L.etc|.fes replace a level script (or name it in a level.toml)"));
+                }
+            }
+            ["levels", _, "level.toml"] => r.count("levels"),
+            ["levels", ..] => r.count("level files"),
             ["game", ..] => {
                 r.count("container replacements");
                 r.warnings.push(format!("{shown}: replaces a whole retail file (prefer per-entry overrides)"));
@@ -161,6 +170,22 @@ pub fn validate(mod_dir: &Path, rendition: Option<&Path>) -> PackReport {
         None => Vfs::new(),
     };
     vfs.add_layer("mod", mod_dir.join("game"));
+    vfs.mount("mod/levels", "levels", mod_dir.join("levels"));
+    let (levels, bad) = crate::levels::find_levels(&vfs);
+    r.errors.extend(bad);
+    for l in &levels {
+        if rendition.is_some() {
+            r.errors.extend(crate::levels::check_files(&vfs, l));
+        } else {
+            // Without a rendition only the mod's own (`./`) files can be checked.
+            for (k, v) in l.manifest.file_entries().into_iter().filter(|(_, v)| v.starts_with("./")) {
+                if vfs.resolve_file(&crate::levels::level_path(&l.dir, v)).is_none() {
+                    r.errors.push(format!("levels/{}/level.toml: {k} = {v:?} not found", l.dir));
+                }
+            }
+        }
+    }
+    r.warnings.extend(crate::levels::duplicate_slots(&levels));
     for (kind, bank) in &banks {
         let res = match *kind {
             "textures" => crate::tex_bank(&vfs, bank).map(|l| (l.warnings, l.replaced.len() + l.added.len())),

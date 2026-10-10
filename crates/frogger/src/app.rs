@@ -8,7 +8,6 @@ use crate::render::{self, FlyCam, LevelScene, Snap};
 use crate::video::VideoPlayer;
 use f2_audio::{AudioEngine, Listener, Play, VoiceId};
 use f2_engine::{Camera, Font, FontId, Renderer, TexHandle};
-use f2_formats::objbank::ObjectBank;
 use f2_game::define::{mode, MULTILOCAL, SINGLEPLAYER};
 use f2_game::ids::ActorId;
 use f2_game::{Effect, Game, TickInput};
@@ -192,6 +191,9 @@ impl App {
             pad_script: None,
             arcade_copied: None,
         };
+        if !app.data.levels.is_empty() {
+            app.game.install_level_registry(app.data.levels.clone()); // mod levels (P7-1)
+        }
         app.rebuild_renderer();
         app.install_game_hooks();
         app
@@ -324,12 +326,11 @@ impl App {
         }
         let files = self.scene.as_ref().map(|s| s.tex_files.clone()).unwrap_or_default();
         for f in files {
-            match self.data.read(&f).and_then(|d| f2_formats::fla::maybe_decompress(d).map_err(|e| format!("{f}: {e}"))) {
-                Ok(d) => match f2_formats::texture::TexBank::parse(&d) {
-                    Ok(b) => self.r.load_tex_bank(&b),
-                    Err(e) => eprintln!("frogger: {f}: {e}"),
-                },
-                Err(e) => eprintln!("frogger: {e}"),
+            // Through the DataSource: the effective bank when mods are enabled.
+            match f2_game::assets::DataSource::texture_bank(&self.data, &f) {
+                Some(Ok(b)) => self.r.load_tex_bank(&b),
+                Some(Err(e)) => eprintln!("frogger: {e}"),
+                None => eprintln!("frogger: {f}: not found"),
             }
         }
     }
@@ -434,6 +435,7 @@ impl App {
     fn session_config(&self) -> f2_game::session::SessionConfig {
         let mut cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
         cfg.save_data = self.save_data.clone().or_else(|| self.save_path.as_ref().and_then(|p| std::fs::read(p).ok()));
+        cfg.extra_levels = self.data.levels.clone();
         cfg
     }
 
@@ -510,9 +512,10 @@ impl App {
     fn load_scene(&mut self, world: u32, level: u32, assets: &f2_game::layout::LevelAssets) {
         let mut banks = Vec::new();
         for f in &assets.object_banks {
-            match self.data.read(f).and_then(|d| ObjectBank::parse(&d).map_err(|e| format!("{f}: {e}"))) {
-                Ok(b) => banks.push(b),
-                Err(e) => eprintln!("frogger: {e}"),
+            match f2_game::assets::DataSource::object_bank(&self.data, f) {
+                Some(Ok(b)) => banks.push(b),
+                Some(Err(e)) => eprintln!("frogger: {e}"),
+                None => eprintln!("frogger: {f}: not found"),
             }
         }
         for f in &assets.missing_object_banks {
@@ -520,7 +523,7 @@ impl App {
         }
         self.scene = Some(LevelScene::new(world, level, banks, assets.texture_banks.clone(), &self.game));
         self.rebuild_renderer();
-        self.load_sfx(world);
+        self.load_sfx(world, level);
 
         self.acc = Duration::ZERO;
         self.prev = render::snapshot(&self.game);
@@ -540,7 +543,7 @@ impl App {
 
     /// Port of the file part of `LoadSfx(worldID)` (pcaudio.c:186): `generic.wus`, the
     /// player voice bank, then the world bank.
-    fn load_sfx(&mut self, world: u32) {
+    fn load_sfx(&mut self, world: u32, level: u32) {
         self.audio.stop_all();
         self.audio.free_samples();
         let world_id = self.game.layout.world_visual_data[world as usize].world_id as i16;
@@ -548,14 +551,18 @@ impl App {
         if self.game.game_state.multi != SINGLEPLAYER {
             files.push("multi.wus".into());
         }
-        if let Some(b) = f2_audio::tables::world_bank(world_id) {
-            files.push(b.into());
+        let mut files: Vec<String> = files.into_iter().map(|f| format!("sfx/{f}")).collect();
+        // A mod level may name its own world bank (level registry).
+        if let Some(b) = self.game.registry_file(world, level, |f| &f.sfx_bank) {
+            files.push(b);
+        } else if let Some(b) = f2_audio::tables::world_bank(world_id) {
+            files.push(format!("sfx/{b}"));
         }
-        for f in files {
-            let path = format!("sfx/{f}");
-            match self.data.read(&path).and_then(|d| f2_formats::wus::SoundBank::parse(&d).map_err(|e| format!("{path}: {e}"))) {
-                Ok(b) => self.audio.load_bank(&b),
-                Err(e) => eprintln!("frogger: {e}"),
+        for path in files {
+            match f2_game::assets::DataSource::sound_bank(&self.data, &path) {
+                Some(Ok(b)) => self.audio.load_bank(&b),
+                Some(Err(e)) => eprintln!("frogger: {e}"),
+                None => eprintln!("frogger: {path}: not found"),
             }
         }
         // InitVoices: one voice bank per frog, by `frogPool[player[i].character]` (frogger.c:78;
@@ -564,9 +571,10 @@ impl App {
         for i in 0..self.game.frogger.num_frogs.clamp(0, 4) as usize {
             let Some(name) = VOICE_BANKS.get(self.game.frogger.player[i].character as usize) else { continue };
             let path = format!("sfx/{name}.wus");
-            match self.data.read(&path).and_then(|d| f2_formats::wus::SoundBank::parse(&d).map_err(|e| format!("{path}: {e}"))) {
-                Ok(b) => self.audio.load_voice_bank(i, &b),
-                Err(e) => eprintln!("frogger: voice bank: {e}"),
+            match f2_game::assets::DataSource::sound_bank(&self.data, &path) {
+                Some(Ok(b)) => self.audio.load_voice_bank(i, &b),
+                Some(Err(e)) => eprintln!("frogger: voice bank: {e}"),
+                None => eprintln!("frogger: voice bank: {path}: not found"),
             }
         }
     }
@@ -806,7 +814,11 @@ impl App {
                     self.audio.update_voice(v, volume, pitch as i16, pos.map(sv), radius);
                 }
             }
-            Effect::PlayMusic { track, looped } => self.audio.play_music(track, looped),
+            Effect::PlayMusic { track, looped } => match self.data.music_track(track).filter(|p| !self.data.mods.is_empty() && Some(p) != self.audio.music_path(track).as_ref()) {
+                // A mod's track (topmost VFS layer).
+                Some(p) => self.audio.play_music_stream(f2_audio::wav::WavStream::open_any(&p).map_err(|e| eprintln!("frogger: {}: {e}", p.display())).ok(), track, looped),
+                None => self.audio.play_music(track, looped),
+            },
             Effect::StopMusic => self.audio.stop_music(),
             Effect::PlayVideo { name } => {
                 if self.video.is_some() {
