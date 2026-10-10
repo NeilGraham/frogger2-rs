@@ -19,7 +19,7 @@ before a public release.
 | Gameplay port (`f2-game`, ~71.5k LOC of original C) | done; 41 of 68 units ported 1:1, 17 replaced by platform redesigns, 5 partial, 4 skipped as dead/PSX-only, 1 todo (all non-gameplay) |
 | Retail parity, single-player | **verified**: 26/26 levels + 3/3 demos identical |
 | Retail parity, local multiplayer | **verified**: 38 cases, 0 regressions |
-| Retail parity, "play to the end" (finish corpus) | 35 cases identical incl. `savegame.dat`; 19/26 single-player levels finished, all 16 multiplayer match ends; work in progress (below) |
+| Retail parity, "play to the end" (finish corpus) | 38 cases identical incl. `savegame.dat`: 22/26 single-player levels played to the end, all 16 multiplayer match ends; last 4 in progress (below) |
 | Enhancements | done (first cut) |
 | Online play | done (first cut, not soak-tested on real networks) |
 | Modding + level editor | done (first cut) |
@@ -58,16 +58,18 @@ before a public release.
 
 ## In progress
 
-- **Finish-corpus parity** (agent running): 3 divergences in "play to the end" runs
-  (`fin-4-1`, `fin-1-1`: the level-complete idle animation one tick early plus an extra
-  `Random(1000)`; `fin-2-2`: Random call count on a baby rescue), and planner support (switches,
-  gated paths, teleports) so the 7 puzzle levels 1-0, 1-2, 2-0, 4-0, 5-2, 6-1, 6-2 can be played to
-  the end automatically.
+- **Last 4 puzzle levels in the finish corpus** (agent running): 1-0, 1-2, 2-0 and 6-2 are not yet
+  played to the end automatically (deadly-tile timing, a superhop, platform-heavy search, a gated
+  level-ending trigger); hand-written waypoints and planner improvements.
+- **`f2-game` `no_std` + `alloc`** (agent running) for future console targets (blockers listed in
+  [docs/PLATFORMS.md](docs/PLATFORMS.md) §5).
+
+Fixed today by the finish corpus: the frog's celebrate animation reads past the end of the animation
+table in the original (an off-by-one the exe gets away with; ported faithfully, known-bugs #28), and
+the PC-only teleport dissolve texture that the port had dropped.
 
 ## Remaining
 
-- `cargo fmt` pass over the repo (CI lint job); make `f2-game` `no_std` + `alloc` for future console
-  targets (blockers listed in [docs/PLATFORMS.md](docs/PLATFORMS.md) §5).
 - Hardware testing not possible here: CD-DA ripping from a real optical drive, a native macOS run,
   real HiDPI displays, online play over real networks.
 - Small display-only gaps in [docs/PORT-GAPS.md](docs/PORT-GAPS.md) (e.g. level-complete texts
@@ -84,5 +86,5 @@ before a public release.
 
 - ~95k lines of Rust across 14 crates (incl. the `f2fix` oracle DLL) and 5 tools; 139 commits since 2026-10-09.
 - Task graph `work/tasks.json`: 41/41 tasks done.
-- Parity: 3 demos + 26 single-player + 38 multiplayer random-input cases + 35 finish cases identical
+- Parity: 3 demos + 26 single-player + 38 multiplayer random-input cases + 38 finish cases identical (102 cases, 0 regressions)
   to retail.
