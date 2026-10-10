@@ -583,7 +583,8 @@ impl Screen {
 pub fn run(cfg: &Config, reason: &str) -> bool {
     let mut wc = WindowConfig::from_config(cfg);
     wc.title = "Frogger 2: Swampy's Revenge - Import".into();
-    wc.fullscreen = false;
+    wc.mode = f2_platform::WindowMode::Windowed;
+    wc.resolution = None;
     let mut s = Screen::new(cfg.data_root(), reason);
     s.rescan();
     match window::run(wc, s) {
