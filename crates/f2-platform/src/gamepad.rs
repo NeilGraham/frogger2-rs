@@ -8,8 +8,13 @@
 //!   notifications and raw button/stick events for the rebinding UI.
 //!
 //! Rumble goes through gilrs force feedback and is a silent no-op where unsupported.
+//!
+//! PS1-style handling (`crate::controller`, docs/CONTROLLERS.md): `poll_raw` applies the face
+//! layout (Nintendo label swap) and the left-stick 4-way filter per pad; [`Gamepads::reassign`]
+//! keeps players on their own pads across hot-plug and remembers devices by id.
 
 use crate::bindings::*;
+use crate::controller::{FaceLayout, StickDpad, StickMode};
 use crate::input::*;
 use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Ticks};
 use gilrs::{Axis, Button, GamepadId, Gilrs};
@@ -26,6 +31,18 @@ pub struct Gamepads {
     pub rumble_scale: f32,
     /// Running rumble effects per slot (dropping an effect stops it).
     active: Vec<(usize, Effect, Instant)>,
+    /// Left stick -> d-pad filter per slot (parallel to `slots`).
+    sticks: Vec<StickDpad>,
+    /// Left stick handling (`[input] stick_mode`).
+    pub stick_mode: StickMode,
+    /// Stick dead zone used by the 4-way filter (`[input] deadzone`).
+    pub deadzone: f32,
+    /// Face button layout (`[input] face_layout`).
+    pub face_layout: FaceLayout,
+    /// Device ids of the slots when `controllers` was last assigned (`Joypad(n)` indexes it).
+    assigned_ids: Vec<String>,
+    /// Remembered device per player (`[input] pad_devices`).
+    preferred: [Option<String>; 4],
 }
 
 /// At most 4 joypads (`MAXJOYPADS`).
@@ -79,7 +96,22 @@ impl Gamepads {
     pub fn new() -> Result<Gamepads, String> {
         let gilrs = Gilrs::new().map_err(|e| e.to_string())?;
         let slots: Vec<_> = gilrs.gamepads().filter(|(_, g)| g.is_connected()).map(|(id, _)| id).take(MAXJOYPADS).collect();
-        let mut pads = Gamepads { gilrs, slots, events: Vec::new(), controllers: [Controller::Keyboard; 4], rumble_scale: 1.0, active: Vec::new() };
+        let sticks = vec![StickDpad::new(DEFAULT_DEADZONE); slots.len()];
+        let mut pads = Gamepads {
+            gilrs,
+            slots,
+            events: Vec::new(),
+            controllers: [Controller::Keyboard; 4],
+            rumble_scale: 1.0,
+            active: Vec::new(),
+            sticks,
+            stick_mode: StickMode::default(),
+            deadzone: DEFAULT_DEADZONE,
+            face_layout: FaceLayout::default(),
+            assigned_ids: Vec::new(),
+            preferred: Default::default(),
+        };
+        pads.assigned_ids = pads.ids();
         for slot in 0..pads.slots.len() {
             pads.events.push(pads.connected_event(slot));
         }
@@ -97,6 +129,46 @@ impl Gamepads {
     /// Device name of joypad `slot`.
     pub fn name(&self, slot: usize) -> Option<String> {
         self.slots.get(slot).map(|&id| self.gilrs.gamepad(id).name().to_string())
+    }
+
+    /// Stable-ish id of joypad `slot` for remembering assignments: the SDL-style GUID (bus,
+    /// vendor, product, version) as hex. Identical pads share it; [`crate::controller::reassign`]
+    /// matches them one each.
+    pub fn device_id(&self, slot: usize) -> Option<String> {
+        self.slots.get(slot).map(|&id| self.gilrs.gamepad(id).uuid().iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    /// Device ids of all connected joypads in slot order.
+    pub fn ids(&self) -> Vec<String> {
+        (0..self.slots.len()).filter_map(|s| self.device_id(s)).collect()
+    }
+
+    /// Sets the remembered device per player (config `pad_devices`, empty string = none).
+    pub fn set_preferred(&mut self, devices: &[String; 4]) {
+        self.preferred = std::array::from_fn(|i| (!devices[i].is_empty()).then(|| devices[i].clone()));
+    }
+
+    /// The remembered device per player, for saving (empty string = none).
+    pub fn preferred(&self) -> [String; 4] {
+        std::array::from_fn(|i| self.preferred[i].clone().unwrap_or_default())
+    }
+
+    /// Re-assigns pads to players after hot-plug (or at startup with the configured
+    /// `controllers`): players keep their own pads even when slots shift, remembered pads
+    /// return to their players, new pads go to the lowest keyboard players. Updates the rumble
+    /// routing and the remembered devices; returns the new `controllers` for the mapper.
+    // controller
+    pub fn reassign(&mut self, current: &[Controller; 4]) -> [Controller; 4] {
+        let ids = self.ids();
+        let c = crate::controller::reassign(current, &self.assigned_ids, &ids, &self.preferred);
+        for (pl, id) in crate::controller::assigned_ids(&c, &ids).into_iter().enumerate() {
+            if id.is_some() {
+                self.preferred[pl] = id;
+            }
+        }
+        self.assigned_ids = ids;
+        self.controllers = c;
+        c
     }
 
     /// Controller family of joypad `slot` ([`ControllerFamily::Generic`] if absent).
@@ -131,6 +203,7 @@ impl Gamepads {
                 gilrs::EventType::Connected => {
                     if !self.slots.contains(&ev.id) && self.slots.len() < MAXJOYPADS {
                         self.slots.push(ev.id);
+                        self.sticks.push(StickDpad::new(self.deadzone));
                         let slot = self.slots.len() - 1;
                         let e = self.connected_event(slot);
                         self.events.push(e);
@@ -139,6 +212,7 @@ impl Gamepads {
                 gilrs::EventType::Disconnected => {
                     if let Some(slot) = self.slots.iter().position(|&id| id == ev.id) {
                         self.slots.remove(slot);
+                        self.sticks.remove(slot);
                         // Effects are keyed by slot; later slots shift down.
                         self.active.retain(|(s, _, _)| *s != slot);
                         for a in self.active.iter_mut().filter(|a| a.0 > slot) {
@@ -205,6 +279,12 @@ impl Gamepads {
             r.set_axis(PadAxis::LeftY, g.value(Axis::LeftStickY));
             r.set_axis(PadAxis::RightX, g.value(Axis::RightStickX));
             r.set_axis(PadAxis::RightY, g.value(Axis::RightStickY));
+            // controller: PS1 layout options and the left stick as a 4-way d-pad.
+            self.face_layout.apply(ControllerFamily::detect(g.name(), g.vendor_id()), &mut r);
+            if let (StickMode::FourWay, Some(st)) = (self.stick_mode, self.sticks.get_mut(i)) {
+                st.deadzone = self.deadzone;
+                st.apply(&mut r, PadAxis::LeftX, PadAxis::LeftY);
+            }
             out[i] = Some(r);
         }
         out

@@ -249,6 +249,14 @@ pub struct Input {
     /// Pad rumble on/off and intensity (0..1).
     pub rumble: bool,
     pub rumble_scale: f32,
+    // controller: PS1-layout pad options (docs/CONTROLLERS.md).
+    /// Left stick as d-pad: `fourway` (one direction, hysteresis) or `raw` (PC retail).
+    pub stick_mode: crate::controller::StickMode,
+    /// `positional` (PS1 layout by position) or `nintendolabels` (Nintendo A confirms).
+    pub face_layout: crate::controller::FaceLayout,
+    /// Remembered pad per player (device id from `Gamepads::device_id`; empty = none), so a
+    /// replugged pad returns to its player.
+    pub pad_devices: [String; 4],
 }
 
 /// Hop buffer window of the enhanced profile when not overridden.
@@ -276,6 +284,9 @@ impl Default for Input {
             hop_buffer_frames: None,
             rumble: true,
             rumble_scale: 1.0,
+            stick_mode: Default::default(),
+            face_layout: Default::default(),
+            pad_devices: Default::default(),
         }
     }
 }

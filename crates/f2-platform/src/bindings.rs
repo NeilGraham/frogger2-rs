@@ -667,10 +667,10 @@ pub fn auto_assign(current: &[Controller; 4], num_pads: usize) -> [Controller; 4
 
 /// Rumble motor magnitudes for the game's `Effect::Rumble { strength, frames }` (60 Hz
 /// frames): `(strong, weak, milliseconds)`. `scale` is the user's rumble intensity (0..=1).
+/// Strength drives the DualShock-style large motor; strong requests also buzz the small one
+/// (`crate::controller::rumble_effect_vibration`). // controller
 pub fn rumble_params(strength: u8, frames: u16, scale: f32) -> (u16, u16, u32) {
-    let s = (strength as f32 / 255.0 * scale.clamp(0.0, 1.0)).clamp(0.0, 1.0);
-    let strong = (s * u16::MAX as f32) as u16;
-    let weak = (s * 0.5 * u16::MAX as f32) as u16;
+    let (strong, weak) = crate::controller::rumble_motors(crate::controller::rumble_effect_vibration(strength), scale);
     (strong, weak, frames as u32 * 1000 / 60)
 }
 
@@ -859,8 +859,9 @@ mod tests {
     fn rumble_scaling() {
         assert_eq!(rumble_params(0, 10, 1.0), (0, 0, 166));
         let (s, w, ms) = rumble_params(255, 60, 1.0);
-        assert_eq!((s, ms), (u16::MAX, 1000));
-        assert!(w < s);
+        assert_eq!((s, w, ms), (u16::MAX, u16::MAX, 1000)); // both motors
+        let (s, w, _) = rumble_params(128, 6, 1.0);
+        assert!(s > 0 && w == 0); // large motor only
         assert_eq!(rumble_params(255, 6, 0.0).0, 0);
     }
 
