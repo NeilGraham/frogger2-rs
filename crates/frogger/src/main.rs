@@ -20,9 +20,9 @@
 //! and print the final state checksum (`NETPLAY_FINAL ...`).
 //! `--editor [--level W L]` opens the level editor (`src/editor/`; Ctrl+E toggles it in
 //! dev builds); `--mod ID` / `--mods-dir DIR` stack mods over the data.
-//! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 fullscreen, Esc quit (Enter/Esc skip videos);
+//! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 / Alt+Enter fullscreen, Esc quit (Enter/Esc skip videos);
 //! Keys: F1 free camera, F2 tile overlay, F10 settings (controls / gameplay / level select;
-//! Tab switches page), F11 fullscreen, Esc quit (Enter/Esc skip videos; any key in the
+//! Tab switches page), F11 / Alt+Enter fullscreen, Esc quit (Enter/Esc skip videos; any key in the
 //! enhanced profile);
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
@@ -100,7 +100,7 @@ fn usage() -> ! {
          \x20      [--screenshot-settings controls|gameplay|levels] (headless: F10 page in the screenshot)\n\
          editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
-         keys: F1 free camera, F2 tile overlay, F10 settings (Tab: controls/gameplay/level select), F11 fullscreen, Esc quit\n\
+         keys: F1 free camera, F2 tile overlay, F10 settings (Tab: controls/gameplay/level select), F11 / Alt+Enter fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
          \x20     F9 fog, F12 draw distance"
     );

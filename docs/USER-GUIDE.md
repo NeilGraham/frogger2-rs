@@ -91,7 +91,7 @@ players. Rumble follows the `rumble` / `rumble_scale` options.
 | F8 | Toggle widescreen (Hor+ FOV and anchored HUD) |
 | F9 | Toggle fog |
 | F10 | Settings (pauses the simulation); Tab switches page: Controls, Gameplay, Level select |
-| F11 | Toggle fullscreen |
+| F11 or Alt+Enter | Toggle fullscreen |
 | F12 | Cycle draw distance (1x / 2x / 4x) |
 
 Changing an option with F3, F4, F6 to F9 or F12 switches to the enhanced profile, because the
