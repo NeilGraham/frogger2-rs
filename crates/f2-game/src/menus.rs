@@ -305,6 +305,10 @@ impl Default for MenusState {
     }
 }
 
+/// Host extension: `currentPauseSelection` of the "Settings" item
+/// (`GameOptions::settings_menu`); the retail values 0..=2 keep their meaning.
+pub const PAUSE_SEL_SETTINGS: u32 = 3;
+
 /// `127+((rsin(n*4000)+4096)*64)/4096`: the pulsing red of a highlighted entry.
 pub fn pulse_r(n: i32) -> u8 {
     (127 + ((rsin(n.wrapping_mul(4000)) + 4096) * 64) / 4096) as u8
@@ -496,6 +500,24 @@ impl Game {
         }
         trgb!(self, quit, 64, 160, 64);
         self.textover.enable(quit);
+        if self.pause_settings_on() {
+            // Host extension: "Settings" below "Continue", the list re-centred on the
+            // original's 320-unit spacing.
+            let short = self.game_state.old_mode == FRONTEND_MODE || self.game_state.multi == MULTIREMOTE;
+            let ys: &[(Option<TextOverlayId>, i16)] = if short {
+                &[(self.hud.continue_text, 1540), (self.hud.settings_text, 1860), (quit, 2180)]
+            } else {
+                &[(self.hud.continue_text, 1380), (self.hud.settings_text, 1700), (restart, 2020), (quit, 2340)]
+            };
+            for &(t, y) in ys {
+                tx!(self, t, |o| {
+                    o.y_pos = y;
+                    o.y_pos_to = y;
+                });
+            }
+            trgb!(self, self.hud.settings_text, 64, 160, 64);
+            self.textover.enable(self.hud.settings_text);
+        }
 
         self.disable_hud();
 
@@ -685,7 +707,21 @@ impl Game {
         }
 
         let short_menu = self.game_state.old_mode == FRONTEND_MODE || self.game_state.multi == MULTIREMOTE;
-        if !exit_pause {
+        let settings_on = self.pause_settings_on();
+        if !exit_pause && settings_on && self.menus.pause_confirm_mode == 0 {
+            // Host extension: the item order with "Settings" (selection value 3).
+            let order: &[u32] = if short_menu { &[0, PAUSE_SEL_SETTINGS, 1] } else { &[0, PAUSE_SEL_SETTINGS, 1, 2] };
+            let cur = if short_menu && self.menus.current_pause_selection == 2 { 1 } else { self.menus.current_pause_selection };
+            let n = order.len();
+            let mut pos = order.iter().position(|&x| x == cur).unwrap_or(0);
+            if deb & PAD_UP != 0 {
+                pos = (pos + n - 1) % n;
+            }
+            if deb & PAD_DOWN != 0 {
+                pos = (pos + 1) % n;
+            }
+            self.menus.current_pause_selection = order[pos];
+        } else if !exit_pause {
             if deb & PAD_UP != 0 {
                 if self.menus.current_pause_selection == 0 {
                     self.menus.current_pause_selection = if short_menu || self.menus.pause_confirm_mode != 0 { 1 } else { 2 };
@@ -714,9 +750,22 @@ impl Game {
             }
             self.t_set_draw(quit, 1);
             self.t_set_draw(cont, 1);
+            self.t_set_draw(self.hud.settings_text, 1);
         }
 
-        if deb & PAD_CROSS != 0 || deb & PAD_START != 0 || exit_pause {
+        // Host extension: Cross on "Settings" asks the host to open its settings screen;
+        // the game stays paused with "Settings" selected.
+        let open_settings = settings_on
+            && !exit_pause
+            && self.menus.pause_confirm_mode == 0
+            && self.menus.current_pause_selection == PAUSE_SEL_SETTINGS
+            && deb & PAD_CROSS != 0
+            && deb & PAD_START == 0;
+        if open_settings {
+            self.effects.push(Effect::OpenSettings);
+        }
+
+        if !open_settings && (deb & PAD_CROSS != 0 || deb & PAD_START != 0 || exit_pause) {
             self.specfx.pause_mode = 0;
 
             if deb & PAD_START != 0 {
@@ -737,6 +786,7 @@ impl Game {
                 self.textover.disable(self.hud.pause_title_text);
                 self.textover.disable(restart);
                 self.textover.disable(quit);
+                self.textover.disable(self.hud.settings_text);
                 if self.menus.pause_confirm_mode != 0 {
                     self.menus.pause_confirm_mode = 0;
                     self.screen_fade(255, 0, 30);
@@ -779,6 +829,7 @@ impl Game {
                     }
                     self.t_set_draw(cont, 1);
                     self.t_set_draw(quit, 1);
+                    self.t_set_draw(self.hud.settings_text, 1);
                     self.menus.quitting_level = 0;
                     sel = u32::MAX; // break
                 } else if !short_menu {
@@ -810,6 +861,7 @@ impl Game {
                     self.fadeout.keep_fade = true;
                     self.t_set_draw(cont, 0);
                     self.t_set_draw(quit, 0);
+                    self.t_set_draw(self.hud.settings_text, 0);
                     self.menus.current_pause_selection = 1;
                     return;
                 } else {
@@ -844,6 +896,7 @@ impl Game {
                     );
                     self.t_set_draw(cont, 0);
                     self.t_set_draw(restart, 0);
+                    self.t_set_draw(self.hud.settings_text, 0);
                 }
                 self.menus.quitting_level = 2;
                 self.fadeout.keep_fade = true;
@@ -886,7 +939,37 @@ impl Game {
                 trgb!(self, cont, 64, 160, 64);
                 trgb!(self, restart, 64, 160, 64);
             }
+            if settings_on {
+                let st = self.hud.settings_text;
+                if s == PAUSE_SEL_SETTINGS {
+                    trgb!(self, st, pr, pg, 10);
+                    trgb!(self, cont, 64, 160, 64);
+                    trgb!(self, restart, 64, 160, 64);
+                    trgb!(self, quit, 64, 160, 64);
+                } else {
+                    trgb!(self, st, 64, 160, 64);
+                }
+            }
         }
+    }
+
+    /// Host extension: the label of the "Settings" items (pause menus, Extras): "Settings"
+    /// in English, else the rendition's `STR_PCSETUP_SETUP` ("Configuration",
+    /// "Einstellungen", "Impostazioni").
+    pub fn settings_label(&self) -> String {
+        use crate::language::{LANG_UK, LANG_US};
+        let l = self.language.game_text_lang;
+        let s = self.language.gamestring_by_id("STR_PCSETUP_SETUP");
+        if l == LANG_UK || l == LANG_US || s.is_empty() {
+            "Settings".into()
+        } else {
+            s.to_string()
+        }
+    }
+
+    /// Whether the pause menu shows the host's "Settings" item.
+    fn pause_settings_on(&self) -> bool {
+        self.hud.settings_text.is_some() && self.game_options().settings_menu
     }
 
     /// The frontend tile number of `currTile[0]` as `RunFrontendGameLoop` counts it
@@ -1964,5 +2047,65 @@ mod tests {
         // continue resumes
         press(&mut g, PAD_START);
         assert_eq!(g.game_state.mode, INGAME_MODE);
+    }
+
+    /// Host extension: with `settings_menu` the in-level pause menu is Continue / Settings /
+    /// Restart / Quit; Cross on Settings emits `OpenSettings` and stays paused; without the
+    /// flag nothing changes.
+    #[test]
+    fn pause_menu_settings_item() {
+        let mk = |flag: bool| {
+            let mut g = Game::new();
+            g.set_game_options(crate::enhance::GameOptions { settings_menu: flag, ..Default::default() });
+            g.textover.init_text_overlay_linked_list(40);
+            g.overlays.init_sprite_overlay_linked_list();
+            g.init_in_game_text_overlays(0, 0);
+            g.frogger.num_frogs = 1;
+            g.game_state.mode = INGAME_MODE;
+            g.start_pause_menu();
+            g
+        };
+        let press = |g: &mut Game, deb: u16| {
+            g.levplay.pad_data.debounce[0] = deb;
+            g.levplay.pad_data.digital[0] = deb;
+            g.run_pause_menu();
+        };
+        let off = mk(false);
+        assert!(off.hud.settings_text.is_none());
+        assert_eq!(off.t_ypos(off.hud.continue_text), 1540);
+
+        let mut g = mk(true);
+        let ys: Vec<i16> = [g.hud.continue_text, g.hud.settings_text, g.hud.restart_text, g.hud.quit_text].iter().map(|&t| g.t_ypos(t)).collect();
+        assert_eq!(ys, [1380, 1700, 2020, 2340]);
+        assert_eq!(g.textover.get(g.hud.settings_text).unwrap().text, "Settings");
+        press(&mut g, PAD_DOWN);
+        assert_eq!(g.menus.current_pause_selection, PAUSE_SEL_SETTINGS);
+        press(&mut g, PAD_DOWN);
+        assert_eq!(g.menus.current_pause_selection, 1);
+        press(&mut g, PAD_UP);
+        press(&mut g, PAD_UP);
+        assert_eq!(g.menus.current_pause_selection, 0);
+        press(&mut g, PAD_UP);
+        assert_eq!(g.menus.current_pause_selection, 2, "wraps to Quit");
+        press(&mut g, PAD_DOWN);
+        press(&mut g, PAD_DOWN);
+        g.take_effects();
+        press(&mut g, PAD_CROSS);
+        assert!(g.take_effects().contains(&Effect::OpenSettings));
+        assert_eq!(g.game_state.mode, PAUSE_MODE);
+        assert_eq!(g.menus.current_pause_selection, PAUSE_SEL_SETTINGS);
+        assert_ne!(g.textover.get(g.hud.settings_text).unwrap().draw, 0);
+        // Quit confirm hides Settings, Triangle brings it back.
+        press(&mut g, PAD_UP);
+        press(&mut g, PAD_UP);
+        assert_eq!(g.menus.current_pause_selection, 2);
+        press(&mut g, PAD_CROSS);
+        assert_eq!(g.menus.pause_confirm_mode, 1);
+        assert_eq!(g.textover.get(g.hud.settings_text).unwrap().draw, 0);
+        press(&mut g, PAD_TRIANGLE);
+        assert_ne!(g.textover.get(g.hud.settings_text).unwrap().draw, 0);
+        press(&mut g, PAD_START);
+        assert_eq!(g.game_state.mode, INGAME_MODE);
+        assert_eq!(g.textover.get(g.hud.settings_text).unwrap().draw, 0);
     }
 }

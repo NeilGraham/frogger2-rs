@@ -519,6 +519,9 @@ pub struct OptionsState {
     pub max_page_allowed: i32,
     pub level_num: i32,
     pub extras: [Option<TextOverlayId>; NUM_EXTRAS],
+    /// Host extension (`GameOptions::settings_menu`): the "Settings" entry after the
+    /// available extras (selection index `numExtrasAvailable`).
+    pub settings_text: Option<TextOverlayId>,
     pub extras_state: [i32; NUM_EXTRAS],
     pub extras_toggle: [i32; NUM_EXTRAS],
     pub extras_available: [i32; NUM_EXTRAS],
@@ -688,6 +691,7 @@ impl Default for OptionsState {
             max_page_allowed: 0,
             level_num: 0,
             extras: [None; NUM_EXTRAS],
+            settings_text: None,
             extras_state: [0; NUM_EXTRAS],
             extras_toggle: [0; NUM_EXTRAS],
             extras_available: [0; NUM_EXTRAS],
@@ -1125,6 +1129,7 @@ impl Game {
             for i in 0..(self.options.num_extras_available.max(0) as usize).min(NUM_EXTRAS) {
                 tx!(self, self.options.extras[i], |o| o.a = 0);
             }
+            tx!(self, self.options.settings_text, |o| o.a = 0);
         }
         self.super_hop_sfx();
     }
@@ -1237,7 +1242,7 @@ impl Game {
     /// Port of `ExtraUp` (Common/options.c:1102).
     pub fn extra_up(&mut self) {
         if self.options.credits_running == 0 {
-            let n = self.options.num_extras_available;
+            let n = self.options.num_extras_available + self.extras_settings_on() as i32;
             self.options.extra_selection =
                 if self.options.confirm_mode != 0 { 1 - self.options.extra_selection } else { (self.options.extra_selection - 1 + n) % n };
             self.hop_sfx();
@@ -1247,7 +1252,7 @@ impl Game {
     /// Port of `ExtraDown` (Common/options.c:1117).
     pub fn extra_down(&mut self) {
         if self.options.credits_running == 0 {
-            let n = self.options.num_extras_available;
+            let n = self.options.num_extras_available + self.extras_settings_on() as i32;
             self.options.extra_selection =
                 if self.options.confirm_mode != 0 { 1 - self.options.extra_selection } else { (self.options.extra_selection + 1) % n };
             self.hop_sfx();
@@ -1267,6 +1272,12 @@ impl Game {
         self.super_hop_sfx();
         if self.options.credits_running != 0 {
             self.options.ending_credits = 1;
+            return;
+        }
+        if self.extras_settings_on() && self.options.confirm_mode == 0 && self.options.extra_selection == self.options.num_extras_available {
+            // Host extension: open the host's settings screen; Extras stays open with
+            // "Settings" selected.
+            self.effects.push(crate::effects::Effect::OpenSettings);
             return;
         }
         let es = (self.options.extra_selection.max(0) as usize).min(NUM_EXTRAS - 1);
@@ -1291,6 +1302,7 @@ impl Game {
                 for i in 0..(self.options.num_extras_available.max(0) as usize).min(NUM_EXTRAS) {
                     tx!(self, self.options.extras[i], |o| o.draw = 0);
                 }
+                tx!(self, self.options.settings_text, |o| o.draw = 0);
                 self.options.num_fmv_open = 2 + self.options.max_page_allowed;
                 let last = STORY_SEQUENCE[NUM_STORY_LEVELS - 1];
                 if self.layout.world_visual_data[last.world_num as usize].level_visual_data[last.level_num as usize].level_completed != 0 {
@@ -1446,6 +1458,7 @@ impl Game {
             for i in 0..(self.options.num_extras_available.max(0) as usize).min(NUM_EXTRAS) {
                 tx!(self, o.extras[i], |x| x.draw = 0);
             }
+            tx!(self, self.options.settings_text, |x| x.draw = 0);
         }
         self.hop_sfx();
         sx!(self, self.menus.title_hud[0], |o| {
@@ -1546,6 +1559,13 @@ impl Game {
             };
             self.options.extras[i] = self.textover.create_and_add_text_overlay(2048, y, &s, true, 255, Font::Small, TEXTOVERLAY_SHADOW);
             tx!(self, self.options.extras[i], |o| o.draw = 0);
+        }
+        // Host extension (settings_menu): the Extras "Settings" entry (placed each frame).
+        self.options.settings_text = None;
+        if self.game_options().settings_menu {
+            let s = self.settings_label();
+            self.options.settings_text = self.textover.create_and_add_text_overlay(2048, 2048, &s, true, 255, Font::Small, TEXTOVERLAY_SHADOW);
+            tx!(self, self.options.settings_text, |o| o.draw = 0);
         }
 
         for i in 0..4 {
@@ -1820,6 +1840,9 @@ impl Game {
                                 self.t_dec_alpha(o.extras[i]);
                             }
                         }
+                        if self.extras_settings_on() {
+                            self.t_dec_alpha(self.options.settings_text);
+                        }
                         for i in 0..2 {
                             if i as i32 == self.options.extra_selection {
                                 self.t_inc_alpha(o.yes_no_text[i], 255);
@@ -1844,6 +1867,22 @@ impl Game {
                                 trgb!(self, o.extras[i], pr, pg, 10);
                             } else {
                                 trgb!(self, o.extras[i], 255, 255, 255);
+                            }
+                        }
+                        if self.extras_settings_on() {
+                            // Host extension: the slot after the last available extra.
+                            let st = self.options.settings_text;
+                            let y = ((2048 - (NUM_EXTRAS as i32 / 2) * E_HEIGHT) + (nea as i32 * E_HEIGHT)) as i16;
+                            tx!(self, st, |x| {
+                                x.draw = 1;
+                                x.y_pos = y;
+                                x.y_pos_to = y;
+                            });
+                            self.t_inc_alpha(st, 255);
+                            if nea as i32 == self.options.extra_selection {
+                                trgb!(self, st, pr, pg, 10);
+                            } else {
+                                trgb!(self, st, 255, 255, 255);
                             }
                         }
                     }
@@ -2624,6 +2663,9 @@ impl Game {
             for j in 0..(self.options.num_extras_available.max(0) as usize).min(NUM_EXTRAS) {
                 self.t_dec_alpha(self.options.extras[j]);
             }
+            if self.options.settings_text.is_some() {
+                self.t_dec_alpha(self.options.settings_text);
+            }
         }
         let mut j = 0usize;
         loop {
@@ -2660,6 +2702,11 @@ impl Game {
             self.options.fmv_num = (self.options.fmv_num + 1) % n;
             self.hop_sfx();
         }
+    }
+
+    /// Whether the Extras list shows the host's "Settings" entry.
+    pub fn extras_settings_on(&self) -> bool {
+        self.options.settings_text.is_some() && self.game_options().settings_menu
     }
 
     /// Port of `FMVSelect` (Common/options.c:3103).

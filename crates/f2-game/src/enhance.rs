@@ -46,6 +46,11 @@ pub struct GameOptions {
     /// in script triggers, so the Swampy 3 vacuum tubes cannot fire out a dead frog that
     /// then respawns behind the parked tube (softlock).
     pub fix_tube_softlock: bool,
+    /// Host flag (not a retail option): adds a "Settings" item to the pause menus and the
+    /// frontend Extras list that emits [`crate::Effect::OpenSettings`]. Off by default
+    /// (parity, demos, netplay); the `frogger` host turns it on for normal offline play.
+    #[serde(default)]
+    pub settings_menu: bool,
 }
 
 impl Default for GameOptions {
@@ -56,7 +61,7 @@ impl Default for GameOptions {
 
 impl GameOptions {
     /// Retail behaviour.
-    pub const AUTHENTIC: GameOptions = GameOptions { profile: GameProfile::Authentic, infinite_lives: false, invulnerable: false, enemy_speed: ENEMY_SPEED_RETAIL, fix_tube_softlock: false };
+    pub const AUTHENTIC: GameOptions = GameOptions { profile: GameProfile::Authentic, infinite_lives: false, invulnerable: false, enemy_speed: ENEMY_SPEED_RETAIL, fix_tube_softlock: false, settings_menu: false };
     /// Enhanced profile defaults: fixes on, assists off.
     pub const ENHANCED: GameOptions = GameOptions { profile: GameProfile::Enhanced, fix_tube_softlock: true, ..GameOptions::AUTHENTIC };
 

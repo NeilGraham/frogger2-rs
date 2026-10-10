@@ -98,6 +98,10 @@ pub enum Effect {
     UnPauseAudio,
     /// `PostQuitMessage(0)`: "Quit" in the frontend's pause menu exits the game.
     Quit,
+    /// Host extension (`GameOptions::settings_menu`): "Settings" was chosen in a pause menu
+    /// or the frontend Extras list. The game stays where it is (paused / in Extras) until
+    /// the host closes its settings screen.
+    OpenSettings,
 }
 
 impl crate::Game {

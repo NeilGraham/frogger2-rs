@@ -287,6 +287,58 @@ fn extras_difficulty_and_credits() {
     assert!(wait(&mut g, 300, |g| g.options.credits_running == 0));
 }
 
+/// Host extension (`settings_menu`): a "Settings" entry after the available extras opens
+/// the host settings screen and keeps the cursor on it; the frontend pause menu gets
+/// Continue / Settings / Quit to Windows.
+#[test]
+fn extras_and_frontend_pause_settings_entry() {
+    let Some(dir) = game_dir() else { return };
+    let mut cfg = SessionConfig::new(Arc::new(DirData(dir.to_path_buf())));
+    cfg.options.settings_menu = true;
+    let mut g = Game::new_session(cfg);
+    g.layout.world_visual_data[worldid::FRONTEND as usize].level_visual_data[LEVELID_FRONTEND4 as usize].level_completed = 1;
+    g.start_frontend();
+    g.take_level_loads();
+    tick_n(&mut g, 0, 60);
+    // Frontend pause: Continue / Settings / Quit.
+    press(&mut g, PAD_START, 2);
+    assert_eq!(g.game_state.mode, PAUSE_MODE);
+    press(&mut g, PAD_DOWN, 1);
+    assert_eq!(g.menus.current_pause_selection, PAUSE_SEL_SETTINGS);
+    assert!(press(&mut g, PAD_CROSS, 1).contains(&Effect::OpenSettings));
+    assert_eq!(g.game_state.mode, PAUSE_MODE);
+    press(&mut g, PAD_DOWN, 1);
+    assert_eq!(g.menus.current_pause_selection, 1, "Quit to Windows");
+    press(&mut g, PAD_DOWN, 1);
+    assert_eq!(g.menus.current_pause_selection, 0);
+    press(&mut g, PAD_CROSS, 2);
+    assert_eq!(g.game_state.mode, FRONTEND_MODE);
+
+    hop(&mut g, PAD_LEFT, TILENUM_OPTIONS);
+    assert!(wait(&mut g, 300, |g| g.check_cam_still()));
+    press(&mut g, PAD_LEFT, 2);
+    assert!(wait(&mut g, 300, |g| g.check_cam_still()));
+    press(&mut g, PAD_CROSS, 2);
+    assert_eq!(g.options.mode, OP_EXTRA);
+    assert!(wait(&mut g, 600, |g| g.options.chest_timer.time == 0));
+    tick_n(&mut g, 0, 30);
+    let n = g.options.num_extras_available;
+    assert!(g.extras_settings_on());
+    // Up from the first entry wraps to Settings (the last entry).
+    press(&mut g, PAD_UP, 2);
+    assert_eq!(g.options.extra_selection, n);
+    let st = g.textover.get(g.options.settings_text).unwrap();
+    assert!(st.draw != 0 && st.a > 0);
+    assert_eq!(st.y_pos as i32, 2048 - 4 * E_HEIGHT + n * E_HEIGHT);
+    assert!(press(&mut g, PAD_CROSS, 2).contains(&Effect::OpenSettings));
+    assert_eq!((g.options.mode, g.options.extra_selection), (OP_EXTRA, n));
+    press(&mut g, PAD_DOWN, 2);
+    assert_eq!(g.options.extra_selection, 0);
+    // Back hides it with the other extras.
+    press(&mut g, PAD_TRIANGLE, 2);
+    assert_eq!(g.textover.get(g.options.settings_text).unwrap().draw, 0);
+}
+
 #[test]
 fn idle_frontend_runs_a_demo() {
     let Some(dir) = game_dir() else { return };

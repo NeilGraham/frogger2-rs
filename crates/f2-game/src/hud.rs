@@ -113,6 +113,9 @@ pub struct HudState {
     pub controller_text: Option<TextOverlayId>,
     pub restart_text: Option<TextOverlayId>,
     pub quit_text: Option<TextOverlayId>,
+    /// Host extension: the pause menu's "Settings" item (only created with
+    /// `GameOptions::settings_menu`, so the retail text overlay block is unchanged without it).
+    pub settings_text: Option<TextOverlayId>,
     pub pos_text: Option<TextOverlayId>,
     pub levelname_text: Option<TextOverlayId>,
     pub garib_count: Option<TextOverlayId>,
@@ -486,8 +489,14 @@ impl Game {
         self.hud.quit_text = self.textover.create_and_add_text_overlay(2048, 2180, &s, true, 255, Font::Normal, TEXTOVERLAY_SHADOW | TEXTOVERLAY_PAUSED);
         self.hud.pos_text = self.textover.create_and_add_text_overlay(2048, 640, "-----------------------", true, 255, Font::Small, 0);
         self.hud.levelname_text = self.textover.create_and_add_text_overlay(2048, 800, "Levelname Goes in here", true, 255, Font::Small, 0);
+        // Host extension (settings_menu): the pause menu's "Settings" item.
+        self.hud.settings_text = None;
+        if self.game_options().settings_menu {
+            let s = self.settings_label();
+            self.hud.settings_text = self.textover.create_and_add_text_overlay(2048, 1860, &s, true, 255, Font::Normal, TEXTOVERLAY_SHADOW | TEXTOVERLAY_PAUSED);
+        }
         let h = &self.hud;
-        let ids = [h.controller_text, h.continue_text, h.xselect_text, h.pause_title_text, h.restart_text, h.quit_text, h.pos_text, h.levelname_text];
+        let ids = [h.controller_text, h.continue_text, h.xselect_text, h.pause_title_text, h.restart_text, h.quit_text, h.pos_text, h.levelname_text, h.settings_text];
         for i in ids {
             self.textover.disable(i);
         }
