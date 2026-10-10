@@ -36,6 +36,8 @@ pub struct Data {
     pub mods: Vec<ModManifest>,
     /// Levels/strings from the mods' level manifests (empty without mods).
     pub levels: f2_game::levels::LevelRegistry,
+    /// P7b behaviour scripts of the enabled mods (empty without mods).
+    pub scripts: Vec<f2_game::modscript::ScriptSource>,
     cache: Arc<Mutex<Cache>>,
 }
 
@@ -142,7 +144,7 @@ impl Data {
     }
 
     pub(crate) fn new(vfs: Vfs, rendition: PathBuf) -> Data {
-        Data { vfs: Arc::new(vfs), rendition, mods: Vec::new(), levels: Default::default(), cache: Default::default() }
+        Data { vfs: Arc::new(vfs), rendition, mods: Vec::new(), levels: Default::default(), scripts: Vec::new(), cache: Default::default() }
     }
 
     /// Logs what the overrides did and returns the effective container.
@@ -179,6 +181,22 @@ impl Data {
             eprintln!("frogger: mods: level {}-{} registered", l.world, l.level);
         }
         self.levels = reg;
+        // P7b: behaviour scripts; a mod with scripts is gameplay-affecting whatever its
+        // manifest says (online play then needs the identical script set, see netplay.rs).
+        let (scripts, owners, warnings) = crate::mods::collect_scripts(self, mods_dir);
+        for w in warnings {
+            eprintln!("frogger: mods: warning: {w}");
+        }
+        for m in self.mods.iter_mut().filter(|m| owners.contains(&m.id)) {
+            if !m.gameplay_affecting {
+                eprintln!("frogger: mods: warning: {} has behaviour scripts: treated as gameplay_affecting", m.id);
+                m.gameplay_affecting = true;
+            }
+        }
+        for s in &scripts {
+            eprintln!("frogger: mods: script {}{}", s.name, s.scope.map_or(String::new(), |(w, l)| format!(" (level {w}-{l})")));
+        }
+        self.scripts = scripts;
         Ok(())
     }
 

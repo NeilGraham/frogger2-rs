@@ -98,6 +98,7 @@ pub fn validate(mod_dir: &Path, rendition: Option<&Path>) -> PackReport {
     // (kind, bank) pairs to resolve.
     let mut banks: BTreeSet<(&'static str, String)> = BTreeSet::new();
     let mut text = false;
+    let mut has_scripts = false;
     for p in &files {
         let rel = lower_rel(mod_dir, p);
         let shown = rel.join("/");
@@ -153,6 +154,10 @@ pub fn validate(mod_dir: &Path, rendition: Option<&Path>) -> PackReport {
                     r.warnings.push(format!("{shown}: only maps/script-W-L.etc|.fes replace a level script (or name it in a level.toml)"));
                 }
             }
+            ["scripts", _] if ext == "f2s" => {
+                r.count("behaviour scripts");
+                has_scripts = true;
+            }
             ["levels", _, "level.toml"] => r.count("levels"),
             ["levels", ..] => r.count("level files"),
             ["game", ..] => {
@@ -186,6 +191,11 @@ pub fn validate(mod_dir: &Path, rendition: Option<&Path>) -> PackReport {
         }
     }
     r.warnings.extend(crate::levels::duplicate_slots(&levels));
+    // P7b: behaviour scripts change gameplay (the engine treats the mod as gameplay-affecting).
+    has_scripts |= levels.iter().any(|l| !l.manifest.scripts.is_empty());
+    if has_scripts && r.manifest.as_ref().is_some_and(|m| !m.gameplay_affecting) {
+        r.warnings.push("mod has behaviour scripts: set gameplay_affecting = true in mod.toml (the engine treats it as gameplay-affecting)".into());
+    }
     for (kind, bank) in &banks {
         let res = match *kind {
             "textures" => crate::tex_bank(&vfs, bank).map(|l| (l.warnings, l.replaced.len() + l.added.len())),

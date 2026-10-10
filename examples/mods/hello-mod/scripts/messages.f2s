@@ -1,0 +1,22 @@
+// Pickup messages (a mod-wide script: its hooks run on every level, so it checks the
+// level itself and stays silent outside Hello Garden). Original example content.
+
+let coins = 0;
+
+fn on_level_start(world, level) {
+    coins = 0;
+}
+
+fn on_pickup(player, kind) {
+    if world() != 0 || level() != 1 {
+        return;
+    }
+    if kind == PICKUP_SILVERCOIN || kind == PICKUP_GOLDCOIN {
+        coins += 1;
+        show_text_at("Coins: " + coins, 2048, 3300, 90);
+    } else if kind == PICKUP_EXTRALIFE {
+        show_text("Extra life!", 120);
+    } else {
+        show_text("Power-up!", 90);
+    }
+}

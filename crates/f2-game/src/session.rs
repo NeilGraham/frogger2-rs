@@ -39,11 +39,13 @@ pub struct SessionConfig {
     pub extra_levels: crate::levels::LevelRegistry,
     /// Gameplay options (P6-1; authentic by default).
     pub options: crate::enhance::GameOptions,
+    /// P7b (mods): behaviour scripts; empty = authentic.
+    pub scripts: Vec<crate::modscript::ScriptSource>,
 }
 
 impl SessionConfig {
     pub fn new(data: Arc<dyn DataSource + Send + Sync>) -> SessionConfig {
-        SessionConfig { data, language: LANG_DEFAULT, save_data: None, extra_levels: Default::default(), options: Default::default() }
+        SessionConfig { data, language: LANG_DEFAULT, save_data: None, extra_levels: Default::default(), options: Default::default(), scripts: Vec::new() }
     }
 }
 
@@ -68,6 +70,11 @@ impl Game {
         g.load_game(config.save_data.as_deref());
         if !config.extra_levels.is_empty() {
             g.install_level_registry(config.extra_levels.clone()); // P7-1
+        }
+        if !config.scripts.is_empty() {
+            for e in g.install_mod_scripts(&config.scripts) {
+                g.effects.push(crate::Effect::Log { text: format!("modscript: {e}") }); // P7b
+            }
         }
         g.common_init();
         g

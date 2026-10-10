@@ -75,6 +75,10 @@ pub struct LevelManifest {
     pub files: LevelFilesToml,
     /// `[world_info]`: changes to the slot's world.
     pub world_info: Option<WorldToml>,
+    /// P7b behaviour scripts (`.f2s`, VFS paths; `./x` = this level's dir) whose hooks run
+    /// only on this level.
+    #[serde(default)]
+    pub scripts: Vec<String>,
 }
 
 /// A parsed manifest and where it lives.
@@ -168,6 +172,12 @@ pub fn check_files(vfs: &Vfs, l: &FoundLevel) -> Vec<String> {
         let p = level_path(&l.dir, v);
         if vfs.resolve_file(&p).is_none() {
             errs.push(format!("levels/{}/level.toml: {k} = {v:?}: {p} not found", l.dir));
+        }
+    }
+    for v in &l.manifest.scripts {
+        let p = level_path(&l.dir, v);
+        if vfs.resolve_file(&p).is_none() {
+            errs.push(format!("levels/{}/level.toml: scripts: {v:?}: {p} not found", l.dir));
         }
     }
     errs

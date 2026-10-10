@@ -15,7 +15,7 @@ mods/
       maps/script-1-0.fes               # script source, compiled at load by f2-etc
     music/track02.ogg
     levels/<new-level>/level.toml       # new levels (see §3), + any files the level brings
-    scripts/*.rhai                      # optional behaviour scripts (Phase 7b)
+    scripts/*.f2s                       # optional behaviour scripts (P7b, §4)
 ```
 
 `config.toml` lists enabled mods in order; later mods win. The VFS resolves
@@ -104,6 +104,7 @@ far_clip = 6000        # farClip (fog.max), game units x 10
 par_time = 450         # parTime (tenths of a second)
 music = 4              # CD track (music/trackNN.*, may come from a mod); default: the world's
 open = true            # levelOpen in a new game (default true)
+scripts = ["./hazard.f2s"]  # P7b behaviour scripts whose hooks run on this level only (§4)
 
 [files]                # VFS paths; "./x" = levels/<dir>/x. Unset = from base (or the slot's row)
 collision = "COLLISION/GARDEN1.COL"
@@ -158,12 +159,150 @@ the `.fev`); `frogger --mods ID --level W L` plays it (`--mod ID` is an alias th
 `SamFile::write`, `Script::write`) reproduce every retail file byte-for-byte
 (`crates/f2-formats/tests/roundtrip.rs`).
 
-## 4. Behaviour scripting (Phase 7b)
+## 4. Behaviour scripting (P7b, `crates/f2-game/src/modscript/`)
 
-The original event language covers triggers/actions. For new behaviour (new enemy types, modes),
-expose a sandboxed scripting API (Rhai or Lua via `mlua`) with hooks: `on_level_start`,
-`on_tick`, `on_frog_land(tile)`, custom enemy update functions. Scripts run inside the
-deterministic tick (no wall-clock, seeded RNG only) so replays/netplay remain valid.
+The original event language (§3, ETC) covers triggers/actions. For new behaviour, mods ship
+**F2S** behaviour scripts: a small integer-only language compiled to bytecode and run on a
+sandboxed stack VM *inside* the deterministic 60 Hz tick. Rhai/Lua were considered; neither is
+available offline in the build environment and both bring floats, allocation-heavy values
+and host access that would need auditing, so the port has its own (~2 200 lines incl. tests).
+
+### Loading
+
+- `mods/<id>/scripts/*.f2s` — mod-wide scripts (sorted by file name); their hooks run on every
+  level (check `world()`/`level()` yourself).
+- `scripts = ["./x.f2s", ...]` in a `level.toml` — hooks run only on that level's slot.
+- Order: enabled mods in load order (each mod's `scripts/`), then level-manifest scripts.
+  Each script has its own globals; all of them see every hook.
+- A mod with scripts is **gameplay-affecting** (the host forces the flag and warns if
+  `mod.toml` says otherwise; `f2-modkit pack` warns too).
+- Compile errors are logged (`frogger: …: line N: …`) and that script is skipped; the game runs.
+- Netplay: every peer installs its own enabled mods' scripts; the script-set hash
+  (`Game::modscript_hash`, name + scope + source of every script) is part of the
+  `MatchSetup` start fingerprint (and of the state checksum), so online play only starts with
+  identical script sets ("game data differs … behaviour scripts must be identical").
+- Hooks never run during attract demos (`DEMO_MODE`). With no scripts installed every hook
+  call returns immediately: authentic play, the demo traces and the parity corpus are unchanged.
+
+### Determinism and sandbox
+
+- Values: 32-bit integers (wrapping arithmetic, `/`/`%` by zero is an error) and immutable
+  strings (for messages/names, ≤ 1024 bytes). No floats, no clock, no I/O, no host access;
+  the only randomness is `random(n)` = the game's own `Random()` (so it advances the game's
+  RNG exactly like game code would).
+- Bounded: **200 000 instructions per script per tick** (all hooks together), 4096 stack
+  values, 64 nested calls. Any runtime error or budget overrun **disables that script** for the
+  rest of the session: an `Effect::Log` `modscript <name>: disabled: <why>` is emitted and
+  `Game::modscript_errors()` lists it; its enemy claims are released. Other scripts keep running.
+- State: script globals, enemy claims, queued events, shown texts and budgets live in
+  `Game::modscript` (`ModScriptState`), so `Game::snapshot`/`restore` and `Game::checksum`
+  (sub-state `modscript`) cover them; compiled code is an immutable `Arc`. A hook always runs to
+  completion inside one tick — no VM state survives between calls.
+- Hook timing: `on_level_start` at the end of `InitLevel`; land/pickup/death events are queued
+  where they happen and dispatched with `on_tick` at the end of `RunGameLoop` (events first, in
+  order; then `on_tick`); `on_enemy_update` runs inside `UpdateEnemies` for claimed enemies.
+
+### Language
+
+```
+// line comment            /* block comment */
+const PERIOD = 120;        // compile-time constant (integer or string literal)
+let counter = 0;           // global: persists across ticks and levels (part of the state)
+
+fn helper(a, b) {          // functions (forward references fine, recursion bounded)
+    let x = a * b;         // locals
+    if x > 10 { return x; } else if x < 0 { return -x; } else { x += 1; }
+    while x < 100 { x = x << 1; if x == 64 { break; } if x == 8 { continue; } }
+    return x;
+}
+
+fn on_tick() { counter += 1; if counter % PERIOD == 0 { log("tick " + counter); } }
+```
+
+Operators (C precedence): `|| && | ^ & == != < <= > >= << >> + - * / %`, unary `- ! ~`;
+assignments `= += -= *= /= %= &= |= ^= <<= >>=` (statements only). `&&`/`||` short-circuit and
+give 0/1. `true`/`false` are 1/0. `+` with a string operand concatenates (`"x" + 3` → `"x3"`).
+Numbers: decimal, `0x` hex, `_` separators. Strings: `"…"` with `\n \t \" \\`. Truthiness:
+non-zero / non-empty. A function without `return` returns 0. Wrong arity, unknown names and
+hook signature mismatches are compile errors.
+
+### Hooks (define any subset)
+
+| Hook | When |
+|---|---|
+| `on_level_start(world, level)` | a level finished loading (claims/queue/texts were reset) |
+| `on_tick()` | every in-game tick (`RunGameLoop`, not while paused / in the end-of-level sequence) |
+| `on_frog_land(player, tile, tile_state)` | a frog landed (tile = -1 if none; state at landing) |
+| `on_frog_death(player, cause)` | a frog's `FROGSTATUS_ISDEAD` went on (`cause` = `DEATH_*`) |
+| `on_pickup(player, kind)` | a collectable was picked up (`kind` = `PICKUP_*`) |
+| `on_enemy_update(e)` | each `UpdateEnemies` pass for an enemy this script claimed, *instead of* its built-in movement (collision still runs first; attached effects after) |
+
+The global initialisers (`let g = expr;` at top level) run once when scripts are installed.
+
+### API reference
+
+Handles are plain integers checked on every call (bad handle → error → script disabled).
+Players are 0–3; tiles are indices `0..tile_count()`; enemies are indices `0..enemy_count()`
+(entries that are not in the enemy list are rejected). Positions are world units
+(`SVECTOR`), speeds and fixed-point values are 20.12 (`FIXED_ONE` = 4096).
+
+| Function | Returns / effect |
+|---|---|
+| `log(v)` | log line `modscript <name>: v` (host stderr) |
+| `frame()` / `level_frame()` | `actFrameCount` (resets at level start) / `frameCount` |
+| `world()` / `level()` / `num_frogs()` | current world/level slot, number of frogs |
+| `random(n)` | game `Random(n)`: 0..n-1 (0 for n ≤ 0) |
+| `abs(x)` `min(a,b)` `max(a,b)` `clamp(x,lo,hi)` `str(v)` | helpers |
+| `frog_tile(p)` `frog_lives(p)` `frog_dead(p)` `frog_state(p)` | frog info (`frog_tile` -1 if none) |
+| `kill_frog(p, cause)` | kills a living frog with death animation `cause` (`DEATH_*`); 1 if killed |
+| `tile_count()` `tile_state(t)` `set_tile_state(t, s)` | collision tiles; `s` = `TILE_*` (0–255) |
+| `tile_neighbour(t, d)` | linked tile `d` (0–3 = the tile's `tilePtrs` n/s/e/w) or -1 |
+| `tile_x(t)` `tile_y(t)` `tile_z(t)` | tile centre |
+| `enemy_count()` `enemy_find(uid)` `enemy_uid(e)` `enemy_model(e)` | enemy lookup (`enemy_find` -1 if none; model e.g. `"wasp.obe"`) |
+| `enemy_active(e)` `enemy_set_active(e, b)` | update/draw on or off |
+| `enemy_speed(e)` `enemy_set_speed(e, v)` | path speed (20.12) |
+| `enemy_flags(e)` `enemy_set_flags(e, f)` | `ENEMY_NEW_*` flags (`ENEMY_*` constants) |
+| `enemy_waiting(e)` `enemy_set_waiting(e, w)` | `isWaiting` (-1 = forever) |
+| `enemy_node(e)` `enemy_to_node(e)` `enemy_num_nodes(e)` `enemy_set_nodes(e, from, to)` | position along the path |
+| `enemy_start_frame(e)` `enemy_end_frame(e)` `enemy_set_frames(e, s, f)` | current path segment timing (`actFrameCount` units) |
+| `enemy_tile(e)` `enemy_x/y/z(e)` `enemy_set_pos(e, x, y, z)` | tile / actor position |
+| `claim_enemy(e)` / `claim_enemy_model(name)` | take over the enemy's update (`on_enemy_update`); the model form claims every enemy with that model and returns the count. Claims reset at level start |
+| `enemy_run_default(e)` | run the built-in movement (waiting + update functions) once |
+| `spawn_fx(type, t)` / `spawn_fx_ex(type, t, size, speed, accn, life)` | special effect at a tile centre (`FX_*`); 1 if created (visible) |
+| `play_sample(name)` / `play_sample_at(name, t)` | sound by sample name (CRC of the name, like the game) |
+| `show_text(text, frames)` / `show_text_at(text, x, y, frames)` | centred text overlay (x/y in 0–4096 screen units; default y 1400), removed after `frames` ticks (≤ 0 = until `hide_text`); returns an id or -1; at most 8 per script |
+| `hide_text(id)` | remove one of this script's texts |
+| `set_fog(r, g, b)` / `set_fog_range(near, far)` | fog / clear colour and distances |
+
+Constants: `TILE_NORMAL DEADLY SINK ICE SUPERHOP JOIN SAFE FINISHLINE GRAPPLE SMASH BARRED FALL
+DEADLYFALL HOT ELECTRIC NOSUPER PANTS NOSUPERHOT OCCUPIED CONVEYOR CONVEYOR_MED CONVEYOR_FAST
+CONVEYOR_ONEWAY` (all `TILE_…`); `DEATH_NORMAL RUNOVER DROWNING SQUASHED FIRE ELECTRIC FALLING
+WHACKING INFLATION POISON SLICING EXPLOSION GIBBING INCINERATE BURSTING SPIKED LIGHTNING
+FALLINGFOREVER`; `PICKUP_SILVERCOIN EXTRALIFE AUTOHOP LONGTONGUE QUICKHOP INVULNERABILITY GOLDCOIN
+SLOWHOP`; `FX_WATERRIPPLE GARIBCOLLECT SPARKLYTRAIL FROGSTUN SMOKE_STATIC SMOKE_GROWS DECAL SPLASH
+SMOKEBURST GREENGLOOP BUBBLES SPARKBURST FIERYSMOKE POLYRING GLOW TWINKLE CROAK FLASH`;
+`ENEMY_FOLLOWPATH PINGPONG CYCLE NODAMAGE ONEHITKILL FACEFORWARDS DONOTMOVE RADIUSCOLLISION`;
+`FIXED_ONE`. (Source of truth: `modscript/api.rs`.)
+
+### Example (`examples/mods/hello-mod`)
+
+- `levels/hello-garden/hazard.f2s` (`scripts = ["./hazard.f2s"]` in its `level.toml`): a patch
+  of deadly water walks back and forth along a row of tiles three tiles ahead of the start,
+  moving every 2 seconds, with a smoke burst and a hint text.
+- `scripts/messages.f2s` (mod-wide): `on_pickup` shows a coin counter / power-up message on
+  Hello Garden only.
+
+```
+frogger --mods hello-mod --mods-dir examples/mods --level 0 1
+```
+
+### Tests
+
+`cargo test -p f2-game modscript` (language, compile errors, runtime errors, budget exhaustion,
+per-tick budget, determinism + snapshot/restore mid-script, scope, events/text, no-script
+no-op), `cargo test -p f2-game --test modscript` (real data: hooks fire on Garden 1, two runs
+identical, snapshot at tick 600 resimulates to the same checksums, an inert script leaves every
+other sub-state and every effect identical), `cargo test -p frogger hello_mod_scripts`.
 
 ## 5. Compatibility rules
 

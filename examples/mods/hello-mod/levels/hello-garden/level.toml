@@ -16,6 +16,8 @@ far_clip = 6000
 par_time = 450
 # After completion go back to Garden 1 (world 0, level 0).
 next = [0, 0]
+# Behaviour scripts (P7b) whose hooks run only on this level: a moving water hazard.
+scripts = ["./hazard.f2s"]
 
 [files]
 # Event script as ETC source, compiled by the game at load time (f2-etc).
