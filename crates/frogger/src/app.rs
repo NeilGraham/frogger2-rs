@@ -302,6 +302,12 @@ impl App {
         o.max_aspect = d.max_aspect;
         o.render_scale = d.render_scale;
         o.msaa = d.msaa;
+        // Retail draws translucent triangles in submission order (`sortMode` is never set);
+        // the enhanced profile sorts them back to front.
+        o.xlu_sort = match self.profile {
+            Profile::Authentic => f2_engine::XluSort::Submission,
+            Profile::Enhanced => f2_engine::XluSort::BackToFront,
+        };
     }
 
     /// F-key display toggles (quick A/B). Changing an enhanced option switches to the

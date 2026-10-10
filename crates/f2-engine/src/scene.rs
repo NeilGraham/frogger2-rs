@@ -228,10 +228,11 @@ impl View {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum XluSort {
     /// Back-to-front by triangle depth, like MDX's sorted path (`DrawSortedPolys`,
-    /// `MA_SORTBACKFRONT`).
-    #[default]
+    /// `MA_SORTBACKFRONT`). Enhanced only: retail never sets `sortMode`.
     BackToFront,
-    /// Submission order (the D3D hardware path with `sortMode = 0`).
+    /// Submission order (the D3D hardware path with `sortMode = 0`, mdxPoly.cpp:73; nothing
+    /// in the game ever changes it), the retail behaviour.
+    #[default]
     Submission,
 }
 
@@ -275,7 +276,7 @@ impl Default for RenderOptions {
             perspective_correct: false,
             screen_reject: true,
             linear_filter: true,
-            xlu_sort: XluSort::BackToFront,
+            xlu_sort: XluSort::Submission,
             fog: Fog::default(),
             anisotropy: 0,
             hor_plus: false,

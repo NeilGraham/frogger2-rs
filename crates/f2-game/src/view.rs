@@ -413,6 +413,7 @@ impl XNode {
 /// (`chain[i..]` are `next` siblings): each sprite gets its object's matrix-stack top
 /// (`scalemat . rotmat . top`). Calls `f(sprite index, world pos ×10, scaleX, scaleY, xlu)`
 /// in `AddObjectsSpritesToSpriteList` order.
+#[allow(clippy::too_many_arguments)]
 fn transform_object_sprites(chain: &[XNode], top: &Mat4, parent_scale: Vec3, p: &MdxPlacement, animated: bool, time: f32, next: &mut usize, f: &mut dyn FnMut(usize, Vec3, f32, f32, u8)) {
     for me in chain {
         let mut last = [0i16; 3];
