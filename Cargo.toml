@@ -20,6 +20,7 @@ members = [
     "tools/f2-viewer",
     "tools/f2-trace",
     "tools/f2-etc",
+    "tools/f2-parity",
 ]
 
 [workspace.package]

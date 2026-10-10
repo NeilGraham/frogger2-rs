@@ -1,0 +1,14 @@
+[package]
+name = "f2-parity"
+description = "Parity corpus: seeded input scripts per level, retail oracle vs Rust simulation traces, diff report and CI regression check."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+f2-trace = { path = "../f2-trace" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha1 = { workspace = true }
