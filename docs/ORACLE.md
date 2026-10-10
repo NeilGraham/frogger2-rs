@@ -254,6 +254,33 @@ The trace schema, binary encoding and diff live in `tools/f2-trace` (`TraceFrame
 f2fix has a dependency-free encoder for the same line format, kept byte-compatible by the
 `oracle_encoder_matches_schema` test there.
 
+## Parity corpus (`tools/f2-parity`)
+
+Beyond the three attract demos, `f2-parity` checks every single-player level of the PC level
+table (26 levels) against the retail exe with a seeded scripted input (`.key`, generator
+`f2-parity-gen-1`, seed 1, 1800 ticks):
+
+```bash
+cargo run -p f2-parity -- run     # oracle runs (cached, 2 at a time) + Rust runs + report
+cargo run -p f2-parity -- check   # no Windows: Rust vs cached oracle, exit 1 on regression
+cargo run -p f2-parity -- check --update   # record improvements in tools/f2-parity/baseline.json
+```
+
+- Oracle traces are cached by script hash in `target/parity/oracle/` (`<W-L>-<key>.jsonl` +
+  `.meta.json` with the rseed before `InitLevel`). A worktree without its own cache uses the
+  main checkout's; `--cache DIR` overrides. `--refresh` re-runs the oracle, `--no-oracle`
+  skips it.
+- The Rust side is the `f2-game` example `scenario_trace W L keys.key out.jsonl [ticks]`
+  (`F2_START_RSEED` from the meta; `F2_LOG=1` prints level-load log lines such as failed
+  enemy/platform creation).
+- `target/parity/report.md` lists per level the matched leading ticks, the first divergent
+  field and a likely module. Status 2026-10-09: **26/26 levels identical** for the full
+  oracle length (the demos stay identical too).
+- To investigate a divergence take oracle snapshots at the tick
+  (`run.py --level W-L --keys K --snap-tick N --snap NAME@ADDR:LEN`) and compare with
+  `scenario_trace`; draw-time state (`DrawLoop`: effects created while drawing, croak,
+  head matrix) and x87 24-bit float rounding were the causes so far (see `DECISIONS.md`).
+
 ## Build notes
 
 `crates/f2fix` is a **standalone cargo workspace** (its own `[workspace]` table, with

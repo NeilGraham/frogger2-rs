@@ -130,7 +130,14 @@ fn main() -> Result<(), String> {
     g.frame_count += 1;
     // ... then LoopFunc's CopyActorList + DrawLoop of that frontend iteration.
     g.after_game_loop();
-    g.take_effects();
+    let load_fx = g.take_effects();
+    if std::env::var_os("F2_LOG").is_some() {
+        for e in &load_fx {
+            if let f2_game::effects::Effect::Log { text } = e {
+                eprintln!("{text}");
+            }
+        }
+    }
     g.take_level_loads();
 
     let mut keys = KeyPlayer { records, next: 0, held: [0; 4] };

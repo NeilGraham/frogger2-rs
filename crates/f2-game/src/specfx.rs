@@ -1196,8 +1196,117 @@ impl Game {
             if !self.specfx.is_live(SpecFxId(id)) {
                 continue;
             }
-            if self.specfx.array[id as usize].draw == Some(FxDraw::Twinkle) {
-                self.update_fx_twinkle(SpecFxId(id));
+            match self.specfx.array[id as usize].draw {
+                Some(FxDraw::Twinkle) => self.update_fx_twinkle(SpecFxId(id)),
+                Some(FxDraw::Ring) => self.draw_fx_ring_state(SpecFxId(id)),
+                _ => {}
+            }
+        }
+    }
+
+    /// The state part of `DrawFXRing` (PC/pcgfx.c:375): the ring is transformed segment by
+    /// segment, and on odd frames every odd, fully on-screen segment drops a
+    /// `FXTYPE_TWINKLE` trail at its fourth vertex (`CreateSpecialEffect`, so `Random` and
+    /// the effect list are touched while drawing). Float maths follows the x87
+    /// single-precision evaluation of the original (see `view.rs`).
+    fn draw_fx_ring_state(&mut self, id: SpecFxId) {
+        use crate::view::{mtx_cat, mtx_xfm, quaternion_to_matrix, IDENTITY};
+        const ONEOVERFIXED: f64 = 0.00024414; // pcgfx.h
+        fn rf(v: i32) -> f32 {
+            (v as f32 as f64 * ONEOVERFIXED) as f32
+        }
+        fn scl(v: f32, k: f64) -> f32 {
+            (v as f64 * k) as f32
+        }
+        fn diag(x: f32, y: f32, z: f32) -> f2_formats::objbank::Mat4 {
+            let mut m = IDENTITY;
+            m[0][0] = x;
+            m[1][1] = y;
+            m[2][2] = z;
+            m
+        }
+
+        let fx = self.specfx.fx(id).clone();
+        if fx.tex == 0 {
+            return;
+        }
+        let Some(ring) = self.specfx.ring_vtx.clone() else { return };
+        let view = self.specfx.view;
+
+        let scale = [scl(rf(fx.scale.vx), 0.1), scl(rf(fx.scale.vy), 0.1), scl(rf(fx.scale.vz), 0.1)];
+        let normal = [rf(fx.normal.vx), rf(fx.normal.vy), rf(fx.normal.vz)];
+        let pos = [scl(fx.origin.vx as f32, 0.1), scl(fx.origin.vy as f32, 0.1), scl(fx.origin.vz as f32, 0.1)];
+
+        // Translate to current fx pos and push
+        let mut t = IDENTITY;
+        t[3] = [pos[0], pos[1], pos[2], 1.0];
+        let s1 = mtx_cat(&t, &IDENTITY);
+
+        // Rotate to be around normal: axis q1 x upV, angle -acos(q1 . upV)
+        let q1 = normal;
+        let up = [0.0f32, 1.0, 0.0];
+        let mut cross = [q1[1] * up[2] - q1[2] * up[1], q1[2] * up[0] - q1[0] * up[2], q1[0] * up[1] - q1[1] * up[0]];
+        let m = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        if m != 0.0 {
+            cross = [cross[0] / m, cross[1] / m, cross[2] / m];
+        }
+        let tt = q1[0] * up[0] + q1[1] * up[1] + q1[2] * up[2];
+        let w = -((tt as f64).acos() as f32);
+        // GetQuaternionFromRotation (mdxMath.cpp:223)
+        let half = w / 2.0;
+        let sh = half.sin();
+        let q3 = [sh * cross[0], sh * cross[1], sh * cross[2], half.cos()];
+        let r = quaternion_to_matrix(&q3);
+        let s2 = mtx_cat(&r, &s1);
+
+        let tilt2 = scl(fx.tilt as f32, 0.000244);
+        let nseg = NUM_RINGSEGS;
+        let mut prev_valid = false; // vTPrev[0].sz && vTPrev[1].sz
+        let afc_odd = self.act_frame_count & 1 != 0;
+        for i in 0..nseg {
+            let vx = i * 2;
+            let mut zero_z = 0;
+            let mut fxpos = SVector::default();
+            for j in 0..4 {
+                if i != 0 && j < 2 && prev_valid {
+                    continue; // memcpy( vT, vTPrev, ... )
+                }
+                let vxj = (vx + j) % (nseg << 1);
+                let rv = ring[vxj];
+                let v = [scl(rv.vx as f32, 0.000244), scl(rv.vy as f32, 0.000244), scl(rv.vz as f32, 0.000244)];
+                // Slant the polys
+                let tilt = if if i & 1 == 0 { j == 0 || j == 3 } else { j == 1 || j == 2 } { 1.0 } else { tilt2 };
+                let sm = diag(tilt * scale[0], tilt * scale[1], tilt * scale[2]);
+                let d = mtx_cat(&sm, &s2);
+                let temp = mtx_xfm(&d, v);
+                if j == 3 {
+                    // SetVectorSR: (short) via __ftol (truncation)
+                    fxpos = SVector { vx: temp[0] as i32 as i16, vy: temp[1] as i32 as i16, vz: temp[2] as i32 as i16, ..SVector::default() };
+                }
+                let visible = view.as_ref().is_none_or(|vw| vw.xfm_point_f(temp)[2] != 0.0);
+                if !visible {
+                    zero_z += 1;
+                }
+            }
+
+            if zero_z == 0 {
+                prev_valid = true;
+                if i & 1 != 0 && afc_odd {
+                    fxpos.vx = fxpos.vx.wrapping_mul(10);
+                    fxpos.vy = fxpos.vy.wrapping_mul(10);
+                    fxpos.vz = fxpos.vz.wrapping_mul(10);
+                    let trail = self.create_special_effect(FXTYPE_TWINKLE, &fxpos, &fx.normal, 81920, 0, 0, 4096);
+                    if let Some(tr) = trail {
+                        self.specfx.fx_mut(tr).tilt = 8192;
+                        if i & 2 != 0 {
+                            self.set_fx_colour(trail, 180, 220, 180);
+                        } else {
+                            self.set_fx_colour(trail, fx.r, fx.g, fx.b);
+                        }
+                    }
+                }
+            } else {
+                prev_valid = false;
             }
         }
     }
