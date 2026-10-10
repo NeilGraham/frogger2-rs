@@ -45,3 +45,4 @@ original), authentic-vs-fixed decision, test (demo/trace) that pins it.
 | 25 | `CreateFrogger` checks `> FROG_NUMFROGS` instead of `>=` | `frogger.c` | reproduced |
 | 26 | Multiplayer camera divides by `camDiv[index]` that can be zero/mis-indexed | `multi.c` | guarded, BUG(original) |
 | 27 | `babiesSaved` never incremented in multiplayer | `multi.c` | reproduced |
+| 28 | `Animate` only rejects `animNum > numAnimations`; `== numAnimations` (the frog's celebrate anim 42 on the level-complete screen) reads the 12 bank bytes after the table | `mdxActor.cpp` | reproduced (bank bytes, f2-formats `anim_past_end`) |

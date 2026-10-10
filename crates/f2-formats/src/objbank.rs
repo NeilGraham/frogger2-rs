@@ -282,6 +282,12 @@ impl Model {
 #[derive(Clone, Debug)]
 pub struct ObjectBank {
     pub models: Vec<Model>,
+    /// Per model id: the 12 bytes right after its animation table read as one more
+    /// `MDX_ANIMATION` (`anims[numAnimations]`). `Animate` only rejects
+    /// `animNum > numAnimations`, so the original reads this entry for
+    /// `animNum == numAnimations` (BUG(original)). `None` when the bytes are outside
+    /// the image or hold a relocated pointer (load-address dependent).
+    pub anim_past_end: Vec<(u32, Option<Animation>)>,
 }
 
 const MAX_KEYS: usize = 100_000;
@@ -430,6 +436,7 @@ impl ObjectBank {
         let p = code.iter().position(|&b| b == 0xB8).filter(|&p| p <= 8).ok_or_else(|| perr("unexpected GetbankAddress code"))?;
         let mut desc = u32::from_le_bytes(code[p + 1..p + 5].try_into().unwrap());
         let mut models = Vec::new();
+        let mut anim_past_end = Vec::new();
         for _ in 0..100_000 {
             let id = img.u32(desc)?;
             let ctl = img.u32(desc + 4)?;
@@ -458,6 +465,13 @@ impl ObjectBank {
                 let n = img.i16(p_anim)?;
                 let p = img.ptr(p_anim + 72)?.unwrap_or(0);
                 if p != 0 && n > 0 {
+                    let a = p + 12 * n as u32;
+                    let past = if (a.saturating_sub(3)..a + 12).any(|v| img.relocs.contains(&v)) {
+                        None
+                    } else {
+                        (|| -> Result<Animation> { Ok(Animation { start: img.i16(a)?, end: img.i16(a + 2)?, speed: img.f32(a + 4)?, looped: img.i32(a + 8)? }) })().ok()
+                    };
+                    anim_past_end.push((id, past));
                     (0..n as u32)
                         .map(|i| {
                             let a = p + 12 * i;
@@ -474,7 +488,7 @@ impl ObjectBank {
             models.push(Model { id, radius, object_size, root, root_siblings, animations, loc_mesh, is_skinned, num_vtx });
             desc += 8;
         }
-        Ok(ObjectBank { models })
+        Ok(ObjectBank { models, anim_past_end })
     }
 
     pub fn find(&self, id: u32) -> Option<&Model> {
