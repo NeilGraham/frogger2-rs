@@ -837,7 +837,7 @@ impl Renderer {
 
     /// Port of `DrawAlphaSprite` (mdxSprite.cpp:45): a screen-aligned sprite at
     /// screen position/size in pixels with screen depth `sz` (0..1), pushed into
-    /// the XLU frame so it is depth-tested against the scene.
+    /// the late (post-`DrawAllFrames`) semi frame so it is depth-tested against the scene.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_alpha_sprite(&mut self, x: f32, y: f32, sz: f32, xs: f32, ys: f32, uv: [f32; 4], tex: Option<TexHandle>, color: [u8; 4]) {
         let col = color.map(|c| c as f32 / 255.0);
@@ -845,8 +845,8 @@ impl Renderer {
         let (x2, y2) = (x + xs, y + ys);
         let q = [v(x, y, uv[0], uv[1]), v(x2, y, uv[2], uv[1]), v(x2, y2, uv[2], uv[3]), v(x, y2, uv[0], uv[3])];
         let tex = tex.or(Some(self.white));
-        self.frames.push(Frame::Xlu, Tri { v: [q[0], q[1], q[2]], tex });
-        self.frames.push(Frame::Xlu, Tri { v: [q[2], q[3], q[0]], tex });
+        self.frames.push(Frame::Late, Tri { v: [q[0], q[1], q[2]], tex });
+        self.frames.push(Frame::Late, Tri { v: [q[2], q[3], q[0]], tex });
     }
 
     /// Port of `DrawFontStringAtLoc` (mdxFont.cpp) at output-pixel position `(x, y)`.
@@ -965,11 +965,14 @@ impl Renderer {
         }
         let sort = self.options.xlu_sort;
         // DrawAllFrames order and states.
-        let passes: [(Frame, Blend, DepthMode, bool, f32, bool); 5] = [
+        let passes: [(Frame, Blend, DepthMode, bool, f32, bool); 7] = [
             (Frame::Normal, Blend::Semi, DepthMode::TestWrite, false, ALPHA_TIGHT, false),
             (Frame::Wrap, Blend::Semi, DepthMode::TestWrite, true, ALPHA_TIGHT, false),
             (Frame::Xlu, Blend::Semi, DepthMode::Test, true, ALPHA_NONZERO, true),
             (Frame::Additive, Blend::Additive, DepthMode::Test, true, ALPHA_NONZERO, true),
+            // DrawLoop's post-DrawAllFrames batches (sprites, special FX): submission order.
+            (Frame::Late, Blend::Semi, DepthMode::Test, false, ALPHA_NONZERO, false),
+            (Frame::LateAdditive, Blend::Additive, DepthMode::Test, false, ALPHA_NONZERO, false),
             (Frame::Overlay, Blend::Semi, DepthMode::Off, false, ALPHA_NONZERO, false),
         ];
         for (frame, blend, depth, wrap, aref, sorted) in passes {
