@@ -302,6 +302,42 @@ cargo run -p f2-parity -- check --update   # record improvements in tools/f2-par
   Status 2026-10-09: **38/38 identical** for 1800 ticks, `mp` section included (battle
   rounds won and drawn, mode 16 win screens; races reach the countdown and running state
   but no lap is completed with random input, so lap/match-end logic is still unexercised).
+- **Finish corpus** (`--corpus finish`, cases `fin-W-L` / `fin-W-L-mpN`, generator
+  `f2-parity-finish-1`): planned scripts that play to the end state random input never
+  reaches — single player: every baby saved, `LEVELCOMPLETE_MODE`, CROSS through the
+  level-complete screen, `SaveGame`, the next start; multiplayer: rounds until a match
+  winner (race: every frog over the finish line, battle: 3 wins, collect: unassailable
+  leads), the mode 14–16 win screens, `DoEndMulti` "quit" and back to the frontend. The
+  scripts are committed in `tools/f2-parity/finish/` (`manifest.json` + `.key`, with the
+  planner's summary) and planned by the Rust sim itself:
+  `scenario_trace [--multi N] --plan OUT.key [--plan-seed S] W L - out.jsonl 1`, or
+  `f2-parity plan --levels fin-..` (re-plan + manifest). The planner is a Go-Explore archive
+  search over the deterministic sim (single player, race one frog at a time, collect) and
+  receding-horizon random shooting (battle); `F2_PLAN_DEBUG=1` prints targets and, on
+  give-up, the most advanced cell; `F2_PLAN_SIM_BUDGET`, `F2_PLAN_MAX_CELLS` (memory:
+  ~0.6 MB per cell; use `MEMCAP=12G` above 6000). Levels finished under par would open the
+  name entry (keyboard text the pad script cannot type), so the planner then starts later.
+  The report adds the end state of each trace and the `savegame.dat` comparison (run.py
+  collects `SaveData\savegame.dat`; Rust: `F2_SAVE_OUT`); `check` fails when a baselined
+  end state or save stops matching. Needs an `f2fix.dll` with `start.multi`
+  (`tools/run/build_f2fix.sh`; f2-parity now refuses a multiplayer trace without a
+  multiplayer start — an old DLL silently ran them single-player).
+  Status 2026-10-09: **32 cases baselined, every end state and save identical**:
+  all 16 multiplayer cases (race 1-3/3-0, battle 5-3..5, collect 7-10..12, 2 and 4 frogs)
+  identical for the whole run, `mp` section and win screens included; 16 single-player
+  levels (0-0, 2-1, 2-2, 4-1, 4-2, 6-0, 7-0..7-9) complete with the oracle's
+  level-complete afc, the next start and a byte-identical `savegame.dat` (retro levels
+  7-x write none on either side). 14 of them are identical throughout; two have a
+  cosmetic-RNG divergence that does not change the outcome:
+  - `fin-2-2` @8836 (a baby rescue in LEV_SPA3): the oracle draws 1061 `Random()` calls
+    that tick, Rust 37 — an effect created at draw time on the exe side (not found yet).
+  - `fin-4-1` @8763 (level-complete screen, CROSS held): Rust draws one more `Random(1000)`
+    (frontend.c:1990 celebrate check: Rust's frog is in looping `FROG_ANIM_BREATHE` one
+    tick before the exe's; anim queue timing in `RunLevelComplete`).
+  Not finished by the planner yet (puzzle levels; the static tile graph does not see
+  switches/teleports/lifts): 1-0, 1-1, 1-2, 2-0, 4-0, 5-0, 5-1, 5-2, 6-1, 6-2 (6-2 has no
+  babies: it ends by script, `EndLevel` after a tube platform ride). Their manifest
+  entries hold the partial 60000-tick plans (`goal no`) and are not baselined.
 - To investigate a divergence take oracle snapshots at the tick
   (`run.py --level W-L --keys K --snap-tick N --snap NAME@ADDR:LEN`) and compare with
   `scenario_trace`; draw-time state (`DrawLoop`: effects created while drawing, croak,
