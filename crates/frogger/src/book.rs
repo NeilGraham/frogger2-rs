@@ -64,6 +64,7 @@ impl Canvas {
 
     /// `DrawFontStringAtLoc(x, y, text, colour, font, scale, centredX, 0)`: with a non-zero
     /// `centred_x` the string is centred on it. Latin-1 text.
+    #[allow(clippy::too_many_arguments)] // the C signature
     pub fn draw_string(&mut self, font: &Font, x: i32, y: i32, text: &str, col: [f32; 4], scale: f32, centred_x: i32) {
         let bytes: Vec<u8> = text.chars().map(|c| if (c as u32) < 256 { c as u8 } else { 0 }).collect();
         let mut cx = if centred_x != 0 { centred_x - font.string_width(&bytes, scale) / 2 } else { x } as f32;
@@ -71,10 +72,12 @@ impl Canvas {
         for &b in &bytes {
             let Some(g) = font.glyphs[b as usize] else { continue };
             let gw = (g.width as f32 * scale).trunc() as i32;
-            for py in 0..gh {
+            // The space has no image (`left` past the font): advance only.
+            let rows = if g.left < font.width { gh } else { 0 };
+            for py in 0..rows {
                 let sy = ((py as f32 + 0.5) / scale) as u32;
                 for px in 0..gw {
-                    let sx = g.left + ((px as f32 + 0.5) / scale) as u32;
+                    let sx = g.left.saturating_add(((px as f32 + 0.5) / scale) as u32);
                     if sx >= font.width || sy >= font.height {
                         continue;
                     }

@@ -57,6 +57,8 @@ struct Args {
     screenshot_rebind: bool,
     pad_script: Option<PathBuf>,
     video: Option<String>,
+    save: Option<PathBuf>,
+    dev_unlock: bool,
 }
 
 fn usage() -> ! {
@@ -65,6 +67,7 @@ fn usage() -> ! {
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
          \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
+         saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 controls, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
          \x20     F9 fog, F12 draw distance"
@@ -93,6 +96,8 @@ fn parse_args() -> Args {
         screenshot_rebind: false,
         pad_script: None,
         video: None,
+        save: None,
+        dev_unlock: false,
     };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
@@ -106,6 +111,8 @@ fn parse_args() -> Args {
                 a.level = Some((w, l));
             }
             "--frontend" => a.frontend = true,
+            "--save" => a.save = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--dev-unlock" => a.dev_unlock = true,
             "--video" => a.video = Some(it.next().unwrap_or_else(|| usage())),
             "--boot" => a.boot = true,
             "--multi" => {
@@ -196,6 +203,22 @@ fn main() {
     }
 }
 
+/// `--dev-unlock`: a save block (`MakeSaveGameBlock`) with every level open and
+/// completed and the training done (arcade machine, multiplayer, book pages).
+fn dev_unlock_save() -> Vec<u8> {
+    let mut g = f2_game::Game::new();
+    g.savegame.global_music_vol = f2_game::menus::MAX_SOUND_VOL;
+    g.savegame.global_sound_vol = f2_game::menus::MAX_SOUND_VOL;
+    g.frogger.player[0].lives = 3;
+    for w in g.layout.world_visual_data.iter_mut() {
+        for l in w.level_visual_data.iter_mut() {
+            l.level_open = f2_game::layout::LEVEL_OPEN;
+            l.level_completed = 1;
+        }
+    }
+    g.make_save_game_block()
+}
+
 fn make_audio(cfg: &Config, mute: bool) -> AudioEngine {
     let mut a = if mute || cfg.audio.muted { AudioEngine::null(44100) } else { AudioEngine::with_default_output() };
     a.set_master_volume(cfg.audio.master as f32 / 100.0);
@@ -214,6 +237,12 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.set_display(cfg.profile, cfg.display_settings(Profile::Enhanced));
     app.set_input(cfg.bindings(), cfg.input.deadzone, cfg.hop_buffer_frames(Profile::Enhanced));
     app.hud_probe = args.hud_probe;
+    // Headless runs only read a save given explicitly and never write one.
+    app.save_data = match (&args.save, args.dev_unlock) {
+        (_, true) => Some(dev_unlock_save()),
+        (Some(p), _) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
+        _ => None,
+    };
     app.pad_script = match &args.pad_script {
         Some(p) => Some(padscript::PadScript::load(p)?),
         None => None,
@@ -304,6 +333,8 @@ struct Host {
     mute: bool,
     hud_probe: bool,
     pad_script: Option<padscript::PadScript>,
+    save_path: PathBuf,
+    dev_unlock: bool,
     steps: Vec<Step>,
     app: Option<App>,
     gfx: Option<Gfx>,
@@ -359,6 +390,11 @@ impl WindowApp for Host {
                 }
                 app.hud_probe = self.hud_probe;
                 app.pad_script = self.pad_script.take();
+                app.save_path = Some(self.save_path.clone());
+                if self.dev_unlock {
+                    app.save_data = Some(dev_unlock_save());
+                    app.save_path = None;
+                }
                 app.push_steps(std::mem::take(&mut self.steps));
                 self.app = Some(app);
                 self.gfx = Some(g);
@@ -490,6 +526,8 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>) -> R
             Some(p) => Some(padscript::PadScript::load(p)?),
             None => None,
         },
+        save_path: args.save.clone().unwrap_or_else(|| f2_platform::paths::save_dir().join("savegame.dat")),
+        dev_unlock: args.dev_unlock,
         fullscreen: wc.fullscreen,
         cfg,
         steps,

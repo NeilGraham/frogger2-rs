@@ -85,7 +85,7 @@ impl PadScript {
 
     /// The pad state to hold at `tick`, if a line changes it there.
     pub fn pad_at(&self, tick: u64) -> Option<u16> {
-        self.events.iter().filter(|(t, c)| *t == tick && matches!(c, Cmd::Pad(_))).last().map(|(_, c)| match c {
+        self.events.iter().filter(|(t, c)| *t == tick && matches!(c, Cmd::Pad(_))).next_back().map(|(_, c)| match c {
             Cmd::Pad(m) => *m,
             Cmd::Shot(_) => 0,
         })

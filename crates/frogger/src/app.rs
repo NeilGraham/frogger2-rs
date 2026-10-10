@@ -116,6 +116,11 @@ pub struct App {
     pub hud_probe: bool,
     /// Scripted pad 0 buttons (`--pad-script`): replaces player 1's input when set.
     pub pad_override: Option<u16>,
+    /// `savegame.dat` read at session start and written by `SaveGame` (None: no saves,
+    /// e.g. headless runs).
+    pub save_path: Option<std::path::PathBuf>,
+    /// Save block used instead of `save_path`'s content (`--dev-unlock`).
+    pub save_data: Option<Vec<u8>>,
     /// `--pad-script`: sets `pad_override` at the scripted ticks.
     pub pad_script: Option<crate::padscript::PadScript>,
     /// The texture last copied onto the arcade screen (`menus.arcade_screen_copy`) and
@@ -182,6 +187,8 @@ impl App {
             osd: None,
             hud_probe: false,
             pad_override: None,
+            save_path: None,
+            save_data: None,
             pad_script: None,
             arcade_copied: None,
         };
@@ -343,7 +350,7 @@ impl App {
                 }
                 Step::Frontend => self.start_frontend(),
                 Step::Boot => {
-                    let cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
+                    let cfg = self.session_config();
                     self.game = Game::new_session(cfg);
                     self.install_game_hooks();
                     self.scene = None;
@@ -372,6 +379,7 @@ impl App {
     fn start_video(&mut self, name: &str) {
         match VideoPlayer::open(&self.data, name, self.audio.is_realtime()) {
             Ok(v) => {
+                eprintln!("frogger: playing video {name}");
                 self.audio.stop_all();
                 self.video = Some(v);
             }
@@ -422,10 +430,17 @@ impl App {
         Ok(())
     }
 
+    /// The session set-up: game files and `SaveData\savegame.dat` (`LoadGame`).
+    fn session_config(&self) -> f2_game::session::SessionConfig {
+        let mut cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
+        cfg.save_data = self.save_data.clone().or_else(|| self.save_path.as_ref().and_then(|p| std::fs::read(p).ok()));
+        cfg
+    }
+
     /// The real start-up: a game session (`CommonInit`), straight into the frontend
     /// level (the logo FMVs are host steps).
     pub fn start_frontend(&mut self) {
-        let cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
+        let cfg = self.session_config();
         self.game = Game::new_session(cfg);
         self.install_game_hooks();
         self.game.start_frontend();
@@ -801,8 +816,8 @@ impl App {
                 }
             }
             Effect::SaveGame { data } => {
-                let dir = f2_platform::paths::save_dir();
-                let path = dir.join("savegame.dat");
+                let Some(path) = self.save_path.clone() else { return };
+                let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
                 if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &data)) {
                     eprintln!("frogger: saving {}: {e}", path.display());
                 }
