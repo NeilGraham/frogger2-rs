@@ -983,6 +983,21 @@ impl App {
 
     /// One presented frame: input, simulation ticks (fixed 60 Hz with accumulator), video.
     pub fn update(&mut self, dt: Duration, kb: &KeyboardState, joypads: &[Option<RawPad>], focused: bool) {
+        // Alt+Enter toggles fullscreen (like F11). While Alt is held, Enter is hidden from
+        // the game so the combo never registers as Cross/select.
+        let mut filtered;
+        let kb = if kb.is_down(dik::LMENU) || kb.is_down(dik::RMENU) {
+            filtered = kb.clone();
+            if filtered.pressed.iter().any(|&k| k == dik::RETURN || k == dik::NUMPADENTER) {
+                self.requests.toggle_fullscreen = true;
+            }
+            filtered.pressed.retain(|&k| k != dik::RETURN && k != dik::NUMPADENTER);
+            filtered.down[dik::RETURN as usize] = false;
+            filtered.down[dik::NUMPADENTER as usize] = false;
+            &filtered
+        } else {
+            kb
+        };
         self.hotkeys(&kb.pressed);
         if self.controls.is_some() {
             // Simulation paused while the rebinding screen is open.

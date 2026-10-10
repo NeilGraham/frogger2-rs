@@ -10,7 +10,7 @@ Keyboard (player 1): arrows = hop, Enter = select / hop confirm (Cross),
   Gamepads (Xbox/PlayStation/Switch) work automatically.
 Quit: the game's own Quit menu, or close the window.
 
-Hotkeys: F10 settings (Controls / Gameplay assists / Level select), F11 fullscreen,
+Hotkeys: F10 settings (Controls / Gameplay assists / Level select), F11 / Alt+Enter fullscreen,
   F5 authentic <-> enhanced profile, F8 widescreen, F6 MSAA, F7 texture filter,
   F4 render scale, F12 draw distance, F9 fog, F1 free camera, F2 tile overlay.
   "Authentic" plays exactly like the 2000 PC release; "enhanced" adds widescreen,
