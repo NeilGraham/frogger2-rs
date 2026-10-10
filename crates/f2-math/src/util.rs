@@ -59,15 +59,31 @@ pub fn fsqrt_f(x: i32) -> Fixed {
 
 /// Port of `rsin` (PC/libgte.h:6): `(fixed)(sin(((x)*(1.0f/4096.0f))*PI2)*4096)`.
 /// Angle is 4096 per turn; result is 4096-scaled.
+///
+/// RETAIL: the exe runs with Direct3D's x87 control word (24-bit precision), so
+/// `x/4096`, the product with `PI2` and `sin*4096` are each rounded to `float` before the
+/// truncating `_ftol` (see `arccos`). This matters for large angles (e.g. the unsigned
+/// `clam` of `UpdateGallopingEnemy` while an enemy waits), where the float argument is
+/// off by up to 1/64 rad. The difftest build rewrites the C macro the same way.
 #[inline]
 pub fn rsin(x: i32) -> Fixed {
-    ftol32((x as f64 * (1.0 / 4096.0) * PI2).sin() * 4096.0)
+    let b = x87_angle(x);
+    ftol32(((b as f64).sin() * 4096.0) as f32 as f64)
 }
 
-/// Port of `rcos` (PC/libgte.h:7): `(fixed)(cos(((x)*(1.0f/4096.0f))*PI2)*4096)`.
+/// Port of `rcos` (PC/libgte.h:7): `(fixed)(cos(((x)*(1.0f/4096.0f))*PI2)*4096)`,
+/// with the retail 24-bit x87 rounding of [`rsin`].
 #[inline]
 pub fn rcos(x: i32) -> Fixed {
-    ftol32((x as f64 * (1.0 / 4096.0) * PI2).cos() * 4096.0)
+    let b = x87_angle(x);
+    ftol32(((b as f64).cos() * 4096.0) as f32 as f64)
+}
+
+/// `(x*(1.0f/4096.0f))*PI2` on the retail 24-bit x87 FPU.
+#[inline]
+fn x87_angle(x: i32) -> f32 {
+    let a = (x as f64 * (1.0 / 4096.0)) as f32;
+    (a as f64 * PI2) as f32
 }
 
 /// Port of `utilCalcAngle` (PC/islutil.h:23):
