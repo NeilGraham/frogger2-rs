@@ -358,7 +358,8 @@ impl ImageDrive {
             while p < hi {
                 let rel = p - a;
                 let (sec, within) = (rel / RAW as i64, rel % RAW as i64);
-                let take = (RAW as i64 - within).min(hi - p) as usize;
+                // Contiguous runs when there is no subchannel between sectors.
+                let take = if stride == RAW as i64 { hi - p } else { (RAW as i64 - within).min(hi - p) } as usize;
                 let src = t.backing.read_at((base + sec * stride + within) as u64, take)?;
                 let o = (p - pos) as usize;
                 out[o..o + take].copy_from_slice(&src);
