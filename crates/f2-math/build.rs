@@ -58,7 +58,17 @@ fn build_c() -> Result<(), String> {
     copy(&common, "maths.h", &same)?;
     copy(&common, "types.c", &same)?;
     copy(&common, "newpsx.h", &same)?;
-    copy(&pc, "libgte.h", &same)?;
+    // RETAIL: rsin/rcos likewise round x/4096, the angle and sin*4096 to float (`f2_math::rsin`).
+    copy(&pc, "libgte.h", &|s: String| {
+        s.replace(
+            "#define rsin(x) (fixed)(sin(((x)*(1.0f/4096.0f))*PI2)*4096)",
+            "#define rsin(x) (fixed)(float)(sin((float)((float)((x)*(1.0f/4096.0f))*PI2))*4096)",
+        )
+        .replace(
+            "#define rcos(x) (fixed)(cos(((x)*(1.0f/4096.0f))*PI2)*4096)",
+            "#define rcos(x) (fixed)(float)(cos((float)((float)((x)*(1.0f/4096.0f))*PI2))*4096)",
+        )
+    })?;
     for e in std::fs::read_dir(&stubs).map_err(|e| e.to_string())? {
         let e = e.map_err(|e| e.to_string())?;
         let name = e.file_name().into_string().unwrap();

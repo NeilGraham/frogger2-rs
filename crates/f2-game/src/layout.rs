@@ -588,6 +588,9 @@ impl Game {
         // headMatrix = NULL (layout.c:1201, PC)
         self.tongue.head_matrix = None;
         self.tongue.head_object = None;
+        // FREE(breastMatrix), FREE(headPostMatrix) (layout.c:1202)
+        self.tongue.breast_post = None;
+        self.tongue.head_post = None;
         self.free_spec_fx_list(); // wave E
         self.particle.free_particle_list(); // wave E
         if self.game_state.multi != crate::define::SINGLEPLAYER {

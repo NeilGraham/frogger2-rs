@@ -136,6 +136,16 @@ pub struct TongueState {
     pub head_matrix: Option<[f32; 16]>,
     /// Name of the head sub-object `headMatrix` points into (set by `FindFrogSubObjects`).
     pub head_object: Option<String>,
+    /// `headPostMatrix` (PC/actor.cpp): the head object's post-matrix diagonal
+    /// (`[0]`, `[5]`, `[10]`), swollen by `UpdateFrogCroak`; folded into `headMatrix`.
+    #[serde(default)]
+    pub head_post: Option<[f32; 3]>,
+    /// `breastMatrix` (PC/actor.cpp): the breast object's post-matrix diagonal.
+    #[serde(default)]
+    pub breast_post: Option<[f32; 3]>,
+    /// `croakDir` (PC/actor.cpp:166; never reset by a level change).
+    #[serde(default)]
+    pub croak_dir: i8,
 }
 
 impl Game {

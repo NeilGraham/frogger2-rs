@@ -8,13 +8,14 @@
 //!
 //! ```text
 //! f2-parity run   [--levels W-L,..] [--ticks N] [--seed S] [--oracle-jobs 2] [--jobs 4]
-//!                 [--refresh] [--no-oracle] [--update-baseline] [--sim PATH] [--dll PATH]
-//! f2-parity check [--baseline FILE] [--levels W-L,..] [--update] [--sim PATH]
+//!                 [--refresh] [--no-oracle] [--update-baseline] [--sim PATH] [--dll PATH] [--cache DIR]
+//! f2-parity check [--baseline FILE] [--levels W-L,..] [--update] [--sim PATH] [--cache DIR]
 //! f2-parity gen   [--levels W-L,..] [--ticks N] [--seed S]
 //! ```
 //!
 //! `check` needs no Windows: it compares fresh Rust traces with the cached oracle traces
-//! (`target/parity/oracle/`) and exits 1 when a level matches fewer ticks than recorded in
+//! (`target/parity/oracle/`, or `--cache DIR`; a worktree falls back to the main checkout's)
+//! and exits 1 when a level matches fewer ticks than recorded in
 //! `tools/f2-parity/baseline.json` (levels without a cached oracle trace are skipped).
 //! Exit status: 0 ok, 1 regression (check), 2 usage / I/O error.
 
@@ -38,6 +39,9 @@ struct Ctx {
     root: PathBuf,
     /// `target/parity` (or `$F2_PARITY_DIR`).
     dir: PathBuf,
+    /// Oracle trace cache (`<dir>/oracle`, `--cache DIR`; a worktree without its own
+    /// cache uses the main checkout's `target/parity/oracle`).
+    oracle_dir: PathBuf,
     sim: PathBuf,
     game_dir: PathBuf,
 }
@@ -55,6 +59,7 @@ struct Opts {
     baseline: Option<PathBuf>,
     sim: Option<PathBuf>,
     dll: Option<PathBuf>,
+    cache: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -123,8 +128,8 @@ fn main() -> ExitCode {
 }
 
 const USAGE: &str = "usage:
-  f2-parity run   [--levels W-L,..] [--ticks N] [--seed S] [--oracle-jobs N] [--jobs N] [--refresh] [--no-oracle] [--update-baseline] [--sim PATH] [--dll PATH]
-  f2-parity check [--baseline FILE] [--levels W-L,..] [--update] [--jobs N] [--sim PATH]
+  f2-parity run   [--levels W-L,..] [--ticks N] [--seed S] [--oracle-jobs N] [--jobs N] [--refresh] [--no-oracle] [--update-baseline] [--sim PATH] [--dll PATH] [--cache DIR]
+  f2-parity check [--baseline FILE] [--levels W-L,..] [--update] [--jobs N] [--sim PATH] [--cache DIR]
   f2-parity gen   [--levels W-L,..] [--ticks N] [--seed S]";
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -140,6 +145,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         baseline: None,
         sim: None,
         dll: None,
+        cache: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -156,6 +162,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--baseline" => o.baseline = Some(PathBuf::from(val()?)),
             "--sim" => o.sim = Some(PathBuf::from(val()?)),
             "--dll" => o.dll = Some(PathBuf::from(val()?)),
+            "--cache" => o.cache = Some(PathBuf::from(val()?)),
             s => return Err(format!("unknown argument {s}\n{USAGE}")),
         }
     }
@@ -184,7 +191,11 @@ fn real_main(args: &[String]) -> Result<u8, String> {
         Some(p) => p.clone(),
         None => build_sim(&root)?,
     };
-    let ctx = Ctx { game_dir: game_dir(&root), root, dir, sim };
+    let oracle_dir = match &o.cache {
+        Some(c) => c.clone(),
+        None => default_cache(&root, &dir),
+    };
+    let ctx = Ctx { game_dir: game_dir(&root), root, dir, oracle_dir, sim };
     let levels = select_levels(&ctx, &o)?;
     let cases = gen_scripts(&ctx, &o, &levels)?;
     match cmd.as_str() {
@@ -285,6 +296,15 @@ fn game_dir(root: &Path) -> PathBuf {
     main_checkout(root).map(|m| m.join("game-data/usa/game")).filter(|p| p.is_dir()).unwrap_or(here)
 }
 
+/// `<dir>/oracle`, or the main checkout's cache when this (worktree) checkout has none.
+fn default_cache(root: &Path, dir: &Path) -> PathBuf {
+    let here = dir.join("oracle");
+    if here.is_dir() || std::env::var_os("F2_PARITY_DIR").is_some() {
+        return here;
+    }
+    main_checkout(root).map(|m| m.join("target/parity/oracle")).filter(|p| p.is_dir()).unwrap_or(here)
+}
+
 fn oracle_dll(root: &Path, o: &Opts) -> PathBuf {
     if let Some(d) = &o.dll {
         return d.clone();
@@ -374,7 +394,7 @@ fn gen_scripts(ctx: &Ctx, o: &Opts, levels: &[(u32, u32)]) -> Result<Vec<Case>, 
 }
 
 fn oracle_path(ctx: &Ctx, c: &Case) -> (PathBuf, PathBuf) {
-    let base = ctx.dir.join("oracle").join(format!("{}-{}", c.level, c.key));
+    let base = ctx.oracle_dir.join(format!("{}-{}", c.level, c.key));
     (base.with_extension("jsonl"), base.with_extension("meta.json"))
 }
 

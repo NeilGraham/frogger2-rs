@@ -394,6 +394,20 @@ mod tests {
     }
 
     #[test]
+    fn checksum_covers_enhance_and_croak_state() {
+        let a = Game::new();
+        let mut e = a.snapshot();
+        e.set_game_options(crate::enhance::GameOptions::ENHANCED);
+        assert_ne!(a.checksum(), e.checksum());
+        let mut t = a.snapshot();
+        t.tongue.croak_dir = 1;
+        assert_ne!(a.checksum(), t.checksum());
+        let mut h = a.snapshot();
+        h.tongue.head_post = Some([1.0; 3]);
+        assert_ne!(a.checksum(), h.checksum());
+    }
+
+    #[test]
     fn resimulate_discards_only_new_effects() {
         let mut g = Game::new();
         g.effects.push(crate::Effect::Quit);

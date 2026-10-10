@@ -239,6 +239,7 @@ impl Game {
         // DrawLoop (PC/drawloop.cpp:250): UpdateFrogTongue(0) after ActorListDraw(1).
         if self.game_state.multi == define::SINGLEPLAYER && self.frogger.frog[0].is_some() {
             self.update_frog_tongue(0);
+            self.update_frog_croak(0); // DrawLoop (PC/drawloop.cpp:251)
         }
     }
 

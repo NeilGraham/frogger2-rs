@@ -616,7 +616,11 @@ impl Game {
         // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
         if let Some(name) = self.tongue.head_object.clone() {
             if self.frogger.frog[0] == Some(id) {
-                if let Some(m) = self.actor_sub_object_matrix(id, &name) {
+                if let Some(mut m) = self.actor_sub_object_matrix(id, &name) {
+                    // TransformObject: objMatrix = postMatrix . top (headPostMatrix).
+                    if let Some([x, y, z]) = self.tongue.head_post {
+                        m = mtx_cat(&gu_scale(x, y, z), &m);
+                    }
                     self.tongue.head_matrix = Some(flatten(&m));
                 }
             }
@@ -636,10 +640,17 @@ impl Game {
     /// `&FindActorSubObject(frog[0], headNames[character])->objMatrix` (its current value is
     /// the pose of `CreateActor`'s transform at the origin until the frog is drawn).
     pub fn find_frog_sub_objects(&mut self, p: usize) {
+        let Some(f0) = self.frogger.frog[0] else { return };
+        // if( !breastMatrix ): "fgshld" ("fmshld" for Lillie) gets an identity postMatrix.
+        if self.tongue.breast_post.is_none() {
+            let name = if self.frogger.player[0].character == crate::frogger::FROG_LILLIE { "fmshld" } else { "fgshld" };
+            if self.find_actor_sub_object(f0, name) {
+                self.tongue.breast_post = Some([1.0; 3]);
+            }
+        }
         if self.tongue.head_object.is_some() {
             return;
         }
-        let Some(f0) = self.frogger.frog[0] else { return };
         let ch = self.frogger.player[p].character as usize;
         let name = crate::frogmove::HEAD_NAMES[ch.min(7)];
         let a = &self.actor2.actors[f0].actor.actual_actor;
@@ -651,6 +662,9 @@ impl Game {
         let m = sub_object_matrix(&model.xform_tree, name, &MdxPlacement::default(), animated, 0.0);
         self.tongue.head_object = Some(name.to_string());
         self.tongue.head_matrix = m.map(|m| flatten(&m));
+        if self.tongue.head_post.is_none() {
+            self.tongue.head_post = Some([1.0; 3]); // headPostMatrix = identity
+        }
     }
 
     /// `CreateActor`'s `XformActor(t, 1)` at the origin (mdxActor.cpp:953): sets the
