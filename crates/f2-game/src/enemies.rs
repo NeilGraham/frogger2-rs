@@ -500,10 +500,26 @@ impl Game {
             self.do_enemy_collision(id);
         }
 
+        // P7b: a mod script that claimed this enemy moves it (no-op without mod scripts).
+        if !self.modscript_update_enemy(id) && !self.update_enemy_motion(id) {
+            return;
+        }
+
+        // Do Special Effects attached to enemies
+        let a = &self.actor2.actors[act2];
+        if a.effects != 0 && a.clipped == 0 && self.nme(id).flags & ENEMY_NEW_VENT == 0 {
+            self.process_attached_effects(FxEntity::Enemy(id));
+        }
+    }
+
+    /// The movement part of `UpdateEnemies`' loop body (waiting at a node, then the
+    /// enemy's update functions). `false` where the original `continue`s (skipping the
+    /// attached effects). Split out for P7b (`enemy_run_default`).
+    pub(crate) fn update_enemy_motion(&mut self, id: EnemyId) -> bool {
         // check if this enemy is currently 'waiting' at a node
         if self.nme(id).is_waiting != 0 {
             if self.nme(id).is_waiting == -1 {
-                return;
+                return false;
             }
             if self.act_frame_count > self.nme(id).path.start_frame {
                 self.nme_mut(id).is_waiting = 0;
@@ -528,7 +544,7 @@ impl Game {
                     self.frogmove.dest_tile[0] = prev;
                     self.frogmove.curr_tile[0] = prev;
                 }
-                return;
+                return false;
             }
         }
 
@@ -537,12 +553,7 @@ impl Game {
             let Some(u) = self.nme(id).update[k] else { break };
             self.call_enemy_update(u, id);
         }
-
-        // Do Special Effects attached to enemies
-        let a = &self.actor2.actors[act2];
-        if a.effects != 0 && a.clipped == 0 && self.nme(id).flags & ENEMY_NEW_VENT == 0 {
-            self.process_attached_effects(FxEntity::Enemy(id));
-        }
+        true
     }
 
     /// Port of `UpdateAllEnemies` (Common/enemies.c:454).

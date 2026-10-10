@@ -67,6 +67,12 @@ pub fn setup_multi(g: &mut Game, data: &Data, world: u32, level: u32, n: i32) ->
     for i in 0..4 {
         g.frogger.player[i].character = i as _;
     }
+    // P7b: the mods' behaviour scripts (their hash is part of the start fingerprint).
+    if !data.scripts.is_empty() {
+        for e in g.install_mod_scripts(&data.scripts) {
+            eprintln!("frogger: modscript: {e}");
+        }
+    }
     g.load_level(world, level, data)
 }
 
@@ -79,10 +85,15 @@ pub fn font_metrics(data: &Data) -> Option<f2_game::textover::FontMetrics> {
     Some(f2_game::textover::FontMetrics { normal: w(&b), small: w(&s) })
 }
 
-/// Fingerprint of a start state: the game checksum plus the host-installed font metrics.
+/// Fingerprint of a start state: the game checksum, the hash of the installed mod
+/// behaviour scripts (P7b: peers must run identical script sets) and the host-installed
+/// font metrics.
 pub fn fingerprint(g: &Game) -> u64 {
     let mut h = f2_game::netsync::StateHasher::new();
     h.write_u64(g.checksum());
+    if g.modscript_hash() != 0 {
+        h.write_u64(g.modscript_hash());
+    }
     if let Some(m) = &g.textover.metrics {
         h.write_bytes(&m.normal);
         h.write_bytes(&m.small);
@@ -387,7 +398,7 @@ where
         let fp = fingerprint(&game);
         self.sim = NetGame::new(game);
         if fp != setup.fingerprint {
-            let msg = format!("game data differs from the host's (start state {fp:016x}, host {:016x}): check data/version", setup.fingerprint);
+            let msg = format!("game data differs from the host's (start state {fp:016x}, host {:016x}): check data/version and enabled mods (behaviour scripts must be identical)", setup.fingerprint);
             self.end(msg.clone());
             return Err(msg);
         }

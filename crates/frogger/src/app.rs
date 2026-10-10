@@ -67,6 +67,8 @@ pub struct App {
     font_id: Option<FontId>,
     /// `bigfont.bmp` / `smallfont.bmp` (`pcFont` / `pcFontSmall`).
     game_font_files: Option<(Font, Font)>,
+    /// `monofont.bmp` (`fontWhite`, PC/Main.cpp `InitFont`s): the story book page text.
+    book_font: Option<Font>,
     game_fonts: Option<GameFonts>,
     /// Full-screen backdrop (`mdxLoadBackdrop`): file and image.
     backdrop: Option<(String, Option<TexHandle>)>,
@@ -172,6 +174,7 @@ impl App {
     pub fn new(data: Data, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, mut audio: AudioEngine, mapper: InputMapper) -> App {
         let font = ["textures/font/smallfont.bmp", "textures/font/monofont.bmp"].iter().find_map(|p| data.read(p).ok().and_then(|b| Font::from_bmp(&b)));
         let load_font = |p: &str| data.read(p).ok().and_then(|b| Font::from_bmp(&b));
+        let book_font = load_font("textures/font/monofont.bmp");
         let game_font_files = match (load_font("textures/font/bigfont.bmp"), load_font("textures/font/smallfont.bmp")) {
             (Some(b), Some(s)) => Some((b, s)),
             _ => {
@@ -189,6 +192,7 @@ impl App {
             font,
             font_id: None,
             game_font_files,
+            book_font,
             game_fonts: None,
             backdrop: None,
             tile_scroll: TileScroll::default(),
@@ -298,6 +302,12 @@ impl App {
         o.max_aspect = d.max_aspect;
         o.render_scale = d.render_scale;
         o.msaa = d.msaa;
+        // Retail draws translucent triangles in submission order (`sortMode` is never set);
+        // the enhanced profile sorts them back to front.
+        o.xlu_sort = match self.profile {
+            Profile::Authentic => f2_engine::XluSort::Submission,
+            Profile::Enhanced => f2_engine::XluSort::BackToFront,
+        };
     }
 
     /// F-key display toggles (quick A/B). Changing an enhanced option switches to the
@@ -600,6 +610,7 @@ impl App {
         let mut cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
         cfg.save_data = self.save_data.clone().or_else(|| self.save_path.as_ref().and_then(|p| std::fs::read(p).ok()));
         cfg.extra_levels = self.data.levels.clone();
+        cfg.scripts = self.data.scripts.clone(); // P7b
         cfg.options = self.game_options();
         cfg
     }
@@ -718,8 +729,8 @@ impl App {
     /// page (`grabToTexture`, `DrawPageB`).
     fn grab_textures(&mut self) {
         if self.game.options.grab_to_texture == 1 || self.game.options.grab_to_texture == 3 {
-            let font = self.game_font_files.as_ref().map(|(b, _)| b);
-            crate::book::process_grab(&mut self.r, &mut self.game, font);
+            let scale = if self.profile == Profile::Authentic { 1 } else { crate::book::ENHANCED_SCALE };
+            crate::book::process_grab(&mut self.r, &mut self.game, self.book_font.as_ref(), scale);
         }
     }
 

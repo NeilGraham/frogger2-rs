@@ -31,8 +31,16 @@ pub const UV_SCALE: f32 = 0.000975;
 pub const SZ_SCALE: f32 = 0.00025;
 
 /// `MA_FRAME_*` (mdxPoly.h:34). Frames are drawn in `DrawAllFrames` order:
-/// Normal, Wrap, Xlu, Additive, Overlay. `Glow` is collected but — as on
-/// retail PC — never drawn (halos were disabled).
+/// Normal, Wrap, Xlu, Additive, then the late batches, then Overlay. `Glow` is
+/// collected but — as on retail PC — never drawn (halos were disabled).
+///
+/// `Late` / `LateAdditive` are the `MA_FRAME_NORMAL` / `MA_FRAME_ADDITIVE` batches that
+/// `DrawLoop` (drawloop.cpp:262-292) fills *after* `DrawAllFrames` with `PrintSprites`
+/// and `DrawSpecialFX` and flushes with `DrawBatchedPolys` under `xluZRS` (z-test, no
+/// z-write), `xluSemiRS` / `xluAddRS`, `normalAlphaCmpRS` (alpha != 0) and clamped
+/// addressing. They are drawn in submission order (retail `sortMode = 0`), after every
+/// world/actor frame, so a sprite or effect blends over all scene geometry it is not
+/// depth-occluded by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Frame {
     Normal = 0,
@@ -41,8 +49,10 @@ pub enum Frame {
     Additive,
     Overlay,
     Wrap,
+    Late,
+    LateAdditive,
 }
-pub const NUM_FRAMES: usize = 6;
+pub const NUM_FRAMES: usize = 8;
 
 /// A `D3DTLVERTEX`: screen-space position in pixels, `sz` in 0..1, `rhw`.
 #[repr(C)]
@@ -218,10 +228,11 @@ impl View {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum XluSort {
     /// Back-to-front by triangle depth, like MDX's sorted path (`DrawSortedPolys`,
-    /// `MA_SORTBACKFRONT`).
-    #[default]
+    /// `MA_SORTBACKFRONT`). Enhanced only: retail never sets `sortMode`.
     BackToFront,
-    /// Submission order (the D3D hardware path with `sortMode = 0`).
+    /// Submission order (the D3D hardware path with `sortMode = 0`, mdxPoly.cpp:73; nothing
+    /// in the game ever changes it), the retail behaviour.
+    #[default]
     Submission,
 }
 
@@ -265,7 +276,7 @@ impl Default for RenderOptions {
             perspective_correct: false,
             screen_reject: true,
             linear_filter: true,
-            xlu_sort: XluSort::BackToFront,
+            xlu_sort: XluSort::Submission,
             fog: Fog::default(),
             anisotropy: 0,
             hor_plus: false,

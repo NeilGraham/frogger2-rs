@@ -9,29 +9,17 @@ oracle, so the gaps below are mostly outside the single-player trace. Line numbe
 
 | Where | Gap |
 |---|---|
-| `f2-game/src/hud.rs:9,323,375,403` | Multiplayer HUD not ported: `InitMultiHUD`, `EnableMultiHUD`, `DisableMultiHUD`, `UpDateMultiplayerInfo` (hud.c). Multi-player timers, trophies, penalty text and centre text are never shown or hidden. |
-| `f2-game/src/multi.rs:807,1466,1469` | `multiTimer`/`mpl[]`/`gameWinner` HUD updates; trophies `draw = 0`; `centreText->draw = 1; EnableHUD()` left as TODO. |
-| `f2-game/src/multi.rs:343` | `SlideTextOverlayToPos` penalty-text slide (needs hud/textover port; `SlideTextOverlayToPos` also absent from `frontend.rs`). |
-| `f2-game/src/frontend.rs:1363,1380,1422,1448` | Multiplayer result screen: `multiHud.centreText` position, `countdownString`, `backChars`/`penaliseText` slides, trophies drawing. |
-| `f2-game/src/multi.rs:811`, `collect.rs:242` | `TransformPoint` (view transform) returns the origin; affects multiplayer/garib screen-space effects. |
-| `f2-game/src/script.rs:717-718` | Script `TrainingHint` command only logs; `Game::training_hint` (`training.rs:81`) exists but is not called. Training-level hint text never appears from scripts. |
-| `f2-game/src/hud.rs:767-769` | `SetTimeForLevel()` (story/records) and `PrepareSong(AUDIOTRK_GAMEOVER)` not performed on game over. |
-| `f2-game/src/layout.rs:570,644,647,764,769` | Level init/free: `StopSong`, `FreeAmbientSoundList`, `InitTiming(60)`, `StoryStartLevel()` in story mode, `InitSpriteSortArray`/`InitSampleList`/`InitAmbientSoundList`, moolard cheat file. `UpdateCompletedLevel` (layout.c) has no Rust function. |
-| `f2-game/src/collect.rs:567`, `hud.rs:90` | `CHEAT_MAD_GARIBS` ("RGARIB01" garib sample/texture) not wired in collect/hud (frontend.rs:1021 does it). |
-| `f2-game/src/frogmove.rs:1532` | Comment says cheats not ported; `CHEAT_INFINITE_LIVES` state should be checked against `menus.rs` cheat state. |
 | `f2-game/src/evenfunc.rs:255` | `FindVoice` per-character resolution deferred to the audio layer. |
+| Local multiplayer oracle | `tools/run/run.py` / f2fix have no multiplayer start (`start.demo`/`start.level` only), so local multiplayer (and its HUD) has no retail trace yet; needs an f2fix `start.multi=W-L-N` (GoMulti: `multiplayerMode`, characters, `NUM_FROGS`). |
 | Online multiplayer parity | Netplay (`f2-net`, `frogger/src/netplay.rs`) is a redesign, not verified against the retail exe; chat (`netchat.cpp`) not carried over. Local multiplayer has no retail trace parity yet. |
 
 ## P2: front-end and data
 
 | Where | Gap |
 |---|---|
-| `Common/DefData.c` (no Rust) | Default hi-score names (`scoreName`, "jam" x N); no Rust equivalent found. Only matters for the high-score table defaults. |
-| `f2-game/src/frontend.rs:520,285` | `FreeTextOverlayLinkedList(); InitTextOverlayLinkedList(2)` and `arcadeHud.coinsOver` (level-complete) marked `TODO(merge wave E)`; verify they are done in `hud.rs`. |
-| `f2-game/src/frontend.rs:1630,1636` | Stale `TODO(merge multi)` comments (`mpl[i]` accessors); multi.rs now exists, confirm and remove. |
+| `f2-game/src/frontend.rs` (level complete, game over) | Level-complete and game-over texts/icons are still `UiOverlay` stand-ins drawn by `frogger/src/overlay.rs` (`ui_overlays`), not entries of the text/sprite overlay lists (draw order and the 40-entry list limit differ; display only). |
 | `Common/E3_Demo.c` | E3 level select not ported; dead in retail (`frontend.rs:458`), kept as `skip`. |
 | `options.c` `RunTeaserScreens`, `ToggleStereo` | Not ported; unused in the PC build. |
-| `f2-game/src/actor2.rs:466-468` | Stale `TODO(port)` for `TeleportActorToTile`; it exists in `evenfunc.rs:291`. `ResetUniqueActorList` has no PC definition. |
 
 ## P3: rendering/glue and cosmetics
 
@@ -47,3 +35,17 @@ oracle, so the gaps below are mostly outside the single-player trace. Line numbe
 
 DirectX/Win32/MCI/DirectPlay layers (`PC/*.cpp`, MDX Library, `net/`), registry/CD checks, PSX-only
 files (`flatpack.c`, `newpsx.c`, `sndview.c`), `ControlCamera` and `SetCamFF` (debug/PSX).
+
+## Closed (2026-10-09, gameplay gap-filling)
+
+Multiplayer HUD (`InitMultiHUD`/`EnableMultiHUD`/`DisableMultiHUD`/`UpDateMultiplayerInfo`, hud.rs),
+`numText`/`penalText` as real text overlays with the penalty slide (multi.rs), the multiplayer win
+screens and `DoEndMulti` on the real overlays (frontend.rs, `SlideTextOverlayToPos` in overlays.rs),
+`TransformPoint` (view.rs; multi player numbers, penalty text, coin zoom), training hints from the
+script (`EV_HINT` → `TrainingHint`, `STR_TRAINING1` = 92) on real overlays with `StringWrap`,
+`CHEAT_MAD_GARIBS` garib texture and `CHEAT_INFINITE_LIVES` in `KillFrog`, `StopSong` in
+`FreeAllLists`, moolard cheat file probe (`layout.moolard_cheat`, "mullard" croak), `InitTiming`
+(no state) and `StoryStartLevel` (already in `init_level_after_free`) notes, `UpdateCompletedLevel`,
+game-over `SetTimeForLevel` + `PrepareSong(AUDIOTRK_GAMEOVER)`, "the end" text on a 2-entry text
+list, level-complete coin on the real `arcadeHud.coinsOver`, `CreateOverlaysFromLogo`, DefData.c
+tables (`defdata.rs`), `FRONTEND_OBJ_BANK` loads nothing (banks.cpp:323), stale TODOs removed.

@@ -787,6 +787,53 @@ mod tests {
         d
     }
 
+    /// P7b: hello-mod's behaviour scripts are collected (mod-wide + level-scoped), mark the
+    /// mod gameplay-affecting, compile, and run deterministically on Hello Garden: the moving
+    /// hazard turns tiles deadly every 2 seconds. Headless (no GPU).
+    #[test]
+    fn hello_mod_scripts() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let data = hello_mod_data(&root);
+        let names: Vec<_> = data.scripts.iter().map(|s| (s.name.as_str(), s.scope)).collect();
+        assert_eq!(names, [("hello-mod/scripts/messages.f2s", None), ("levels/hello-garden/hazard.f2s", Some((0, 1)))]);
+        assert!(data.mods[0].gameplay_affecting);
+        let run = || {
+            let mut cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(data.clone()));
+            cfg.extra_levels = data.levels.clone();
+            cfg.scripts = data.scripts.clone();
+            let mut g = f2_game::Game::new_session(cfg);
+            assert!(g.modscript_errors().is_empty(), "{:?}", g.modscript_errors());
+            g.start_arcade(0, 1);
+            g.after_game_loop();
+            let initial: Vec<u32> = g.map.tiles.iter().map(|t| t.state).collect();
+            let mut deadly = std::collections::BTreeSet::new();
+            for t in 0..900u32 {
+                let pad = if t % 40 == 0 { f2_game::levplay::PAD_UP } else { 0 };
+                g.tick(f2_game::TickInput { pads: [pad, 0, 0, 0] });
+                g.take_effects();
+                for (i, tile) in g.map.tiles.iter().enumerate() {
+                    if tile.state == f2_game::define::tilestate::DEADLY && initial[i] != tile.state {
+                        deadly.insert(i);
+                    }
+                }
+            }
+            assert!(g.modscript_errors().is_empty(), "{:?}", g.modscript_errors());
+            (g.checksum(), deadly)
+        };
+        let (a, deadly) = run();
+        let (b, _) = run();
+        assert_eq!(a, b, "two runs identical");
+        eprintln!("tiles that were deadly: {deadly:?}");
+        assert!((3..=5).contains(&deadly.len()), "the hazard walked over 3-5 tiles: {deadly:?}");
+        // On Garden 1 the scripts do nothing (messages.f2s checks the level).
+        let mut fp = f2_game::Game::new();
+        assert!(fp.install_mod_scripts(&data.scripts).is_empty());
+        assert_ne!(fp.modscript_hash(), 0);
+    }
+
     /// The example mod (`examples/mods/hello-mod`): its level 0-1 loads through the level
     /// registry with the ETC script compiled at load, its text override applies, and
     /// Garden 1 (untouched by the mod) renders exactly as without mods, so the effective

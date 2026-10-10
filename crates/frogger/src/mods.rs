@@ -8,6 +8,10 @@ use f2_game::levels::{ExtraLevel, LevelFileNames, LevelRegistry, WorldPatch};
 use f2_game::pc_banks::{object_bank_file, texture_bank_file};
 use f2_modkit::levels::{find_levels, level_path, FoundLevel};
 
+use std::path::{Path, PathBuf};
+
+use f2_game::modscript::ScriptSource;
+
 use crate::data::Data;
 
 /// The registry for the enabled mods, plus warnings (bad manifests, unknown text ids,
@@ -124,4 +128,58 @@ pub fn extra_level(l: &FoundLevel) -> ExtraLevel {
         world_open: wi.open.map(|o| if o { WORLD_OPEN } else { WORLD_CLOSED }),
     });
     ExtraLevel { world: w, level: lv, data: row, name: m.name.clone(), files, music_track: m.music, world_patch }
+}
+
+/// P7b behaviour scripts of the enabled mods, in load order: every mod's `scripts/*.f2s`
+/// (sorted by name; hooks run on every level), then each level manifest's `scripts = [...]`
+/// (hooks run on that level only). Returns the scripts, the ids of the mods that provide
+/// them, and warnings (unreadable files).
+pub fn collect_scripts(data: &Data, mods_dir: &Path) -> (Vec<ScriptSource>, Vec<String>, Vec<String>) {
+    let (mut out, mut ids, mut warnings) = (Vec::new(), Vec::<String>::new(), Vec::new());
+    let mut owner = |id: &str| {
+        if !ids.iter().any(|i| i == id) {
+            ids.push(id.to_string());
+        }
+    };
+    let available = f2_mods::scan_mods(mods_dir).unwrap_or_default();
+    for m in &data.mods {
+        let Some((dir, _)) = available.iter().find(|(_, a)| a.id == m.id) else { continue };
+        let is_scripts = |p: &PathBuf| p.is_dir() && p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("scripts"));
+        let Some(sdir) = std::fs::read_dir(dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(is_scripts)) else { continue };
+        let is_f2s = |p: &PathBuf| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("f2s"));
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&sdir).map(|rd| rd.flatten().map(|e| e.path()).filter(is_f2s).collect()).unwrap_or_default();
+        files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()));
+        for f in files {
+            let name = format!("{}/scripts/{}", m.id, f.file_name().unwrap_or_default().to_string_lossy());
+            match std::fs::read(&f).map(String::from_utf8) {
+                Ok(Ok(source)) => {
+                    out.push(ScriptSource { name, source, scope: None });
+                    owner(&m.id);
+                }
+                Ok(Err(_)) => warnings.push(format!("{name}: not UTF-8")),
+                Err(e) => warnings.push(format!("{name}: {e}")),
+            }
+        }
+    }
+    let (found, _) = find_levels(&data.vfs);
+    for l in &found {
+        for v in &l.manifest.scripts {
+            let p = level_path(&l.dir, v);
+            let name = format!("levels/{}/{}", l.dir, v.trim_start_matches("./"));
+            match data.vfs.read(&p).map(String::from_utf8) {
+                Ok(Ok(source)) => {
+                    out.push(ScriptSource { name, source, scope: Some((l.manifest.world, l.manifest.level)) });
+                    // The mod whose layer provides the file (layer "mod:<id>/levels").
+                    let file = data.vfs.resolve_file(&p);
+                    let layer = file.and_then(|f| data.vfs.layers().iter().rev().find(|ly| f.starts_with(&ly.root)).map(|ly| ly.name.clone()));
+                    if let Some(id) = layer.as_deref().and_then(|n| n.strip_prefix("mod:")).and_then(|n| n.split('/').next()) {
+                        owner(id);
+                    }
+                }
+                Ok(Err(_)) => warnings.push(format!("{name}: not UTF-8")),
+                Err(e) => warnings.push(format!("{name}: {e}")),
+            }
+        }
+    }
+    (out, ids, warnings)
 }

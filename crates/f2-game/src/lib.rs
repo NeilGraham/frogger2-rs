@@ -19,6 +19,7 @@ pub mod bbtimer;
 pub mod cam;
 pub mod charsel; // wave G
 pub mod collect;
+pub mod defdata; // DefData.c (port-gaps agent)
 pub mod define;
 pub mod effects;
 pub mod enemies;
@@ -43,6 +44,7 @@ pub mod map;
 pub mod mdx_actor;
 pub mod memload;
 pub mod menus; // wave G
+pub mod modscript; // P7b mods: behaviour scripts
 pub mod multi;
 pub mod netsync; // P6-2 netplay: snapshot / checksum / resimulate
 pub mod options; // wave G
@@ -183,6 +185,8 @@ pub struct Game {
     pub charsel: charsel::CharSelState,
     // P6-1: enhanced-profile gameplay options (no effect in the authentic profile).
     pub enhance: enhance::EnhanceState,
+    // P7b: mod behaviour scripts (empty = authentic).
+    pub modscript: modscript::ModScriptState,
 }
 
 impl Game {

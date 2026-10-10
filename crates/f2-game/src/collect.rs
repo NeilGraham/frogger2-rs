@@ -81,7 +81,8 @@ pub struct Garib {
     pub garib_type: u8,
     /// `sprite` (coins only).
     pub sprite: Option<GaribSprite>,
-    /// The `sprList` slot `AllocateSprites(1)` gave `garib->sprite` (pool bookkeeping).
+    /// The `sprList` slot `AllocateSprites(1)` gave `garib->sprite`: the element the
+    /// renderer draws (kept in sync with `sprite` where the C writes `garib->sprite`).
     pub pool_sprite: Option<crate::ids::SpriteId>,
     /// `fx` (power-ups: the `FXTYPE_HEALTHFLY` effect).
     pub fx: Option<SpecFxId>,
@@ -228,6 +229,7 @@ impl Game {
         let p = pl as usize;
         let garib_type = self.garib(id).garib_type as i32;
         let sprite_pos = self.garib(id).sprite.as_ref().map_or(self.garib(id).pos, |s| s.pos);
+        self.modscript_pickup(pl, garib_type); // P7b (no-op without mod scripts)
 
         match garib_type {
             GOLDCOIN_GARIB | SILVERCOIN_GARIB => {
@@ -239,7 +241,7 @@ impl Game {
                     let (cz, co) = (self.hud.arcade_hud.coin_zoom, self.hud.arcade_hud.coins_over);
                     let (ox, oy) = self.overlays.get(co).map_or((0, 0), |o| (o.x_pos, o.y_pos));
                     let fpos = self.frogger.frog[p].map(|a| self.actor2.actors[a].actor.position).unwrap_or_default();
-                    // TransformPoint: TODO(port) needs the view transform (multi.rs transform_point).
+                    // TransformPoint (view.rs).
                     let (sx, sy) = self.transform_point(&fpos);
                     if let Some(o) = self.overlays.get_mut(cz) {
                         o.draw = 1;
@@ -564,11 +566,11 @@ impl Game {
             // the C frees the array element and returns NULL, is not modelled).
             let ps = self.sprite.allocate_sprites(1);
             self.garib_mut(id).pool_sprite = ps;
-            // TODO(port): cheatCombos[CHEAT_MAD_GARIBS] -> "RGARIB01".
+            let texture = if self.cheat_mad_garibs() { "RGARIB01" } else { "SCOIN0001" };
             let (r, g, b) = if garib_type == GOLDCOIN_GARIB { (255, 255, 0) } else { (255, 255, 255) };
             let angle = self.rng.random(4096) as i16;
             let s = GaribSprite {
-                texture: "SCOIN0001".to_string(),
+                texture: texture.to_string(),
                 pos,
                 scale_x: 0,
                 scale_y: 0,
@@ -584,6 +586,21 @@ impl Game {
                 angle,
                 angle_inc: 50,
             };
+            // `garib->sprite` IS the `sprList` element: mirror it so PrintSprites draws it.
+            if let Some(ps) = ps {
+                let sp = self.sprite.get_mut(ps);
+                sp.texture = crate::specfx::find_texture(&s.texture);
+                sp.pos = s.pos;
+                sp.scale_x = s.scale_x;
+                sp.scale_y = s.scale_y;
+                sp.flags = s.flags;
+                (sp.r, sp.g, sp.b, sp.a) = (s.r, s.g, s.b, s.a);
+                sp.offset_x = s.offset_x;
+                sp.offset_y = s.offset_y;
+                sp.draw = s.draw;
+                sp.angle = s.angle;
+                sp.angle_inc = s.angle_inc;
+            }
             self.garib_mut(id).sprite = Some(s);
         } else {
             let (name, r, g, b) = match garib_type {
@@ -655,6 +672,11 @@ impl Game {
             if let Some(s) = g.sprite.as_mut() {
                 s.scale_x = 64;
                 s.scale_y = 64;
+                if let Some(ps) = g.pool_sprite {
+                    let sp = self.sprite.get_mut(ps);
+                    sp.scale_x = 64;
+                    sp.scale_y = 64;
+                }
             } else if let Some(gfx) = g.fx {
                 g.drop_speed = g.drop_speed.wrapping_sub(step);
 
@@ -721,6 +743,27 @@ mod tests {
         assert_eq!(gl.head.ids(&gl.array), vec![c, b, a]);
         assert_eq!((gl.count, gl.total, gl.max_coins), (3, 3, 6));
         assert_eq!(g.collect.pickup_obj_name, "bfly.obe");
+    }
+
+    /// `garib->sprite` is the `sprList` element PrintSprites draws: the pool slot must
+    /// carry the coin's texture/pos/colour and the scale UpdateGaribs sets (else the
+    /// renderer skips it and coins are invisible).
+    #[test]
+    fn coin_sprite_is_in_sprite_list() {
+        let mut g = game_with_frog();
+        g.sprite.init_sprite_list();
+        g.init_garib_list();
+        g.alloc_garib_block(1);
+        let pos = SVector { vx: 10, vy: 20, vz: 30, pad: 0 };
+        let a = g.create_new_garib(pos, GOLDCOIN_GARIB).unwrap();
+        g.update_garibs();
+        let ps = g.garib(a).pool_sprite.unwrap();
+        let (id, sp) = g.sprite.iter_list().next().unwrap();
+        assert_eq!(id, ps);
+        assert_eq!(sp.texture, crate::specfx::find_texture("SCOIN0001"));
+        assert_eq!(sp.pos, pos);
+        assert_eq!((sp.scale_x, sp.scale_y, sp.draw, sp.a), (64, 64, 1, 200));
+        assert_eq!((sp.r, sp.g, sp.b, sp.offset_x, sp.offset_y), (255, 255, 0, -16, -16));
     }
 
     #[test]

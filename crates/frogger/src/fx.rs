@@ -5,9 +5,12 @@
 //! Everything reads the simulation state; the state changes these functions make in the
 //! original (sprite rotation, health-fly twinkles) are done by `f2-game` in the tick.
 //!
-//! `SwapFrame(0)` after `DrawAllFrames` is drawn with `xluZRS` / `xluSemiRS` (z-test, no
-//! z-write, semi-transparent), which is the engine's `Frame::Xlu`; `SwapFrame(3)` is
-//! `Frame::Additive`.
+//! `SwapFrame(0)` after `DrawAllFrames` (sprites, special FX) is drawn with `xluZRS` /
+//! `xluSemiRS` (z-test, no z-write, semi-transparent: vertex alpha x texture alpha, so the
+//! coins' `a = 200` really is ~78% opaque on retail), which is the engine's `Frame::Late`;
+//! `SwapFrame(3)` is `Frame::LateAdditive`. Both are flushed after every world/actor
+//! frame in submission order (drawloop.cpp:283-292). Shadows are drawn mid-loop on
+//! retail and stay in `Frame::Xlu`.
 
 use f2_engine::math::{mtx_cat, mtx_xfm, quaternion_to_matrix, Mat4, IDENTITY};
 use f2_engine::scene::{Frame, TlVertex, Tri, DIST, SZ_SCALE};
@@ -315,8 +318,8 @@ fn draw_fx_decal(r: &mut Renderer, game: &Game, id: SpecFxId) {
     if !xfm_quad(r, &m, &mut v, corners, -4.0) {
         return;
     }
-    push(r, Frame::Xlu, [v[0], v[1], v[2]], tex);
-    push(r, Frame::Xlu, [v[2], v[3], v[4]], tex);
+    push(r, Frame::Late, [v[0], v[1], v[2]], tex);
+    push(r, Frame::Late, [v[2], v[3], v[4]], tex);
     if ripple {
         // Pseudo bump map: an additive copy shifted 3 pixels right in the real colour.
         let col = rgba(fx.r as f32 * ONEOVER255, fx.g as f32 * ONEOVER255, fx.b as f32 * ONEOVER255, a);
@@ -324,8 +327,8 @@ fn draw_fx_decal(r: &mut Renderer, game: &Game, id: SpecFxId) {
             t.sx += 3.0;
             t.color = col;
         }
-        push(r, Frame::Additive, [v[0], v[1], v[2]], tex);
-        push(r, Frame::Additive, [v[2], v[3], v[4]], tex);
+        push(r, Frame::LateAdditive, [v[0], v[1], v[2]], tex);
+        push(r, Frame::LateAdditive, [v[2], v[3], v[4]], tex);
     }
 }
 
@@ -355,7 +358,7 @@ fn draw_fx_ring(r: &mut Renderer, game: &Game, id: SpecFxId) {
     let mut prev = [Tv::default(); 2];
     let t = f2_engine::math::gu_translate(pos[0], pos[1], pos[2]);
     let m_rt = mtx_cat(&quaternion_to_matrix(&rotation_to_normal(normal)), &t);
-    let frame = if fx.ty == FXTYPE_CROAK { Frame::Additive } else { Frame::Xlu };
+    let frame = if fx.ty == FXTYPE_CROAK { Frame::LateAdditive } else { Frame::Late };
     let tilt2 = fx.tilt as f32 * 0.000244;
 
     let segs = NUM_RINGSEGS * 2;
@@ -442,8 +445,8 @@ fn draw_fx_lightning(r: &mut Renderer, game: &Game, id: SpecFxId) {
                 t.tu = u;
                 t.tv = w;
             }
-            push(r, Frame::Additive, [v[0], v[1], v[2]], tex);
-            push(r, Frame::Additive, [v[2], v[3], v[4]], tex);
+            push(r, Frame::LateAdditive, [v[0], v[1], v[2]], tex);
+            push(r, Frame::LateAdditive, [v[2], v[3], v[4]], tex);
         }
     }
 }
@@ -500,8 +503,8 @@ fn draw_tongue(r: &mut Renderer, game: &Game, pl: usize) {
                 x.tu = u;
                 x.tv = w;
             }
-            push(r, Frame::Xlu, [v[0], v[1], v[2]], tex);
-            push(r, Frame::Xlu, [v[1], v[2], v[3]], tex);
+            push(r, Frame::Late, [v[0], v[1], v[2]], tex);
+            push(r, Frame::Late, [v[1], v[2], v[3]], tex);
         }
     }
 }
@@ -538,7 +541,7 @@ pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32) {
         let d = fov / (sz + DIST);
         let distx = d * (s.scale_x as f32 / 64.0) * sprite_mul;
         let disty = d * (s.scale_y as f32 / 64.0) * sprite_mul;
-        let frame = if s.flags & SPRITE_ADDITIVE != 0 { Frame::Additive } else { Frame::Xlu };
+        let frame = if s.flags & SPRITE_ADDITIVE != 0 { Frame::LateAdditive } else { Frame::Late };
         let col = rgba(s.r as f32 / 255.0, s.g as f32 / 255.0, s.b as f32 / 255.0, s.a as f32 / 255.0);
         let x = sx + s.offset_x as f32 * distx;
         let y = sy + s.offset_y as f32 * disty;

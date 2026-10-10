@@ -387,12 +387,57 @@ pub struct XNode {
     pub name: String,
     pub keys: RootObject,
     pub children: Vec<XNode>,
+    /// `obj->xlu`.
+    pub xlu: u8,
+    /// `MDX_OBJECTSPRITE` placement: `x, y, z, sx, sy` per object sprite.
+    pub sprites: Vec<[i16; 5]>,
 }
 
 impl XNode {
     pub fn from_object(o: &Object) -> XNode {
-        XNode { name: o.name.clone(), keys: RootObject::from_object(o), children: o.children.iter().map(XNode::from_object).collect() }
+        XNode {
+            name: o.name.clone(),
+            keys: RootObject::from_object(o),
+            children: o.children.iter().map(XNode::from_object).collect(),
+            xlu: o.xlu,
+            sprites: o.sprites.iter().map(|s| [s.pos[0], s.pos[1], s.pos[2], s.size[0], s.size[1]]).collect(),
+        }
     }
+
+    fn sprite_count(&self) -> usize {
+        self.sprites.len() + self.children.iter().map(XNode::sprite_count).sum::<usize>()
+    }
+}
+
+/// The object-sprite part of `TransformObject` (mdxObject.cpp:461) for an object chain
+/// (`chain[i..]` are `next` siblings): each sprite gets its object's matrix-stack top
+/// (`scalemat . rotmat . top`). Calls `f(sprite index, world pos ×10, scaleX, scaleY, xlu)`
+/// in `AddObjectsSpritesToSpriteList` order.
+#[allow(clippy::too_many_arguments)]
+fn transform_object_sprites(chain: &[XNode], top: &Mat4, parent_scale: Vec3, p: &MdxPlacement, animated: bool, time: f32, next: &mut usize, f: &mut dyn FnMut(usize, Vec3, f32, f32, u8)) {
+    for me in chain {
+        let mut last = [0i16; 3];
+        let (rotmat, scale) = object_local(&me.keys.move_keys, &me.keys.scale_keys, &me.keys.rotate_keys, animated, time, &mut last, p.scale, parent_scale);
+        let m1 = mtx_cat(&rotmat, top);
+        let a = p.scale;
+        let obj = mtx_cat(&gu_scale(scale[0] * a[0], scale[1] * a[1], scale[2] * a[2]), &m1);
+        for s in &me.sprites {
+            let sx = 2.0 * (s[3] as f32 * a[0] * scale[0]);
+            let sy = 2.0 * (s[4] as f32 * a[1] * scale[1]);
+            // "TEMPORARY" SPRITE FIX: the sprite's z is negated.
+            let t = mtx_xfm(&obj, [s[0] as f32, s[1] as f32, -(s[2] as f32)]);
+            f(*next, [t[0] * 10.0, t[1] * 10.0, t[2] * 10.0], sx, sy, me.xlu);
+            *next += 1;
+        }
+        if !me.children.is_empty() {
+            transform_object_sprites(&me.children, &m1, scale, p, animated, time, next, f);
+        }
+    }
+}
+
+/// A float stored to a `short` (MSVC `_ftol` truncation, low 16 bits kept).
+fn ftol16(v: f32) -> i16 {
+    v as i64 as i16
 }
 
 /// `objMatrix` of the first object named `name` (case-insensitive, `FindObj` order:
@@ -557,11 +602,19 @@ pub struct ViewState {
     pub far_clip: f32,
     /// Whether `DrawLoop` has computed `vMatrix` yet (before that nothing is culled).
     pub valid: bool,
+    /// `drawThisObjectsSprites` (mdxObject.cpp:39): the `draw` of the actor `ActorListDraw`
+    /// is on; `TransformObject` copies it into the object sprites.
+    #[serde(default = "one")]
+    pub draw_this_objects_sprites: u32,
+}
+
+fn one() -> u32 {
+    1
 }
 
 impl Default for ViewState {
     fn default() -> Self {
-        ViewState { far_clip: FAR_CLIP_INIT, valid: false }
+        ViewState { far_clip: FAR_CLIP_INIT, valid: false, draw_this_objects_sprites: 1 }
     }
 }
 
@@ -613,6 +666,7 @@ impl Game {
         }
         self.update_actor_anim(id);
         self.transform_root_object(id, no_clip);
+        self.transform_actor_sprites(id);
         // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
         if let Some(name) = self.tongue.head_object.clone() {
             if self.frogger.frog[0] == Some(id) {
@@ -624,6 +678,50 @@ impl Game {
                     self.tongue.head_matrix = Some(flatten(&m));
                 }
             }
+        }
+    }
+
+    /// The object sprites of `TransformObject` (mdxObject.cpp:461) for actor `id`: the sprites
+    /// the model's objects point at follow the actor (position, size, `xlu`, `draw`).
+    fn transform_actor_sprites(&mut self, id: ActorId) {
+        let a2 = &self.actor2.actors[id];
+        let a = &a2.actor.actual_actor;
+        let Some(mid) = a.object_controller else { return };
+        // After `ChangeModel` the controller is the shared bank model (NULL sprite pointers).
+        let Some(ptrs) = a2.obj_sprites.as_ref().filter(|(m, _)| *m == mid).map(|(_, p)| p) else { return };
+        let Some(model) = self.models.get(mid) else { return };
+        if model.xform_tree.iter().map(XNode::sprite_count).sum::<usize>() == 0 {
+            return;
+        }
+        let animated = a.animation.is_some();
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        let p = a.placement;
+        let draw = self.view.draw_this_objects_sprites;
+        let top = actor_top(p.pos, &p.q_rot);
+        let (sprites, model) = (&mut self.sprite, model.clone());
+        let mut next = 0;
+        transform_object_sprites(&model.xform_tree, &top, [1.0; 3], &p, animated, time, &mut next, &mut |i, pos, sx, sy, xlu| {
+            let Some(Some(sid)) = ptrs.get(i) else { return };
+            let sp = sprites.get_mut(*sid);
+            sp.draw = draw as i8;
+            sp.g = (draw.wrapping_mul(0xff)) as u8;
+            sp.scale_x = ftol16(sx);
+            sp.scale_y = ftol16(sy);
+            sp.a = xlu;
+            sp.offset_x = -16;
+            sp.offset_y = -16;
+            sp.pos = SVector { vx: ftol16(pos[0]), vy: ftol16(pos[1]), vz: ftol16(pos[2]), pad: 0 };
+        });
+    }
+
+    /// Port of `KillObjectSprites` (mdxActor.cpp:115): an actor culled by `ActorListDraw`
+    /// hides its object sprites.
+    fn kill_object_sprites(&mut self, id: ActorId) {
+        let a2 = &self.actor2.actors[id];
+        let Some(mid) = a2.actor.actual_actor.object_controller else { return };
+        let Some(ptrs) = a2.obj_sprites.as_ref().filter(|(m, _)| *m == mid).map(|(_, p)| p) else { return };
+        for sid in ptrs.iter().flatten() {
+            self.sprite.get_mut(*sid).draw = 0;
         }
     }
 
@@ -714,13 +812,16 @@ impl Game {
     pub fn actor_list_draw(&mut self, list: u32) {
         let Some(view) = self.specfx.view else {
             for id in self.actor_draw_list(list) {
+                self.view.draw_this_objects_sprites = self.actor2.actors[id].actor.actual_actor.placement.draw as u32;
                 self.update_actor_anim(id);
+                self.transform_actor_sprites(id);
             }
             return;
         };
         for id in self.actor_draw_list(list) {
             let a = &self.actor2.actors[id].actor.actual_actor;
             let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { continue };
+            self.view.draw_this_objects_sprites = a.placement.draw as u32;
             let p = a.placement;
             let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
             let visible = if draw_override {
@@ -747,8 +848,23 @@ impl Game {
             };
             if visible {
                 self.xform_actor(id, draw_override);
+            } else {
+                self.kill_object_sprites(id);
             }
         }
+    }
+
+    /// Port of `TransformPoint` (Common/maths.c:1817, PC): world point -> screen position in
+    /// 4096ths (`(short)(scr * 4096 / rXRes)`), through `XfmPoint` with the current view.
+    /// A clipped point keeps its camera-space x/y (as `XfmPoint` leaves them). Before the
+    /// first view matrix exists the result is the origin.
+    pub fn transform_point(&self, pos: &SVector) -> (i32, i32) {
+        let Some(v) = self.specfx.view.as_ref() else { return (0, 0) };
+        let (x, y, _) = v.xfm_point(pos);
+        // MSVC `_ftol` truncates to a 64-bit integer; the store keeps the low 16 bits.
+        let sx = ((x * 4096.0) / v.x_res) as i64 as i16;
+        let sy = ((y * 4096.0) / v.y_res) as i64 as i16;
+        (sx as i32, sy as i32)
     }
 
     /// `IsPointVisible` for a world point (`None` view: everything visible).

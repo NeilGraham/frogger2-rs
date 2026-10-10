@@ -1255,6 +1255,7 @@ impl Game {
             self.check_tile_for_collectable(tile, pl);
         }
 
+        self.modscript_frog_landed(pl, tile); // P7b (no-op without mod scripts)
         self.check_for_frog_on(pl, tile);
     }
 
@@ -1529,8 +1530,7 @@ impl Game {
                 }
             }
 
-            // cheatCombos[CHEAT_INFINITE_LIVES].state is 0 (cheats not ported).
-            if self.game_state.mode == INGAME_MODE {
+            if self.game_state.mode == INGAME_MODE && self.menus.cheat_combos[crate::menus::CHEAT_INFINITE_LIVES].state == 0 {
                 if !self.game_options().infinite_lives_on() {
                     // P6-1: infinite lives assist (enhanced only).
                     self.frogger.player[p].lives -= 1;

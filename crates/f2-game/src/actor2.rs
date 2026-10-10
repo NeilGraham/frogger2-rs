@@ -92,6 +92,11 @@ pub struct Actor2 {
     pub miles_away: i8,
     pub depth_shift: i8,
     pub dff_clipping: i8,
+    /// `obj->sprites[i].sprite` of the actor's own object tree (`MakeUniqueActor` copies the
+    /// objects per actor), in `AddObjectsSpritesToSpriteList` order, with the model id they
+    /// belong to. `TransformObject` positions them (`view.rs`).
+    #[serde(default)]
+    pub obj_sprites: Option<(u32, Vec<Option<crate::ids::SpriteId>>)>,
 }
 
 /// Arena of actors; freed slots stay `None` until the next level.
@@ -329,8 +334,11 @@ impl Game {
 
         // AddObjectsSpritesToSpriteList(object, 0) (PC/pcsprite.c:61): one pool sprite per
         // object sprite (never freed before the level ends).
+        let mut obj_sprites = Vec::with_capacity(model.obj_sprites.len());
         for &(tex, xlu) in &model.obj_sprites {
-            if let Some(s) = self.sprite.allocate_sprites(1) {
+            let sid = self.sprite.allocate_sprites(1);
+            obj_sprites.push(sid);
+            if let Some(s) = sid {
                 let sp = self.sprite.get_mut(s);
                 sp.texture = tex;
                 sp.pos = SVector::default();
@@ -430,8 +438,12 @@ impl Game {
         if let Some(uid) = ambient {
             self.add_ambient_sound(uid, None, 12000, crate::pcaudio::AMBIENT_VOLUME as i16, -1, 0, 0, Some(id));
         }
-        // CreateActor: XformActor(t, 1) at the origin (initial OBJECT_FLAGS_CLIPPED).
+        // CreateActor: XformActor(t, 1) at the origin (initial OBJECT_FLAGS_CLIPPED). It runs
+        // before AddObjectsSpritesToSpriteList: the unique objects' sprite pointers are NULL.
         self.xform_new_actor(id);
+        if !obj_sprites.is_empty() {
+            self.actor2.actors[id].obj_sprites = Some((model.id, obj_sprites));
+        }
         Some(id)
     }
 
@@ -463,9 +475,8 @@ impl Game {
         self.actor2.act_list.ids(&self.actor2.actors).into_iter().filter(|&id| self.actor2.actors[id].actor.actual_actor.list_num == list).collect()
     }
 
-    // TODO(port): TeleportActorToTile (Common/actor2.c:1230) needs player/currTile/
-    // currPlatform/frogFacing/camFacing state (frogger.c, frogmove.c, cam.c waves).
-    // TODO(port): ResetUniqueActorList - declared only, no PC definition.
+    // TeleportActorToTile (Common/actor2.c:1230) is ported in evenfunc.rs.
+    // ResetUniqueActorList: declared only, no PC definition (nothing to port).
 }
 
 #[cfg(test)]
