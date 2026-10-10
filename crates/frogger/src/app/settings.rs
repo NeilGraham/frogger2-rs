@@ -282,6 +282,9 @@ pub struct SettingsUi {
     pub map: Option<MapPage>,
     /// Pad bits held when the screen opened / last frame (debounce).
     prev: u16,
+    /// The key / button press that opened the screen (Cross on "Settings" in Extras or
+    /// the pause menu) is still in this frame's input: it must not act on the first row.
+    fresh: bool,
     /// Held direction and when it repeats next.
     repeat: Option<(u16, Instant)>,
     t0: Instant,
@@ -296,7 +299,7 @@ const ROW_H: f32 = 255.0;
 impl SettingsUi {
     pub fn new(page: Page, held: u16) -> SettingsUi {
         let p = Page::ALL.iter().position(|&x| x == page).unwrap_or(0);
-        SettingsUi { page: p, row: [Some(0); 4], scroll: [0; 4], map: None, prev: held, repeat: None, t0: Instant::now(), msg: String::new() }
+        SettingsUi { page: p, row: [Some(0); 4], scroll: [0; 4], map: None, prev: held, fresh: true, repeat: None, t0: Instant::now(), msg: String::new() }
     }
 
     pub fn page(&self) -> Page {
@@ -383,8 +386,8 @@ impl App {
     /// Opens the settings screen on `page`.
     pub fn open_settings_page(&mut self, page: Page) {
         if self.settings.is_none() {
-            let held = self.settings_pad(&KeyboardState::default(), &[]);
-            self.settings = Some(SettingsUi::new(page, held));
+            // Everything counts as held until released (`prev` follows the pad each frame).
+            self.settings = Some(SettingsUi::new(page, u16::MAX));
             self.languages = self.available_languages();
             self.acc = std::time::Duration::ZERO;
         } else if let Some(s) = &mut self.settings {
@@ -446,6 +449,9 @@ impl App {
         let Some(ui) = self.settings.as_mut() else { return };
         let deb = dig & !ui.prev;
         ui.prev = dig;
+        if std::mem::take(&mut ui.fresh) {
+            return;
+        }
         // A capture prompt takes raw keys.
         if ui.map.as_ref().is_some_and(|m| m.capture.is_some()) {
             let keyboard = ui.map.as_ref().is_some_and(|m| m.device == Device::Keyboard);
