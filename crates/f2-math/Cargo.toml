@@ -9,6 +9,8 @@ build = "build.rs"
 
 [dependencies]
 serde = { workspace = true }
+# Pure-Rust libm: OS-independent sin/cos/atan2/acos (see src/detfloat.rs).
+libm = "0.2.16"
 
 [build-dependencies]
 cc = "1"

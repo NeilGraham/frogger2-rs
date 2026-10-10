@@ -1,10 +1,10 @@
 //! Rust-vs-original-C differential tests. The C (`Common/fixed.c`, `Common/maths.c`,
 //! `Common/types.c` + macro wrappers in `tests/csrc/shim.c`) is compiled by `build.rs`.
 //!
-//! Known, intentional domain restrictions (host gcc/x86-64 SSE vs retail MSVC6/x87):
-//! - `rsin`/`rcos` inputs limited to |x| < 2^24 (gcc rounds `x*(1.0f/4096)` to float).
-//! - `arccos` inputs limited to [-4096, 4096]: for NaN, MSVC6 `_ftol` yields 0 while gcc's
-//!   `cvttsd2si` yields `INT_MIN` (covered by a separate unit test of the MSVC behaviour).
+//! The PC float macros (`rsin`/`rcos`, `utilCalcAngle`, `arccos`) run as their retail MSVC6
+//! x87 instruction sequences under Direct3D's 24-bit control word on the host FPU
+//! (`tests/csrc/x87.h`), so these tests check the Rust PC24 emulation against hardware over
+//! the full `i32` range.
 #![cfg(not(f2_math_no_c))]
 #![allow(non_snake_case)]
 
@@ -265,10 +265,9 @@ fn scalar_helpers() {
         assert_eq!(util_sqrt(x as u32), unsafe { c::utilSqrt(x as u32) });
         assert_eq!(fsqrt(x), unsafe { c::t_fsqrt(x) });
         assert_eq!(fsqrt_f(x), unsafe { c::t_fsqrtf(x) });
-        let a = x % (1 << 24);
-        assert_eq!(rsin(a), unsafe { c::t_rsin(a) }, "rsin({a})");
-        assert_eq!(rcos(a), unsafe { c::t_rcos(a) }, "rcos({a})");
-        let c0 = g.range(-4096, 4096);
+        assert_eq!(rsin(x), unsafe { c::t_rsin(x) }, "rsin({x})");
+        assert_eq!(rcos(x), unsafe { c::t_rcos(x) }, "rcos({x})");
+        let c0 = g.range(-8192, 8192);
         assert_eq!(arccos(c0), unsafe { c::arccos(c0) }, "arccos({c0})");
         let (p, q) = (g.i32(), g.i32());
         assert_eq!(util_calc_angle(p, q), unsafe { c::t_calc_angle(p, q) });
@@ -304,6 +303,12 @@ fn msvc_ftol_semantics() {
     assert_eq!(arccos(0), 1024);
     assert_eq!(arccos_f64(0), 1023);
     assert_eq!(arccos(4096), 0);
+    // RETAIL (24-bit x87): atan2 / 6.283185308 rounds to 0.25 -> exact 90 degrees.
+    assert_eq!(util_calc_angle(1, 0), 1024);
+    assert_eq!(util_calc_angle_f64(1, 0), 1023);
+    // 24-bit argument rounding: the 53-bit and PC24 evaluations part from |x| = 10684.
+    assert_eq!((rsin(10683), rcos(10683)), (rsin_f64(10683), rcos_f64(10683)));
+    assert_ne!((rsin(10684), rcos(10684)), (rsin_f64(10684), rcos_f64(10684)));
 }
 
 #[test]

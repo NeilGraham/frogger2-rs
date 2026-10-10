@@ -47,27 +47,17 @@ fn build_c() -> Result<(), String> {
     let same = |s: String| s;
     copy(&common, "fixed.c", &|s: String| s.replace("2147483648L", "((unsigned int)2147483648U)"))?;
     copy(&common, "fixed.h", &same)?;
-    // RETAIL: the exe runs on Direct3D's 24-bit x87 control word, so arccos rounds
-    // every step to float (see `f2_math::arccos`); emulate that on the SSE host.
-    copy(&common, "maths.c", &|s: String| {
-        s.replace(
-            "return (long)(acos(cos/4096.0F)*(4096/PI2));",
-            "{ float _x = cos/4096.0F; float _a = (float)acos(_x); float _r = (float)(_a*(4096/PI2)); return (long)_r; }",
-        )
-    })?;
+    // RETAIL: the exe runs on Direct3D's 24-bit x87 control word. The PC float macros
+    // (`arccos` here, `rsin`/`rcos` in libgte.h, `utilCalcAngle` in the islutil.h stub) run
+    // their MSVC6 x87 instruction sequences on the host FPU under that control word
+    // (tests/csrc/x87.h), so the difftests check the Rust PC24 emulation against hardware.
+    copy(&common, "maths.c", &|s: String| replace_once(s, "return (long)(acos(cos/4096.0F)*(4096/PI2));", "return x87_arccos(cos);"))?;
     copy(&common, "maths.h", &same)?;
     copy(&common, "types.c", &same)?;
     copy(&common, "newpsx.h", &same)?;
-    // RETAIL: rsin/rcos likewise round x/4096, the angle and sin*4096 to float (`f2_math::rsin`).
     copy(&pc, "libgte.h", &|s: String| {
-        s.replace(
-            "#define rsin(x) (fixed)(sin(((x)*(1.0f/4096.0f))*PI2)*4096)",
-            "#define rsin(x) (fixed)(float)(sin((float)((float)((x)*(1.0f/4096.0f))*PI2))*4096)",
-        )
-        .replace(
-            "#define rcos(x) (fixed)(cos(((x)*(1.0f/4096.0f))*PI2)*4096)",
-            "#define rcos(x) (fixed)(float)(cos((float)((float)((x)*(1.0f/4096.0f))*PI2))*4096)",
-        )
+        let s = replace_once(s, "#define rsin(x) (fixed)(sin(((x)*(1.0f/4096.0f))*PI2)*4096)", "#define rsin(x) (fixed)x87_rsin(x)");
+        replace_once(s, "#define rcos(x) (fixed)(cos(((x)*(1.0f/4096.0f))*PI2)*4096)", "#define rcos(x) (fixed)x87_rcos(x)")
     })?;
     for e in std::fs::read_dir(&stubs).map_err(|e| e.to_string())? {
         let e = e.map_err(|e| e.to_string())?;
@@ -99,4 +89,11 @@ fn build_c() -> Result<(), String> {
     println!("cargo:rustc-link-arg-tests={}", lib.display());
     println!("cargo:rustc-link-arg-tests=-lm");
     Ok(())
+}
+
+/// `s.replace(from, to)`, panicking if `from` does not occur exactly once (keeps the test
+/// build honest if the reference source changes).
+fn replace_once(s: String, from: &str, to: &str) -> String {
+    assert_eq!(s.matches(from).count(), 1, "build.rs: expected exactly one `{from}`");
+    s.replace(from, to)
 }

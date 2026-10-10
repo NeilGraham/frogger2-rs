@@ -70,7 +70,7 @@ pub fn arccos(cos: i32) -> i32 {
     // With 53-bit maths arccos(0) would be 1023 (PI2 = 6.283185308 > 2*pi); the
     // retail game gets 1024 (exact 90-degree turns: Orientate -> (0,-2896,0,2896)).
     let c = cos as f32 / 4096.0f32;
-    let a = (c as f64).acos() as f32;
+    let a = crate::detfloat::acos(c as f64) as f32;
     let r = (a as f64 * (4096.0 / PI2)) as f32;
     ftol32(r as f64)
 }
@@ -78,7 +78,7 @@ pub fn arccos(cos: i32) -> i32 {
 /// `arccos` evaluated in double precision (the source compiled on a 53-bit FPU), for
 /// difftests against the C on the host.
 pub fn arccos_f64(cos: i32) -> i32 {
-    ftol32((cos as f64 / 4096.0).acos() * (4096.0 / PI2))
+    ftol32(crate::detfloat::acos(cos as f64 / 4096.0) * (4096.0 / PI2))
 }
 
 /// Port of `arccos` (Common/maths.c:189), PSX path (table lookup with clamping). Unused

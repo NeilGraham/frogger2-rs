@@ -191,9 +191,9 @@ and packet counters for an on-screen netgraph.
    ordering.
 4. **Floating point.** The few float paths (`actor2.rs` sqrt, `tongue.rs` matrices, `arccos`,
    MDX animation time) must give identical results on all peers: IEEE `+ - * / sqrt` are fine;
-   transcendental functions (`acos`, `sin`, …) from the platform libm can differ between OSes
-   and must be replaced by a pure-Rust implementation (e.g. a vendored `libm` port) or tables
-   before cross-platform play. Never enable fast-math style flags.
+   transcendental functions (`acos`, `sin`, …) from the platform libm differ between OSes, so
+   the simulation calls them only through `f2_math::detfloat` (pure-Rust `libm`; §9). Never
+   enable fast-math style flags.
 5. **Side effects are not state.** `Game::effects` (sounds, music, rumble, FMV, saves) is emitted
    on every tick including resimulated ones. The platform layer must consume effects only from
    the final tick of an `advance` (or deduplicate by frame) and must never feed back into the
@@ -303,28 +303,41 @@ Tests (game data required, skipped otherwise):
 
 ## 9. Floating point across OS/CPU
 
-`f2-game` is integer/fixed-point except for these float paths:
+`f2-game` is integer/fixed-point except for these float paths, all of which are now
+platform-independent (bit-identical on Linux/Windows/macOS, x86-64/aarch64):
 
-| Path | Operations | Cross-platform risk |
+| Path | Operations | How it is made deterministic |
 |---|---|---|
-| `f2_math::util::{rsin, rcos, util_calc_angle}` | `f64::sin/cos/atan2` → `ftol32` | **libm** (platform C library: glibc vs UCRT vs Apple). Last-ulp differences flip the truncated integer only when the exact value is within 1 ulp of an integer — rare but possible. |
-| `f2_math::arccos` (24-bit x87 emulation) | `f64::acos`, rounded to `f32`, then `ftol32` | **libm** `acos`; the f32 rounding hides most ulp differences but not all. |
-| `f2-game/src/view.rs` | f32 matrices/quaternions, `f32::sqrt`; acos/sin tables built once with `f64::acos/sin` → `f32` | basic IEEE ops + `sqrt` are exact everywhere (SSE2/NEON, no FMA contraction in Rust); table init uses **libm**. |
-| `tongue.rs`, `specfx.rs` view checks, host `spec_fx_view` (`f2_engine::gu_look_at`) | f32 `+ − × ÷ sqrt` | none (IEEE-exact) on x86-64 / aarch64; would differ on x87-only targets (i586). |
-| `actor2.rs` | one `sqrt` | none. |
+| `f2_math::util::{rsin, rcos, util_calc_angle}` | x87 PC24 emulation: argument / quotient rounded once to 24 bits (`mul_pc24`/`div_pc24`, Dekker two-product), `sin`/`cos`/`atan2`, `*4096` rounded to `f32`, `ftol32` | `f2_math::detfloat` (pure-Rust `libm` crate), IEEE `+ − × ÷` only |
+| `f2_math::arccos` (24-bit x87 emulation) | `acos` → `f32` → `× 4096/PI2` → `f32` → `ftol32` | `detfloat::acos` |
+| `f2-game/src/view.rs` | f32 matrices/quaternions, `f32::sqrt`; `InitMaths` acos/sin tables (`f64` → `f32`) | tables via `detfloat::{acos, sin}`; the rest is IEEE-exact |
+| `tongue.rs`, `specfx.rs` view checks, host `spec_fx_view` (`f2_engine::gu_look_at`) | f32 `+ − × ÷ sqrt` | none needed on x86-64 / aarch64 (would differ on x87-only targets, i586) |
+| `actor2.rs` | one `sqrt` | none needed |
+
+Evidence (2026-10-09, see docs/DECISIONS.md):
+
+* `cargo run --release -p f2-math --example float_audit [-- full]`: the integer results with
+  `detfloat` equal those with the platform libm (glibc, Windows UCRT) for all 2^32
+  `rsin`/`rcos` inputs, the whole `arccos` domain, `util_calc_angle` on all pairs in ±2048 plus
+  50M sampled pairs, and the `view.rs` tables (f32 bits). Raw `f64` results of glibc and
+  the UCRT do differ in the last ulp; `detfloat`'s do not.
+* `-- digest` prints result digests; Linux x86-64 and Windows MSVC x86-64 print identical
+  `detfloat` digests (the "system" raw-`f64` digest differs between the two OSes).
+* `cargo run --release -p f2-math --example x87_check [-- full]` (x86-64): the port equals
+  the retail MSVC6 instruction sequences executed on the host's x87 under control word
+  0x007F for all 2^32 `rsin`/`rcos` inputs; the f2-math difftests do the same through the C.
+* Oracle: the 0-0/1-0/6-1 attract demos and the 26-level parity corpus are identical.
 
 Policy:
 
-* **Same-binary play is safe** (same OS + same build ⇒ same libm results). The start-state
-  fingerprint does not catch libm differences, the per-60-frame checksums do.
-* For **cross-OS / cross-CPU** play, route `sin/cos/atan2/acos` through a pure-Rust
-  implementation (the `libm` crate — already in the dependency tree — or tables generated at
-  build time) in `f2-math` and `view.rs`; verify with the oracle parity suite (the retail exe
-  uses MSVC's x87 `acos`, so the results must stay bit-identical to today's on Windows).
+* Simulation code must not call `f32`/`f64` transcendental methods (`sin`, `cos`, `atan2`,
+  `acos`, `exp`, `powf`, …) directly: use `f2_math::detfloat` (add wrappers there as needed).
+  Rendering/audio code in `f2-engine`/`frogger` may use std (it never feeds the simulation).
 * Never enable fast-math, FMA contraction (`-C target-feature=+fma` is fine only because Rust
   never contracts `a*b+c` implicitly; do not introduce `mul_add`) or x87 targets.
-* Until then, the lobby should only pair identical OS families (a future `Start` extension can
-  carry an OS/arch tag next to the data fingerprint).
+* Cross-OS / cross-CPU pairing is therefore allowed; a future `Start` extension may still
+  carry an OS/arch tag next to the data fingerprint for diagnostics. The per-60-frame
+  checksums remain the safety net.
 
 ## 10. Limitations / future work
 
