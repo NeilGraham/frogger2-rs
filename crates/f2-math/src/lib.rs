@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod acostable;
+pub mod detfloat;
 pub mod fixed;
 pub mod maths;
 pub mod types;

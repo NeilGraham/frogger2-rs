@@ -59,8 +59,8 @@ fn tables() -> &'static Tables {
     T.get_or_init(|| {
         let mut t = Box::new(Tables { sin: [0.0; 4096], acos: [0.0; 4096] });
         for i in 0..4096 {
-            t.acos[i] = ((i as f64 - 2048.0) / 2048.0).acos() as f32;
-            t.sin[i] = ((i as f64 * PI2) / 4096.0).sin() as f32;
+            t.acos[i] = f2_math::detfloat::acos((i as f64 - 2048.0) / 2048.0) as f32;
+            t.sin[i] = f2_math::detfloat::sin((i as f64 * PI2) / 4096.0) as f32;
         }
         t
     })

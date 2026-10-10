@@ -10,3 +10,4 @@
 /* MSVC labs(INT_MIN) == INT_MIN (wrapping); avoid the LP64 libc prototype. */
 #define labs(x) (((x) < 0) ? -(x) : (x))
 #define PC_VERSION 1
+#include "x87.h"
