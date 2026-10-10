@@ -50,10 +50,15 @@ impl Game {
         let Some(file) = object_bank_file(object_bank) else {
             return Ok(BankLoad::NoFile);
         };
-        let Some(bytes) = data.read(&file) else {
+        self.load_object_bank_file(file, data)
+    }
+
+    /// The file half of [`Game::load_object_bank`]; also used for level-registry banks (P7-1).
+    pub fn load_object_bank_file(&mut self, file: String, data: &dyn DataSource) -> Result<BankLoad, String> {
+        let Some(bank) = data.object_bank(&file) else {
             return Ok(BankLoad::Missing(file));
         };
-        let bank = ObjectBank::parse(&bytes).map_err(|e| format!("{file}: {e}"))?;
+        let bank: ObjectBank = bank?;
         self.models.add_bank(&bank);
         Ok(BankLoad::Loaded(file))
     }

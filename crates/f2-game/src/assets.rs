@@ -13,6 +13,38 @@ use serde::{Deserialize, Serialize};
 /// File access with the original's relative paths (`MAPS\\ENTITY-1-0.DAT`, any case).
 pub trait DataSource {
     fn read(&self, path: &str) -> Option<Vec<u8>>;
+
+    // P7-1 (mods): parsed containers. The defaults parse [`DataSource::read`]; a modding
+    // host overrides them to return the *effective* bank (retail + per-entry overrides).
+    // `None` = file missing.
+
+    /// `objects\<name>.dll` (`LoadObjBank`).
+    fn object_bank(&self, path: &str) -> Option<Result<ObjectBank, String>> {
+        self.read(path).map(|b| ObjectBank::parse(&b).map_err(|e| format!("{path}: {e}")))
+    }
+
+    /// `textures\<name>.fla` (`LoadTexBankFile`), decompressed and parsed.
+    fn texture_bank(&self, path: &str) -> Option<Result<f2_formats::texture::TexBank, String>> {
+        self.read(path).map(|b| {
+            f2_formats::fla::maybe_decompress(b)
+                .map_err(|e| format!("{path}: {e}"))
+                .and_then(|b| f2_formats::texture::TexBank::parse(&b).map_err(|e| format!("{path}: {e}")))
+        })
+    }
+
+    /// `sfx\<name>.wus` (`LoadSfxSet`).
+    fn sound_bank(&self, path: &str) -> Option<Result<f2_formats::wus::SoundBank, String>> {
+        self.read(path).map(|b| f2_formats::wus::SoundBank::parse(&b).map_err(|e| format!("{path}: {e}")))
+    }
+
+    /// `MAPS\LANGUAGE.FLA` (`gameTextInit`), decompressed and parsed.
+    fn string_table(&self, path: &str) -> Option<Result<f2_formats::lang::StringTable, String>> {
+        self.read(path).map(|b| {
+            f2_formats::fla::maybe_decompress(b)
+                .map_err(|e| e.to_string())
+                .and_then(|b| f2_formats::lang::StringTable::parse(&b).map_err(|e| e.to_string()))
+        })
+    }
 }
 
 /// In-memory data source (tests).

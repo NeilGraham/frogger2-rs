@@ -521,8 +521,13 @@ impl Game {
         let obj_bank_to_use = wvd.master_object_bank as i32;
         let tex_bank_to_use = wvd.master_texture_bank as i32;
 
-        let mut load_obj = |g: &mut Game, bank: i32| -> Result<(), String> {
-            match g.load_object_bank(bank, data)? {
+        // P7-1: `file` = a level-registry bank file instead of the bank id's.
+        let mut load_obj = |g: &mut Game, bank: i32, file: Option<String>| -> Result<(), String> {
+            let r = match file {
+                Some(f) => g.load_object_bank_file(f, data)?,
+                None => g.load_object_bank(bank, data)?,
+            };
+            match r {
                 BankLoad::Loaded(f) => out.object_banks.push(f),
                 BankLoad::Missing(f) => {
                     g.effects.push(Effect::Log { text: format!("Unable to load object bank {f}") });
@@ -534,23 +539,26 @@ impl Game {
         };
 
         // Contains frogger and froglet - probably quite important
-        load_obj(self, INGAMEGENERIC_OBJ_BANK)?;
+        load_obj(self, INGAMEGENERIC_OBJ_BANK, None)?;
 
         // Load multiple frogs for multiplayer modes
         for i in 0..self.frogger.num_frogs.max(0) as usize {
             let multi = (self.game_state.multi != crate::define::SINGLEPLAYER) as i32;
             let bank = FROGGER_OBJ_BANK + self.frogger.player[i].character as i32 + multi * FROG_NUMFROGS;
-            load_obj(self, bank)?;
+            load_obj(self, bank, None)?;
         }
 
-        if let Some(f) = texture_bank_file(tex_bank_to_use) {
+        if let Some(f) = self.registry_file(world_id, level_id, |f| &f.texture_bank).or_else(|| texture_bank_file(tex_bank_to_use)) {
             out.texture_banks.push(f);
         }
-        load_obj(self, obj_bank_to_use)?;
+        let world_bank = self.registry_file(world_id, level_id, |f| &f.world_object_bank);
+        load_obj(self, obj_bank_to_use, world_bank)?;
 
         let lvd = &wvd.level_visual_data[level_id as usize];
-        if lvd.coll_bank > -1 && lvd.object_bank_to_use > 0 {
-            load_obj(self, lvd.object_bank_to_use)?;
+        if let Some(f) = self.registry_file(world_id, level_id, |f| &f.object_bank) {
+            load_obj(self, 0, Some(f))?;
+        } else if lvd.coll_bank > -1 && lvd.object_bank_to_use > 0 {
+            load_obj(self, lvd.object_bank_to_use, None)?;
         }
 
         out.has_world_model = self.models.find_object("world.obe").is_some();
@@ -611,6 +619,7 @@ impl Game {
             return Err(format!("no level {world}-{level}"));
         }
         let mut out = LevelAssets::default();
+        self.apply_level_registry(world, level); // P7-1 (no-op without mods)
 
         self.layout.num_levels_played += 1;
         self.frogger.player[0].world_num = world as u8;
@@ -641,20 +650,26 @@ impl Game {
         // ambient: InitSampleList, InitAmbientSoundList, LoadSfx(worldID) (useAudio).
         self.pcaudio.init_sample_list();
         self.pcaudio.ambient_sound_list.clear();
-        self.load_sfx(world, data);
+        self.load_level_sfx(world, level, data); // LoadSfx (+ P7-1 registry bank)
 
         let wvd = self.layout.world_visual_data[world as usize];
         let lvd = wvd.level_visual_data[level as usize];
 
         // LoadMapBank(collBank) = LoadCollision + LoadScenics
-        let coll = collision_file_for_coll_bank(lvd.coll_bank).ok_or_else(|| format!("collBank {} has no collision file", lvd.coll_bank))?;
-        let bytes = data.read(coll).ok_or_else(|| format!("missing {coll}"))?;
+        let coll = match self.registry_file(world, level, |f| &f.collision) {
+            Some(f) => f,
+            None => collision_file_for_coll_bank(lvd.coll_bank).ok_or_else(|| format!("collBank {} has no collision file", lvd.coll_bank))?.to_string(),
+        };
+        let bytes = data.read(&coll).ok_or_else(|| format!("missing {coll}"))?;
         let c = level::Collision::parse(&bytes).map_err(|e| format!("{coll}: {e}"))?;
         self.map.load_collision(&c);
         out.collision_file = coll.to_string();
 
-        let sce = scenics_file_for_coll_bank(lvd.coll_bank).ok_or_else(|| format!("collBank {} has no scenics file", lvd.coll_bank))?;
-        let bytes = data.read(sce).ok_or_else(|| format!("missing {sce}"))?;
+        let sce = match self.registry_file(world, level, |f| &f.scenics) {
+            Some(f) => f,
+            None => scenics_file_for_coll_bank(lvd.coll_bank).ok_or_else(|| format!("collBank {} has no scenics file", lvd.coll_bank))?.to_string(),
+        };
+        let bytes = data.read(&sce).ok_or_else(|| format!("missing {sce}"))?;
         let s = level::parse_scenics(&bytes).map_err(|e| format!("{sce}: {e}"))?;
         self.map.load_scenics(&s);
         out.scenics_file = sce.to_string();
@@ -667,9 +682,8 @@ impl Game {
         let banks: Vec<_> = out
             .texture_banks
             .iter()
-            .filter_map(|f| data.read(f))
-            .filter_map(|b| f2_formats::fla::maybe_decompress(b).ok())
-            .filter_map(|b| f2_formats::texture::TexBank::parse(&b).ok())
+            .filter_map(|f| data.texture_bank(f))
+            .filter_map(|b| b.ok())
             .collect();
         self.pt_texture_load(&banks);
         self.init_baby_list(true);
@@ -690,7 +704,7 @@ impl Game {
         self.frogger.fog.max = lvd.far_clip as i16;
 
         // LoadLevelEntities(worldVisualData[w].worldID, levelVisualData[l].levelID)
-        let ent = entity_file_name(wvd.world_id, lvd.level_id);
+        let ent = self.registry_file(world, level, |f| &f.entities).unwrap_or_else(|| entity_file_name(wvd.world_id, lvd.level_id));
         if let Some(bytes) = data.read(&ent) {
             match Entities::version(&bytes) {
                 Some(v) if v == ENTITY_VERSION => {
@@ -703,7 +717,7 @@ impl Game {
         }
 
         // LoadLevelScript(worldVisualData[w].worldID, levelVisualData[l].levelID)
-        let scr = script_file_name(wvd.world_id, lvd.level_id);
+        let scr = self.registry_file(world, level, |f| &f.script).unwrap_or_else(|| script_file_name(wvd.world_id, lvd.level_id));
         match data.read(&scr) {
             Some(bytes) => match Script::parse(&bytes) {
                 Ok(s) => self.level_files.script = Some(s),
@@ -718,7 +732,7 @@ impl Game {
 
         // LoadSfxMapping(worldID, levelID) - note: index ids, and after all actors of
         // InitLevel exist, so none of them get a mapping (sfx_anim_map was NULL).
-        let sam = crate::general::sfx_mapping_file_name(world, level);
+        let sam = self.registry_file(world, level, |f| &f.sfx_mapping).unwrap_or_else(|| crate::general::sfx_mapping_file_name(world, level));
         if let Some(bytes) = data.read(&sam) {
             let (maps, amb) = level::parse_sfx_mapping(&bytes, self.map.tiles.len()).map_err(|e| format!("{sam}: {e}"))?;
             self.general.load_sfx_mapping(&maps, &amb);

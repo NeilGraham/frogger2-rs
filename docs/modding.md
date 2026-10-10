@@ -14,12 +14,27 @@ mods/
       objects/garden1/jetty.gltf        # replacement model
       maps/script-1-0.fes               # script source, compiled at load by f2-etc
     music/track02.ogg
-    levels/<new-level>/…                # new levels (see §3)
+    levels/<new-level>/level.toml       # new levels (see §3), + any files the level brings
     scripts/*.rhai                      # optional behaviour scripts (Phase 7b)
 ```
 
 `config.toml` lists enabled mods in order; later mods win. The VFS resolves
-`mods/<n>/game/<path>` → … → `data/<rendition>/game/<path>`.
+`mods/<n>/game/<path>` → … → `data/<rendition>/game/<path>`; each mod's `levels/` dir is
+mounted at the virtual `levels/`.
+
+Enabling mods (`frogger`):
+
+```toml
+# config.toml
+[mods]
+enabled = ["hello-mod"]          # load order, later wins
+dir = "/path/to/mods"            # optional; default <config dir>/mods or $F2_MODS_DIR
+```
+
+`frogger --mods a,b` replaces `enabled` for one run (`--mods ""` = no mods), `--mods-dir DIR`
+replaces `dir`. With no mods enabled every read is the plain retail file (authentic play is
+unchanged; `hello_mod_pipeline` in `crates/frogger` checks Garden 1 renders pixel-identically
+with a mod enabled that doesn't touch it).
 
 ## 2. Granularity: why per-entry overrides
 
@@ -54,6 +69,73 @@ world assignment. We will:
    tile graph editing, entity placement, path editing, save to text formats.
 4. Blender workflow: glTF export from Blender → importer computes tile graph helpers; or a Blender
    add-on later.
+
+### What works now (P7-1)
+
+- **Script source** (`f2-etc`, see `docs/ETC-LANGUAGE.md`): a mod file
+  `game/maps/script-W-L.etc` (or `.fes`) replaces the retail `MAPS\SCRIPT-W-L.FEV`; the host
+  compiles it when the game reads the `.fev` (a source wins over a `.fev` in the same or a
+  lower layer). A level manifest may also name an `.etc`/`.fes` file directly. Compile errors
+  are logged and the level runs without a script, like a missing `.fev`.
+- **Level manifests**: `levels/<dir>/level.toml` adds a level to (or overrides) one
+  `worldVisualData[world].levelVisualData[level]` slot at session start, through the
+  additive `f2_game::levels::LevelRegistry` (`SessionConfig::extra_levels`,
+  `Game::install_level_registry`). `load_level` takes file names from the registry entry and
+  falls back to the original switch tables, so no game code is patched. Files resolve
+  through the mod VFS, so a level may reuse retail files by name.
+- Not yet: editor revival, text level formats, Blender workflow; new levels are not listed
+  in the frontend menus (raising `numLevels` would change the save-game layout) — start them
+  with `frogger --level W L` or reach them through `next` of another level.
+
+### `level.toml` reference
+
+```toml
+world = 0              # worldVisualData slot, 0-9 (the original table has exactly 10)
+level = 1              # levelVisualData slot, 0-19 (empty slots are free)
+base = [0, 0]          # optional: copy this retail slot's row and files first
+name = "Hello Garden"  # literal level name (Latin-1), or:
+# text_id = "STR_..."  # name by string id
+level_id = 0           # levelID (default ENTITY-/SCRIPT- file names); default from base/slot
+next = [1, 0]          # [nextWorldID, nextLevelID] after completion
+fog = [96, 64, 160]    # fog / clear colour (0-255)
+fog_near = 500         # fogNearDist
+fog_far = 700          # fogFarDist
+far_clip = 6000        # farClip (fog.max), game units x 10
+par_time = 450         # parTime (tenths of a second)
+music = 4              # CD track (music/trackNN.*, may come from a mod); default: the world's
+open = true            # levelOpen in a new game (default true)
+
+[files]                # VFS paths; "./x" = levels/<dir>/x. Unset = from base (or the slot's row)
+collision = "COLLISION/GARDEN1.COL"
+scenics = "SCENICS/GARDEN1.SCE"
+entities = "MAPS/ENTITY-0-0.DAT"
+script = "./script.etc"          # .fev, or ETC source (.etc/.fes) compiled at load
+sfx_mapping = "MAPS/SFXANIM00.SAM"
+texture_bank = "textures/garden.fla"         # replaces the world's masterTextureBank
+world_object_bank = "objects/gardenmaster.dll" # replaces masterObjectBank
+object_bank = "objects/garden1.dll"          # replaces objectBankToUse
+sfx_bank = "sfx/garden.wus"                  # replaces the world's sample bank in LoadSfx
+
+[world_info]           # optional changes to the slot's world
+world_id = 9
+name = "My World"      # or text_id = "STR_..."
+open = true
+```
+
+Banks named here still get per-entry overrides (§6) when they live at `textures/<bank>.fla`,
+`objects/<bank>.dll`, `sfx/<bank>.wus`. Literal names become extra strings
+`GAMESTRING(LANG_NUM_STRINGS + i)`. A slot claimed by two manifests: the later directory
+(alphabetical, top layer first per directory) wins, with a warning. `f2-modkit pack` parses
+every manifest and checks the named files exist (all of them with `--rendition`, else only
+the mod's own `./` files).
+
+Example: `examples/mods/hello-mod` (a text override and a dusk copy of Garden 1 in slot 0-1
+with its own ETC script; no game assets):
+
+```
+f2-modkit pack examples/mods/hello-mod --rendition game-data/usa
+frogger --mods hello-mod --mods-dir examples/mods --level 0 1
+```
 
 ## 4. Behaviour scripting (Phase 7b)
 
@@ -139,14 +221,14 @@ resolver the engine uses (errors for unreadable files), and with a rendition war
 byte-identical to a retail file (sha1 list in `<rendition>/manifest.json`) or an override decodes
 to exactly the retail entry it replaces. Validation only — it does not build an archive yet.
 
-### Host wiring (not done yet — owned by the engine/game agents)
+### Host wiring (done, P7-1)
 
-1. `frogger` builds the `Vfs` with `f2_mods::load_enabled_mods(rendition, mods_dir, &ids)`.
-2. Wherever `f2-engine`/`f2-game` currently read and parse a bank file (texture bank load,
-   `LoadSfxSet`, `LoadObjBank`, `gameTextInit`), call `f2_modkit::{tex_bank, sound_bank,
-   object_bank, string_table}(&vfs, name)` instead and use `.value`; log `.warnings`.
-   The returned types are the same `f2-formats` structs, so nothing downstream changes.
-3. Music: replace `AudioEngine::set_music_dir` lookups with `f2_modkit::music_track(&vfs, n)` and
-   `play_music_stream(WavStream::open_any(&path).ok(), n, looped)`.
-4. Optional cache: the effective banks are deterministic in the enabled-mod list, so the host may
-   memoise them per bank name for a session.
+- `frogger` (`crates/frogger/src/data.rs`) builds the `Vfs` with the enabled mods; `Data` is
+  the game's `DataSource`. `f2_game::assets::DataSource` has default-implemented
+  `object_bank` / `texture_bank` / `sound_bank` / `string_table` methods that `f2-game`
+  (object banks, `PTTextureLoad`, `LoadSfx`, `gameTextInit`) and the renderer/audio host use;
+  with mods `Data` answers them from `f2_modkit::{object_bank, tex_bank, sound_bank,
+  string_table}` (memoised per session, `.warnings` logged as `frogger: mods: warning: …`).
+- Music: `Effect::PlayMusic` plays `f2_modkit::music_track(&vfs, n)` when a mod provides the
+  track, else the retail track as before.
+- Level manifests → `LevelRegistry` (`crates/frogger/src/mods.rs`), passed to every session.

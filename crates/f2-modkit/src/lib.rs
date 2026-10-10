@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod gltf;
+pub mod levels;
 pub mod pack;
 pub mod sound;
 pub mod text;

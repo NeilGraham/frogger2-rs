@@ -1,0 +1,40 @@
+; hello-garden: event script for the hello-mod example level (slot 0-1).
+; Written for this example; compiled at load by the game's built-in ETC compiler.
+; Language reference: docs/ETC-LANGUAGE.md.
+
+Set %RISING 16                ; TRIGGER_RISING: fire when the condition becomes true
+Set %ONCE 1                   ; TRIGGER_ONCE
+
+Set %frog 0                   ; player one
+Set %pipe_in 103              ; garden pipe placeholders (same layout as Garden 1)
+Set %pipe_out 104
+Set %pipe_back 106
+Set %pipe_reset 110
+Set %pipe_tile 107
+Set %crossed 0                ; script flag: frog went through the pipe
+
+; Dusk: purple fog that starts close and ends early.
+Fog(96, 64, 160, 5, 60)
+
+; The pipe placeholder starts in the same state as the original level.
+SetTileP(%pipe_tile, 10)
+ResetFlag(%crossed)
+
+; Riding the lily pads / the crocodile makes a noise.
+On FrogOnPlatform(%frog, 1) %RISING PlaySound("splash.wav", 0)
+On FrogOnPlatform(%frog, 2) %RISING PlaySound("crock.wav", 0)
+
+; Pipe: in at one end, out at the other, with a little camera rumble on arrival.
+On OnPath(%frog, %pipe_in) %RISING {
+    TeleportP(%frog, %pipe_out, 0.75)
+    SetFlag(%crossed)
+    ShakeCamera(2.0, 0.5)
+}
+On OnPath(%frog, %pipe_reset) %RISING ResetFlag(%crossed)
+On And(Not(FlagSet(%crossed)), OnPath(%frog, %pipe_out)) %RISING TeleportP(%frog, %pipe_back, 0.75)
+
+; After three seconds: a training hint, and the fog lifts a little.
+On Wait(3.0) %ONCE {
+    Hint(0)
+    Fog(120, 90, 190, 6, 75)
+}

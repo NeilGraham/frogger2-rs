@@ -1,0 +1,9 @@
+id = "hello-mod"
+name = "Hello, mod!"
+version = "0.1.0"
+authors = ["Frogger 2 Rust port contributors"]
+# Semver requirement on the engine/mod API version.
+engine_version = ">=0.1, <0.2"
+# Adds a level with its own script, so it is excluded from vanilla-only modes.
+gameplay_affecting = true
+description = "Example mod: a menu text change and a dusk-coloured copy of Garden 1 (level slot 0-1) with its own event script. Contains no game assets; it reuses the imported retail level files by name."

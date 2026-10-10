@@ -47,6 +47,11 @@ pub fn config_file() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+/// Mods: `$F2_MODS_DIR`, else `mods/` in [`config_dir`].
+pub fn default_mods_dir() -> PathBuf {
+    env_path("F2_MODS_DIR").unwrap_or_else(|| config_dir().join("mods"))
+}
+
 /// Save games and sidecars (next to the config).
 pub fn save_dir() -> PathBuf {
     config_dir().join("saves")

@@ -1,0 +1,5 @@
+# Text overrides for the US English column (f2-modkit text TOML, docs/modding.md §6).
+# Keys are the game's STR_* ids; values must be Latin-1 (the game font).
+# STR_START_GAME is the "Start Game" label on the title screen's lily pad.
+[strings]
+STR_START_GAME = "Hello, Start!"

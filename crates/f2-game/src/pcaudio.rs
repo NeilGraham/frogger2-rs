@@ -236,7 +236,7 @@ impl Game {
     pub fn load_sfx(&mut self, world_id: u32, data: &dyn DataSource) {
         let load = |g: &mut Game, name: &str| {
             let path = format!("{SFX_BASE}{name}");
-            match data.read(&path).map(|b| SoundBank::parse(&b)) {
+            match data.sound_bank(&path) {
                 Some(Ok(bank)) => g.pcaudio.load_sfx_set(&bank),
                 _ => g.effects.push(Effect::Log { text: format!("Failed to load sample bank {path}") }),
             }
