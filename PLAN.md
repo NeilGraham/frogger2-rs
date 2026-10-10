@@ -5,21 +5,21 @@
 
 ## Status
 
-Snapshot of 2026-10-09 from `python3 -I tools/tasks.py status` (`work/tasks.json`: 25 done, 1 in
-progress, 14 todo, 0 blocked), [docs/source-map.md](docs/source-map.md) (game-side units: 41 ported,
-2 partial, 15 todo, 1 replaced, 6 deferred, 3 skipped; 47,824 original LOC) and `git log`. Note that
-`work/tasks.json` lags the git history for P3-8..P3-12 and P4-1/P4-2 (landed in the wave D/E/F1 merges).
+Audited 2026-10-09 against the code ([docs/source-map.md](docs/source-map.md): 68 game-side units,
+41 ported, 5 partial, 17 replaced by platform redesigns, 4 skipped, 1 todo; open items in
+[docs/PORT-GAPS.md](docs/PORT-GAPS.md)). Single-player parity is verified: all 26 levels and the 3
+demos are identical to the retail oracle trace.
 
 | Phase | State | What exists | Open |
 |---|---|---|---|
-| 0 Foundations | mostly done | research, plan, workspace, oracle spike (`f2fix` proxy, trace schema v2), packaging scripts and CI ([docs/BUILDING.md](docs/BUILDING.md)) | P0-1 tooling/CI polish; P0-2 owner decisions ([section 9](#9-decisions-needed-from-the-project-owner)) |
-| 1 Media and import | done | `f2-media`, `f2-formats`, `f2-import` (incl. FLAC music), exporters (`f2-export`), `f2-viewer` | none |
-| 2 Engine core | done | `f2-math` (difftests vs C), `f2-engine` (wgpu), `f2-audio`, `f2-platform`, `f2-bink`, `f2-mods`, `frogger` binary | ambient scheduling lives in the simulation (`f2-game::pcaudio`); `PC/` glue files in the source map still `todo` |
-| 3 Gameplay port | ported, unverified | `f2-game`: map, general, path, actor2/anim, platform, enemies, frogmove/tongue, collect/babyfrog, levplay, script/event/evenfunc, cam, specfx/particle/sprite/overlays/textover/hud/ptexture; `game.c` and `layout.c` partial | trace-parity harness (P3-T); `DefData.c`; finish `game.c`/`layout.c` |
-| 4 Full single-player | partial | frontend modes, story, savegame, language, training, fades/backdrop | `menus.c`, `options.c` (UI), FMV flow, cheats/extras (P4-1..3) |
-| 5 Multiplayer and hardening | partial | local multiplayer and split-screen (`multi.c`) | parity hardening across all levels; packaging (P5-2) |
-| 6 Enhancements and online | started | display profiles (authentic/enhanced: Hor+, ultrawide, MSAA, supersampling, aniso, fog, frame cap); `f2-net` rollback/lockstep netcode, UDP and loopback, lobby, spectators | broader enhancements ([docs/enhancements.md](docs/enhancements.md)); wiring online play into the game |
-| 7 Modding | started | `f2-mods` layered VFS, `f2-etc` script tool | overlays, glTF/PNG/WAV replacement, level manifests (P7-1) |
+| 0 Foundations | done | research, plan, workspace, oracle (`f2fix` proxy, trace schema v2), `f2-parity` trace diff, packaging scripts and CI ([docs/BUILDING.md](docs/BUILDING.md)) | P0-2 owner decisions ([section 9](#9-decisions-needed-from-the-project-owner)) |
+| 1 Media and import | done | `f2-media`, `f2-formats`, `f2-import` (incl. FLAC music), exporters, `f2-viewer` | none |
+| 2 Engine core | done | `f2-math` (difftests vs C, deterministic libm / x87 PC24 float paths), `f2-engine` (wgpu), `f2-audio`, `f2-platform`, `f2-bink`, `frogger` binary | none |
+| 3 Gameplay port | done, parity verified | all of `f2-game` except the items in PORT-GAPS; 26 single-player levels and 3 demos trace-identical to retail | multiplayer HUD (`hud.c`), `UpdateCompletedLevel`, script `TrainingHint` wiring, `DefData` hi-score defaults |
+| 4 Full single-player | done | frontend, menus, options, story, savegame, language, training, cheats, FMV, fades | none known |
+| 5 Multiplayer and hardening | partial | local multiplayer and split-screen game logic (`multi.c`) | multiplayer HUD; retail parity for multiplayer; packaging (P5-2) |
+| 6 Enhancements and online | done (first cut) | display profiles (authentic/enhanced: Hor+, ultrawide, MSAA, supersampling, aniso, fog, frame cap), gamepad and rebinding, `f2-net` rollback/lockstep netcode with UDP/loopback, lobby, spectators, wired into `frogger` | broader enhancements ([docs/enhancements.md](docs/enhancements.md)); real-network soak testing |
+| 7 Modding | done (first cut) | `f2-mods` layered VFS, `f2-etc` script tool, `f2-modkit`, level editor (`--editor`, `f2-formats` writers) | glTF/PNG/WAV replacement polish, level manifests |
 
 
 ## 1. Goal

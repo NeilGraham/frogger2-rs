@@ -12,78 +12,78 @@ Conventions for function-level tracking: each ported Rust function gets a doc co
 `/// Port of `funcName` (Common/file.c:LINE).` so `grep "Port of"` produces the function-level map.
 Generated 2026-10-09 from `FroggerProject/FroggerProject.dsp` (LOC via `wc -l`).
 
-**Status summary (game-side, 68 units):** ported 41, partial 2, todo 15, replace 1, deferred 6, skip 3. Last regenerated 2026-10-09 (LOC via `wc -l`).
+**Status summary (game-side, 68 units, audited 2026-10-09 against the Rust code):** ported 41, partial 5, replaced 17, skip 4, todo 1. Function-level gaps: [PORT-GAPS.md](PORT-GAPS.md). Statuses in use: `ported`, `partial`, `replaced`, `skip`, `todo`. Rust paths are flat modules (`crates/f2-game/src/<name>.rs`). Parity: all 26 single-player levels and 3 demos match the retail oracle (see PLAN Status).
 
-| C/C++ file | LOC | Rust target | Status |
-|---|---:|---|---|
-| `Common/DefData.c` | 41 | f2-game::defaults | todo |
-| `Common/E3_Demo.c` | 255 | (skip — E3 build) | skip |
-| `Common/actor2.c` | 1254 | f2-engine::actor | ported |
-| `Common/anim.c` | 511 | f2-game::anim | ported |
-| `Common/babyfrog.c` | 468 | f2-game::babyfrog | ported |
-| `Common/bbtimer.c` | 44 | f2-game::timer | ported |
-| `Common/cam.c` | 1012 | f2-game::cam | ported |
-| `Common/collect.c` | 688 | f2-game::collect | ported |
-| `Common/crc32.c` | 106 | f2-formats::crc | ported |
-| `Common/enemies.c` | 2900 | f2-game::enemies | ported |
-| `Common/evenfunc.c` | 525 | f2-game::evenfunc | ported |
-| `Common/event.c` | 372 | f2-game::event | ported |
-| `Common/fixed.c` | 69 | f2-math::fixed | ported |
-| `Common/flatpack.c` | 340 | (PSX only — skip) | skip |
-| `Common/frogger.c` | 295 | f2-game::frog | ported |
-| `Common/frogmove.c` | 2190 | f2-game::frog::movement | ported |
-| `Common/frontend.c` | 2048 | f2-game::frontend | ported |
-| `Common/game.c` | 759 | f2-game::ingame | partial |
-| `Common/general.c` | 485 | f2-game::tiles | ported |
-| `Common/hud.c` | 1184 | f2-game::hud (multi HUD todo) | ported |
-| `Common/language.c` | 243 | f2-game::language | ported |
-| `Common/layout.c` | 1329 | f2-game::level::layout | partial |
-| `Common/levplay.c` | 173 | f2-game::demo | ported |
-| `Common/map.c` | 847 | f2-game::level::map (+ f2-formats::col/sce) | ported |
-| `Common/maths.c` | 1848 | f2-math::maths | ported |
-| `Common/memload.c` | 504 | f2-formats::entity | ported |
-| `Common/menus.c` | 2177 | f2-game::ui::pause (+cheats) | todo |
-| `Common/multi.c` | 1821 | f2-game::multi | ported |
-| `Common/newpsx.c` | 55 | f2-math::psx | ported |
-| `Common/options.c` | 3253 | f2-game::ui::frontend | todo |
-| `Common/overlays.c` | 150 | f2-game::overlays | ported |
-| `Common/particle.c` | 365 | f2-game::particle | ported |
-| `Common/path.c` | 274 | f2-game::path | ported |
-| `Common/platform.c` | 1243 | f2-game::platform | ported |
-| `Common/ptexture.c` | 497 | f2-game::ptexture | ported |
-| `Common/savegame.c` | 180 | f2-game::savegame | ported |
-| `Common/script.c` | 1432 | f2-game::script | ported |
-| `Common/sndview.c` | 25 | (debug — skip) | skip |
-| `Common/specfx.c` | 2457 | f2-game::specfx | ported |
-| `Common/sprite.c` | 502 | f2-game::sprite | ported |
-| `Common/story.c` | 92 | f2-game::story | ported |
-| `Common/textover.c` | 453 | f2-game::textover | ported |
-| `Common/tongue.c` | 822 | f2-game::frog::tongue | ported |
-| `Common/training.c` | 148 | f2-game::training | ported |
-| `Common/types.c` | 37 | f2-math::types | ported |
-| `PC/Main.cpp` | 1025 | frogger (bin) + f2-platform | todo |
-| `PC/actor.cpp` | 293 | f2-engine::actor | ported |
-| `PC/backdrop.c` | 192 | f2-game::backdrop | ported |
-| `PC/banks.cpp` | 647 | f2-formats + f2-game::level::banks | ported |
-| `PC/controll.cpp` | 1464 | f2-platform::input | todo |
-| `PC/drawloop.cpp` | 408 | f2-engine::frame | todo |
-| `PC/dx_sound.cpp` | 430 | f2-audio (replaced) | replace |
-| `PC/fadeout.cpp` | 105 | f2-game::fadeout | ported |
-| `PC/islfile.cpp` | 35 | f2-mods::vfs | todo |
-| `PC/isllocal.c` | 105 | f2-game::lang | todo |
-| `PC/isltex.cpp` | 27 | f2-engine::texture | todo |
-| `PC/islutil.cpp` | 81 | f2-platform::util | todo |
-| `PC/net/dputil.cpp` | 81 | (Phase 6 — redesign) | deferred |
-| `PC/net/netchat.cpp` | 435 | (Phase 6 — redesign) | deferred |
-| `PC/net/netconnect.cpp` | 779 | (Phase 6 — redesign) | deferred |
-| `PC/net/netgame.cpp` | 634 | (Phase 6 — redesign) | deferred |
-| `PC/net/netrace.cpp` | 457 | (Phase 6 — redesign) | deferred |
-| `PC/net/network.cpp` | 530 | (Phase 6 — redesign) | deferred |
-| `PC/pcaudio.c` | 1518 | f2-audio | todo |
-| `PC/pcgfx.c` | 862 | f2-engine::fx | todo |
-| `PC/pcmisc.cpp` | 521 | f2-engine::misc | todo |
-| `PC/pcsprite.c` | 471 | f2-engine::sprite | todo |
-| `PC/video.cpp` | 251 | f2-bink + f2-engine::fmv | todo |
+| C/C++ file | LOC | Rust target | Status | Notes |
+|---|---:|---|---|---|
+| `Common/DefData.c` | 41 | (none) | todo | default hi-score names (`scoreName`); no Rust equivalent (see PORT-GAPS) |
+| `Common/E3_Demo.c` | 255 | (skip: E3 build) | skip | `E3_LEVELSELECT_MODE` is dead in retail (frontend.rs:458) |
+| `Common/actor2.c` | 1254 | f2-game::actor2 + f2-engine | ported | `DrawActorList`/`GetHeadMatrix` replaced by the wgpu renderer |
+| `Common/anim.c` | 511 | f2-game::anim | ported |  |
+| `Common/babyfrog.c` | 468 | f2-game::babyfrog | ported |  |
+| `Common/bbtimer.c` | 44 | f2-game::bbtimer | ported |  |
+| `Common/cam.c` | 1012 | f2-game::cam | ported | `ControlCamera` (debug) and `SetCamFF` (PSX) intentionally absent |
+| `Common/collect.c` | 688 | f2-game::collect | ported | `CHEAT_MAD_GARIBS` sample swap TODO (collect.rs:567); `TransformPoint` for garib fx |
+| `Common/crc32.c` | 106 | f2-formats::crc | ported |  |
+| `Common/enemies.c` | 2900 | f2-game::enemies | ported |  |
+| `Common/evenfunc.c` | 525 | f2-game::evenfunc + event | ported | trigger/assign helpers live in `event.rs` enums; FindVoice per-character TODO (evenfunc.rs:255) |
+| `Common/event.c` | 372 | f2-game::event | ported | `DeallocTriggerBlock` unnecessary (Rust ownership) |
+| `Common/fixed.c` | 69 | f2-math::fixed | ported |  |
+| `Common/flatpack.c` | 340 | (PSX only: skip) | skip |  |
+| `Common/frogger.c` | 295 | f2-game::frogger | ported |  |
+| `Common/frogmove.c` | 2190 | f2-game::frogmove | ported |  |
+| `Common/frontend.c` | 2048 | f2-game::frontend | partial | multiplayer HUD hooks (countdown, trophies, penalty slides) TODO; `CreateOverlaysFromLogo`, `SlideTextOverlayToPos` absent |
+| `Common/game.c` | 759 | f2-game::game + session | ported | game loop / level init flow in `game.rs` and `session.rs` |
+| `Common/general.c` | 485 | f2-game::general | ported | `cmemcpy`/`lmemcpy`/`smemcpy` not needed |
+| `Common/hud.c` | 1184 | f2-game::hud | partial | `InitMultiHUD`, `EnableMultiHUD`, `DisableMultiHUD`, `UpDateMultiplayerInfo` missing; `SetTimeForLevel`, game-over `PrepareSong` TODO |
+| `Common/language.c` | 243 | f2-game::language | ported |  |
+| `Common/layout.c` | 1329 | f2-game::layout + session | partial | `UpdateCompletedLevel` absent; audio list init/free, `InitTiming`, `StoryStartLevel`, moolard cheat are TODO (layout.rs:570-769) |
+| `Common/levplay.c` | 173 | f2-game::levplay | ported |  |
+| `Common/map.c` | 847 | f2-game::map (+ f2-formats) | ported |  |
+| `Common/maths.c` | 1848 | f2-math::maths | ported | PSX matrix-stack helpers not needed |
+| `Common/memload.c` | 504 | f2-game::memload (+ f2-formats::entity) | ported | `MemLoadEvents`/`MemLoadString` folded into f2-formats |
+| `Common/menus.c` | 2177 | f2-game::menus | ported | pause menu, cheats, frontend loop, `CheckForExtras` |
+| `Common/multi.c` | 1821 | f2-game::multi | partial | all game logic ported; HUD calls TODO (multi.rs:343,807,1466,1469); `TransformPoint` returns origin (multi.rs:811) |
+| `Common/newpsx.c` | 55 | (PSX only: skip) | skip |  |
+| `Common/options.c` | 3253 | f2-game::options | ported | `RunTeaserScreens`/`ToggleStereo` unused on PC; Gouraud helpers done in-line |
+| `Common/overlays.c` | 150 | f2-game::overlays | ported |  |
+| `Common/particle.c` | 365 | f2-game::particle | ported |  |
+| `Common/path.c` | 274 | f2-game::path | ported |  |
+| `Common/platform.c` | 1243 | f2-game::platform | ported |  |
+| `Common/ptexture.c` | 497 | f2-game::ptexture | ported |  |
+| `Common/savegame.c` | 180 | f2-game::savegame | ported |  |
+| `Common/script.c` | 1432 | f2-game::script | partial | all commands ported; `TrainingHint` call still only logs (script.rs:717) |
+| `Common/sndview.c` | 25 | (debug: skip) | skip |  |
+| `Common/specfx.c` | 2457 | f2-game::specfx | ported |  |
+| `Common/sprite.c` | 502 | f2-game::sprite | ported | `Print*Sprite` drawing replaced by `frogger::fx` |
+| `Common/story.c` | 92 | f2-game::story | ported |  |
+| `Common/textover.c` | 453 | f2-game::textover | ported | `PrintText*` drawing replaced by `frogger::overlay` |
+| `Common/tongue.c` | 822 | f2-game::tongue | ported | `CalcTongueNodes` done in the renderer |
+| `Common/training.c` | 148 | f2-game::training | ported | script call site only logs (see script.c) |
+| `Common/types.c` | 37 | f2-math::types | ported |  |
+| `PC/Main.cpp` | 1025 | frogger (bin: main/app) + f2-platform | replaced | window, loop, args; registry/CD-check/installer dropped |
+| `PC/actor.cpp` | 293 | f2-game::pc_actor | ported |  |
+| `PC/backdrop.c` | 192 | f2-game::backdrop | ported | draw side in `frogger::render` |
+| `PC/banks.cpp` | 647 | f2-game::pc_banks + f2-formats | ported |  |
+| `PC/controll.cpp` | 1464 | f2-platform::{input,bindings,gamepad} + frogger::controls | replaced | DirectInput/dialogs redesigned (rebinding UI, gamepad) |
+| `PC/drawloop.cpp` | 408 | frogger::{app,render} + f2-engine | replaced |  |
+| `PC/dx_sound.cpp` | 430 | f2-audio | replaced |  |
+| `PC/fadeout.cpp` | 105 | f2-game::fadeout | ported |  |
+| `PC/islfile.cpp` | 35 | f2-mods (layered VFS) | replaced |  |
+| `PC/isllocal.c` | 105 | f2-game::language | ported |  |
+| `PC/isltex.cpp` | 27 | f2-engine::textures | replaced |  |
+| `PC/islutil.cpp` | 81 | f2-math | replaced |  |
+| `PC/net/dputil.cpp` | 81 | f2-net | replaced | DirectPlay -> rollback/lockstep UDP + loopback |
+| `PC/net/netchat.cpp` | 435 | f2-net | replaced | chat not carried over |
+| `PC/net/netconnect.cpp` | 779 | f2-net::lobby | replaced |  |
+| `PC/net/netgame.cpp` | 634 | f2-net + frogger::netplay | replaced |  |
+| `PC/net/netrace.cpp` | 457 | f2-net + frogger::netplay | replaced |  |
+| `PC/net/network.cpp` | 530 | f2-net | replaced |  |
+| `PC/pcaudio.c` | 1518 | f2-game::pcaudio + f2-audio | ported | CD-audio/MCI/DirectSound parts replaced by `f2-audio`; ambient scheduling in `pcaudio.rs` |
+| `PC/pcgfx.c` | 862 | frogger::fx + f2-engine | replaced |  |
+| `PC/pcmisc.cpp` | 521 | frogger::{render,overlay} + f2-game::frontend | replaced | `PcNameEntryInit` ported (frontend.rs:1320) |
+| `PC/pcsprite.c` | 471 | frogger::fx + f2-engine | replaced |  |
+| `PC/video.cpp` | 251 | f2-bink + frogger::video | replaced |  |
 
 Game-side .c/.cpp total: **47824** lines (headers excluded).
 

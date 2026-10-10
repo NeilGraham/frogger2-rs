@@ -3,10 +3,11 @@
 A Rust port of **Frogger 2: Swampy's Revenge** (PC, Blitz Games / Hasbro Interactive, 2000) that
 runs on modern systems using **your own copy** of the game.
 
-> Status: **in development**. Import pipeline, engine, audio, video and the gameplay simulation are
-> ported (41 of 68 game-side source units ported; menus/options UI, trace-parity verification and
-> some PC glue remain). Not yet release-ready. See [PLAN.md Status](PLAN.md#status) and
-> [docs/source-map.md](docs/source-map.md).
+> Status: **in development, playable**. Import pipeline, engine, audio, video, the full single-player
+> game (26 levels, 3 demos trace-identical to the retail exe), frontend/menus, rebindable controls,
+> display enhancements, rollback netplay, mods and a level editor exist. Open: the multiplayer HUD and
+> a few small items in [docs/PORT-GAPS.md](docs/PORT-GAPS.md). Not yet release-ready. See
+> [PLAN.md Status](PLAN.md#status) and [docs/source-map.md](docs/source-map.md).
 
 - No game assets are included or will ever be distributed. You import them from your own disc
   image (e.g. a Redump dump) or install.
