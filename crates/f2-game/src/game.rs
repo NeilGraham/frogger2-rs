@@ -146,8 +146,11 @@ impl Game {
             }
         }
 
-        self.update_platforms();
-        self.update_enemies();
+        if self.enhance_enemy_tick() {
+            // P6-1: always true in the authentic profile.
+            self.update_platforms();
+            self.update_enemies();
+        }
         self.update_special_effects();
         self.update_events(); // wave D
         if self.game_state.mode != PAUSE_MODE {

@@ -66,7 +66,24 @@ anisotropy = 16           # 1..16, used by filter = "anisotropic"
 perspective_correct = true  # retail: affine texturing
 draw_distance = 1.0       # far-clip multiplier (0.25..16)
 fog = false               # linear fog to the level's clear colour, ending at the far clip
+
+# Gameplay / QoL (enhanced profile only, except save_slot). Edited in game: F10, Tab -> Gameplay.
+[gameplay]
+infinite_lives = false    # assist: dying never costs a life
+invulnerable = false      # assist: enemies can't hurt the frog (hazard tiles / falls still kill)
+enemy_speed = 100         # assist: enemy + platform speed in percent, 25..100
+skip_fmv_any_key = true   # any key / pad button skips an FMV (authentic: Enter/Esc)
+skip_intro_logos = false  # skip the Hasbro / Blitz logo FMVs
+speedrun_timer = false    # IGT + RTA on screen, splits appended to <config>/saves/splits.csv
+save_slot = 1             # 1..4: saves/savegame.dat, saves/slotN/savegame.dat
+auto_save = true          # off: the game's own saves are not written; use "Save now"
+fix_tube_softlock = true  # known bug #11 fix
 ```
+
+F10 opens the settings screen; Tab cycles its pages: Controls (rebinding), Gameplay (the
+`[gameplay]` options, profile, save slot load / "Save now"), Level select (every story chapter
+and single-player level as practice, regardless of the save; also `--story N` /
+`--practice W L` on the command line).
 
 Authentic profile = Vert- projection (`FOV = 450` scaled by `width/640`), overlays stretched
 over the whole screen, no AA, bilinear without mipmaps, affine texturing, retail far clip, fog

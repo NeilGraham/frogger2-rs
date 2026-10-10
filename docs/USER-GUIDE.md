@@ -11,8 +11,8 @@ dump, a physical disc's files, or an existing install folder). The importer extr
 needs into a local data directory. Nothing copyrighted is ever distributed with this project.
 
 Status: in development; see the Status section of [PLAN.md](../PLAN.md). Some menus/options
-screens and FMV flow are still being finished, so expect rough edges. Online play is **not**
-wired into the game yet (see Multiplayer).
+screens and FMV flow are still being finished, so expect rough edges. Online play (`--host` /
+`--join`) and mods (`--mods`) are available (see Multiplayer and Mods).
 
 ## Quick start
 
@@ -89,7 +89,7 @@ players. Rumble follows the `rumble` / `rumble_scale` options.
 | F7 | Cycle texture filter (nearest / linear / anisotropic) |
 | F8 | Toggle widescreen (Hor+ FOV and anchored HUD) |
 | F9 | Toggle fog |
-| F10 | Controls screen: rebind keys, pad buttons and stick directions (pauses the simulation) |
+| F10 | Settings (pauses the simulation); Tab switches page: Controls, Gameplay, Level select |
 | F11 | Toggle fullscreen |
 | F12 | Cycle draw distance (1x / 2x / 4x) |
 
@@ -97,7 +97,21 @@ Changing an option with F3, F4, F6 to F9 or F12 switches to the enhanced profile
 authentic profile is fixed. These toggles are for quick A/B comparison and are not saved; put
 permanent choices in `config.toml`.
 
-### Rebinding (F10)
+### Settings (F10)
+
+F10 opens the settings screen; Tab cycles its pages:
+
+- **Controls**: rebinding (below).
+- **Gameplay**: assists (infinite lives, invulnerability, enemy speed), FMV skipping, intro logo
+  skip, speedrun timer, save slot (1 to 4, Enter loads it, "Save now"), auto-save, the tube
+  softlock fix. Assists and fixes only apply in the enhanced profile; see
+  [enhancements.md](enhancements.md).
+- **Level select**: start any story chapter or level for practice through a normal game session
+  (also `--practice WORLD LEVEL` / `--story CHAPTER`).
+
+Changes are saved to `config.toml` (`[gameplay]`).
+
+### Rebinding (Controls page)
 
 Up/Down select an action, Enter rebinds (press a key, pad button or stick direction; Esc
 cancels), A adds an extra binding, Backspace resets that action, R resets everything. Conflicts
@@ -159,6 +173,21 @@ hop_buffer_frames = 6       # enhanced profile only; 0 = off
 rumble = true
 rumble_scale = 1.0
 
+[gameplay]                  # assists/fixes apply in the enhanced profile only
+infinite_lives = false
+invulnerable = false
+enemy_speed = 100           # percent, 25..100
+skip_fmv_any_key = true
+skip_intro_logos = false
+speedrun_timer = false
+save_slot = 1               # 1..4
+auto_save = true
+fix_tube_softlock = true
+
+[mods]
+enabled = []                # mod ids in load order (later wins)
+# dir = "/path"             # mods directory (default: platform data dir)
+
 [[input.bindings]]          # normally written by the F10 screen
 player = 1
 button = "CROSS"
@@ -176,7 +205,7 @@ Environment variables: `F2_DATA_ROOT` (data location), `F2_CONFIG_DIR` (config/s
 ## Saves
 
 The save file is `savegame.dat` in `saves/` next to `config.toml` (for example
-`~/.config/frogger2-rs/saves/savegame.dat`). Override with `--save FILE`. It uses the original
+`~/.config/frogger2-rs/saves/savegame.dat`); save slots 2 to 4 live in `saves/slotN/`. Override with `--save FILE`. It uses the original
 game's save-block format. `--dev-unlock` starts with every level open without touching your save.
 Headless runs never write saves.
 
@@ -185,15 +214,18 @@ Headless runs never write saves.
 - **Local**: the original 2 to 4 player modes, with split-screen, are ported (the `multi.c`
   logic). Each player uses their own keyboard block (table above) or gamepad. Developers can jump
   straight in with `frogger --multi WORLD LEVEL FROGS`.
-- **Online**: the `f2-net` crate (rollback and lockstep netcode, UDP, join codes, spectators) is
-  implemented and tested in isolation, but `frogger` has **no `--host` / `--join` options yet**;
-  online play is not available. See [NETPLAY.md](NETPLAY.md) for the design.
+- **Online**: `frogger --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS` hosts a
+  match and prints a join code; the other players run `frogger --join CODE`. Rollback netcode
+  over UDP (`f2-net`); see [NETPLAY.md](NETPLAY.md) for ports, NAT and desync dumps. Online
+  matches always run with authentic gameplay rules (the `[gameplay]` assists and fixes are
+  ignored) so every peer simulates identically; display settings stay local.
 
 ## Mods
 
-Mods are layered over the retail data; see [modding.md](modding.md) and `f2-modkit` in
-[TOOLS.md](TOOLS.md). Host wiring of the loader into the game is still in progress, so check
-modding.md before relying on it.
+Mods are layered over the retail data (files, scripts, extra levels). Enable them in
+`config.toml` (`[mods] enabled = ["id", ...]`) or per run with `frogger --mods a,b`
+(`--mods ""` = none) and `--mods-dir DIR`. See [modding.md](modding.md) for the mod format and
+`f2-modkit` in [TOOLS.md](TOOLS.md) to create and check mods.
 
 ## Troubleshooting
 

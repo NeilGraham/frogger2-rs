@@ -23,6 +23,7 @@ pub mod define;
 pub mod effects;
 pub mod enemies;
 pub mod enemy_tables;
+pub mod enhance; // P6-1
 pub mod evenfunc; // wave D
 pub mod event; // wave D
 pub mod fadeout;
@@ -180,6 +181,8 @@ pub struct Game {
     pub options: options::OptionsState,
     /// `Common/charsel.c` (`charSel`).
     pub charsel: charsel::CharSelState,
+    // P6-1: enhanced-profile gameplay options (no effect in the authentic profile).
+    pub enhance: enhance::EnhanceState,
 }
 
 impl Game {

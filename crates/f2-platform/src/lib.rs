@@ -17,5 +17,5 @@ pub mod paths;
 pub mod window;
 
 pub use bindings::{Binding, Bindings, ControllerFamily, HopBuffer, PadAxis, PadButton, RawEvent, RawPad, Rebind, RebindStatus};
-pub use config::{Config, DisplaySettings, Profile, TextureFilter};
+pub use config::{Config, DisplaySettings, Gameplay, Profile, TextureFilter};
 pub use input::{Controller, InputMapper, JoypadState, KeyboardState, Keymap, PadData, PadState};

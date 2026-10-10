@@ -37,11 +37,13 @@ pub struct SessionConfig {
     pub save_data: Option<Vec<u8>>,
     /// P7-1 (mods): levels/strings added by mods; empty = authentic.
     pub extra_levels: crate::levels::LevelRegistry,
+    /// Gameplay options (P6-1; authentic by default).
+    pub options: crate::enhance::GameOptions,
 }
 
 impl SessionConfig {
     pub fn new(data: Arc<dyn DataSource + Send + Sync>) -> SessionConfig {
-        SessionConfig { data, language: LANG_DEFAULT, save_data: None, extra_levels: Default::default() }
+        SessionConfig { data, language: LANG_DEFAULT, save_data: None, extra_levels: Default::default(), options: Default::default() }
     }
 }
 
@@ -60,6 +62,7 @@ impl Game {
     /// `CommonInit` (STARTUP_MODE with the title backdrop; the logo FMVs follow).
     pub fn new_session(config: SessionConfig) -> Game {
         let mut g = Game::new();
+        g.enhance.opts = config.options.clone(); // P6-1
         g.load_game_text(&*config.data, config.language);
         g.session.data = Some(config.data.clone());
         g.load_game(config.save_data.as_deref());

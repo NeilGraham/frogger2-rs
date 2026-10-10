@@ -253,7 +253,13 @@ trace tooling in `tools/f2-trace` can diff them).
    by bit pattern), plus the `Debug` text of the few sub-states without serde derives (`memload`,
    `event`, `script` minus the buffer, `textover` minus metrics). Excluded: effects, models,
    level files, game text, data source. `Game::checksum_parts()` gives per-sub-state hashes for
-   desync dumps.
+   desync dumps. The P6-1 gameplay options (`Game::enhance`: `GameOptions` + enemy-speed
+   accumulator) are part of the checksum (sub-state `enhance`).
+   Gameplay options: every peer must simulate with identical `GameOptions`, so online matches
+   always run `GameOptions::AUTHENTIC` (`App::fresh_game` on host and joiner; the window host
+   never re-applies its local `[gameplay]` options while `App.net` is set; headless peers use
+   `Game::new()`). A peer with different options would fail the start fingerprint. Host-chosen
+   options sent in `MatchSetup` are possible future work.
 8. Pause menu / win screens / "quit" are pad-driven inside `tick`; quitting to the frontend ends
    the online match ("match over") and the game continues offline.
 

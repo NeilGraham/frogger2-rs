@@ -116,6 +116,7 @@ impl Game {
             "menus" => &self.menus,
             "options" => &self.options,
             "charsel" => &self.charsel,
+            "enhance" => &self.enhance, // P6-1 options + enemy-speed accumulator
         }
         // Sub-states without serde derives: their `Debug` output is a canonical field walk
         // (no maps; floats print their exact shortest round-trip form).

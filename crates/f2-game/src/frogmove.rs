@@ -1530,7 +1530,10 @@ impl Game {
 
             // cheatCombos[CHEAT_INFINITE_LIVES].state is 0 (cheats not ported).
             if self.game_state.mode == INGAME_MODE {
-                self.frogger.player[p].lives -= 1;
+                if !self.game_options().infinite_lives_on() {
+                    // P6-1: infinite lives assist (enhanced only).
+                    self.frogger.player[p].lives -= 1;
+                }
                 if self.frogger.player[p].lives <= 0 {
                     self.start_game_over();
                     return false;
@@ -2010,5 +2013,28 @@ mod tests {
         assert_eq!(g.frogmove.curr_tile[0], Some(TileId(0)));
         assert_eq!(g.frogger.player[0].lives, 2);
         assert_eq!(g.frogger.player[0].safe.time, 2);
+    }
+
+    /// P6-1: the infinite-lives assist keeps the life count (enhanced only).
+    #[test]
+    fn kill_frog_infinite_lives_assist() {
+        use crate::enhance::{GameOptions, GameProfile};
+        for (profile, want) in [(GameProfile::Authentic, 2), (GameProfile::Enhanced, 3)] {
+            let mut g = Game::new();
+            g.game_state.mode = INGAME_MODE;
+            g.enhance.opts = GameOptions { profile, infinite_lives: true, ..GameOptions::AUTHENTIC };
+            strip(&mut g, &[0, 0, 0]);
+            g.frogmove.curr_tile[0] = Some(TileId(2));
+            g.frogger.player[0].lives = 3;
+            g.frogger.player[0].frog_state |= FROGSTATUS_ISDEAD;
+            g.frogger.player[0].dead.init(1);
+            let mut f = 1;
+            while g.frogger.player[0].frog_state & FROGSTATUS_ISDEAD != 0 && f < 200 {
+                g.act_frame_count = f;
+                g.kill_frog(0);
+                f += 1;
+            }
+            assert_eq!(g.frogger.player[0].lives, want, "{profile:?}");
+        }
     }
 }
