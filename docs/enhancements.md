@@ -76,9 +76,9 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
 
 ## Input
 
-- [x] Native gamepad support (Xbox/PS/Switch via gilrs) with button prompts (f2-platform: per-player assignment, hot-plug, deadzone, `ControllerFamily` glyph labels; host UI pending)
+- [x] Native gamepad support (Xbox/PS/Switch via gilrs), PS1 layout by position ([CONTROLLERS.md](CONTROLLERS.md)): 4-way stick with hysteresis, Nintendo label option, per-player device memory across hot-plug, ✕○□△ glyphs, pad name entry; host prompts UI pending
 - [~] Full rebinding UI, multiple bindings per action (f2-platform `Bindings`/`Rebind` API + config done; in-game UI is host work)
-- [~] Rumble (`Gamepads::rumble` done; host must call it for `Effect::Rumble`) (events already exist for PSX vibration — check `#ifdef PSX_VERSION` code)
+- [~] Rumble (`Gamepads::rumble` + DualShock motor model `controller::ShockMotors` done and wired; the PS1 game never vibrates — the shock code has no call sites — so nothing emits `Effect::Rumble` yet; any events would be a new enhancement)
 - [~] Input buffering option for hops (`HopBuffer`, enhanced default 6 frames; host must apply it)
 
 ## Audio

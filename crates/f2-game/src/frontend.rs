@@ -1349,6 +1349,92 @@ impl Game {
         }
     }
 
+    /// Pad name entry: port of `PsxNameEntryFrame` (PSX/temp_psx.c:575) for the host to call
+    /// once per tick while `text_entry > 0` with player 1's debounced pad bits (the PC handler
+    /// is missing from the preserved source, see [`Self::name_entry_key`]). Not called by
+    /// `tick`, so traces are unaffected. // controller
+    ///
+    /// LEFT steps back, RIGHT/CROSS advance (CROSS on the last letter finishes), UP/DOWN cycle
+    /// A..Z and space, START finishes. The PSX keeps the cursor in a global `cursPos` that is
+    /// never reset between entries (BUG(original): a second entry starts on the last letter);
+    /// here it is derived from `text_entry` (`cursPos = NAME_LENGTH - textEntry`), which
+    /// starts every entry on the first letter like the PC keyboard path.
+    pub fn psx_name_entry_frame(&mut self, debounce: u16) {
+        use crate::levplay::{PAD_LEFT, PAD_RIGHT, PAD_START};
+        use crate::pcaudio::{gen_sfx, GEN_COLLECT_BABY, GEN_FROG_HOP, GEN_SUPER_HOP};
+        if self.frontend.text_entry <= 0 {
+            return;
+        }
+        let ts = &mut self.frontend.text_string;
+        if ts.len() < NAME_LENGTH + 1 {
+            ts.resize(NAME_LENGTH + 1, 0);
+        }
+        // PsxNameEntryInit (temp_psx.c:560): blanks -> '-', first letter 'A'.
+        for c in ts.iter_mut().take(NAME_LENGTH) {
+            if *c == 0 {
+                *c = b'-';
+            }
+        }
+        let mut curs = NAME_LENGTH.saturating_sub(self.frontend.text_entry as usize).min(NAME_LENGTH - 1);
+        if curs == 0 && ts[0] == b'-' {
+            ts[0] = b'A';
+        }
+        let mut sfx = Vec::new();
+        let mut done = false;
+        if debounce & PAD_LEFT != 0 && curs > 0 {
+            ts[curs] = b'-';
+            curs -= 1;
+            sfx.push(GEN_FROG_HOP);
+        }
+        if debounce & (PAD_RIGHT | PAD_CROSS) != 0 && (curs < NAME_LENGTH - 1 || debounce & PAD_CROSS != 0) {
+            curs += 1;
+            if curs == NAME_LENGTH {
+                done = true;
+                curs -= 1;
+                sfx.push(GEN_COLLECT_BABY);
+            } else {
+                ts[curs] = b'A';
+                ts[curs + 1] = if curs == NAME_LENGTH - 1 { 0 } else { b'-' };
+                sfx.push(GEN_SUPER_HOP);
+            }
+        }
+        if debounce & PAD_UP != 0 {
+            sfx.push(GEN_FROG_HOP);
+            ts[curs] = match ts[curs] {
+                b' ' | b'-' => b'A',
+                b'Z' => b' ',
+                c if c < b'Z' => c + 1,
+                c => c,
+            };
+        }
+        if debounce & PAD_DOWN != 0 {
+            sfx.push(GEN_FROG_HOP);
+            ts[curs] = match ts[curs] {
+                b'A' => b' ',
+                b' ' | b'-' => b'Z',
+                c if c > b'A' => c - 1,
+                c => c,
+            };
+        }
+        if debounce & PAD_START != 0 {
+            done = true;
+        }
+        if done {
+            for c in ts.iter_mut().take(NAME_LENGTH) {
+                if *c == b'-' {
+                    *c = 0;
+                }
+            }
+            ts[NAME_LENGTH] = 0;
+            self.frontend.text_entry = 0;
+        } else {
+            self.frontend.text_entry = (NAME_LENGTH - curs) as i32;
+        }
+        for s in sfx {
+            self.play_sample(gen_sfx(s), None, 0, SAMPLE_VOLUME, -1);
+        }
+    }
+
     // ------------------------------------------------------------ multiplayer win screens
 
     /// Port of `CreateOverlaysFromLogo` (Common/frontend.c:293): one 32x32 sprite overlay
@@ -1863,6 +1949,42 @@ mod tests {
         g.start_level_complete();
         assert_eq!(g.frontend.grade, 2);
         assert_eq!(g.frontend.level_opened, 0, "already completed");
+    }
+
+    #[test]
+    fn psx_name_entry_with_pad() {
+        use crate::levplay::{PAD_LEFT, PAD_RIGHT, PAD_START};
+        let mut g = Game::new();
+        g.frontend.text_entry = NAME_LENGTH as i32;
+        g.pc_name_entry_init();
+        g.psx_name_entry_frame(0); // first frame: 'A' under the cursor
+        assert_eq!(&g.frontend.text_string[..3], b"A--");
+        g.psx_name_entry_frame(PAD_DOWN); // A -> space -> Z
+        g.psx_name_entry_frame(PAD_DOWN);
+        assert_eq!(g.frontend.text_string[0], b'Z');
+        g.psx_name_entry_frame(PAD_UP); // Z -> space
+        g.psx_name_entry_frame(PAD_UP); // space -> A
+        g.psx_name_entry_frame(PAD_UP);
+        assert_eq!(g.frontend.text_string[0], b'B');
+        g.psx_name_entry_frame(PAD_RIGHT);
+        assert_eq!((&g.frontend.text_string[..3], g.frontend.text_entry), (&b"BA-"[..], 2));
+        g.psx_name_entry_frame(PAD_LEFT);
+        assert_eq!((&g.frontend.text_string[..3], g.frontend.text_entry), (&b"B--"[..], 3));
+        g.psx_name_entry_frame(PAD_CROSS);
+        g.psx_name_entry_frame(PAD_CROSS);
+        assert_eq!((&g.frontend.text_string[..4], g.frontend.text_entry), (&b"BAA\0"[..], 1));
+        g.psx_name_entry_frame(PAD_RIGHT); // RIGHT does not leave the last letter
+        assert_eq!(g.frontend.text_entry, 1);
+        g.psx_name_entry_frame(PAD_CROSS); // CROSS there finishes
+        assert_eq!((&g.frontend.text_string[..4], g.frontend.text_entry), (&b"BAA\0"[..], 0));
+        // START finishes early; '-' blanks become terminators.
+        let mut g = Game::new();
+        g.frontend.text_entry = NAME_LENGTH as i32;
+        g.pc_name_entry_init();
+        g.psx_name_entry_frame(PAD_START);
+        assert_eq!((&g.frontend.text_string[..4], g.frontend.text_entry), (&b"A\0\0\0"[..], 0));
+        g.psx_name_entry_frame(PAD_UP); // inactive: no-op
+        assert_eq!(g.frontend.text_string[0], b'A');
     }
 
     #[test]

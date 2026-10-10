@@ -8,6 +8,7 @@
 
 pub mod bindings;
 pub mod config;
+pub mod controller;
 pub mod dik;
 #[cfg(feature = "gamepad")]
 pub mod gamepad;

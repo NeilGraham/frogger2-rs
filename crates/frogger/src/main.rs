@@ -46,7 +46,6 @@ mod video;
 use app::{App, NetRequest, Step};
 use f2_audio::AudioEngine;
 use f2_engine::{GpuContext, WindowSurface};
-use f2_platform::bindings::auto_assign;
 use f2_platform::gamepad::{Gamepads, PadEvent};
 use f2_platform::window::{self, winit, Flow, WindowApp, WindowConfig};
 use f2_platform::{Config, Profile};
@@ -605,10 +604,17 @@ impl WindowApp for Host {
                 let audio = make_audio(&self.cfg, self.mute);
                 let mut mapper = self.cfg.input_mapper();
                 self.gamepads = Gamepads::new().map_err(|e| eprintln!("frogger: gamepads unavailable: {e}")).ok();
-                if let Some(p) = &self.gamepads {
-                    if p.count() > 0 && self.cfg.input.controllers.iter().all(|c| *c == f2_platform::Controller::Keyboard) {
-                        mapper.reset_controllers(p.count());
-                    }
+                if let Some(p) = &mut self.gamepads {
+                    // controller: PS1-style pad options; remembered pads go back to their players,
+                    // other pads to the lowest keyboard players (connection order).
+                    p.stick_mode = self.cfg.input.stick_mode;
+                    p.deadzone = self.cfg.input.deadzone;
+                    p.face_layout = self.cfg.input.face_layout;
+                    p.set_preferred(&self.cfg.input.pad_devices);
+                    // Slot order can change between runs: with remembered devices, start from
+                    // scratch so each player finds their own pad.
+                    let start = if self.cfg.input.pad_devices.iter().any(|d| !d.is_empty()) { [f2_platform::Controller::Keyboard; 4] } else { mapper.controllers };
+                    mapper.controllers = p.reassign(&start);
                 }
                 eprintln!(
                     "frogger: {} {:?} ({:?}), audio {}",
@@ -723,11 +729,18 @@ impl WindowApp for Host {
                 }
             }
             if replug {
-                let c = auto_assign(&app.mapper.controllers, p.count());
+                // controller: assignment by device id (players keep their pads when slots shift).
+                let c = p.reassign(&app.mapper.controllers);
                 app.mapper.controllers = c;
-                p.set_controllers(c);
                 for i in 0..4 {
                     app.families[i] = p.family_for_player(i);
+                }
+                if self.cfg.input.controllers != c || self.cfg.input.pad_devices != p.preferred() {
+                    self.cfg.input.controllers = c;
+                    self.cfg.input.pad_devices = p.preferred();
+                    if let Err(e) = self.cfg.save_default() {
+                        eprintln!("frogger: saving config: {e}");
+                    }
                 }
             }
         }

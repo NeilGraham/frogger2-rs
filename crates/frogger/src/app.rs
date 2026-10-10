@@ -1160,6 +1160,10 @@ impl App {
         self.prev = render::snapshot(&self.game);
         self.prev_cam = Some(render::game_camera(&self.game));
         let pads = self.read_pads(raw);
+        if self.game.frontend.text_entry > 0 {
+            // controller: best-time name entry with the pad/arrows (PS1 `PsxNameEntryFrame`).
+            self.game.psx_name_entry_frame(self.pad.debounce[0]);
+        }
         self.apply_game_options(); // P6-1
         self.game.tick(TickInput { pads });
         self.ticks += 1;
