@@ -7,7 +7,7 @@ use crate::input::KeyboardState;
 use std::sync::Arc;
 pub use winit;
 use winit::application::ApplicationHandler;
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -18,7 +18,7 @@ use winit::window::{Fullscreen, WindowId};
 #[derive(Clone, Debug)]
 pub struct WindowConfig {
     pub title: String,
-    /// Windowed inner size.
+    /// Windowed inner size in LOGICAL points (see [`logical_to_physical`]).
     pub width: u32,
     pub height: u32,
     pub mode: WindowMode,
@@ -111,7 +111,7 @@ pub fn apply_mode(window: &Window, mode: WindowMode, resolution: Option<[u32; 2]
                 window.set_fullscreen(None);
             }
             let [w, h] = resolution.unwrap_or(windowed_size);
-            let _ = window.request_inner_size(PhysicalSize::new(w.max(160), h.max(120)));
+            let _ = window.request_inner_size(LogicalSize::new(w.max(160), h.max(120)));
             format!("windowed {w}x{h}")
         }
         WindowMode::Borderless => {
@@ -185,16 +185,31 @@ pub fn windowed_position(window: &Window) -> Option<[i32; 2]> {
     window.outer_position().ok().map(|p| [p.x, p.y])
 }
 
-/// The requested window size. macOS sizes windows in points, so `width`x`height` is logical
-/// there (a 640x480 window stays 640x480 points on a Retina display, rendered at 2x physical
-/// pixels: the surface follows `inner_size()`/`Resized`, which are physical). Elsewhere it is
-/// physical pixels, as before.
-fn initial_size(cfg: &WindowConfig) -> winit::dpi::Size {
-    if cfg!(target_os = "macos") {
-        winit::dpi::LogicalSize::new(cfg.width, cfg.height).into()
+/// Converts a physical pixel length to logical points for `scale` (the window's
+/// `scale_factor()`); non-finite or non-positive scales count as 1.
+pub fn physical_to_logical(px: u32, scale: f64) -> u32 {
+    (px as f64 / sane_scale(scale)).round() as u32
+}
+
+/// Converts a logical length to physical pixels for `scale`.
+pub fn logical_to_physical(pt: u32, scale: f64) -> u32 {
+    (pt as f64 * sane_scale(scale)).round() as u32
+}
+
+fn sane_scale(s: f64) -> f64 {
+    if s.is_finite() && s > 0.0 {
+        s
     } else {
-        PhysicalSize::new(cfg.width, cfg.height).into()
+        1.0
     }
+}
+
+/// The requested window size. One rule on every platform: configured windowed sizes are
+/// LOGICAL (a 640x480 window stays 640x480 points on a Retina / 150% display, rendered at
+/// the physical size: the surface follows `inner_size()`/`Resized`, which are physical).
+/// Exclusive-fullscreen resolutions and render targets stay physical.
+fn initial_size(cfg: &WindowConfig) -> winit::dpi::Size {
+    LogicalSize::new(cfg.width, cfg.height).into()
 }
 
 struct Runner<A: WindowApp> {
@@ -462,5 +477,29 @@ mod tests {
         // Unknown size: the closest one.
         assert_eq!(pick_video_mode(&modes, desk, Some([1900, 1000]), Some(60_000)), Some(m(1920, 1080, 60)));
         assert_eq!(pick_video_mode(&[], desk, None, None), None);
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    #[test]
+    fn logical_physical_round_trip() {
+        for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {
+            for pt in [160u32, 480, 640, 1281] {
+                assert_eq!(physical_to_logical(logical_to_physical(pt, scale), scale), pt, "{pt} @ {scale}");
+            }
+        }
+        assert_eq!(logical_to_physical(640, 2.0), 1280);
+        assert_eq!(physical_to_logical(1280, 2.0), 640);
+    }
+
+    #[test]
+    fn bad_scale_is_identity() {
+        for s in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(logical_to_physical(640, s), 640);
+            assert_eq!(physical_to_logical(640, s), 640);
+        }
     }
 }

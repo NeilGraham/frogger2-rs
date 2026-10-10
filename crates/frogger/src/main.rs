@@ -706,11 +706,16 @@ impl WindowApp for Host {
         if let Some(app) = &mut self.app {
             let v = &mut app.cfg.video;
             if w.fullscreen().is_none() && v.window_mode == f2_platform::WindowMode::Windowed && self.mode_req.is_none() && size.width > 0 && size.height > 0 {
-                if v.resolution.is_some_and(|[rw, rh]| (rw, rh) != (size.width, size.height)) {
+                // Config window sizes are logical points (physical / scale_factor), so the
+                // window does not grow on every launch on HiDPI displays.
+                let scale = w.scale_factor();
+                let (lw, lh) = (window::physical_to_logical(size.width, scale), window::physical_to_logical(size.height, scale));
+                let same = |a: u32, b: u32| window::logical_to_physical(a, scale) == b;
+                if v.resolution.is_some_and(|[rw, rh]| !(same(rw, size.width) && same(rh, size.height))) {
                     v.resolution = None;
                 }
-                if (v.width, v.height) != (size.width, size.height) {
-                    (v.width, v.height) = (size.width, size.height);
+                if !(same(v.width, size.width) && same(v.height, size.height)) {
+                    (v.width, v.height) = (lw, lh);
                     self.window_dirty = true;
                 }
             }

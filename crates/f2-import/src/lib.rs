@@ -219,17 +219,22 @@ pub fn sha1_hex(b: &[u8]) -> String {
     f2_media::vfs::hex(&h.finalize())
 }
 
+/// An environment variable as a path; empty counts as unset.
+fn env_path(k: &str) -> Option<PathBuf> {
+    std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 /// Default data root: `$F2_DATA_ROOT`, else the platform data dir + `frogger2-rs/data`.
 pub fn default_data_root() -> PathBuf {
-    if let Some(p) = std::env::var_os("F2_DATA_ROOT") {
-        return PathBuf::from(p);
+    if let Some(p) = env_path("F2_DATA_ROOT") {
+        return p;
     }
     let base = if cfg!(windows) {
-        std::env::var_os("APPDATA").map(PathBuf::from)
+        env_path("APPDATA")
     } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
+        env_path("HOME").map(|h| h.join("Library/Application Support"))
     } else {
-        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        env_path("XDG_DATA_HOME").or_else(|| env_path("HOME").map(|h| h.join(".local/share")))
     };
     base.unwrap_or_else(|| PathBuf::from(".")).join("frogger2-rs").join("data")
 }

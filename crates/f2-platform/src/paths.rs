@@ -26,8 +26,8 @@ fn data_base() -> Option<PathBuf> {
 
 /// Imported game data: `$F2_DATA_ROOT`, else `<data base>/frogger2-rs/data`.
 pub fn default_data_root() -> PathBuf {
-    if let Some(p) = std::env::var_os("F2_DATA_ROOT") {
-        return PathBuf::from(p);
+    if let Some(p) = env_path("F2_DATA_ROOT") {
+        return p;
     }
     data_base().unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR).join("data")
 }
