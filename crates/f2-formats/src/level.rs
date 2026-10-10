@@ -56,6 +56,9 @@ pub struct Collision {
     pub tiles: Vec<Tile>,
     pub planes: Vec<CamPlane>,
     pub boxes: Vec<CamBox>,
+    /// Whether the file had the (optional) camera plane/box section.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub has_camera_section: bool,
 }
 
 impl Collision {
@@ -92,7 +95,8 @@ impl Collision {
             }
         }
         let (mut planes, mut boxes) = (Vec::new(), Vec::new());
-        if !r.is_empty() {
+        let has_camera_section = !r.is_empty();
+        if has_camera_section {
             let np = r.i32()?;
             for _ in 0..np.max(0) {
                 planes.push(CamPlane { normal: [r.i32()?, r.i32()?, r.i32()?], k: r.i32()?, status: r.u32()? });
@@ -105,7 +109,7 @@ impl Collision {
         if !r.is_empty() {
             return Err(r.err(format!("{} trailing bytes", r.remaining())));
         }
-        Ok(Collision { player_start, baby_start, tiles, planes, boxes })
+        Ok(Collision { player_start, baby_start, tiles, planes, boxes, has_camera_section })
     }
 }
 
@@ -126,6 +130,9 @@ pub struct Scenic {
     pub name: String,
     pub pos: SVec,
     pub rot: IQuat,
+    /// The 16 name bytes as stored (padding after the NUL kept for round-trips).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub name_raw: [u8; 16],
 }
 
 /// `LoadScenics` (`Common/map.c`): follows the `next` chain like the game.
@@ -138,10 +145,11 @@ pub fn parse_scenics(data: &[u8]) -> Result<Vec<Scenic>> {
     loop {
         let mut e = Reader::at("sce", data, base + off);
         let next = e.i32()?;
-        let name = e.fixed_str(16)?;
+        let name_raw: [u8; 16] = e.bytes(16)?.try_into().unwrap();
+        let name = crate::read::cstr(&name_raw);
         let pos = SVec::read(&mut e)?;
         let rot = IQuat { x: e.i32()?, y: e.i32()?, z: e.i32()?, w: e.i32()? };
-        out.push(Scenic { name, pos, rot });
+        out.push(Scenic { name, pos, rot, name_raw });
         if next == -1 {
             break;
         }
@@ -210,4 +218,150 @@ pub fn parse_sfx_mapping(data: &[u8], tile_count: usize) -> Result<(Vec<SfxMappi
         out.push(SfxMapping { uid, kind, samples });
     }
     Ok((out, amb))
+}
+
+// ---------------------------------------------------------------------------
+// Writers (inverse of the parsers above; used by the level editor).
+
+fn put_i32(o: &mut Vec<u8>, v: i32) {
+    o.extend_from_slice(&v.to_le_bytes());
+}
+
+impl SVec {
+    fn write(&self, o: &mut Vec<u8>) {
+        for v in [self.x, self.y, self.z, self.pad] {
+            o.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+impl Collision {
+    /// Serialises to the `.col` layout read by [`Collision::parse`]. The camera
+    /// plane/box section is written when present in the source or non-empty.
+    pub fn write(&self) -> Vec<u8> {
+        let mut o = Vec::with_capacity(24 + self.tiles.len() * 68);
+        put_i32(&mut o, self.tiles.len() as i32);
+        for v in self.player_start {
+            put_i32(&mut o, v);
+        }
+        put_i32(&mut o, self.baby_start.len() as i32);
+        for &v in &self.baby_start {
+            put_i32(&mut o, v);
+        }
+        for t in &self.tiles {
+            for a in t.adj {
+                put_i32(&mut o, a);
+            }
+            put_i32(&mut o, t.state as i32);
+            t.centre.write(&mut o);
+            t.normal.write(&mut o);
+            for d in &t.dir_vector {
+                d.write(&mut o);
+            }
+        }
+        if self.has_camera_section || !self.planes.is_empty() || !self.boxes.is_empty() {
+            put_i32(&mut o, self.planes.len() as i32);
+            for p in &self.planes {
+                for v in p.normal {
+                    put_i32(&mut o, v);
+                }
+                put_i32(&mut o, p.k);
+                put_i32(&mut o, p.status as i32);
+            }
+            put_i32(&mut o, self.boxes.len() as i32);
+            for b in &self.boxes {
+                put_i32(&mut o, b.num_planes);
+                put_i32(&mut o, b.first_plane);
+            }
+        }
+        o
+    }
+}
+
+/// Serialises scenics to the `.sce` layout: header count, then 44-byte records
+/// chained by `next` byte offsets (sequential, last = `-1`), as the game walks them.
+/// Names keep their original NUL padding bytes when [`Scenic::name_raw`] still
+/// matches the name.
+pub fn write_scenics(list: &[Scenic]) -> Vec<u8> {
+    let mut o = Vec::with_capacity(4 + list.len() * 44);
+    put_i32(&mut o, list.len() as i32);
+    for (i, s) in list.iter().enumerate() {
+        let next = if i + 1 == list.len() { -1 } else { ((i + 1) * 44) as i32 };
+        put_i32(&mut o, next);
+        let mut name = [0u8; 16];
+        if crate::read::cstr(&s.name_raw) == s.name {
+            name = s.name_raw;
+        } else {
+            for (d, c) in name.iter_mut().zip(s.name.chars().take(15)) {
+                *d = c as u32 as u8;
+            }
+        }
+        o.extend_from_slice(&name);
+        s.pos.write(&mut o);
+        for v in [s.rot.x, s.rot.y, s.rot.z, s.rot.w] {
+            put_i32(&mut o, v);
+        }
+    }
+    o
+}
+
+/// One `.sam` record, in file order.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SamRecord {
+    Mapping(SfxMapping),
+    Ambient(AmbientSfx),
+}
+
+/// Lossless `.sam` file: records in order plus any bytes past the loader's
+/// `size - 4` loop bound.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SamFile {
+    pub records: Vec<SamRecord>,
+    pub trailer: Vec<u8>,
+}
+
+impl SamFile {
+    /// Same walk as [`parse_sfx_mapping`], keeping record order and trailing bytes.
+    pub fn parse(data: &[u8], tile_count: usize) -> Result<SamFile> {
+        let mut r = Reader::new("sam", data);
+        let mut records = Vec::new();
+        let limit = data.len().saturating_sub(4);
+        while r.pos < limit {
+            let uid = r.i32()?;
+            let kind = r.i32()?;
+            if kind == 4 && uid < tile_count as i32 {
+                records.push(SamRecord::Ambient(AmbientSfx { tile: uid, sample: r.i32()? }));
+                continue;
+            }
+            let n = sfx_mapping_slots(kind);
+            let samples = (0..n).map(|_| r.i32()).collect::<Result<Vec<_>>>()?;
+            records.push(SamRecord::Mapping(SfxMapping { uid, kind, samples }));
+        }
+        let trailer = data[r.pos.min(data.len())..].to_vec();
+        Ok(SamFile { records, trailer })
+    }
+
+    pub fn write(&self) -> Vec<u8> {
+        let mut o = Vec::new();
+        for rec in &self.records {
+            match rec {
+                SamRecord::Ambient(a) => {
+                    put_i32(&mut o, a.tile);
+                    put_i32(&mut o, 4);
+                    put_i32(&mut o, a.sample);
+                }
+                SamRecord::Mapping(m) => {
+                    put_i32(&mut o, m.uid);
+                    put_i32(&mut o, m.kind);
+                    for &s in &m.samples {
+                        put_i32(&mut o, s);
+                    }
+                }
+            }
+        }
+        o.extend_from_slice(&self.trailer);
+        o
+    }
 }
