@@ -467,8 +467,8 @@ impl Entities {
                 Item::CameraCase(c) => {
                     o.push(3);
                     put_i32(&mut o, c.flags);
-                    for k in 0..3 {
-                        put_hi16(&mut o, c.pos[k], lo[k]);
+                    for (&v, &l) in c.pos.iter().zip(&lo) {
+                        put_hi16(&mut o, v, l);
                     }
                     put_fixed(&mut o, c.fov, lo[3]);
                     put_hi16(&mut o, c.speed, lo[4]);

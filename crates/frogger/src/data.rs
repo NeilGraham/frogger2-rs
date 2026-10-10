@@ -19,6 +19,19 @@ impl f2_game::assets::DataSource for Data {
 }
 
 impl Data {
+    /// Stacks the enabled mods (`mods_dir/<id>`, later ids win) over the rendition.
+    pub fn with_mods(self, mods_dir: &Path, ids: &[String]) -> Result<Data, String> {
+        if ids.is_empty() {
+            return Ok(self);
+        }
+        let ids: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let (vfs, mods) = f2_mods::load_enabled_mods(&self.rendition, mods_dir, &ids).map_err(|e| e.to_string())?;
+        for m in mods {
+            eprintln!("frogger: mod {} ({} {})", m.id, m.name, m.version);
+        }
+        Ok(Data { vfs: Arc::new(vfs), rendition: self.rendition })
+    }
+
     pub fn read(&self, path: &str) -> Result<Vec<u8>, String> {
         self.vfs.read(path).map_err(|e| format!("{path}: {e}"))
     }

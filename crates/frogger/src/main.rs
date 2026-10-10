@@ -20,6 +20,7 @@ mod app;
 mod book;
 mod controls;
 mod data;
+mod editor;
 mod fx;
 mod overlay;
 mod padscript;
@@ -59,6 +60,10 @@ struct Args {
     video: Option<String>,
     save: Option<PathBuf>,
     dev_unlock: bool,
+    editor: bool,
+    editor_cmds: Vec<String>,
+    mods: Vec<String>,
+    mods_dir: PathBuf,
 }
 
 fn usage() -> ! {
@@ -67,6 +72,8 @@ fn usage() -> ! {
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
          \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
+         mods: [--mod ID]... [--mods-dir DIR] (default mods/)\n\
+         editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mod, else mods/level-W-L)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 controls, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -98,6 +105,10 @@ fn parse_args() -> Args {
         video: None,
         save: None,
         dev_unlock: false,
+        editor: false,
+        editor_cmds: Vec::new(),
+        mods: Vec::new(),
+        mods_dir: PathBuf::from("mods"),
     };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
@@ -113,6 +124,10 @@ fn parse_args() -> Args {
             "--frontend" => a.frontend = true,
             "--save" => a.save = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--dev-unlock" => a.dev_unlock = true,
+            "--editor" => a.editor = true,
+            "--editor-cmd" => a.editor_cmds.push(it.next().unwrap_or_else(|| usage())),
+            "--mod" => a.mods.push(it.next().unwrap_or_else(|| usage())),
+            "--mods-dir" => a.mods_dir = PathBuf::from(it.next().unwrap_or_else(|| usage())),
             "--video" => a.video = Some(it.next().unwrap_or_else(|| usage())),
             "--boot" => a.boot = true,
             "--multi" => {
@@ -177,9 +192,20 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let data = match data.with_mods(&args.mods_dir, &args.mods) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("frogger: mods: {e}");
+            std::process::exit(1);
+        }
+    };
     eprintln!("frogger: data {}", data.rendition.display());
 
     let steps: Vec<Step> = match args.level {
+        l if args.editor => {
+            let (w, l) = l.unwrap_or((0, 0));
+            vec![Step::Editor(w, l)]
+        }
         _ if args.video.is_some() => vec![Step::Video(args.video.clone().unwrap())],
         _ if args.frontend => vec![Step::Frontend],
         _ if args.boot => vec![Step::Boot],
@@ -227,6 +253,12 @@ fn make_audio(cfg: &Config, mute: bool) -> AudioEngine {
     a
 }
 
+/// Where the editor saves: `--mods-dir`, and the first `--mod` id (else `level-W-L`).
+fn editor_target(args: &Args) -> (PathBuf, String) {
+    let (w, l) = args.level.unwrap_or((0, 0));
+    (args.mods_dir.clone(), args.mods.first().cloned().unwrap_or_else(|| format!("level-{w}-{l}")))
+}
+
 // ------------------------------------------------------------------ headless
 
 /// CI smoke mode: runs N ticks without a window (muted) and renders the last frame offscreen.
@@ -237,6 +269,8 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.set_display(cfg.profile, cfg.display_settings(Profile::Enhanced));
     app.set_input(cfg.bindings(), cfg.input.deadzone, cfg.hop_buffer_frames(Profile::Enhanced));
     app.hud_probe = args.hud_probe;
+    app.editor_mods = Some(editor_target(args));
+    app.editor_cmds = args.editor_cmds.clone();
     // Headless runs only read a save given explicitly and never write one.
     app.save_data = match (&args.save, args.dev_unlock) {
         (_, true) => Some(dev_unlock_save()),
@@ -258,6 +292,10 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     // Debug: `F2_SHOT_UNTIL=tongue|ring|decal|lightning` stops at the first tick showing it.
     let until = std::env::var("F2_SHOT_UNTIL").ok();
     for _ in 0..frames {
+        if app.editing() {
+            // The editor pauses the simulation.
+            break;
+        }
         let shots: Vec<PathBuf> = app.pad_script.as_ref().map_or(Vec::new(), |s| s.shots_at(app.ticks).cloned().collect());
         for out in shots {
             app.draw(w, h);
@@ -336,6 +374,8 @@ struct Host {
     save_path: PathBuf,
     dev_unlock: bool,
     steps: Vec<Step>,
+    /// Editor save target and start-up commands.
+    editor_setup: ((PathBuf, String), Vec<String>),
     app: Option<App>,
     gfx: Option<Gfx>,
     gamepads: Option<Gamepads>,
@@ -389,6 +429,8 @@ impl WindowApp for Host {
                     }
                 }
                 app.hud_probe = self.hud_probe;
+                app.editor_mods = Some(self.editor_setup.0.clone());
+                app.editor_cmds = std::mem::take(&mut self.editor_setup.1);
                 app.pad_script = self.pad_script.take();
                 app.save_path = Some(self.save_path.clone());
                 if self.dev_unlock {
@@ -402,6 +444,18 @@ impl WindowApp for Host {
             Err(e) => self.error = Some(e),
         }
         self.last = Instant::now();
+    }
+
+    fn event(&mut self, _w: &Arc<window::Window>, event: &winit::event::WindowEvent) -> Flow {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        if let Some(ed) = self.app.as_mut().and_then(|a| a.editor.as_mut()) {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => ed.mouse(Some((position.x as f32, position.y as f32)), false),
+                WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => ed.mouse(None, true),
+                _ => {}
+            }
+        }
+        Flow::Continue
     }
 
     fn resized(&mut self, _w: &Arc<window::Window>, size: winit::dpi::PhysicalSize<u32>) {
@@ -531,6 +585,7 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>) -> R
         fullscreen: wc.fullscreen,
         cfg,
         steps,
+        editor_setup: (editor_target(args), args.editor_cmds.clone()),
         app: None,
         gfx: None,
         gamepads: None,
