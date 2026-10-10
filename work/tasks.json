@@ -779,13 +779,14 @@
       ],
       "files": [],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T18:49:57-06:00 done: parity 26/26 levels + demos; packaging; enhanced profile fixes/QoL"
       ]
     },
     {
@@ -797,13 +798,14 @@
       ],
       "files": [],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T18:49:57-06:00 done: parity 26/26 levels + demos; packaging; enhanced profile fixes/QoL"
       ]
     },
     {
@@ -835,13 +837,14 @@
       ],
       "files": [],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T19:13:45-06:00 done: modding: overrides, glTF, f2-etc, level manifests, F2S behaviour scripts, editor"
       ]
     }
   ]
