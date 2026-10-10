@@ -55,6 +55,27 @@ world assignment. We will:
 4. Blender workflow: glTF export from Blender → importer computes tile graph helpers; or a Blender
    add-on later.
 
+### Level editor (P7, `crates/frogger/src/editor/`)
+
+`frogger --editor --level W L [--mod ID] [--mods-dir DIR] [--editor-cmd "CMD; CMD"]` (Ctrl+E toggles
+it on the current level in dev builds). The simulation pauses; a free camera (WASD/QE, arrows,
+Shift) flies over the level. Modes (keys 1-5): **tiles** (graph colour-coded by state, links as
+half-way lines coloured per slot n/s/e/w; PgUp/PgDn state, L/U link/unlink towards the pointer,
+Ins extrude a new linked tile, Del delete with every tile reference renumbered), **entities**
+(markers: enemy red, platform blue, placeholder grey, garib yellow, camera case magenta; Tab/Space
+select, M move to the pointer tile — paths and camera tile groups move as a whole, N/G/C new
+enemy/garib/camera case, Del), **paths** (`[`/`]` node, N add, M move, Del, PgUp/PgDn speed),
+**scenics** (M, Ins copy, Del), **script** (decompiled ETC source view; O opens `$EDITOR`, the
+result is compiled with `f2-etc` and the `.fev` only changes when it compiles). Enter opens a
+command line (`help` lists commands; `set FIELD VALUE` edits any field of the selection, e.g.
+`set speed 2.5`, `set flags 0x10`, `set model bfly.obe`). P play-tests the level from the edited
+files in memory, R reloads it paused. `save [ID]` writes the changed files in the retail formats to
+`mods/<ID>/game/{collision,scenics,maps}/…` (+ `mod.toml` when missing and the `.etc` source next to
+the `.fev`); `frogger --mod ID --level W L` plays it. Writers in `f2-formats`
+(`Collision::write`, `write_scenics`, `EntityFile::write` incl. the low bits the loader drops,
+`SamFile::write`, `Script::write`) reproduce every retail file byte-for-byte
+(`crates/f2-formats/tests/roundtrip.rs`).
+
 ## 4. Behaviour scripting (Phase 7b)
 
 The original event language covers triggers/actions. For new behaviour (new enemy types, modes),

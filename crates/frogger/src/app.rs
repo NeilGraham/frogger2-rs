@@ -449,6 +449,28 @@ impl App {
         Ok(())
     }
 
+    /// Opens the editor on the loaded level (keeping the camera), or closes it.
+    pub fn toggle_editor(&mut self) {
+        if self.editor.take().is_some() {
+            self.status.clear();
+            return;
+        }
+        let Some(scene) = &self.scene else { return };
+        let (w, l) = (scene.world, scene.level);
+        match crate::editor::doc::LevelDoc::load(&self.data, w, l) {
+            Ok(doc) => {
+                let cam = self.last_cam.as_ref().map(FlyCam::from_camera).unwrap_or_else(|| FlyCam::from_camera(&render::game_camera(&self.game)));
+                let mut ed = crate::editor::Editor::new(doc, cam);
+                if let Some((dir, _)) = &self.editor_mods {
+                    ed.mods_dir = dir.clone();
+                }
+                self.free_cam = None;
+                self.editor = Some(ed);
+            }
+            Err(e) => self.status = format!("editor: {e}"),
+        }
+    }
+
     /// Whether the editor is open and the simulation paused.
     pub fn editing(&self) -> bool {
         self.editor.as_ref().is_some_and(|e| !e.playing)
@@ -808,6 +830,11 @@ impl App {
 
         if let Some(fc) = &mut self.free_cam {
             fc.update(kb, dt.as_secs_f32());
+        }
+        // Dev builds: Ctrl+E opens / closes the editor on the current level.
+        let ctrl = kb.is_down(dik::LCONTROL) || kb.is_down(dik::RCONTROL);
+        if cfg!(debug_assertions) && ctrl && kb.pressed.contains(&dik::E) && self.editor.as_ref().is_none_or(|e| e.prompt.is_none()) {
+            self.toggle_editor();
         }
         if let Some(ed) = &mut self.editor {
             ed.input(kb, dt.as_secs_f32());

@@ -12,6 +12,8 @@
 //! `--pad-script FILE` drives player 1's pad: lines `TICK BUTTONS` hold the buttons
 //! (`cross+up`, `none`, or a hex mask) from that tick on; `TICK shot FILE.png` writes a
 //! screenshot before that tick (headless).
+//! `--editor [--level W L]` opens the level editor (`src/editor/`; Ctrl+E toggles it in
+//! dev builds); `--mod ID` / `--mods-dir DIR` stack mods over the data.
 //! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 fullscreen, Esc quit (Enter/Esc skip videos);
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
