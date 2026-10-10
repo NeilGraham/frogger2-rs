@@ -18,7 +18,8 @@ use crate::define::{DIFFICULTY_HARD, MULTILOCAL, SINGLEPLAYER, STORY_MODE};
 use crate::effects::Effect;
 use crate::frogger::*;
 use crate::frogmove::FROGSTATUS_ISDEAD;
-use crate::ids::ActorId;
+use crate::ids::{ActorId, TextOverlayId};
+use crate::textover::Font;
 use crate::language::str_id::*;
 use crate::language::{c_sprintf, FmtArg};
 use crate::layout::{worldid, LEVELID_FRONTEND1, LEVEL_CLOSED, LEVEL_OPEN, WORLD_CLOSED, WORLD_OPEN};
@@ -227,7 +228,7 @@ impl UiOverlay {
 /// `MULTIGAMEWIN` (`frontend.c:485`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultiGameWin {
-    pub count_text_over: [Option<UiOverlay>; 4],
+    pub count_text_over: [Option<TextOverlayId>; 4],
     pub current: i8,
     pub mode: i8,
     pub countdown: u32,
@@ -282,8 +283,6 @@ pub struct FrontendState {
     pub sparkles: Vec<Option<UiOverlay>>,
     /// Coins flying off during the missed-coins count (`CreateAndAddSpriteOverlay("SCOIN0001")`).
     pub flying_coins: Vec<UiOverlay>,
-    /// `arcadeHud.coinsOver` as the level-complete screen uses it. TODO(merge wave E): hud.
-    pub coins_over: UiOverlay,
     /// `coinStr`, `oldBestStr`, `levTimeText`.
     pub coin_str: String,
     pub old_best_str: String,
@@ -294,14 +293,14 @@ pub struct FrontendState {
     /// `eolTimer`.
     pub eol_timer: Timer,
     /// `theEndText` / `theEndTimer`.
-    pub the_end_text: Option<UiOverlay>,
+    pub the_end_text: Option<TextOverlayId>,
     pub the_end_timer: Timer,
     /// `gameOverText` (local of `StartGameOver`).
     pub game_over_text: Option<UiOverlay>,
     /// `mgWin`.
     pub mg_win: Option<MultiGameWin>,
     /// `menuText[2]` (created by the multiplayer HUD, `hud.c:364`).
-    pub menu_text: [Option<UiOverlay>; 2],
+    pub menu_text: [Option<TextOverlayId>; 2],
     /// `menuOption`, `optionSelected`.
     pub menu_option: i32,
     pub option_selected: i32,
@@ -349,7 +348,6 @@ impl Default for FrontendState {
             b_icon: None,
             sparkles: vec![None; MAX_SPARKLES],
             flying_coins: Vec::new(),
-            coins_over: UiOverlay::sprite(0, 0, "", 0, 0, 255),
             coin_str: String::new(),
             old_best_str: String::new(),
             lev_time_text: String::new(),
@@ -492,7 +490,6 @@ impl Game {
             &mut f.extra_icon,
             &mut f.coin_icon,
             &mut f.b_icon,
-            &mut f.the_end_text,
             &mut f.game_over_text,
         ]
         .into_iter()
@@ -506,19 +503,15 @@ impl Game {
         for o in f.flying_coins.iter_mut() {
             o.step(gs, paused);
         }
-        f.coins_over.step(gs, paused);
-        if let Some(t) = self.training.train.as_mut() {
-            for o in std::iter::once(&mut t.bg).chain(t.txtover.iter_mut()).flatten() {
-                o.step(gs, paused);
-            }
-        }
     }
 
     /// Port of `RunTheEndMode` (Common/frontend.c:112).
     pub fn run_the_end_mode(&mut self) {
         if self.frontend.the_end_text.is_none() {
-            // FreeTextOverlayLinkedList(); InitTextOverlayLinkedList(2): TODO(merge wave E).
-            self.frontend.the_end_text = Some(UiOverlay::text(2048, 2000, &self.gamestring(STR_THE_END), true, 255));
+            self.textover.free_text_overlay_linked_list();
+            self.textover.init_text_overlay_linked_list(2);
+            let s = self.gamestring(STR_THE_END);
+            self.frontend.the_end_text = self.textover.create_and_add_text_overlay(2048, 2000, &s, true, 255, Font::Normal, 0);
             self.frontend.the_end_timer.init(5);
             self.screen_fade(0, 255, 30);
         } else if self.frontend.the_end_timer.time != 0 && !self.levplay.fading_out {
@@ -733,7 +726,9 @@ impl Game {
         self.frontend.create_time = self.act_frame_count.wrapping_add(CREATE_FRAMES);
         self.frontend.more_coins = 0;
 
-        self.frontend.coins_over.x_pos = 3400 + 4096;
+        if let Some(o) = self.overlays.get_mut(self.hud.arcade_hud.coins_over) {
+            o.x_pos = 3400 + 4096;
+        }
         self.frontend.coin_text = None;
         self.frontend.coin_icon = None;
         self.frontend.extra_text = None;
@@ -774,7 +769,7 @@ impl Game {
                     ei.x_pos_to = 2048 - 256;
                     self.frontend.extra_icon = Some(ei);
                 }
-                self.frontend.coins_over.draw = false;
+                self.overlays.disable(self.hud.arcade_hud.coins_over);
             } else {
                 self.frontend.coin_str = c_sprintf(self.language.gamestring(STR_MISSED_COINS), &[FmtArg::Int(0)]);
                 let mut ct = UiOverlay::text(2048 + 4096, 850, &self.frontend.coin_str, true, 255);
@@ -785,11 +780,12 @@ impl Game {
                 et.x_pos_to = 2048;
                 self.frontend.extra_text = Some(et);
                 self.frontend.extra_icon = None;
-                let co = &mut self.frontend.coins_over;
-                co.draw = true;
-                co.x_pos_to = 3400;
-                co.y_pos = 850;
-                co.y_pos_to = 850;
+                if let Some(co) = self.overlays.get_mut(self.hud.arcade_hud.coins_over) {
+                    co.draw = 1;
+                    co.x_pos_to = 3400;
+                    co.y_pos = 850;
+                    co.y_pos_to = 850;
+                }
             }
         }
 
@@ -994,7 +990,9 @@ impl Game {
                 for o in [&mut f.coin_text, &mut f.coin_icon, &mut f.extra_text, &mut f.extra_icon].into_iter().flatten() {
                     o.speed = 4096 * 75;
                 }
-                f.coins_over.speed = 4096 * 75;
+                if let Some(co) = self.overlays.get_mut(self.hud.arcade_hud.coins_over) {
+                    co.speed = 4096 * 75;
+                }
 
                 // BUG(original): coinText is NULL on a level without coins (not training); the
                 // original dereferences it. The port treats a missing overlay as arrived.
@@ -1017,15 +1015,15 @@ impl Game {
                                 }
                                 self.frontend.coin_counter = 0;
                                 self.play_sample(f2_formats::crc::crc("pickupcoin"), None, 0, SAMPLE_VOLUME, -1);
-                                let co = &self.frontend.coins_over;
+                                let (cx, cy) = self.overlays.get(self.hud.arcade_hud.coins_over).map_or((0, 0), |o| (o.x_pos as i32, o.y_pos as i32));
                                 let tex = if self.cheat_mad_garibs() { "RGARIB01" } else { "SCOIN0001" };
-                                let mut c = UiOverlay::sprite(co.x_pos, co.y_pos, tex, 205, 273, 0xff);
+                                let mut c = UiOverlay::sprite(cx, cy, tex, 205, 273, 0xff);
                                 c.x_pos_to += 10000;
                                 c.speed = 4096 * 50;
                                 self.frontend.flying_coins.push(c);
                             }
                         } else {
-                            self.frontend.coins_over.draw = false;
+                            self.overlays.disable(self.hud.arcade_hud.coins_over);
                             if self.frontend.eol_timer.time == 0 {
                                 self.frontend.eol_timer.init(2);
                             }
@@ -1353,41 +1351,90 @@ impl Game {
 
     // ------------------------------------------------------------ multiplayer win screens
 
-    /// Port of `StartMultiWinGame` (Common/frontend.c:504), the state part.
+    /// Port of `StartMultiWinGame` (Common/frontend.c:510).
     pub fn start_multi_win_game(&mut self) {
         self.screen_fade(255, 128, 30);
         self.fadeout.keep_fade = true;
         self.fadeout.fade_text = false;
 
         let mut mg = MultiGameWin::default();
-        // multiHud.centreText->yPos = 1600: TODO(port hud.c multi HUD).
+        let ct = self.hud.multi_hud.centre_text;
+        if let Some(o) = self.textover.get_mut(ct) {
+            o.y_pos = 1600;
+        }
         match self.multi.multiplayer_mode {
             MULTIMODE_RACE => {
                 self.game_state.mode = MULTI_WINRACE_MODE;
                 for i in 0..self.frogger.num_frogs.clamp(0, 4) as usize {
-                    let (_, timer, _) = self.mpl_get(i);
-                    let s = format!("{}:{:02}:{:02}", timer / 3600, (timer % 3600) / 60, timer % 60);
-                    let mut t = UiOverlay::text(5000, 1024 + 512 * i as i32, &s, false, 255);
-                    t.flags = TEXTOVERLAY_SHADOW;
-                    t.speed = 50 << 12;
-                    mg.count_text_over[i] = Some(t);
+                    let s = race_time_text(self.multi.mpl[i].timer);
+                    let t = self.textover.create_and_add_text_overlay(5000, (1024 + 512 * i) as i16, &s, false, 255, Font::Normal, TEXTOVERLAY_SHADOW as i8);
+                    if let Some(o) = self.textover.get_mut(t) {
+                        o.speed = 50 << 12;
+                    }
+                    mg.count_text_over[i] = t;
                 }
                 mg.mode = MGW_MOVING;
             }
             MULTIMODE_COLLECT | MULTIMODE_BATTLE => {
                 mg.mode = MGW_MOVING;
                 self.game.mode_timer.init(3);
-                // countdownString / multiHud.centreText: TODO(port hud.c multi HUD).
+                let s = self.multi_win_string(false);
+                self.set_countdown_string(s);
+                if let Some(o) = self.textover.get_mut(ct) {
+                    o.a = 0;
+                    o.scale = 4096;
+                }
                 self.game_state.mode = MULTI_WINCOLLECT_MODE;
             }
             _ => {}
         }
         self.frontend.mg_win = Some(mg);
 
-        if self.multi_match_winner() != -1 {
+        if self.multi.match_winner != -1 {
             self.backdrop.draw_game = false;
             self.init_tiled_backdrop("LOGO");
             self.hide_all_sprites();
+        }
+    }
+
+    /// The `countdownString` of the win screens: match winner, round draw or round winner
+    /// (`STR_MULTI_WINMATCH` / `STR_MULTI_DRAW` / `STR_MULTI_PLAYERWINS` with the winner's
+    /// character name; `NetGetPlayerName` for `MULTIREMOTE` is not ported). `finished`
+    /// selects `RunMultiWinRace`'s order (match winner first in both).
+    fn multi_win_string(&self, _finished: bool) -> String {
+        let gw = self.multi.game_winner;
+        let name = |g: &Game| {
+            let ch = if gw >= 0 { g.frogger.player[gw as usize & 3].character as i32 } else { 0 };
+            g.gamestring(STR_CHAR_NAME_1 + ch)
+        };
+        if self.multi.match_winner != -1 {
+            c_sprintf(&self.gamestring(STR_MULTI_WINMATCH), &[FmtArg::Str(name(self))])
+        } else if gw as i32 == MULTI_ROUND_DRAW {
+            c_sprintf(&self.gamestring(STR_MULTI_DRAW), &[])
+        } else {
+            c_sprintf(&self.gamestring(STR_MULTI_PLAYERWINS), &[FmtArg::Str(name(self))])
+        }
+    }
+
+    /// `DEC_ALPHA` on a sprite overlay.
+    fn sprite_dec_alpha(&mut self, s: Option<crate::ids::OverlayId>) {
+        let gs = self.game_speed;
+        if let Some(o) = self.overlays.get_mut(s) {
+            crate::hud::dec_alpha(&mut o.a, &mut o.draw, gs);
+        }
+    }
+
+    /// Sets the colour of `multiHud.backChars[w]`, `penaliseText[w]` and `countTextOver[w]`.
+    fn multi_win_colour(&mut self, w: usize, r: u8, g: u8, b: u8) {
+        let m = self.hud.multi_hud.clone();
+        if let Some(o) = self.overlays.get_mut(m.back_chars[w]) {
+            (o.r, o.g, o.b) = (r, g, b);
+        }
+        let ct = self.frontend.mg_win.as_ref().and_then(|w2| w2.count_text_over[w]);
+        for t in [m.penalise_text[w], ct] {
+            if let Some(o) = self.textover.get_mut(t) {
+                (o.r, o.g, o.b) = (r, g, b);
+            }
         }
     }
 
@@ -1402,25 +1449,34 @@ impl Game {
         self.game_state.mode = INGAME_MODE;
     }
 
-    /// Port of `RunMultiWinRace` (Common/frontend.c:625). The HUD sliding and colour
-    /// pulsing is wave E; the penalty count-down and mode flow are ported.
+    /// Port of `RunMultiWinRace` (Common/frontend.c:637).
     pub fn run_multi_win_race(&mut self) {
         self.frontend.check_menu_keys = 1;
         let Some(mode) = self.frontend.mg_win.as_ref().map(|m| m.mode) else { return };
         let num_frogs = self.frogger.num_frogs.clamp(0, 4) as usize;
+        let m = self.hud.multi_hud.clone();
+        let cto = self.frontend.mg_win.as_ref().expect("mgWin").count_text_over;
+        // `n = mgWin->current` at entry (the MOVING loop reuses it).
+        let n = self.frontend.mg_win.as_ref().expect("mgWin").current as i32;
         if mode == MGW_MOVING {
-            let gs = self.game_speed;
-            let mg = self.frontend.mg_win.as_mut().expect("mgWin");
+            self.text_dec_alpha(m.time_text_hsec);
+            self.text_dec_alpha(m.time_text_sec);
+            self.text_dec_alpha(m.time_text_min);
             let mut num_arrived = 0;
-            for t in mg.count_text_over.iter_mut().take(num_frogs).flatten() {
-                t.x_pos_to = 2000;
-                t.step(gs, false);
-                if t.x_pos == t.x_pos_to {
-                    num_arrived += 1;
+            for n in 0..num_frogs {
+                let ni = n as i32;
+                self.slide_sprite_overlay_to_pos(m.back_chars[n], 700, 1024 + 512 * ni - 128, BACK_CHARS_X[n], BACK_CHARS_Y[n], 50);
+                self.slide_text_overlay_to_pos(m.penalise_text[n], 1300, 1024 + 512 * ni, BACK_TEXT_X[n], BACK_TEXT_Y[n], 50);
+                if let Some(t) = self.textover.get_mut(cto[n]) {
+                    t.x_pos_to = 2000;
+                    if t.x_pos == t.x_pos_to {
+                        num_arrived += 1;
+                    }
                 }
             }
-            // backChars / penaliseText slides: TODO(port hud.c multi HUD).
+            // If overlays have got to proper positions, start counting
             if num_arrived == num_frogs {
+                let mg = self.frontend.mg_win.as_mut().expect("mgWin");
                 mg.mode = MGW_COUNTING;
                 mg.countdown = 0;
                 mg.current = 0;
@@ -1429,48 +1485,97 @@ impl Game {
             let add = if self.levplay.pad_data.digital[0] & PAD_CROSS != 0 { 5 } else { self.act_frame_count.wrapping_sub(self.last_act_frame_count) };
             let mg = self.frontend.mg_win.as_mut().expect("mgWin");
             mg.countdown = mg.countdown.wrapping_add(add);
-            // BUG(original): `n` is set to mgWin->current only at function entry.
-            let n = mg.current as usize;
+            let t = cto[mg.current as usize & 3];
+            let n = n as usize & 3;
+            // Every half a second, countdown a penalty point and make a noise
             if mg.countdown > 5 {
                 mg.countdown = 0;
-                let (penalty, timer, _) = self.mpl_get(n);
-                if penalty != 0 {
-                    let timer = timer + 60;
-                    self.mpl_set(n, penalty - 60, timer);
-                    let cur = self.frontend.mg_win.as_ref().expect("mgWin").current as usize;
-                    if let Some(t) = self.frontend.mg_win.as_mut().expect("mgWin").count_text_over[cur].as_mut() {
-                        t.text = format!("{}:{:02}:{:02}", timer / 3600, (timer % 3600) / 60, timer % 60);
+                if self.multi.mpl[n].penalty != 0 {
+                    let mp = &mut self.multi.mpl[n];
+                    mp.penalty = mp.penalty.wrapping_sub(60);
+                    mp.timer = mp.timer.wrapping_add(60);
+                    let s = race_time_text(mp.timer);
+                    if let Some(o) = self.textover.get_mut(t) {
+                        o.text = s;
                     }
                     self.play_sample(f2_formats::crc::crc("clocktick"), None, 0, SAMPLE_VOLUME, -1);
                 } else if n + 1 < num_frogs {
-                    self.frontend.mg_win.as_mut().expect("mgWin").current += 1;
+                    mg.current += 1;
                 } else {
-                    // trophies drawn: TODO(port hud.c multi HUD).
+                    // Else we've finished, so prepare to replay.
+                    for i in 0..num_frogs {
+                        let wins = (self.multi.mpl[i].wins.max(0) as usize).min(3);
+                        for j in 0..wins {
+                            self.overlays.enable(m.trophies[i][j]);
+                        }
+                    }
                     self.frontend.mg_win.as_mut().expect("mgWin").mode = MGW_FLASHING;
+                    if let Some(o) = self.textover.get_mut(m.centre_text) {
+                        o.a = 0;
+                        o.y_pos = 900;
+                    }
                     self.game.mode_timer.init(3);
                 }
             }
         } else if mode == MGW_FLASHING {
             let afc = self.act_frame_count;
             self.game.mode_timer.update(-1, afc);
-            if self.multi_game_winner() == MULTI_ROUND_DRAW || self.game.mode_timer.time == 0 {
+            let gw = self.multi.game_winner as i32;
+            if gw == MULTI_ROUND_DRAW || self.game.mode_timer.time == 0 {
                 self.frontend.mg_win.as_mut().expect("mgWin").mode = MGW_FINISHED;
                 self.game.mode_timer.init(4);
+            } else if (0..4).contains(&gw) {
+                let a = afc as i32;
+                self.multi_win_colour(gw as usize, pulse(rsin(a.wrapping_mul(4000))), pulse(rcos(a.wrapping_mul(4000))), 10);
             }
         } else if mode == MGW_FINISHED {
             if self.game.mode_timer.time != 0 {
-                let gs = self.game_speed;
-                for t in self.frontend.mg_win.as_mut().expect("mgWin").count_text_over.iter_mut().flatten() {
-                    t.x_pos_to = 5200;
-                    t.dec_alpha(gs);
+                let gw = self.multi.game_winner as i32;
+                if gw != MULTI_ROUND_DRAW && (0..4).contains(&gw) {
+                    self.multi_win_colour(gw as usize, 255, 255, 255);
                 }
+                if self.multi.match_winner != -1 {
+                    for i in 0..num_frogs {
+                        self.slide_sprite_overlay_to_pos(m.back_chars[i], BACK_CHARS_X[i], BACK_CHARS_Y[i], 700, 1024 + 512 * n - 128, 50);
+                        self.text_dec_alpha(m.penalise_text[i]);
+                        if let Some(o) = self.textover.get_mut(cto[i]) {
+                            o.x_pos_to = 5200;
+                        }
+                        self.text_dec_alpha(cto[i]);
+                    }
+                } else {
+                    self.text_inc_alpha(m.time_text_hsec, 255);
+                    self.text_inc_alpha(m.time_text_sec, 255);
+                    self.text_inc_alpha(m.time_text_min, 255);
+                    for i in 0..num_frogs {
+                        self.slide_sprite_overlay_to_pos(m.back_chars[i], BACK_CHARS_X[i], BACK_CHARS_Y[i], 700, 1024 + 512 * n - 128, 50);
+                        self.slide_text_overlay_to_pos(m.penalise_text[i], BACK_TEXT_X[i], BACK_TEXT_Y[i], 1300, 1024 + 512 * n, 50);
+                        if let Some(o) = self.textover.get_mut(cto[i]) {
+                            o.x_pos_to = 5200;
+                        }
+                        self.text_dec_alpha(cto[i]);
+                    }
+                }
+                self.text_inc_alpha(m.centre_text, 255);
+            }
+
+            let s = self.multi_win_string(true);
+            self.set_countdown_string(s);
+            if let Some(o) = self.textover.get_mut(m.centre_text) {
+                o.scale = 4096;
+            }
+
+            if self.game.mode_timer.time != 0 {
                 let afc = self.act_frame_count;
                 self.game.mode_timer.update(-1, afc);
             }
             if self.game.mode_timer.time == 0 {
-                if self.multi_match_winner() != -1 {
+                if self.multi.match_winner != -1 {
                     self.do_end_multi();
                     return;
+                }
+                for t in cto.iter().take(num_frogs) {
+                    self.textover.sub_text_overlay(*t);
                 }
                 self.multi_win_next_round();
             }
@@ -1478,33 +1583,60 @@ impl Game {
         self.up_date_multiplayer_info();
     }
 
-    /// Port of `RunMultiWinCollect` (Common/frontend.c:822): mode flow (HUD visuals wave E).
+    /// Port of `RunMultiWinCollect` (Common/frontend.c:822).
     pub fn run_multi_win_collect(&mut self) {
         self.frontend.check_menu_keys = 1;
         let Some(mode) = self.frontend.mg_win.as_ref().map(|m| m.mode) else { return };
         let afc = self.act_frame_count;
+        let m = self.hud.multi_hud.clone();
+        let num_frogs = self.frogger.num_frogs.clamp(0, 4) as usize;
         match mode {
             MGW_FLASHING => {
                 if self.game.mode_timer.time != 0 {
                     self.game.mode_timer.update(-1, afc);
+                    self.text_inc_alpha(m.centre_text, 255);
                 }
                 if self.game.mode_timer.time == 0 {
-                    if self.multi_match_winner() != -1 {
+                    if self.multi.match_winner != -1 {
                         self.do_end_multi();
                         return;
+                    }
+                    if let Some(o) = self.textover.get_mut(m.centre_text) {
+                        o.draw = 0;
+                        o.y_pos = 900;
                     }
                     self.multi_win_next_round();
                 }
             }
             MGW_MOVING | MGW_COUNTING => {
+                let max_score = (0..num_frogs).map(|j| self.multi.mpl[j].score).fold(0, i16::max);
+                let num_draw = (0..num_frogs).filter(|&j| self.multi.mpl[j].score == max_score).count() as i32;
+                let mut num = 0;
+                for j in 0..num_frogs {
+                    if self.multi.mpl[j].score == max_score {
+                        let cx = 2048 - 256 - (num_draw - 1) * 256 + num * 512;
+                        if mode == MGW_MOVING {
+                            self.slide_sprite_overlay_to_pos(m.back_chars[j], cx, 2100, BACK_CHARS_X[j], BACK_CHARS_Y[j], 30);
+                        } else {
+                            self.slide_sprite_overlay_to_pos(m.back_chars[j], BACK_CHARS_X[j], BACK_CHARS_Y[j], cx, 2100, 30);
+                        }
+                        num += 1;
+                    }
+                }
                 self.game.mode_timer.update(-1, afc);
+                self.text_inc_alpha(m.centre_text, 255);
                 if self.game.mode_timer.time == 0 {
-                    let mg = self.frontend.mg_win.as_mut().expect("mgWin");
                     if mode == MGW_MOVING {
+                        for i in 0..num_frogs {
+                            let wins = (self.multi.mpl[i].wins.max(0) as usize).min(3);
+                            for j in 0..wins {
+                                self.overlays.enable(m.trophies[i][j]);
+                            }
+                        }
                         self.game.mode_timer.init(2);
-                        mg.mode = MGW_COUNTING;
+                        self.frontend.mg_win.as_mut().expect("mgWin").mode = MGW_COUNTING;
                     } else {
-                        mg.mode = MGW_FLASHING;
+                        self.frontend.mg_win.as_mut().expect("mgWin").mode = MGW_FLASHING;
                     }
                 }
             }
@@ -1517,14 +1649,20 @@ impl Game {
     pub fn run_multi_win_battle(&mut self) {
         self.frontend.check_menu_keys = 1;
         let mode = self.frontend.mg_win.as_ref().map_or(MGW_FINISHED, |m| m.mode);
+        let ct = self.hud.multi_hud.centre_text;
         if mode == MGW_FLASHING && self.game.mode_timer.time != 0 {
             let afc = self.act_frame_count;
             self.game.mode_timer.update(-1, afc);
+            self.text_inc_alpha(ct, 255);
         }
         if self.game.mode_timer.time == 0 {
-            if self.multi_match_winner() != -1 {
+            if self.multi.match_winner != -1 {
                 self.do_end_multi();
                 return;
+            }
+            if let Some(o) = self.textover.get_mut(ct) {
+                o.draw = 0;
+                o.y_pos = 900;
             }
             self.multi_win_next_round();
         }
@@ -1536,10 +1674,11 @@ impl Game {
             self.frontend.menu_option = 0;
             self.frontend.option_selected = 0;
         }
-        let gs = self.game_speed;
+        let mt = self.frontend.menu_text;
         if self.frontend.option_selected == 0 {
-            for t in self.frontend.menu_text.iter_mut().flatten() {
-                t.inc_alpha(255, gs);
+            self.text_inc_alpha(mt[0], 255);
+            if mt[1].is_some() {
+                self.text_inc_alpha(mt[1], 255);
             }
             let digital = self.levplay.pad_data.digital[0];
             if self.frontend.menu_option == 1 && digital & PAD_UP != 0 {
@@ -1550,13 +1689,13 @@ impl Game {
                 self.frontend.option_selected = 1;
             }
             let afc = self.act_frame_count as i32;
-            let mo = self.frontend.menu_option as usize;
-            if let Some(t) = self.frontend.menu_text[mo].as_mut() {
+            let mo = (self.frontend.menu_option & 1) as usize;
+            if let Some(t) = self.textover.get_mut(mt[mo]) {
                 t.r = pulse(rsin(afc.wrapping_mul(4000)));
                 t.g = pulse(rcos(afc.wrapping_mul(4000)));
                 t.b = 10;
             }
-            if let Some(t) = self.frontend.menu_text[1 - mo].as_mut() {
+            if let Some(t) = self.textover.get_mut(mt[1 - mo]) {
                 t.r = 255;
                 t.g = 255;
                 t.b = 255;
@@ -1579,11 +1718,13 @@ impl Game {
                 self.backdrop.draw_game = true;
                 if self.frontend.menu_option == 0 {
                     self.frontend.check_menu_keys = 0;
+                    if let Some(o) = self.textover.get_mut(self.hud.multi_hud.centre_text) {
+                        o.y_pos = 900;
+                    }
                     self.restart_multi();
                     self.game_state.mode = INGAME_MODE;
-                    for t in self.frontend.menu_text.iter_mut().flatten() {
-                        t.draw = false;
-                    }
+                    self.textover.disable(mt[0]);
+                    self.textover.disable(mt[1]);
                 } else {
                     self.frogger.player[0].character = FROG_FROGGER;
                     self.frogger.num_frogs = 1;
@@ -1596,8 +1737,21 @@ impl Game {
                 self.frontend.menu_option = -1;
             }
         } else {
-            for t in self.frontend.menu_text.iter_mut().flatten() {
-                t.dec_alpha(gs);
+            if self.frontend.menu_option == 1 {
+                let m = self.hud.multi_hud.clone();
+                for t in [m.centre_text, m.time_text_hsec, m.time_text_sec, m.time_text_min] {
+                    if t.is_some() {
+                        self.text_dec_alpha(t);
+                    }
+                }
+                for i in 0..self.frogger.num_frogs.clamp(0, 4) as usize {
+                    self.sprite_dec_alpha(m.back_chars[i]);
+                    self.text_dec_alpha(m.penalise_text[i]);
+                }
+            }
+            self.text_dec_alpha(mt[0]);
+            if mt[1].is_some() {
+                self.text_dec_alpha(mt[1]);
             }
         }
     }
@@ -1626,19 +1780,8 @@ impl Game {
     pub fn multi_game_winner(&self) -> i32 {
         self.multi.game_winner as i32
     }
-
-    /// `(mpl[i].penalty, mpl[i].timer, mpl[i].wins)` (Common/multi.c). TODO(merge multi).
-    pub fn mpl_get(&self, i: usize) -> (i32, i32, i32) {
-        let m = &self.multi.mpl[i];
-        (m.penalty as i32, m.timer as i32, m.wins as i32)
-    }
-
-    /// `mpl[i].penalty = penalty; mpl[i].timer = timer`. TODO(merge multi).
-    pub fn mpl_set(&mut self, i: usize, penalty: i32, timer: i32) {
-        self.multi.mpl[i].penalty = penalty as u32;
-        self.multi.mpl[i].timer = timer as u32;
-    }
 }
+
 
 /// `TEXTOVERLAY_SHADOW` (`textover.h`).
 pub const TEXTOVERLAY_SHADOW: u32 = 1 << 4;
@@ -1736,4 +1879,9 @@ mod tests {
         assert_eq!(g.game_state.mode, FRONTEND_MODE);
         assert_eq!(g.frogger.player[0].world_num as u32, worldid::FRONTEND);
     }
+}
+
+/// `sprintf("%d:%02d:%02d", timer/3600, (timer%3600)/60, timer%60)` of the race win screen.
+fn race_time_text(timer: u32) -> String {
+    format!("{}:{:02}:{:02}", timer / 3600, (timer % 3600) / 60, timer % 60)
 }

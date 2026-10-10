@@ -47,8 +47,8 @@ pub const SCRIPT_MAX_FLAGS: i32 = 64;
 pub const SCRIPT_FLAGS_BYTES: usize = (SCRIPT_MAX_FLAGS / 8) as usize;
 pub const SCRIPT_MAX_COUNTERS: i32 = 16;
 
-/// `STR_TRAINING1` (`lang.h`): first training hint string.
-pub const STR_TRAINING1: i32 = 0;
+/// `STR_TRAINING1` (`lang.h:126`, index 92 of the string enum): first training hint string.
+pub const STR_TRAINING1: i32 = 92;
 
 /// Globals of `script.c` (+ `showEndLevelScreen`, defined in `game.c:88`).
 #[derive(Clone, Debug)]
@@ -714,8 +714,9 @@ impl Game {
             }
 
             Command::Hint { string } => {
-                // TODO(port): TrainingHint(GAMESTRING(str+STR_TRAINING1)) (training wave).
-                self.effects.push(Effect::Log { text: format!("TODO(port) TrainingHint(string {})", *string as i32 + STR_TRAINING1) });
+                // TrainingHint(GAMESTRING(str + STR_TRAINING1))
+                let s = self.gamestring((*string as i32).wrapping_add(STR_TRAINING1));
+                self.training_hint(Some(&s));
             }
 
             Command::LineNumber { line } => self.script.line_number = *line as i32,

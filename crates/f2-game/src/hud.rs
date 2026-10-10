@@ -6,8 +6,8 @@
 //! text overlays; [`HudState`] keeps their ids (the `arcadeHud` pointers). The HUD's
 //! `sprintf` buffers are written straight into the overlays' text.
 //!
-//! Not ported here: the multiplayer HUD (`InitMultiHUD`, `UpDateMultiplayerInfo`,
-//! needs `multi.c` state) - TODO(port).
+//! The multiplayer HUD (`multiHud`: `InitMultiHUD`, `EnableMultiHUD`, `DisableMultiHUD`,
+//! `UpDateMultiplayerInfo`) is at the end of this file.
 
 use f2_math::{fmul, rsin};
 use serde::{Deserialize, Serialize};
@@ -68,10 +68,28 @@ pub struct ArcadeHud {
     pub time_out_text: Option<TextOverlayId>,
 }
 
+/// `MULTI_HUD multiHud` (`hud.h:81`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiHud {
+    pub back_chars: [Option<OverlayId>; 4],
+    pub penalise_text: [Option<TextOverlayId>; 4],
+    pub time_text_min: Option<TextOverlayId>,
+    pub time_text_sec: Option<TextOverlayId>,
+    pub time_text_hsec: Option<TextOverlayId>,
+    pub centre_text: Option<TextOverlayId>,
+    pub trophies: [[Option<OverlayId>; 3]; 4],
+    pub penal_over: [Option<OverlayId>; 4],
+}
+
 /// Globals of `hud.c`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HudState {
     pub arcade_hud: ArcadeHud,
+    /// `multiHud`.
+    pub multi_hud: MultiHud,
+    /// `countdownString` (the text of `multiHud.centreText`; overlays copy their text, so
+    /// writers call [`Game::set_countdown_string`]).
+    pub countdown_string: String,
     /// `handAngle`.
     pub hand_angle: i32,
     /// `goTimer`.
@@ -87,8 +105,6 @@ pub struct HudState {
     pub coin_zoom_y: i32,
     /// `goText` points at `goStr` (hard / arcade) instead of a fixed string.
     pub go_text_is_go_str: bool,
-    /// `cheatCombos[CHEAT_MAD_GARIBS].state`. TODO(port): cheats.
-    pub mad_garibs: bool,
     /// `pauseTitleString`.
     pub pause_title_string: String,
     pub xselect_text: Option<TextOverlayId>,
@@ -105,7 +121,7 @@ pub struct HudState {
 }
 
 /// `INC_ALPHA(x, y)` (`menus.h:55`) on an overlay's `a`/`draw`.
-fn inc_alpha(a: &mut u8, draw: &mut u8, y: i32, gs: i32) {
+pub(crate) fn inc_alpha(a: &mut u8, draw: &mut u8, y: i32, gs: i32) {
     let t = fmul(gs, FADE_SPEED) >> 12;
     *draw = 1;
     if (*a as i32) + t < y {
@@ -116,7 +132,7 @@ fn inc_alpha(a: &mut u8, draw: &mut u8, y: i32, gs: i32) {
 }
 
 /// `DEC_ALPHA(x)` (`menus.h:41`).
-fn dec_alpha(a: &mut u8, draw: &mut u8, gs: i32) {
+pub(crate) fn dec_alpha(a: &mut u8, draw: &mut u8, gs: i32) {
     let t = fmul(gs, FADE_SPEED) >> 12;
     if (*a as i32) > t {
         *a = (*a as i32 - t) as u8;
@@ -219,7 +235,7 @@ impl Game {
         }
         let lives = format!("{}", self.frogger.player[0].lives as i32 as u32);
         h.lives_text = self.textover.create_and_add_text_overlay(520, 3650, &lives, false, 255, Font::Normal, TEXTOVERLAY_SHADOW);
-        let coin_tex = if self.hud.mad_garibs { "RGARIB01" } else { "SCOIN0001" };
+        let coin_tex = if self.cheat_mad_garibs() { "RGARIB01" } else { "SCOIN0001" };
         let ov = &mut self.overlays;
         h.coins_over = ov.create_and_add_sprite_overlay(3624, 130, Some(coin_tex), 205, 273, 0xff, 0);
         if let Some(o) = ov.get_mut(h.coins_over) {
@@ -320,8 +336,8 @@ impl Game {
         if self.game_state.multi == SINGLEPLAYER {
             self.init_arcade_hud();
         } else {
-            // TODO(port): InitMultiHUD (multiplayer HUD).
             self.hud.arcade_hud = ArcadeHud::default();
+            self.init_multi_hud();
         }
     }
 
@@ -372,7 +388,7 @@ impl Game {
     /// Port of `DisableHUD` (Common/hud.c:487).
     pub fn disable_hud(&mut self) {
         if self.game_state.multi != SINGLEPLAYER {
-            // TODO(port): DisableMultiHUD.
+            self.disable_multi_hud();
             return;
         }
         let h = self.hud.arcade_hud.clone();
@@ -400,7 +416,7 @@ impl Game {
     /// Port of `EnableHUD` (Common/hud.c:528).
     pub fn enable_hud(&mut self) {
         if self.game_state.multi != SINGLEPLAYER {
-            // TODO(port): EnableMultiHUD.
+            self.enable_multi_hud();
             return;
         }
         let h = self.hud.arcade_hud.clone();
@@ -764,9 +780,9 @@ impl Game {
                         t.draw = 1;
                     }
                     self.game.end_level_timer.init(4);
-                    // TODO(port): SetTimeForLevel() (story/records).
+                    self.set_time_for_level();
                     self.play_sample(f2_formats::crc::crc("alarm"), None, 0, SAMPLE_VOLUME, -1);
-                    self.effects.push(crate::Effect::Log { text: "TODO(port) PrepareSong(AUDIOTRK_GAMEOVER)".into() });
+                    self.prepare_song(crate::pcaudio::AUDIOTRK_GAMEOVER as i16, false);
                 }
             }
         }
@@ -805,6 +821,242 @@ impl Game {
         self.sync_collect_text(false);
         self.print_sprite_overlays_state(1);
         self.print_sprite_overlays_state(2);
+    }
+}
+
+// ------------------------------------------------------------------ multiplayer HUD
+
+pub use crate::frontend::{BACK_CHARS_X, BACK_CHARS_Y, BACK_TEXT_X, BACK_TEXT_Y, BACK_WINS_TEXT_X, BACK_WINS_TEXT_Y};
+
+impl Game {
+    #[inline]
+    fn num_frogs_hud(&self) -> usize {
+        self.frogger.num_frogs.clamp(0, 4) as usize
+    }
+
+    /// `sprintf(countdownString, ...)`: sets the string and the centre text that shows it.
+    pub fn set_countdown_string(&mut self, s: String) {
+        if let Some(o) = self.textover.get_mut(self.hud.multi_hud.centre_text) {
+            o.text = s.clone();
+        }
+        self.hud.countdown_string = s;
+    }
+
+    /// `INC_ALPHA(t, y)` on a text overlay.
+    pub fn text_inc_alpha(&mut self, t: Option<TextOverlayId>, y: i32) {
+        let gs = self.game_speed;
+        if let Some(o) = self.textover.get_mut(t) {
+            inc_alpha(&mut o.a, &mut o.draw, y, gs);
+        }
+    }
+
+    /// `DEC_ALPHA(t)` on a text overlay.
+    pub fn text_dec_alpha(&mut self, t: Option<TextOverlayId>) {
+        let gs = self.game_speed;
+        if let Some(o) = self.textover.get_mut(t) {
+            dec_alpha(&mut o.a, &mut o.draw, gs);
+        }
+    }
+
+    /// Port of `InitMultiHUD` (Common/hud.c:334).
+    pub fn init_multi_hud(&mut self) {
+        use crate::define::MULTIREMOTE;
+        use crate::language::str_id::{STR_QUIT, STR_RESTARTLEVEL};
+        use crate::multi::{MULTIMODE_BATTLE, MULTIMODE_COLLECT, MULTIMODE_RACE};
+
+        let mut m = MultiHud::default();
+        let overlay_name = match self.multi.multiplayer_mode {
+            MULTIMODE_BATTLE => "",
+            MULTIMODE_COLLECT => "00BABYIC",
+            MULTIMODE_RACE => {
+                let t = &mut self.textover;
+                m.time_text_min = t.create_and_add_text_overlay(1536 - 102, 160 + 64, "00:", false, 255, Font::Normal, TEXTOVERLAY_SHADOW);
+                m.time_text_sec = t.create_and_add_text_overlay(1536 + 410 - 102, 160 + 64, "00:", false, 255, Font::Normal, TEXTOVERLAY_SHADOW);
+                m.time_text_hsec = t.create_and_add_text_overlay(1536 + 410 + 410 - 102, 160 + 64, "00", false, 255, Font::Normal, TEXTOVERLAY_SHADOW);
+                if let Some(o) = t.get_mut(m.time_text_hsec) {
+                    o.scale = 3072;
+                }
+                "HUD_PENALTY"
+            }
+            // `overlayName` is uninitialised for other modes; treated as none.
+            _ => "",
+        };
+
+        if self.game_state.multi == MULTIREMOTE {
+            let q = self.gamestring(STR_QUIT);
+            self.frontend.menu_text[0] = self.textover.create_and_add_text_overlay(2048, 2400, &q, true, 0, Font::Normal, TEXTOVERLAY_SHADOW);
+            self.frontend.menu_text[1] = None;
+        } else {
+            let r = self.gamestring(STR_RESTARTLEVEL);
+            let q = self.gamestring(STR_QUIT);
+            self.frontend.menu_text[0] = self.textover.create_and_add_text_overlay(2048, 2400, &r, true, 0, Font::Normal, TEXTOVERLAY_SHADOW);
+            self.frontend.menu_text[1] = self.textover.create_and_add_text_overlay(2048, 2700, &q, true, 0, Font::Normal, TEXTOVERLAY_SHADOW);
+            self.textover.disable(self.frontend.menu_text[1]);
+        }
+        self.textover.disable(self.frontend.menu_text[0]);
+
+        let cs = self.hud.countdown_string.clone();
+        m.centre_text = self.textover.create_and_add_text_overlay(2048, 900, &cs, true, 255, Font::Normal, TEXTOVERLAY_SHADOW);
+
+        for i in 0..self.num_frogs_hud() {
+            // The text is `penalString[i]`, refreshed below.
+            m.penalise_text[i] = self.textover.create_and_add_text_overlay(BACK_TEXT_X[i] as i16, BACK_TEXT_Y[i] as i16, "00", false, 255, Font::Normal, TEXTOVERLAY_SHADOW);
+            let ov = &mut self.overlays;
+            if !overlay_name.is_empty() {
+                // PC size 256x256 (PSX: 4096x256).
+                m.penal_over[i] = ov.create_and_add_sprite_overlay((BACK_TEXT_X[i] - 256 - 64) as i16, BACK_TEXT_Y[i] as i16, Some(overlay_name), 256, 256, 255, 0);
+                if self.multi.multiplayer_mode == MULTIMODE_COLLECT {
+                    if let Some(o) = ov.get_mut(m.penal_over[i]) {
+                        o.r = 60;
+                        o.g = 255;
+                        o.b = 60;
+                    }
+                }
+            } else {
+                m.penal_over[i] = None;
+            }
+            let ch = (self.frogger.player[i].character as usize).min(crate::frogger::FROG_NUMFROGS - 1);
+            let icon = self.frogger.frog_pool(ch).icon;
+            let ov = &mut self.overlays;
+            m.back_chars[i] = ov.create_and_add_sprite_overlay(BACK_CHARS_X[i] as i16, BACK_CHARS_Y[i] as i16, Some(icon), 512, 512, 0xff, 0);
+            for j in 0..3 {
+                let x = if i == 0 || i == 3 { BACK_WINS_TEXT_X[i] + j as i32 * 220 } else { BACK_WINS_TEXT_X[i] - j as i32 * 220 };
+                m.trophies[i][j] = ov.create_and_add_sprite_overlay(x as i16, BACK_WINS_TEXT_Y[i] as i16, Some("TRPHYGOLD"), 200, 200, 255, 0);
+                ov.disable(m.trophies[i][j]);
+            }
+        }
+        self.hud.multi_hud = m;
+        // The overlays pointed at the static strings: copy their current values.
+        self.up_date_multiplayer_info_text();
+    }
+
+    /// Port of `DisableMultiHUD` (Common/hud.c:408).
+    pub fn disable_multi_hud(&mut self) {
+        let m = self.hud.multi_hud.clone();
+        if self.multi.multiplayer_mode == crate::multi::MULTIMODE_RACE {
+            self.set_text_draw(&[m.time_text_min, m.time_text_sec, m.time_text_hsec], 0);
+        }
+        self.textover.disable(m.centre_text);
+        for i in 0..self.num_frogs_hud() {
+            self.overlays.disable(m.back_chars[i]);
+            self.overlays.disable(m.penal_over[i]);
+            self.textover.disable(m.penalise_text[i]);
+            self.set_overlay_draw(&m.trophies[i], 0);
+        }
+    }
+
+    /// Port of `EnableMultiHUD` (Common/hud.c:431).
+    pub fn enable_multi_hud(&mut self) {
+        let m = self.hud.multi_hud.clone();
+        if self.multi.multiplayer_mode == crate::multi::MULTIMODE_RACE {
+            self.set_text_draw(&[m.time_text_min, m.time_text_sec, m.time_text_hsec], 1);
+        }
+        if self.multi.multi_timer.time > 1 {
+            self.textover.enable(m.centre_text);
+        }
+        for i in 0..self.num_frogs_hud() {
+            self.overlays.enable(m.back_chars[i]);
+            self.overlays.enable(m.penal_over[i]);
+            self.textover.enable(m.penalise_text[i]);
+            if let Some(o) = self.textover.get_mut(m.penalise_text[i]) {
+                o.a = 255;
+                o.x_pos = BACK_TEXT_X[i] as i16;
+                o.x_pos_to = BACK_TEXT_X[i] as i16;
+                o.y_pos = BACK_TEXT_Y[i] as i16;
+                o.y_pos_to = BACK_TEXT_Y[i] as i16;
+            }
+            let wins = (self.multi.mpl[i].wins.max(0) as usize).min(3);
+            self.set_overlay_draw(&m.trophies[i][..wins], 1);
+        }
+    }
+
+    /// Port of `UpDateMultiplayerInfo` (Common/hud.c:581): countdown / round / "GO" centre
+    /// text, per-player penalty or score text and the race clock. Display only.
+    pub fn up_date_multiplayer_info(&mut self) {
+        use crate::language::str_id::{STR_GO, STR_ROUND_NUM};
+        use crate::language::{c_sprintf, FmtArg};
+        let ct = self.hud.multi_hud.centre_text;
+        let time = self.multi.multi_timer.time as u32;
+        if time > 1 {
+            if time < 5 {
+                self.set_countdown_string(format!("{}", time - 1));
+                if let Some(o) = self.textover.get_mut(ct) {
+                    o.scale = 6144;
+                    match time {
+                        4 => (o.r, o.g, o.b) = (0xff, 0, 0),
+                        3 => (o.r, o.g, o.b) = (0xff, 180, 30),
+                        2 => (o.r, o.g, o.b) = (0, 0xff, 0),
+                        _ => {}
+                    }
+                }
+            } else {
+                let mut round_num = 1i32;
+                for i in 0..self.num_frogs_hud() {
+                    round_num = round_num.wrapping_add(self.multi.mpl[i].wins as i32);
+                }
+                let s = c_sprintf(&self.gamestring(STR_ROUND_NUM), &[FmtArg::Int(round_num)]);
+                self.set_countdown_string(s);
+                if let Some(o) = self.textover.get_mut(ct) {
+                    o.scale = 4096;
+                }
+            }
+            self.textover.enable(ct);
+        } else {
+            if let Some(o) = self.textover.get_mut(ct) {
+                (o.r, o.g, o.b) = (0xff, 0xff, 0xff);
+            }
+            if time == 1 {
+                let s = c_sprintf(&self.gamestring(STR_GO), &[]);
+                self.set_countdown_string(s);
+            } else if self.multi.game_winner == -1 {
+                self.textover.disable(ct);
+            }
+        }
+        self.up_date_multiplayer_info_text();
+    }
+
+    /// The `switch (multiplayerMode)` half of `UpDateMultiplayerInfo`: `penalString` (race
+    /// penalty seconds, collect score) and the race clock `timeString*`.
+    fn up_date_multiplayer_info_text(&mut self) {
+        use crate::multi::{MULTIMODE_BATTLE, MULTIMODE_COLLECT, MULTIMODE_RACE};
+        let m = self.hud.multi_hud.clone();
+        let n = self.num_frogs_hud();
+        match self.multi.multiplayer_mode {
+            MULTIMODE_RACE => {
+                let mut time_frames: u32 = 0;
+                for i in 0..n {
+                    let s = format!("{:02}", (self.multi.mpl[i].penalty as i32) / 60);
+                    self.hud_text(m.penalise_text[i], s);
+                    if self.multi.mpl[i].timer > time_frames {
+                        time_frames = self.multi.mpl[i].timer;
+                    }
+                }
+                let tf = time_frames as i32;
+                self.hud_text(m.time_text_hsec, format!("{:02}", (tf.wrapping_mul(100) / 60) % 100));
+                self.hud_text(m.time_text_sec, format!("{:02}:", (tf / 60) % 60));
+                self.hud_text(m.time_text_min, format!("{:2}:", (tf / (60 * 60)) % 60));
+                // PC: xPos = sec.xPos +/- (CalcStringWidth(text, font, scale/4096) + 2) * 6.4
+                let width = |g: &Game, t: Option<TextOverlayId>| {
+                    g.textover.get(t).map_or(0.0, |o| (g.textover.calc_string_width(&o.text, o.font, o.scale as f32 / 4096.0) + 2) as f32 * 6.4)
+                };
+                let sec_x = self.textover.get(m.time_text_sec).map_or(0, |o| o.x_pos);
+                let ws = width(self, m.time_text_sec);
+                let wm = width(self, m.time_text_min);
+                if let Some(o) = self.textover.get_mut(m.time_text_hsec) {
+                    o.x_pos = (sec_x as f32 + ws) as i32 as i16;
+                }
+                if let Some(o) = self.textover.get_mut(m.time_text_min) {
+                    o.x_pos = (sec_x as f32 - wm) as i32 as i16;
+                }
+            }
+            MULTIMODE_BATTLE | MULTIMODE_COLLECT => {
+                for i in 0..n {
+                    let s = if self.multi.multiplayer_mode == MULTIMODE_BATTLE { String::new() } else { format!("{:02}", self.multi.mpl[i].score) };
+                    self.hud_text(m.penalise_text[i], s);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

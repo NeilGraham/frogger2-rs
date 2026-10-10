@@ -19,6 +19,7 @@ pub mod bbtimer;
 pub mod cam;
 pub mod charsel; // wave G
 pub mod collect;
+pub mod defdata; // DefData.c (port-gaps agent)
 pub mod define;
 pub mod effects;
 pub mod enemies;

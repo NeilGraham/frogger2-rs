@@ -238,7 +238,8 @@ pub fn object_bank_name(id: i32) -> Option<&'static str> {
         85 => "sretromulti8",    // RETROMULTI8_OBJ_BANK
         86 => "sretromulti9",    // RETROMULTI9_OBJ_BANK
         87 => "sretromulti10",   // RETROMULTI10_OBJ_BANK
-        89 => "start",           // FRONTEND_OBJ_BANK
+        // 89 FRONTEND_OBJ_BANK: `return;` in PC/banks.cpp:323 (the "titles" bank is commented
+        // out), so the frontend master bank loads nothing (retail agrees).
         90 => "start",           // FRONTEND1_OBJ_BANK
         91 => "levela",          // FRONTEND2_OBJ_BANK
         92 => "levelb",          // FRONTEND3_OBJ_BANK

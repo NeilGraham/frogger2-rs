@@ -1,23 +1,29 @@
 //! Port of `Common/training.c`: the training level (`WORLDID_FRONTEND`/`LEVELID_FRONTEND4`)
-//! with its sliding hint panel.
+//! with its sliding hint panel. The hints come from the level script (`EV_HINT`,
+//! [`crate::script`]): `TrainingHint(GAMESTRING(str + STR_TRAINING1))`.
 
 use serde::{Deserialize, Serialize};
 
 use crate::define::mode::TRAINING_MODE;
 use crate::define::SINGLEPLAYER;
 use crate::frogger::UP_VEC;
-use crate::frontend::{UiOverlay, NUM_LIVES};
+use crate::frontend::NUM_LIVES;
+use crate::ids::{OverlayId, TextOverlayId};
 use crate::specfx::FXTYPE_SPARKLYTRAIL;
+use crate::textover::{Font, TEXTOVERLAY_SHADOW};
 use crate::Game;
+
+/// `MAX_LINES` of `TrainingHint`.
+const MAX_LINES: usize = 4;
 
 /// `TRAININGMODE` (`training.h:18`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrainingMode {
     /// `bg` (sprite overlay `SHEEN`).
-    pub bg: Option<UiOverlay>,
-    /// `txtover[2]`.
-    pub txtover: [Option<UiOverlay>; 2],
-    /// `text[1024]`: the wrapped hint.
+    pub bg: Option<OverlayId>,
+    /// `txtover[2]` (small font, shadowed).
+    pub txtover: [Option<TextOverlayId>; 2],
+    /// `text[1024]`: the hint being shown (the overlays hold its first two wrapped lines).
     pub text: String,
 }
 
@@ -26,7 +32,8 @@ pub struct TrainingMode {
 pub struct TrainingState {
     /// `train` (`None` = `NULL`).
     pub train: Option<TrainingMode>,
-    /// `lastStr` (the original compares string pointers; strings come from `GAMESTRING`).
+    /// `lastStr` (the original compares `GAMESTRING` pointers, one per string id; the port
+    /// compares the text).
     pub last_str: Option<String>,
     /// `currStr`.
     pub curr_str: Option<String>,
@@ -50,16 +57,19 @@ impl Game {
             }
         }
 
-        let mut bg = UiOverlay::sprite(0, 4096, "SHEEN", 4096, 900, 180);
-        bg.speed = 75 << 12;
-        bg.r = 128;
-        bg.g = 128;
-        bg.b = 128;
-        train.bg = Some(bg);
+        train.bg = self.overlays.create_and_add_sprite_overlay(0, 4096, Some("SHEEN"), 4096, 900, 180, 0);
+        if let Some(bg) = self.overlays.get_mut(train.bg) {
+            bg.speed = 75 << 12;
+            bg.r = 128;
+            bg.g = 128;
+            bg.b = 128;
+        }
         for i in 0..2 {
-            let mut t = UiOverlay::text(2048, 4096 + 204 + i as i32 * 250, "", true, 255);
-            t.speed = 75 << 12;
-            train.txtover[i] = Some(t);
+            let t = self.textover.create_and_add_text_overlay(2048, (4096 + 204 + i * 250) as i16, "", true, 255, Font::Small, TEXTOVERLAY_SHADOW);
+            if let Some(o) = self.textover.get_mut(t) {
+                o.speed = 75 << 12;
+            }
+            train.txtover[i] = t;
         }
         self.training.train = Some(train);
         self.training.curr_str = None;
@@ -76,20 +86,18 @@ impl Game {
         }
     }
 
-    /// Port of `TrainingHint(str)` (Common/training.c:72). `StringWrap` (font metrics) is the
-    /// renderer's job: the hint text goes to `text` / `txtover[0]` unwrapped.
+    /// Port of `TrainingHint(str)` (Common/training.c:72).
     pub fn training_hint(&mut self, s: Option<&str>) {
         if self.training.curr_str.is_none() {
             self.training.curr_str = s.map(str::to_string);
         }
+        // The original dereferences `train` unconditionally (NULL outside the training level).
+        let Some(t) = self.training.train.clone() else { return };
         let Some(s) = s else {
-            if let Some(t) = self.training.train.as_mut() {
-                slide(t, 4096, 4096 + 204);
-            }
+            self.training_slide(&t, 4096, 4096 + 204);
             return;
         };
-        let Some(has_bg) = self.training.train.as_ref().map(|t| t.bg.is_some()) else { return };
-        if !has_bg {
+        if t.bg.is_none() {
             return;
         }
         if self.training.last_str.as_deref() != Some(s) {
@@ -105,46 +113,49 @@ impl Game {
                     self.set_fx_gravity(fx, 4100);
                 }
             }
-            let last = self.training.last_str.clone();
-            let Some(t) = self.training.train.as_mut() else { return };
-            let bg = t.bg.as_ref().expect("bg");
-            if bg.y_pos_to == bg.y_pos {
-                if bg.y_pos >= 4096 {
-                    set_text(t, s);
+            let Some((y, y_to)) = self.overlays.get(t.bg).map(|o| (o.y_pos, o.y_pos_to)) else { return };
+            if y_to == y {
+                if y >= 4096 {
+                    self.training_set_text(s);
                     self.training.last_str = Some(s.to_string());
-                    slide(t, 3296, 3500);
+                    self.training_slide(&t, 3296, 3500);
                 } else {
-                    set_text(t, last.as_deref().unwrap_or(""));
-                    slide(t, 4096, 4096 + 204);
+                    let last = self.training.last_str.clone().unwrap_or_default();
+                    self.training_set_text(&last);
+                    self.training_slide(&t, 4096, 4096 + 204);
                 }
             }
-        } else if let Some(t) = self.training.train.as_mut() {
-            set_text(t, s);
+        } else {
+            self.training_set_text(s);
         }
     }
-}
 
-/// `StringWrap(str, ...)` + `txtover[0..2]->text = lines[0..2]` (wrapping left to the renderer).
-fn set_text(t: &mut TrainingMode, s: &str) {
-    t.text = s.to_string();
-    if let Some(o) = t.txtover[0].as_mut() {
-        o.text = s.to_string();
+    /// `StringWrap(str, 4096-128, train->text, 1024, lines, MAX_LINES, fontSmall)` then
+    /// `txtover[0..2]->text = lines[0..2]`.
+    fn training_set_text(&mut self, s: &str) {
+        let lines = self.textover.string_wrap(s, 4096 - 128, MAX_LINES, Font::Small);
+        let Some(t) = self.training.train.as_mut() else { return };
+        t.text = s.to_string();
+        let ids = t.txtover;
+        for (i, id) in ids.iter().enumerate() {
+            let line = lines.get(i).cloned().unwrap_or_default();
+            if let Some(o) = self.textover.get_mut(*id) {
+                o.text = line;
+            }
+        }
     }
-    if let Some(o) = t.txtover[1].as_mut() {
-        o.text.clear();
-    }
-}
 
-/// Sets `bg->yPosTo = bg_y`, `txtover[i]->yPosTo = text_y + i*250`, all with speed `75<<12`.
-fn slide(t: &mut TrainingMode, bg_y: i32, text_y: i32) {
-    if let Some(bg) = t.bg.as_mut() {
-        bg.y_pos_to = bg_y;
-        bg.speed = 75 << 12;
-    }
-    for (i, o) in t.txtover.iter_mut().enumerate() {
-        if let Some(o) = o.as_mut() {
-            o.y_pos_to = text_y + i as i32 * 250;
-            o.speed = 75 << 12;
+    /// Sets `bg->yPosTo = bg_y`, `txtover[i]->yPosTo = text_y + i*250`, all with speed `75<<12`.
+    fn training_slide(&mut self, t: &TrainingMode, bg_y: i32, text_y: i32) {
+        if let Some(bg) = self.overlays.get_mut(t.bg) {
+            bg.y_pos_to = bg_y as i16;
+            bg.speed = 75 << 12;
+        }
+        for (i, id) in t.txtover.iter().enumerate() {
+            if let Some(o) = self.textover.get_mut(*id) {
+                o.y_pos_to = (text_y + i as i32 * 250) as i16;
+                o.speed = 75 << 12;
+            }
         }
     }
 }

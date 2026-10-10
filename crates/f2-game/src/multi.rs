@@ -26,7 +26,8 @@ use crate::frogger::{
 };
 use crate::frogmove::*;
 use crate::general::{find_joined_tile_by_direction, find_joined_tile_by_direction_and_type};
-use crate::ids::{ActorId, EnemyId, TileId};
+use crate::ids::{ActorId, EnemyId, TextOverlayId, TileId};
+use crate::textover::{Font, TEXTOVERLAY_SHADOW};
 use crate::layout::worldid;
 use crate::levplay::{PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_START, PAD_UP};
 use crate::map::SCALE;
@@ -72,15 +73,6 @@ pub const BATTLE_CAM_PLUS: i32 = 5000;
 /// `scaleV` initial value (`cam.c:73`).
 pub const SCALE_V_INIT: Fixed = 4506;
 
-/// The fields of a `TEXTOVERLAY` that multi.c drives (`numText`, `penalText`). The overlay
-/// itself (text, font, colour) belongs to the HUD port.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MpText {
-    pub draw: u8,
-    pub x_pos: i32,
-    pub y_pos: i32,
-}
-
 /// `MPINFO` (`multi.h:63`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MpInfo {
@@ -106,9 +98,9 @@ pub struct MpInfo {
     pub scr_x: i16,
     pub scr_y: i16,
     /// `penalText` (`NULL` outside race mode).
-    pub penal_text: Option<MpText>,
+    pub penal_text: Option<TextOverlayId>,
     /// `numText`.
-    pub num_text: Option<MpText>,
+    pub num_text: Option<TextOverlayId>,
 }
 
 /// `BATTLENODE` (`multi.h:43`).
@@ -339,9 +331,16 @@ impl Game {
 
         // Proper game loop thing
         for i in 0..n {
-            if self.multi.mpl[i].penal_text.is_some_and(|t| t.draw != 0) {
-                // TODO(merge hud): SlideTextOverlayToPos(penalText, backTextX[i], backTextY[i],
-                // scrX, scrY, 40) and hide it on arrival (display only).
+            let pt = self.multi.mpl[i].penal_text;
+            if self.textover.get(pt).is_some_and(|t| t.draw != 0) {
+                let (bx, by) = (crate::frontend::BACK_TEXT_X[i], crate::frontend::BACK_TEXT_Y[i]);
+                let (sx, sy) = (self.multi.mpl[i].scr_x as i32, self.multi.mpl[i].scr_y as i32);
+                self.slide_text_overlay_to_pos(pt, bx, by, sx, sy, 40);
+                if let Some(t) = self.textover.get_mut(pt) {
+                    if t.x_pos as i32 == bx && t.y_pos as i32 == by {
+                        t.draw = 0;
+                    }
+                }
             }
 
             if self.multi.mpl[i].ready == 0 {
@@ -786,10 +785,10 @@ impl Game {
             let show = self.multi.multi_timer.time > 1;
             let pos = self.frog_position(i);
             let (x, y) = self.transform_point(&pos);
-            if let Some(t) = self.multi.mpl[i].num_text.as_mut() {
+            if let Some(t) = self.textover.get_mut(self.multi.mpl[i].num_text) {
                 t.draw = show as u8;
-                t.x_pos = x.wrapping_add(MPLTEXTX);
-                t.y_pos = y.wrapping_add(MPLTEXTY);
+                t.x_pos = (x as i16).wrapping_add(MPLTEXTX as i16);
+                t.y_pos = (y as i16).wrapping_add(MPLTEXTY as i16);
             }
             if self.multi.mpl[i].wins == 3 {
                 if self.multi.match_winner == -1 {
@@ -799,18 +798,6 @@ impl Game {
                 break;
             }
         }
-    }
-
-    /// `UpDateMultiplayerInfo` (Common/hud.c:581): HUD text only (countdown string, round
-    /// number, wins/penalty strings); no gameplay state, no `Random()`.
-    pub fn up_date_multiplayer_info(&mut self) {
-        // TODO(port hud.c multi HUD): port with the HUD (reads multiTimer, mpl[], gameWinner).
-    }
-
-    /// `TransformPoint` (PC/pcmisc.cpp): world -> screen position of a text overlay.
-    /// TODO(port): needs the renderer view transform (specfx ViewXform has no TransformPoint yet); returns the origin.
-    pub fn transform_point(&self, _pos: &SVector) -> (i32, i32) {
-        (0, 0)
     }
 
     /// Port of `RaceRespawn` (Common/multi.c:768): teleport frog to a non-dead player.
@@ -1112,10 +1099,11 @@ impl Game {
                 let m = &mut self.multi.mpl[p];
                 m.scr_x = x as i16;
                 m.scr_y = y as i16;
-                if let Some(t) = m.penal_text.as_mut() {
+                let (pt, sx, sy) = (m.penal_text, m.scr_x, m.scr_y);
+                if let Some(t) = self.textover.get_mut(pt) {
                     t.draw = 1;
-                    t.x_pos = m.scr_x as i32;
-                    t.y_pos = m.scr_y as i32;
+                    t.x_pos = sx;
+                    t.y_pos = sy;
                 }
                 self.frogger.player[p].dead.init(2);
                 self.set_frog_draw(p, 0);
@@ -1173,13 +1161,20 @@ impl Game {
 
         for i in 0..self.num_frogs_mp() {
             // PC MULTIREMOTE nameText: network play is not ported.
-            // numText = CreateAndAddTextOverlay(-1000, 0, numberText[i], YES, 255, font, ...)
-            self.multi.mpl[i].num_text = Some(MpText { draw: 1, x_pos: -1000, y_pos: 0 });
+            // numberText[i] (options.c:496)
+            let num = ["1", "2", "3", "4"][i];
+            self.multi.mpl[i].num_text = self.textover.create_and_add_text_overlay(-1000, 0, num, true, 255, Font::Normal, TEXTOVERLAY_SHADOW);
             self.multi.mpl[i].trail = if self.game_state.difficulty == DIFFICULTY_HARD { MULTI_BATTLE_TRAILLENGTH * 2 } else { MULTI_BATTLE_TRAILLENGTH };
             self.multi.mpl[i].lasttile = tilestate::FROGGER1AREA as i16;
             if self.multi.multiplayer_mode == MULTIMODE_RACE {
-                // penalText = CreateAndAddTextOverlay(0, 0, "+1", NO, ...); g = b = 0; draw = 0
-                self.multi.mpl[i].penal_text = Some(MpText { draw: 0, x_pos: 0, y_pos: 0 });
+                // penalStr (multi.c:63)
+                let t = self.textover.create_and_add_text_overlay(0, 0, "+1", false, 255, Font::Normal, TEXTOVERLAY_SHADOW);
+                if let Some(o) = self.textover.get_mut(t) {
+                    o.g = 0;
+                    o.b = 0;
+                    o.draw = 0;
+                }
+                self.multi.mpl[i].penal_text = t;
             }
         }
     }
@@ -1463,10 +1458,15 @@ impl Game {
             m.penalty = 0;
             m.score = 0;
             m.wins = 0;
-            // TODO(port hud.c multi HUD): multiHud.trophies[i][0..3]->draw = 0.
+            for j in 0..3 {
+                let t = self.hud.multi_hud.trophies[i][j];
+                self.overlays.disable(t);
+            }
         }
         self.reset_multiplayer();
-        // TODO(port hud.c multi HUD): multiHud.centreText->draw = 1; EnableHUD().
+        let ct = self.hud.multi_hud.centre_text;
+        self.textover.enable(ct);
+        self.enable_hud();
     }
 
     /// Port of `PlayerRaceWin` (Common/multi.c:1813).
@@ -1498,6 +1498,8 @@ mod tests {
         g.game_state.mode = INGAME_MODE;
         g.frogger.num_frogs = n;
         g.multi.multiplayer_mode = mode;
+        g.textover.init_text_overlay_linked_list(40);
+        g.overlays.init_sprite_overlay_linked_list();
         g.map.tiles = vec![GameTile::default(); tiles];
         for i in 0..n as usize {
             g.frogmove.curr_tile[i] = Some(TileId(i as u32));
@@ -1583,7 +1585,7 @@ mod tests {
         assert_eq!(g.multi.mpl[1].penalty, MULTI_RACE_TIMEPENALTY);
         assert_eq!(g.frogger.player[1].dead.time, 2);
         assert!(g.frogger.player[1].frog_state & FROGSTATUS_ISDEAD != 0);
-        assert_eq!(g.multi.mpl[1].penal_text.unwrap().draw, 1);
+        assert_eq!(g.textover.get(g.multi.mpl[1].penal_text).unwrap().draw, 1);
     }
 
     #[test]

@@ -751,6 +751,19 @@ impl Game {
         }
     }
 
+    /// Port of `TransformPoint` (Common/maths.c:1817, PC): world point -> screen position in
+    /// 4096ths (`(short)(scr * 4096 / rXRes)`), through `XfmPoint` with the current view.
+    /// A clipped point keeps its camera-space x/y (as `XfmPoint` leaves them). Before the
+    /// first view matrix exists the result is the origin.
+    pub fn transform_point(&self, pos: &SVector) -> (i32, i32) {
+        let Some(v) = self.specfx.view.as_ref() else { return (0, 0) };
+        let (x, y, _) = v.xfm_point(pos);
+        // MSVC `_ftol` truncates to a 64-bit integer; the store keeps the low 16 bits.
+        let sx = ((x * 4096.0) / v.x_res) as i64 as i16;
+        let sy = ((y * 4096.0) / v.y_res) as i64 as i16;
+        (sx as i32, sy as i32)
+    }
+
     /// `IsPointVisible` for a world point (`None` view: everything visible).
     pub fn view_point_visible(&self, p: &SVector) -> bool {
         self.is_point_visible(p)

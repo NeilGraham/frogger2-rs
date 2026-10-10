@@ -213,6 +213,32 @@ impl Game {
         } else {
             o.y_pos = (o.y_pos as i32).wrapping_add(fmul(vect.vy, step)) as i16;
         }
+        o.x_pos_to = o.x_pos;
+        o.y_pos_to = o.y_pos;
+    }
+
+    /// Port of `SlideTextOverlayToPos` (Common/frontend.c:606).
+    pub fn slide_text_overlay_to_pos(&mut self, s: Option<crate::ids::TextOverlayId>, x: i32, y: i32, from_x: i32, from_y: i32, num_frames: i32) {
+        let gs = self.game_speed;
+        let Some(o) = self.textover.get_mut(s) else { return };
+        let mut vect = f2_math::FVector::new(x.wrapping_sub(from_x), y.wrapping_sub(from_y), 0);
+        let speed = fmul(f2_math::magnitude_f(&vect), gs);
+        vect.vx = x.wrapping_sub(o.x_pos as i32);
+        vect.vy = y.wrapping_sub(o.y_pos as i32);
+        f2_math::make_unit(&mut vect);
+        let step = if num_frames != 0 { speed / num_frames } else { 0 };
+        if (o.x_pos as i32 - x).abs() <= step {
+            o.x_pos = x as i16;
+        } else {
+            o.x_pos = (o.x_pos as i32).wrapping_add(fmul(vect.vx, step)) as i16;
+        }
+        if (o.y_pos as i32 - y).abs() <= step {
+            o.y_pos = y as i16;
+        } else {
+            o.y_pos = (o.y_pos as i32).wrapping_add(fmul(vect.vy, step)) as i16;
+        }
+        o.x_pos_to = o.x_pos;
+        o.y_pos_to = o.y_pos;
     }
 }
 
