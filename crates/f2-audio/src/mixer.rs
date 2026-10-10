@@ -146,6 +146,19 @@ impl Mixer {
         self.music.as_ref().map(|m| m.stream.position())
     }
 
+    /// Precise playback position of the current track in source frames (fractional): the
+    /// frame being output now, as opposed to [`Mixer::music_position`], which is the
+    /// stream's read position and runs up to one 4096-frame chunk ahead. Use this as an
+    /// A/V-sync clock. After a gapless loop rewind it restarts near 0.
+    pub fn music_playhead(&self) -> Option<f64> {
+        self.music.as_ref().map(|m| {
+            // Frames read but not yet consumed: the rest of the chunk plus `a`/`b` held for
+            // interpolation (`a` is the frame being output, `frac` past it).
+            let buffered = (m.chunk_frames - m.chunk_idx.min(m.chunk_frames)) as u64 + 2;
+            m.stream.position().saturating_sub(buffered) as f64 + m.frac
+        })
+    }
+
     /// Mixes `out.len() / 2` stereo frames into `out` (overwriting it).
     pub fn render(&mut self, out: &mut [f32]) {
         out.iter_mut().for_each(|s| *s = 0.0);

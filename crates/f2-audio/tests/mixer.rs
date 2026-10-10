@@ -231,6 +231,30 @@ fn music_resamples_and_volume() {
 }
 
 #[test]
+fn music_playhead_is_smooth() {
+    // 22050 Hz source on a 48 kHz device in 480-frame (10 ms) callbacks: the read position
+    // jumps in 4096-frame chunks, the playhead must follow output time to within a frame.
+    let dir = music_dir("ph", track::FRONTEND, 22050 * 3, 22050);
+    let mut e = AudioEngine::null(48000);
+    e.set_music_dir(&dir);
+    e.play_music(track::FRONTEND, false);
+    assert_eq!(e.music_playhead(), Some(0.0));
+    let mut distinct_pos = std::collections::BTreeSet::new();
+    for cb in 1..=200u32 {
+        e.render_offline(480);
+        let want = cb as f64 * 480.0 * 22050.0 / 48000.0;
+        let ph = e.music_playhead().unwrap();
+        assert!((ph - want).abs() <= 1.0, "callback {cb}: playhead {ph} want {want}");
+        let pos = e.music_position().unwrap();
+        assert!(pos as f64 >= ph && pos as f64 <= ph + 4096.0 + 2.0, "{pos} {ph}");
+        distinct_pos.insert(pos);
+    }
+    // 2 s of 22050 Hz: the read position only took ~11 distinct values.
+    assert!(distinct_pos.len() <= 12, "{}", distinct_pos.len());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn muted_skip_advances_time() {
     let mut e = engine(vec![sample(1, 22050, false, &sine(22050, 500.0, 22050))]);
     let v = e.play(1, Play::default()).unwrap();
