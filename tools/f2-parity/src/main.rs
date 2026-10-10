@@ -20,7 +20,19 @@
 //! one seeded script stream per player
 //! (`script::GENERATOR_MP`); the oracle starts them with `run.py --level W-L --multi N`
 //! (f2fix `start.multi`, the retail `GoMulti`) and the traces carry the `mp` section.
-//! `--corpus single|multi|all` (default all) selects the case families.
+//! `--corpus single|multi|finish|all` (default all) selects the case families.
+//!
+//! The **finish** family (`fin-W-L`, `fin-W-L-mpN`) covers the end states random input
+//! never reaches: single-player levels completed (every baby saved, the level-complete
+//! screen, continue, `SaveGame`, the next start) and local multiplayer matches played to a
+//! match winner (race laps finished, battle/collect rounds won, back to the frontend).
+//! Their scripts are planned with the Rust simulation itself (`scenario_trace --plan`, a
+//! receding-horizon search over the deterministic sim) and committed in
+//! `tools/f2-parity/finish/` (`manifest.json` + `.key`), so the corpus does not move when
+//! the simulation changes; `f2-parity plan [--levels fin-..]` regenerates them. The report
+//! adds per case the end state seen in each trace (level complete, babies, next level,
+//! wins, match winner, frontend) and whether the `savegame.dat` the oracle wrote (run.py
+//! collects it) equals the Rust `SaveGame` block (`F2_SAVE_OUT`).
 //!
 //! `check` needs no Windows: it compares fresh Rust traces with the cached oracle traces
 //! (`target/parity/oracle/`, or `--cache DIR`; a worktree falls back to the main checkout's)
@@ -76,7 +88,44 @@ struct Opts {
 enum Corpus {
     Single,
     Multi,
+    Finish,
     All,
+}
+
+/// Generator id of the planned finish scripts (cache key; bump when re-planned).
+const GENERATOR_FINISH: &str = "f2-parity-finish-1";
+
+/// `tools/f2-parity/finish/manifest.json`: the planned finish cases.
+#[derive(Serialize, Deserialize, Default)]
+struct Manifest {
+    generator: String,
+    cases: BTreeMap<String, FinishCase>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct FinishCase {
+    world: u32,
+    level: u32,
+    players: u32,
+    #[serde(default)]
+    mp_mode: u32,
+    /// Trace length (ticks) the case is run for.
+    ticks: u32,
+    /// Script file in `tools/f2-parity/finish/`.
+    key: String,
+    /// Planner options used (`scenario_trace --plan-seed/--plan-rivals`).
+    seed: u64,
+    rivals: String,
+    /// The planner's summary line.
+    plan: String,
+}
+
+fn manifest_path(root: &Path) -> PathBuf {
+    root.join("tools/f2-parity/finish/manifest.json")
+}
+
+fn read_manifest(root: &Path) -> Manifest {
+    std::fs::read(manifest_path(root)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 /// Player counts of the multiplayer corpus.
@@ -92,10 +141,17 @@ struct Baseline {
     levels: BTreeMap<String, BaseLevel>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Default)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 struct BaseLevel {
     matched: usize,
     oracle_ticks: usize,
+    /// Finish cases: the oracle's end state and whether the Rust end state (and save) matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    save: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -120,6 +176,10 @@ struct Case {
     mp_mode: u32,
     keys: PathBuf,
     key: String,
+    /// Trace length (`--ticks`, or the finish manifest's).
+    ticks: u32,
+    /// A planned finish case (`fin-...`).
+    finish: bool,
 }
 
 struct Row {
@@ -131,6 +191,12 @@ struct Row {
     first: Option<First>,
     sections: Vec<(String, u32, usize)>,
     note: String,
+    finish: bool,
+    /// End state seen in the oracle / Rust trace (finish cases).
+    end_oracle: Option<String>,
+    end_rust: Option<String>,
+    /// `savegame.dat` comparison (finish cases).
+    save: Option<String>,
 }
 
 struct First {
@@ -155,9 +221,10 @@ fn main() -> ExitCode {
 }
 
 const USAGE: &str = "usage:
-  f2-parity run   [--levels W-L[-mpN],..] [--corpus single|multi|all] [--ticks N] [--seed S] [--oracle-jobs N] [--jobs N] [--refresh] [--no-oracle] [--update-baseline] [--sim PATH] [--dll PATH] [--cache DIR]
-  f2-parity check [--baseline FILE] [--levels W-L[-mpN],..] [--corpus single|multi|all] [--update] [--jobs N] [--sim PATH] [--cache DIR]
-  f2-parity gen   [--levels W-L[-mpN],..] [--corpus single|multi|all] [--ticks N] [--seed S]";
+  f2-parity run   [--levels W-L[-mpN],..] [--corpus single|multi|finish|all] [--ticks N] [--seed S] [--oracle-jobs N] [--jobs N] [--refresh] [--no-oracle] [--update-baseline] [--sim PATH] [--dll PATH] [--cache DIR]
+  f2-parity check [--baseline FILE] [--levels W-L[-mpN],..] [--corpus single|multi|finish|all] [--update] [--jobs N] [--sim PATH] [--cache DIR]
+  f2-parity gen   [--levels W-L[-mpN],..] [--corpus single|multi|finish|all] [--ticks N] [--seed S]
+  f2-parity plan  [--levels fin-W-L[-mpN[-MODE]],..] [--jobs N] [--sim PATH]   (re-plan the finish scripts)";
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
     let mut o = Opts {
@@ -195,8 +262,9 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
                 o.corpus = match val()?.as_str() {
                     "single" => Corpus::Single,
                     "multi" => Corpus::Multi,
+                    "finish" => Corpus::Finish,
                     "all" => Corpus::All,
-                    s => return Err(format!("bad --corpus {s} (single|multi|all)")),
+                    s => return Err(format!("bad --corpus {s} (single|multi|finish|all)")),
                 }
             }
             s => return Err(format!("unknown argument {s}\n{USAGE}")),
@@ -233,6 +301,9 @@ fn real_main(args: &[String]) -> Result<u8, String> {
     };
     let ctx = Ctx { game_dir: game_dir(&root), root, dir, oracle_dir, sim };
     let levels = select_levels(&ctx, &o)?;
+    if cmd == "plan" {
+        return plan_finish(&ctx, &o, &levels);
+    }
     let cases = gen_scripts(&ctx, &o, &levels)?;
     match cmd.as_str() {
         "gen" => {
@@ -275,6 +346,16 @@ fn real_main(args: &[String]) -> Result<u8, String> {
                     Some(m) if m < b.matched => {
                         regress += 1;
                         println!("REGRESS  {:<5} matched {} < baseline {}{}", r.level, m, b.matched, first_txt(r));
+                    }
+                    Some(_) if b.end_match == Some(true) && (r.end_rust != r.end_oracle || !r.save.as_deref().is_some_and(|s| s == "identical" || s == "none")) => {
+                        regress += 1;
+                        println!(
+                            "REGRESS  {:<5} end state {} != oracle {} (save {})",
+                            r.level,
+                            r.end_rust.as_deref().unwrap_or("-"),
+                            r.end_oracle.as_deref().unwrap_or("-"),
+                            r.save.as_deref().unwrap_or("-")
+                        );
                     }
                     Some(m) if m > b.matched => {
                         improved += 1;
@@ -399,7 +480,7 @@ const MP_MODES: [&str; 3] = ["race", "battle", "collect"];
 
 /// `(world, level, players, mp_mode)` of the selected cases (players 0 = single-player;
 /// mp_mode 0 = the level's own `multiGameTypes` mode, else an override).
-fn select_levels(ctx: &Ctx, o: &Opts) -> Result<Vec<(u32, u32, u32, u32)>, String> {
+fn select_levels(ctx: &Ctx, o: &Opts) -> Result<Vec<Sel>, String> {
     let list = |flag: &str| -> Result<Vec<(u32, u32, String)>, String> {
         let out = Command::new(&ctx.sim).arg(flag).output().map_err(|e| format!("{}: {e}", ctx.sim.display()))?;
         if !out.status.success() {
@@ -414,38 +495,44 @@ fn select_levels(ctx: &Ctx, o: &Opts) -> Result<Vec<(u32, u32, u32, u32)>, Strin
             })
             .collect())
     };
-    let keep = |p: u32| match o.corpus {
+    let keep = |c: &Sel| match o.corpus {
         Corpus::All => true,
-        Corpus::Single => p == 0,
-        Corpus::Multi => p != 0,
+        Corpus::Single => !c.4 && c.2 == 0,
+        Corpus::Multi => !c.4 && c.2 != 0,
+        Corpus::Finish => c.4,
     };
     let all = match &o.levels {
         None => {
             let mut v = Vec::new();
             if o.corpus != Corpus::Multi {
-                v.extend(list("--list-levels")?.into_iter().map(|(w, l, _)| (w, l, 0, 0)));
+                v.extend(list("--list-levels")?.into_iter().map(|(w, l, _)| (w, l, 0, 0, false)));
             }
-            if o.corpus != Corpus::Single {
+            if matches!(o.corpus, Corpus::Multi | Corpus::All) {
                 // Every multiplayer level in its own mode, plus race and collect on the others.
                 // Battle on a non-battle level is left out: the retail exe dies in
                 // GoMulti/InitLevel (no trace line; probably the battle trail cube model, which only the
                 // laboratory banks load), a combination the frontend never starts.
                 for (w, l, native) in list("--list-multi")? {
                     for &p in &MP_PLAYERS {
-                        v.push((w, l, p, 0));
+                        v.push((w, l, p, 0, false));
                         for (i, m) in MP_MODES.iter().enumerate() {
                             if *m != native && *m != "battle" {
-                                v.push((w, l, p, i as u32 + 1));
+                                v.push((w, l, p, i as u32 + 1, false));
                             }
                         }
                     }
+                }
+            }
+            if matches!(o.corpus, Corpus::Finish | Corpus::All) {
+                for id in read_manifest(&ctx.root).cases.keys() {
+                    v.push(parse_case(id).ok_or(format!("manifest: bad case {id}"))?);
                 }
             }
             v
         }
         Some(want) => want.iter().map(|w| parse_case(w).ok_or(format!("bad case {w} (want W-L, W-L-mpN or W-L-mpN-MODE)"))).collect::<Result<_, _>>()?,
     };
-    Ok(all.into_iter().filter(|c| keep(c.2)).collect())
+    Ok(all.into_iter().filter(|c| keep(c)).collect())
 }
 
 fn parse_level(s: &str) -> Option<(u32, u32)> {
@@ -453,9 +540,16 @@ fn parse_level(s: &str) -> Option<(u32, u32)> {
     Some((w.parse().ok()?, l.parse().ok()?))
 }
 
+/// A selected case: `(world, level, players, mp_mode, finish)`.
+type Sel = (u32, u32, u32, u32, bool);
+
 /// `W-L` (single-player), `W-L-mpN` (N = 2..=4 local players, the level's own mode) or
-/// `W-L-mpN-MODE` (MODE = race|battle|collect overrides `multiGameTypes[W]`).
-fn parse_case(s: &str) -> Option<(u32, u32, u32, u32)> {
+/// `W-L-mpN-MODE` (MODE = race|battle|collect overrides `multiGameTypes[W]`); a `fin-`
+/// prefix selects the planned finish script of that case.
+fn parse_case(s: &str) -> Option<Sel> {
+    if let Some(rest) = s.strip_prefix("fin-") {
+        return parse_case(rest).filter(|c| !c.4).map(|c| (c.0, c.1, c.2, c.3, true));
+    }
     match s.split_once("-mp") {
         Some((wl, rest)) => {
             let (w, l) = parse_level(wl)?;
@@ -464,13 +558,16 @@ fn parse_case(s: &str) -> Option<(u32, u32, u32, u32)> {
                 None => (rest, 0),
             };
             let n: u32 = n.parse().ok().filter(|n| (2..=4).contains(n))?;
-            Some((w, l, n, mode))
+            Some((w, l, n, mode, false))
         }
-        None => parse_level(s).map(|(w, l)| (w, l, 0, 0)),
+        None => parse_level(s).map(|(w, l)| (w, l, 0, 0, false)),
     }
 }
 
-fn case_id(w: u32, l: u32, players: u32, mode: u32) -> String {
+fn case_id(w: u32, l: u32, players: u32, mode: u32, finish: bool) -> String {
+    if finish {
+        return format!("fin-{}", case_id(w, l, players, mode, false));
+    }
     match (players, mode) {
         (0, _) => format!("{w}-{l}"),
         (p, 0) => format!("{w}-{l}-mp{p}"),
@@ -478,10 +575,22 @@ fn case_id(w: u32, l: u32, players: u32, mode: u32) -> String {
     }
 }
 
-fn gen_scripts(ctx: &Ctx, o: &Opts, levels: &[(u32, u32, u32, u32)]) -> Result<Vec<Case>, String> {
+fn gen_scripts(ctx: &Ctx, o: &Opts, levels: &[Sel]) -> Result<Vec<Case>, String> {
     let mut v = Vec::new();
-    for &(w, l, players, mp_mode) in levels {
-        let level = case_id(w, l, players, mp_mode);
+    let manifest = read_manifest(&ctx.root);
+    for &(w, l, players, mp_mode, finish) in levels {
+        let level = case_id(w, l, players, mp_mode, finish);
+        if finish {
+            let fc = manifest.cases.get(&level).ok_or(format!("{level}: not in {} (f2-parity plan)", manifest_path(&ctx.root).display()))?;
+            let keys = manifest_path(&ctx.root).with_file_name(&fc.key);
+            let bytes = std::fs::read(&keys).map_err(|e| format!("{}: {e}", keys.display()))?;
+            let mut h = Sha1::new();
+            h.update(format!("{GENERATOR_FINISH}\n{level}\nticks {}\ntrace v{TRACE_VERSION}\n", fc.ticks).as_bytes());
+            h.update(&bytes);
+            let key: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+            v.push(Case { level, world: w, lvl: l, players, mp_mode, keys, key, ticks: fc.ticks, finish: true });
+            continue;
+        }
         let (generator, bytes) = if players == 0 {
             (script::GENERATOR, script::to_key_bytes(&script::generate(w, l, o.seed, o.ticks)))
         } else {
@@ -495,7 +604,7 @@ fn gen_scripts(ctx: &Ctx, o: &Opts, levels: &[(u32, u32, u32, u32)]) -> Result<V
         if !keys.is_file() {
             write(&keys, &bytes)?;
         }
-        v.push(Case { level, world: w, lvl: l, players, mp_mode, keys, key });
+        v.push(Case { level, world: w, lvl: l, players, mp_mode, keys, key, ticks: o.ticks, finish: false });
     }
     Ok(v)
 }
@@ -536,7 +645,7 @@ fn run_oracles(ctx: &Ctx, o: &Opts, cases: &[Case]) -> Result<(), String> {
     }
     eprintln!("f2-parity: {} oracle run(s), {} at a time", todo.len(), o.oracle_jobs);
     let res = par_for(&todo, o.oracle_jobs, |c| {
-        let r = run_oracle(ctx, o, &dll, c);
+        let r = run_oracle(ctx, &dll, c);
         match &r {
             Ok(n) => eprintln!("  oracle {:<5} {n} ticks", c.level),
             Err(e) => eprintln!("  oracle {:<5} FAILED: {e}", c.level),
@@ -550,7 +659,7 @@ fn run_oracles(ctx: &Ctx, o: &Opts, cases: &[Case]) -> Result<(), String> {
     Ok(())
 }
 
-fn run_oracle(ctx: &Ctx, o: &Opts, dll: &Path, c: &Case) -> Result<usize, String> {
+fn run_oracle(ctx: &Ctx, dll: &Path, c: &Case) -> Result<usize, String> {
     let id = format!("parity-{}-{}", c.level, &c.key[..8]);
     let mut cmd = memcap(&ctx.root);
     cmd.args(["python3", "-I", "tools/run/run.py", "--id", &id, "--trace", "--trace-version", &TRACE_VERSION.to_string()])
@@ -561,10 +670,12 @@ fn run_oracle(ctx: &Ctx, o: &Opts, dll: &Path, c: &Case) -> Result<usize, String
     if c.mp_mode != 0 {
         cmd.args(["--mp-mode", &c.mp_mode.to_string()]);
     }
+    // ~600 ticks/s in a level; FMV-free.
+    let secs = 150.max(c.ticks / 150);
     let st = cmd
         .arg("--keys")
         .arg(&c.keys)
-        .args(["--exit-ticks", &o.ticks.to_string(), "--exit-seconds", "150", "--timeout", "200", "--dll"])
+        .args(["--exit-ticks", &c.ticks.to_string(), "--exit-seconds", &secs.to_string(), "--timeout", &(secs + 50).to_string(), "--dll"])
         .arg(dll)
         .current_dir(&ctx.root)
         .stdout(Stdio::null())
@@ -589,10 +700,83 @@ fn run_oracle(ctx: &Ctx, o: &Opts, dll: &Path, c: &Case) -> Result<usize, String
     });
     let (tp, mp) = oracle_path(ctx, c);
     write(&tp, text.as_bytes())?;
+    // savegame.dat the game wrote (run.py collects it), for the finish cases.
+    let save = tp.with_extension("save");
+    let _ = std::fs::remove_file(&save);
+    if let Ok(b) = std::fs::read(run.join("savegame.dat")) {
+        write(&save, &b)?;
+    }
     let meta = OracleMeta { level: c.level.clone(), key: c.key.clone(), rseed, lines, fog_store };
     write(&mp, serde_json::to_string_pretty(&meta).unwrap().as_bytes())?;
     let _ = std::fs::remove_dir_all(&run);
     Ok(lines)
+}
+
+// ---- finish scripts ------------------------------------------------------------
+
+/// Default finish cases (`f2-parity plan` without `--levels`): every single-player level
+/// and every multiplayer level in its own mode with 2 and 4 frogs.
+fn default_finish(ctx: &Ctx) -> Result<Vec<Sel>, String> {
+    let o = Opts { levels: None, corpus: Corpus::All, ..parse_opts(&[])? };
+    Ok(select_levels(ctx, &o)?.into_iter().filter(|c| !c.4 && c.3 == 0).map(|c| (c.0, c.1, c.2, c.3, true)).collect())
+}
+
+/// `f2-parity plan`: (re)plans the finish scripts with `scenario_trace --plan` and records
+/// them in the manifest. A case whose plan does not reach its goal is still recorded (its
+/// summary says `goal no`), so the corpus covers how far the planner got.
+fn plan_finish(ctx: &Ctx, o: &Opts, levels: &[Sel]) -> Result<u8, String> {
+    let sel: Vec<Sel> = if o.levels.is_some() { levels.iter().map(|c| (c.0, c.1, c.2, c.3, true)).collect() } else { default_finish(ctx)? };
+    let dir = manifest_path(&ctx.root).parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    eprintln!("f2-parity: planning {} finish case(s), {} at a time", sel.len(), o.jobs);
+    let res = par_for(&sel, o.jobs, |&(w, l, players, mp_mode, _)| {
+        let id = case_id(w, l, players, mp_mode, true);
+        let key = format!("{}.key", &id[4..]);
+        let mut cmd = memcap(&ctx.root);
+        cmd.arg(&ctx.sim);
+        if players >= 2 {
+            cmd.args(["--multi".to_string(), players.to_string()]);
+        }
+        if mp_mode != 0 {
+            cmd.args(["--mp-mode".to_string(), mp_mode.to_string()]);
+        }
+        let seed = 1u64;
+        let rivals = "auto";
+        let tmp = ctx.dir.join("plan").join(format!("{id}.jsonl"));
+        let _ = std::fs::create_dir_all(tmp.parent().unwrap());
+        cmd.args(["--plan".into(), dir.join(&key).display().to_string(), "--plan-seed".into(), seed.to_string(), "--plan-rivals".into(), rivals.to_string()])
+            .args([w.to_string(), l.to_string(), "-".into()])
+            .arg(&tmp)
+            .arg("1")
+            .env("F2_GAME_DIR", &ctx.game_dir)
+            .stderr(Stdio::null());
+        let r = match cmd.output() {
+            Ok(out) if out.status.success() => {
+                let summary = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let ticks = summary.split_whitespace().skip_while(|w| *w != "ticks").nth(1).and_then(|t| t.parse::<u32>().ok()).unwrap_or(0);
+                Ok(FinishCase { world: w, level: l, players, mp_mode, ticks, key, seed, rivals: rivals.into(), plan: summary })
+            }
+            Ok(out) => Err(format!("scenario_trace --plan: {}", out.status)),
+            Err(e) => Err(e.to_string()),
+        };
+        match &r {
+            Ok(fc) => eprintln!("  plan {id}: {}", fc.plan),
+            Err(e) => eprintln!("  plan {id}: FAILED {e}"),
+        }
+        (id, r)
+    });
+    let mut m = read_manifest(&ctx.root);
+    m.generator = GENERATOR_FINISH.into();
+    for (id, r) in res {
+        if let Ok(fc) = r {
+            m.cases.insert(id, fc);
+        }
+    }
+    let mut s = serde_json::to_string_pretty(&m).map_err(|e| e.to_string())?;
+    s.push('\n');
+    write(&manifest_path(&ctx.root), s.as_bytes())?;
+    println!("manifest: {} ({} cases)", manifest_path(&ctx.root).display(), m.cases.len());
+    Ok(0)
 }
 
 // ---- simulation + diff -------------------------------------------------------
@@ -600,7 +784,7 @@ fn run_oracle(ctx: &Ctx, o: &Opts, dll: &Path, c: &Case) -> Result<usize, String
 fn compare(ctx: &Ctx, o: &Opts, cases: &[Case]) -> Vec<Row> {
     eprintln!("f2-parity: {} simulation run(s), {} at a time", cases.len(), o.jobs);
     par_for(cases, o.jobs, |c| {
-        let r = compare_one(ctx, o, c);
+        let r = compare_one(ctx, c);
         eprintln!("  rust   {:<5} {}", c.level, r.matched.map_or(r.note.clone(), |m| format!("{m} ticks matched")));
         r
     })
@@ -610,7 +794,7 @@ fn load(p: &Path) -> Result<Vec<TraceFrame>, String> {
     f2_trace::read_file(p)
 }
 
-fn compare_one(ctx: &Ctx, o: &Opts, c: &Case) -> Row {
+fn compare_one(ctx: &Ctx, c: &Case) -> Row {
     let mut row = Row {
         level: c.level.clone(),
         oracle_ticks: None,
@@ -620,10 +804,16 @@ fn compare_one(ctx: &Ctx, o: &Opts, c: &Case) -> Row {
         first: None,
         sections: Vec::new(),
         note: String::new(),
+        finish: c.finish,
+        end_oracle: None,
+        end_rust: None,
+        save: None,
     };
     let (tp, mp) = oracle_path(ctx, c);
     let meta: OracleMeta = std::fs::read(&mp).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let out = ctx.dir.join("rust").join(format!("{}.jsonl", c.level));
+    let rust_save = out.with_extension("save");
+    let _ = std::fs::remove_file(&rust_save);
     let _ = std::fs::create_dir_all(out.parent().unwrap());
     let mut cmd = memcap(&ctx.root);
     cmd.arg(&ctx.sim);
@@ -639,12 +829,15 @@ fn compare_one(ctx: &Ctx, o: &Opts, c: &Case) -> Row {
     cmd.args([c.world.to_string(), c.lvl.to_string()])
         .arg(&c.keys)
         .arg(&out)
-        .arg(o.ticks.to_string())
+        .arg(c.ticks.to_string())
         .env("F2_GAME_DIR", &ctx.game_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     if let Some(s) = meta.rseed {
         cmd.env("F2_START_RSEED", s.to_string());
+    }
+    if c.finish {
+        cmd.env("F2_SAVE_OUT", &rust_save);
     }
     let rust = match cmd.output() {
         Ok(r) if r.status.success() => load(&out),
@@ -673,7 +866,63 @@ fn compare_one(ctx: &Ctx, o: &Opts, c: &Case) -> Row {
     row.oracle_ticks = Some(oracle.len());
     let rep = diff::diff(&oracle, &rust, &Options { max_fields: 0, ..Default::default() });
     fill_row(&mut row, &rep, &oracle);
+    if c.finish {
+        row.end_oracle = Some(end_state(&oracle, c.ticks));
+        row.end_rust = Some(end_state(&rust, c.ticks));
+        let a = std::fs::read(tp.with_extension("save")).ok();
+        let b = std::fs::read(&rust_save).ok();
+        row.save = Some(
+            match (a, b) {
+                (None, None) => "none",
+                (Some(a), Some(b)) if a == b => "identical",
+                (Some(_), Some(_)) => "DIFFERS",
+                (Some(_), None) => "oracle only",
+                (None, Some(_)) => "rust only",
+            }
+            .to_string(),
+        );
+    }
     row
+}
+
+/// The end state a trace reached: single player `complete@AFC babies S/N` (first
+/// `LEVELCOMPLETE_MODE` line), `next W-L@LINE` (a level started again afterwards);
+/// multiplayer `rounds R wins [..] match P`; `frontend@N` when the run ended in the
+/// frontend before its tick limit.
+fn end_state(fr: &[TraceFrame], ticks: u32) -> String {
+    const LEVELCOMPLETE_MODE: u32 = 3;
+    let mut parts: Vec<String> = Vec::new();
+    let Some(last) = fr.last() else { return "empty".into() };
+    if fr.iter().all(|f| f.mp.is_none()) {
+        let max_saved = fr.iter().map(|f| f.babies_saved).max().unwrap_or(0);
+        match fr.iter().position(|f| f.mode == LEVELCOMPLETE_MODE) {
+            Some(i) => {
+                parts.push(format!("complete@{} babies {}/{}", fr[i].act_frame_count, fr[i].babies_saved, fr[i].num_babies));
+                if let Some(j) = (i + 1..fr.len()).find(|&j| fr[j].act_frame_count < fr[j - 1].act_frame_count) {
+                    parts.push(format!("next {}-{}@{}", fr[j].world, fr[j].level, j));
+                }
+            }
+            None => parts.push(format!("babies {max_saved}/{} lives {}", last.num_babies, last.players.first().map_or(0, |p| p.lives))),
+        }
+    } else {
+        let mut rounds = 0;
+        let mut prev = -1;
+        for f in fr {
+            if let Some(m) = &f.mp {
+                if m.game_winner != -1 && prev == -1 {
+                    rounds += 1;
+                }
+                prev = m.game_winner as i32;
+            }
+        }
+        let m = fr.iter().rev().find_map(|f| f.mp.as_ref());
+        let wins: Vec<i16> = m.map_or(Vec::new(), |m| m.mpl.iter().map(|p| p.wins).collect());
+        parts.push(format!("rounds {rounds} wins {wins:?} match {}", m.map_or(-1, |m| m.match_winner as i32)));
+    }
+    if (fr.len() as u32) < ticks {
+        parts.push(format!("frontend@{}", fr.len()));
+    }
+    parts.join(" ")
 }
 
 fn fill_row(row: &mut Row, rep: &Report, oracle: &[TraceFrame]) {
@@ -823,7 +1072,31 @@ fn render(o: &Opts, rows: &[Row]) -> String {
             module
         ));
     }
-    s.push_str(&format!("\n{full}/{total} cases identical.\n\n## First divergence per section (afc, frames differing)\n\n"));
+    s.push_str(&format!("\n{full}/{total} cases identical.\n"));
+    let fin: Vec<&Row> = rows.iter().filter(|r| r.finish).collect();
+    if !fin.is_empty() {
+        s.push_str(&format!(
+            "\n## Finish cases (`{GENERATOR_FINISH}`, planned scripts in `tools/f2-parity/finish/`)\n\n\
+             | case | ticks | matched | end state (oracle) | end state (rust) | end | savegame.dat |\n|---|---:|---:|---|---|---|---|\n"
+        ));
+        for r in &fin {
+            let eq = match (&r.end_oracle, &r.end_rust) {
+                (Some(a), Some(b)) if a == b => "match",
+                (Some(_), Some(_)) => "DIFFERS",
+                _ => "-",
+            };
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {eq} | {} |\n",
+                r.level,
+                num(r.oracle_ticks),
+                num(r.matched),
+                r.end_oracle.as_deref().unwrap_or("-"),
+                r.end_rust.as_deref().unwrap_or("-"),
+                r.save.as_deref().unwrap_or("-")
+            ));
+        }
+    }
+    s.push_str("\n## First divergence per section (afc, frames differing)\n\n");
     for r in rows.iter().filter(|r| !r.sections.is_empty()) {
         let v: Vec<String> = r.sections.iter().map(|(n, a, k)| format!("{n}@{a} ({k})")).collect();
         s.push_str(&format!("- {}: {}\n", r.level, v.join(", ")));
@@ -847,7 +1120,8 @@ fn baseline_from(o: &Opts, rows: &[Row], old: Baseline) -> Baseline {
     let mut levels = if old.seed == o.seed && old.ticks == o.ticks && old.generator == script::GENERATOR { old.levels } else { BTreeMap::new() };
     for r in rows {
         if let (Some(m), Some(n)) = (r.matched, r.oracle_ticks) {
-            levels.insert(r.level.clone(), BaseLevel { matched: m, oracle_ticks: n });
+            let end_match = r.end_oracle.as_ref().map(|a| Some(a) == r.end_rust.as_ref() && r.save.as_deref().is_some_and(|s| s == "identical" || s == "none"));
+            levels.insert(r.level.clone(), BaseLevel { matched: m, oracle_ticks: n, end: r.end_oracle.clone(), end_match, save: r.save.clone() });
         }
     }
     Baseline { generator: script::GENERATOR.into(), seed: o.seed, ticks: o.ticks, trace_version: TRACE_VERSION, levels }
@@ -876,13 +1150,17 @@ mod tests {
     fn level_parse() {
         assert_eq!(parse_level("7-9"), Some((7, 9)));
         assert_eq!(parse_level("x"), None);
-        assert_eq!(parse_case("7-10-mp4"), Some((7, 10, 4, 0)));
-        assert_eq!(parse_case("7-10-mp2-battle"), Some((7, 10, 2, 2)));
-        assert_eq!(parse_case("1-3"), Some((1, 3, 0, 0)));
+        assert_eq!(parse_case("7-10-mp4"), Some((7, 10, 4, 0, false)));
+        assert_eq!(parse_case("7-10-mp2-battle"), Some((7, 10, 2, 2, false)));
+        assert_eq!(parse_case("1-3"), Some((1, 3, 0, 0, false)));
         assert_eq!(parse_case("1-3-mp1"), None);
         assert_eq!(parse_case("1-3-mp2-golf"), None);
-        assert_eq!(case_id(5, 3, 2, 0), "5-3-mp2");
-        assert_eq!(case_id(5, 3, 4, 1), "5-3-mp4-race");
+        assert_eq!(case_id(5, 3, 2, 0, false), "5-3-mp2");
+        assert_eq!(case_id(5, 3, 4, 1, false), "5-3-mp4-race");
+        assert_eq!(parse_case("fin-1-3-mp2"), Some((1, 3, 2, 0, true)));
+        assert_eq!(parse_case("fin-0-0"), Some((0, 0, 0, 0, true)));
+        assert_eq!(parse_case("fin-fin-0-0"), None);
+        assert_eq!(case_id(1, 3, 4, 0, true), "fin-1-3-mp4");
         assert!(classify(&[fd("mp.mpl[1].timer")], None, 9).starts_with("multi.rs"));
     }
 }

@@ -221,6 +221,9 @@ def make_root(args, root, st, rels):
     shutil.copyfile(args.dll, os.path.join(root, "dinput.dll"))
     if args.keys:
         shutil.copyfile(args.keys, os.path.join(root, "scenario.key"))
+    # banks.cpp SaveGame writes <InstallDir>\SaveData\savegame.dat (fopen fails without the
+    # directory); collected as savegame.dat. The startup LoadGame finds no file either way.
+    os.makedirs(os.path.join(root, "SaveData"), exist_ok=True)
     write_ini(os.path.join(root, "f2fix.ini"), args, wpath(root))
 
 
@@ -419,6 +422,9 @@ def main():
             shutil.copyfile(os.path.join(root, name), os.path.join(collect, name))
             if name.endswith(".png"):
                 shots.append(name)
+    save = os.path.join(root, "SaveData", "savegame.dat")
+    if os.path.isfile(save):
+        shutil.copyfile(save, os.path.join(collect, "savegame.dat"))
     text = ""
     if os.path.isfile(os.path.join(collect, "f2fix.log")):
         with open(os.path.join(collect, "f2fix.log"), encoding="latin-1") as f:
