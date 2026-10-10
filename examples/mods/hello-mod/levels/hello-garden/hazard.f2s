@@ -1,0 +1,81 @@
+// Moving hazard for Hello Garden (level 0-1; scoped by level.toml `scripts`).
+//
+// A patch of deadly water walks back and forth across a row of tiles in front of the
+// start tile, one tile every 2 seconds (120 ticks at 60 Hz). Original example content.
+
+const PERIOD = 120;      // ticks between moves
+const ROW_AHEAD = 3;     // how many tiles in front of the start tile the row lies
+const SPAN = 4;          // tiles the hazard walks in each direction
+
+let row_start = -1;      // first tile of the row (-1: no usable row found)
+let hazard = -1;         // tile currently deadly
+let saved_state = 0;     // its original state
+let pos = 0;             // position along the row (0..SPAN)
+let delta = 1;           // +1 / -1: walking out or back
+let next_move = 0;
+
+fn on_level_start(world, level) {
+    hazard = -1;
+    pos = 0;
+    delta = 1;
+    next_move = PERIOD;
+    // Walk ROW_AHEAD tiles along link 0 from the frog's start tile.
+    let t = frog_tile(0);
+    let i = 0;
+    while t >= 0 && i < ROW_AHEAD {
+        t = tile_neighbour(t, 0);
+        i += 1;
+    }
+    row_start = t;
+    if row_start >= 0 {
+        show_text("Watch out: the water is moving!", 180);
+    }
+}
+
+fn restore() {
+    if hazard >= 0 {
+        set_tile_state(hazard, saved_state);
+        hazard = -1;
+    }
+}
+
+fn on_tick() {
+    if row_start < 0 || frame() < next_move {
+        return;
+    }
+    next_move = frame() + PERIOD;
+    restore();
+    // The tile `pos` links (link 2) from the row start; bounce at the ends.
+    let t = row_start;
+    let i = 0;
+    while i < pos {
+        let n = tile_neighbour(t, 2);
+        if n < 0 {
+            break;
+        }
+        t = n;
+        i += 1;
+    }
+    if i < pos {
+        pos = i;         // the row is shorter than SPAN: turn back here
+        delta = -1;
+    }
+    pos += delta;
+    if pos >= SPAN || pos <= 0 {
+        delta = -delta;
+    }
+    pos = clamp(pos, 0, SPAN);
+    // Only ordinary ground turns into water (never the frog's own tile).
+    if t >= 0 && tile_state(t) == TILE_NORMAL && t != frog_tile(0) {
+        hazard = t;
+        saved_state = TILE_NORMAL;
+        set_tile_state(hazard, TILE_DEADLY);
+        spawn_fx(FX_SMOKEBURST, hazard);
+    }
+}
+
+fn on_frog_death(player, cause) {
+    if cause == DEATH_DROWNING {
+        show_text("Splash! Time your hops.", 120);
+    }
+}

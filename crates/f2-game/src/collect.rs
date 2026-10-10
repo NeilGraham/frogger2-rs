@@ -228,6 +228,7 @@ impl Game {
         let p = pl as usize;
         let garib_type = self.garib(id).garib_type as i32;
         let sprite_pos = self.garib(id).sprite.as_ref().map_or(self.garib(id).pos, |s| s.pos);
+        self.modscript_pickup(pl, garib_type); // P7b (no-op without mod scripts)
 
         match garib_type {
             GOLDCOIN_GARIB | SILVERCOIN_GARIB => {

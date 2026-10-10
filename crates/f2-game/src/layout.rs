@@ -783,6 +783,7 @@ impl Game {
 
         self.update_events(); // wave D
 
+        self.modscript_level_start(world, level); // P7b (no-op without mod scripts)
         Ok(out)
     }
 }

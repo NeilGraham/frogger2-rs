@@ -166,6 +166,8 @@ impl Game {
             self.run_multiplayer();
         }
 
+        self.modscript_tick(); // P7b (no-op without mod scripts)
+
         // SHOW_ME_THE_TILE_NUMBERS: currTileNum (0xffffffff when currTile[0] is not a tile).
         self.game.curr_tile_num = self.frogmove.curr_tile[0].map_or(u32::MAX, |t| t.idx() as u32);
     }

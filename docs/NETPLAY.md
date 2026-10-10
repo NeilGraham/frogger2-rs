@@ -248,6 +248,10 @@ trace tooling in `tools/f2-trace` can diff them).
 6. Same start: the host sends `MatchSetup { world, level, frogs, fingerprint }` in the lobby's
    `Start.app_data` (wire version 2); the fingerprint hashes the start state checksum and the font
    metrics, and a joiner whose own start state differs refuses to play ("game data differs").
+   P7b: mod behaviour scripts (`docs/modding.md` §4) are installed by `setup_multi` from the
+   enabled mods; their set hash (`Game::modscript_hash`) is added to the fingerprint and the
+   script state (`Game::modscript`) is a checksummed sub-state, so peers must run identical
+   script sets.
 7. `Game::checksum()`: a fixed-key 64-bit streaming hash implemented as a minimal
    `serde::Serializer` (`StateHasher`) over every serde-derived sub-state in a fixed order (floats
    by bit pattern), plus the `Debug` text of the few sub-states without serde derives (`memload`,

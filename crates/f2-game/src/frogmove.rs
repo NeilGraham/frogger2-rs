@@ -1255,6 +1255,7 @@ impl Game {
             self.check_tile_for_collectable(tile, pl);
         }
 
+        self.modscript_frog_landed(pl, tile); // P7b (no-op without mod scripts)
         self.check_for_frog_on(pl, tile);
     }
 

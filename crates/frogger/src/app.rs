@@ -600,6 +600,7 @@ impl App {
         let mut cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
         cfg.save_data = self.save_data.clone().or_else(|| self.save_path.as_ref().and_then(|p| std::fs::read(p).ok()));
         cfg.extra_levels = self.data.levels.clone();
+        cfg.scripts = self.data.scripts.clone(); // P7b
         cfg.options = self.game_options();
         cfg
     }
