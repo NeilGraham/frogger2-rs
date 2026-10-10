@@ -6,11 +6,16 @@ edition.workspace = true
 license = "MIT OR Apache-2.0"
 publish.workspace = true
 
+[features]
+default = ["audio-device"]
+# Real audio output through cpal (see crates/frogger/Cargo.toml).
+audio-device = ["f2-audio/cpal"]
+
 [dependencies]
 f2-engine = { path = "../../crates/f2-engine" }
 f2-formats = { path = "../../crates/f2-formats" }
 f2-platform = { path = "../../crates/f2-platform", default-features = false, features = ["window"] }
-f2-audio = { path = "../../crates/f2-audio" }
+f2-audio = { path = "../../crates/f2-audio", default-features = false }
 f2-bink = { path = "../../crates/f2-bink" }
 f2-mods = { path = "../../crates/f2-mods" }
 wgpu = "=30.0.1"

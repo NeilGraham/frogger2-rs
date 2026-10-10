@@ -75,11 +75,13 @@ fn game_dir() -> PathBuf {
 
 /// `.key` records `(frame, buttons, player)` (PC/controll.cpp `RecordButtons`).
 fn parse_keys(b: &[u8]) -> Result<Vec<(u32, u16, usize)>, String> {
-    if b.len() % 12 != 0 {
+    if !b.len().is_multiple_of(12) {
         return Err(format!("key file length {} is not a multiple of 12", b.len()));
     }
     let w = |c: &[u8], k: usize| u32::from_le_bytes([c[k], c[k + 1], c[k + 2], c[k + 3]]);
-    b.chunks_exact(12)
+    b.as_chunks::<12>()
+        .0
+        .iter()
         .map(|c| {
             let p = w(c, 8);
             if p >= 4 {

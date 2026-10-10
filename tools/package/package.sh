@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Produce release archives under target/package/.
-#   tools/package/package.sh linux     # tar.gz (+ AppImage if appimagetool is on PATH)
+#   tools/package/package.sh linux     # tar.gz (+ AppImage if appimagetool is found)
 #   tools/package/package.sh windows   # zip (cross-builds via tools/package/build-windows.sh unless
 #                                      #      F2_WIN_BIN_DIR points at prebuilt .exe files)
-#   tools/package/package.sh macos     # .app bundle + tar.gz (UNTESTED; run on macOS)
+#   tools/package/package.sh macos     # .app bundle + tar.gz (run on macOS; CI: macos-14)
 #   tools/package/package.sh all       # linux + windows (when cargo.exe exists)
 # Set F2_SKIP_BUILD=1 to package already-built binaries. No game data is ever included.
 set -euo pipefail
@@ -14,6 +14,7 @@ VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
 VER="$VERSION-$SHA"
 BINS=(frogger f2-import f2-viewer)
+TGT="${CARGO_TARGET_DIR:-target}"
 mkdir -p "$OUT"
 
 # Copy the docs/licenses common to every archive into directory $1.
@@ -28,28 +29,50 @@ stage_docs() {
 
 pkg_linux() {
   [[ -n "${F2_SKIP_BUILD:-}" ]] || cargo build --release -p frogger -p f2-import -p f2-viewer
-  local name="frogger2-rs-$VER-linux-x86_64" st="$OUT/stage/linux"
+  local arch; arch="$(uname -m)"
+  local name="frogger2-rs-$VER-linux-$arch" st="$OUT/stage/linux"
   rm -rf "$st"; mkdir -p "$st/$name"
-  for b in "${BINS[@]}"; do install -m755 "target/release/$b" "$st/$name/"; done
+  for b in "${BINS[@]}"; do install -m755 "$TGT/release/$b" "$st/$name/"; done
   strip "$st/$name"/* 2>/dev/null || true
   install -m644 packaging/frogger2-rs.desktop packaging/frogger2-rs.svg "$st/$name/"
   stage_docs "$st/$name"
   tar -C "$st" -czf "$OUT/$name.tar.gz" "$name"
   echo "wrote $OUT/$name.tar.gz"
 
-  # AppImage: AppDir layout; needs appimagetool (https://github.com/AppImage/appimagetool).
-  if command -v appimagetool >/dev/null; then
-    local ad="$OUT/stage/Frogger2rs.AppDir"
-    rm -rf "$ad"; mkdir -p "$ad/usr/bin" "$ad/usr/share/licenses/frogger2-rs"
-    for b in "${BINS[@]}"; do install -m755 "target/release/$b" "$ad/usr/bin/"; done
-    cp packaging/frogger2-rs.desktop packaging/frogger2-rs.svg "$ad/"
-    cp NOTICE LICENSE-* "$ad/usr/share/licenses/frogger2-rs/"
-    printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/frogger" "$@"\n' > "$ad/AppRun"
-    chmod +x "$ad/AppRun"
-    ARCH=x86_64 appimagetool "$ad" "$OUT/Frogger2rs-$VER-x86_64.AppImage"
-  else
-    echo "appimagetool not found; skipping AppImage (download from github.com/AppImage/appimagetool/releases)"
+  # AppImage (AppDir layout). Needs appimagetool on PATH or $F2_APPIMAGETOOL
+  # (https://github.com/AppImage/appimagetool/releases, "continuous"). Recent appimagetool
+  # downloads the type-2 runtime at build time; offline, pass it with
+  # F2_APPIMAGE_RUNTIME=/path/to/runtime-x86_64 (github.com/AppImage/type2-runtime/releases).
+  # No FUSE (containers/CI): export APPIMAGE_EXTRACT_AND_RUN=1.
+  local tool="${F2_APPIMAGETOOL:-$(command -v appimagetool || true)}"
+  if [[ -z "$tool" ]]; then
+    echo "appimagetool not found; skipping AppImage (see tools/package/package.sh pkg_linux)"
+    return 0
   fi
+  local ad="$OUT/stage/Frogger2rs.AppDir"
+  rm -rf "$ad"
+  mkdir -p "$ad/usr/bin" "$ad/usr/share/licenses/frogger2-rs" "$ad/usr/share/applications" \
+    "$ad/usr/share/icons/hicolor/scalable/apps"
+  for b in "${BINS[@]}"; do install -m755 "$st/$name/$b" "$ad/usr/bin/"; done
+  install -m644 packaging/frogger2-rs.desktop "$ad/usr/share/applications/"
+  install -m644 packaging/frogger2-rs.svg "$ad/usr/share/icons/hicolor/scalable/apps/"
+  cp packaging/frogger2-rs.desktop packaging/frogger2-rs.svg "$ad/"
+  ln -sf frogger2-rs.svg "$ad/.DirIcon"
+  cp NOTICE LICENSE-* "$ad/usr/share/licenses/frogger2-rs/"
+  # AppRun: `frogger` by default; `<AppImage> f2-import ...` / `<AppImage> f2-viewer` run the tools.
+  cat > "$ad/AppRun" <<'APPRUN'
+#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+case "$1" in
+  f2-import|f2-viewer) tool="$1"; shift; exec "$HERE/usr/bin/$tool" "$@" ;;
+esac
+exec "$HERE/usr/bin/frogger" "$@"
+APPRUN
+  chmod +x "$ad/AppRun"
+  local rt=()
+  [[ -n "${F2_APPIMAGE_RUNTIME:-}" ]] && rt=(--runtime-file "$F2_APPIMAGE_RUNTIME")
+  ARCH="$arch" "$tool" ${rt[@]+"${rt[@]}"} --no-appstream "$ad" "$OUT/Frogger2rs-$VER-$arch.AppImage"
+  echo "wrote $OUT/Frogger2rs-$VER-$arch.AppImage"
 }
 
 pkg_windows() {
@@ -70,14 +93,31 @@ pkg_windows() {
   echo "wrote $OUT/$name.zip"
 }
 
+# macOS .app bundle (run on macOS; see tools/package/README-macos.md).
+#   F2_MACOS_UNIVERSAL=1  build aarch64 + x86_64 and lipo them into universal binaries
+#   F2_CODESIGN_ID="Developer ID Application: ..."  sign with a real identity (default: ad-hoc "-")
 pkg_macos() {
-  [[ -n "${F2_SKIP_BUILD:-}" ]] || cargo build --release -p frogger -p f2-import -p f2-viewer
-  local arch; arch="$(uname -m)"
+  local arch bindir="$TGT/release"
+  if [[ -n "${F2_MACOS_UNIVERSAL:-}" ]]; then
+    arch=universal bindir="$TGT/universal-apple-darwin/release"
+    if [[ -z "${F2_SKIP_BUILD:-}" ]]; then
+      for t in aarch64-apple-darwin x86_64-apple-darwin; do
+        cargo build --release --target "$t" -p frogger -p f2-import -p f2-viewer
+      done
+    fi
+    mkdir -p "$bindir"
+    for b in "${BINS[@]}"; do
+      lipo -create -output "$bindir/$b" "$TGT/aarch64-apple-darwin/release/$b" "$TGT/x86_64-apple-darwin/release/$b"
+    done
+  else
+    arch="$(uname -m)"
+    [[ -n "${F2_SKIP_BUILD:-}" ]] || cargo build --release -p frogger -p f2-import -p f2-viewer
+  fi
   local name="frogger2-rs-$VER-macos-$arch" st="$OUT/stage/macos"
   rm -rf "$st"; mkdir -p "$st/$name"
-  local app="$st/$name/Frogger2rs.app/Contents"
+  local bundle="$st/$name/Frogger2rs.app" app="$st/$name/Frogger2rs.app/Contents"
   mkdir -p "$app/MacOS" "$app/Resources"
-  for b in "${BINS[@]}"; do install -m755 "target/release/$b" "$app/MacOS/"; done
+  for b in "${BINS[@]}"; do install -m755 "$bindir/$b" "$app/MacOS/"; done
   cat > "$app/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -90,17 +130,40 @@ pkg_macos() {
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.arcade-games</string>
+  <key>GCSupportsControllerUserInteraction</key><true/>
 </dict></plist>
 PLIST
-  # Icon: placeholder SVG shipped as-is; convert to .icns (iconutil) for a polished build.
+  if command -v plutil >/dev/null; then plutil -lint "$app/Info.plist"; fi
+  # Icon: the placeholder SVG -> .icns when rsvg-convert (brew install librsvg) and iconutil
+  # exist; otherwise the SVG is shipped and Finder shows the generic app icon.
   cp packaging/frogger2-rs.svg "$app/Resources/"
+  if command -v rsvg-convert >/dev/null && command -v iconutil >/dev/null; then
+    local set="$st/frogger2-rs.iconset"; mkdir -p "$set"
+    for s in 16 32 128 256 512; do
+      rsvg-convert -w $s -h $s packaging/frogger2-rs.svg -o "$set/icon_${s}x${s}.png"
+      rsvg-convert -w $((s * 2)) -h $((s * 2)) packaging/frogger2-rs.svg -o "$set/icon_${s}x${s}@2x.png"
+    done
+    iconutil -c icns "$set" -o "$app/Resources/frogger2-rs.icns"
+  fi
   mkdir -p "$app/Resources/licenses"
   cp NOTICE LICENSE-* "$app/Resources/licenses/"
   stage_docs "$st/$name"
-  # Ad-hoc sign so Apple Silicon will run it locally (notarisation is out of scope).
-  command -v codesign >/dev/null && codesign --force --deep -s - "$st/$name/Frogger2rs.app" || true
+  # (Empty-array expansions are written ${a[@]+"${a[@]}"} for macOS's bash 3.2 under set -u.)
+  # Ad-hoc signature by default: required for arm64 binaries to run at all; Gatekeeper still
+  # quarantines downloads (right-click > Open, or `xattr -dr com.apple.quarantine`). Inner
+  # binaries first, then the bundle (--deep is deprecated). Notarisation: README-macos.md.
+  if command -v codesign >/dev/null; then
+    local id="${F2_CODESIGN_ID:--}" opts=()
+    [[ "$id" != "-" ]] && opts=(--options runtime --timestamp)
+    for b in "${BINS[@]}"; do codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$app/MacOS/$b"; done
+    codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$bundle"
+    codesign --verify --strict "$bundle"
+  fi
   tar -C "$st" -czf "$OUT/$name.tar.gz" "$name"
   echo "wrote $OUT/$name.tar.gz"
 }

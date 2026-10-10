@@ -7,8 +7,15 @@ license = "GPL-3.0-or-later"
 publish.workspace = true
 build = "build.rs"
 
+[features]
+default = ["std"]
+# Off: `#![no_std]` (core only, no allocator) for future console targets; see docs/PLATFORMS.md.
+# Only the `RANDOM_LOG` stderr debug aid needs std.
+std = ["serde/std"]
+
 [dependencies]
-serde = { workspace = true }
+# Not `workspace = true`: the workspace entry enables serde's default `std` feature.
+serde = { version = "1", default-features = false, features = ["derive"] }
 # Pure-Rust libm: OS-independent sin/cos/atan2/acos (see src/detfloat.rs).
 libm = "0.2.16"
 
