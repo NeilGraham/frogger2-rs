@@ -1351,6 +1351,21 @@ impl Game {
 
     // ------------------------------------------------------------ multiplayer win screens
 
+    /// Port of `CreateOverlaysFromLogo` (Common/frontend.c:293): one 32x32 sprite overlay
+    /// per non-zero tile, texture `"%s%02d"`. Unused in the PC game.
+    pub fn create_overlays_from_logo(&mut self, logo: &Logo, x: i32, y: i32) {
+        let mut tex = logo.tiles.iter();
+        for i in 0..logo.height as i32 {
+            for j in 0..logo.width as i32 {
+                let t = tex.next().copied().unwrap_or(0);
+                if t != 0 {
+                    let texture = format!("{}{:02}", logo.texname, t);
+                    self.overlays.create_and_add_sprite_overlay((x + j * 32) as i16, (y + i * 32) as i16, Some(&texture), 32, 32, 255, 0);
+                }
+            }
+        }
+    }
+
     /// Port of `StartMultiWinGame` (Common/frontend.c:510).
     pub fn start_multi_win_game(&mut self) {
         self.screen_fade(255, 128, 30);
@@ -1782,6 +1797,19 @@ impl Game {
     }
 }
 
+/// `LOGO` (`frontend.h:18`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Logo {
+    pub texname: String,
+    pub width: u16,
+    pub height: u16,
+    pub tiles: [u16; 16],
+}
+
+/// `sprintf("%d:%02d:%02d", timer/3600, (timer%3600)/60, timer%60)` of the race win screen.
+fn race_time_text(timer: u32) -> String {
+    format!("{}:{:02}:{:02}", timer / 3600, (timer % 3600) / 60, timer % 60)
+}
 
 /// `TEXTOVERLAY_SHADOW` (`textover.h`).
 pub const TEXTOVERLAY_SHADOW: u32 = 1 << 4;
@@ -1879,9 +1907,4 @@ mod tests {
         assert_eq!(g.game_state.mode, FRONTEND_MODE);
         assert_eq!(g.frogger.player[0].world_num as u32, worldid::FRONTEND);
     }
-}
-
-/// `sprintf("%d:%02d:%02d", timer/3600, (timer%3600)/60, timer%60)` of the race win screen.
-fn race_time_text(timer: u32) -> String {
-    format!("{}:{:02}:{:02}", timer / 3600, (timer % 3600) / 60, timer % 60)
 }

@@ -1737,4 +1737,41 @@ mod tests {
         assert_eq!(g.rng.rseed, r.rseed, "exactly one Random() (the voice) after the start");
         assert!(g.frogger.player.iter().take(2).all(|p| p.can_jump == 1));
     }
+
+    #[test]
+    fn multi_hud_countdown_race_clock_and_trophies() {
+        let mut g = mp_game(2, MULTIMODE_RACE, 4);
+        g.init_multi_hud();
+        let m = g.hud.multi_hud.clone();
+        assert!(m.time_text_min.is_some() && m.penal_over[1].is_some() && m.back_chars[1].is_some());
+        assert!(g.frontend.menu_text[0].is_some() && g.frontend.menu_text[1].is_some());
+
+        g.multi.multi_timer.init(4);
+        g.up_date_multiplayer_info();
+        let ct = g.textover.get(m.centre_text).unwrap();
+        assert_eq!((ct.text.as_str(), ct.r, ct.g, ct.b, ct.scale, ct.draw), ("3", 255, 0, 0, 6144, 1));
+        assert_eq!(g.hud.countdown_string, "3");
+
+        g.multi.multi_timer.init(0);
+        g.multi.mpl[0].timer = 3 * 3600 + 61;
+        g.multi.mpl[1].penalty = 120;
+        g.up_date_multiplayer_info();
+        let t = |id| g.textover.get(id).unwrap().text.clone();
+        assert_eq!(g.textover.get(m.centre_text).unwrap().draw, 0);
+        assert_eq!((t(m.penalise_text[0]), t(m.penalise_text[1])), ("00".to_string(), "02".to_string()));
+        assert_eq!((t(m.time_text_min), t(m.time_text_sec), t(m.time_text_hsec)), (" 3:".to_string(), "01:".to_string(), "01".to_string()));
+
+        g.multi.mpl[0].wins = 2;
+        g.enable_multi_hud();
+        let d = |g: &Game, id| g.overlays.get(id).unwrap().draw;
+        assert_eq!((d(&g, m.trophies[0][0]), d(&g, m.trophies[0][1]), d(&g, m.trophies[0][2]), d(&g, m.trophies[1][0])), (1, 1, 0, 0));
+        g.disable_multi_hud();
+        assert_eq!(d(&g, m.back_chars[0]), 0);
+    }
+
+    #[test]
+    fn transform_point_without_view_is_origin() {
+        let g = mp_game(2, MULTIMODE_RACE, 1);
+        assert_eq!(g.transform_point(&SVector::default()), (0, 0));
+    }
 }

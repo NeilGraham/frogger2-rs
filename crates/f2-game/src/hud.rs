@@ -782,7 +782,7 @@ impl Game {
                     self.game.end_level_timer.init(4);
                     self.set_time_for_level();
                     self.play_sample(f2_formats::crc::crc("alarm"), None, 0, SAMPLE_VOLUME, -1);
-                    self.prepare_song(crate::pcaudio::AUDIOTRK_GAMEOVER as i16, false);
+                    self.prepare_song(crate::pcaudio::AUDIOTRK_GAMEOVER, false);
                 }
             }
         }

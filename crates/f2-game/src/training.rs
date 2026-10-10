@@ -159,3 +159,26 @@ impl Game {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hint_slides_panel_in_with_the_wrapped_text() {
+        let mut g = Game::new();
+        g.textover.init_text_overlay_linked_list(40);
+        g.overlays.init_sprite_overlay_linked_list();
+        g.init_training_mode();
+        let t = g.training.train.clone().unwrap();
+        g.training_hint(Some("Hop forward"));
+        assert_eq!(g.training.last_str.as_deref(), Some("Hop forward"));
+        assert_eq!(g.overlays.get(t.bg).unwrap().y_pos_to, 3296);
+        let o = g.textover.get(t.txtover[0]).unwrap();
+        assert_eq!((o.text.as_str(), o.y_pos_to, o.font), ("Hop forward", 3500, Font::Small));
+        assert_eq!(g.textover.get(t.txtover[1]).unwrap().y_pos_to, 3750);
+        // no hint: slide back out
+        g.training_hint(None);
+        assert_eq!(g.overlays.get(t.bg).unwrap().y_pos_to, 4096);
+    }
+}
