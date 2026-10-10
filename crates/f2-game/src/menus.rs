@@ -569,6 +569,9 @@ impl Game {
                         if let Some(s) = g.sprite.as_mut() {
                             s.texture = tex.to_string();
                         }
+                        if let Some(ps) = g.pool_sprite {
+                            self.sprite.get_mut(ps).texture = crate::specfx::find_texture(tex);
+                        }
                     }
                 }
                 let t = crate::specfx::find_texture(tex);
