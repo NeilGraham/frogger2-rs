@@ -41,7 +41,7 @@ pub enum Rivals {
     Random,
     /// No input.
     Idle,
-    /// Race/collect `Plan`, battle `Random` (default).
+    /// Race `Plan`, battle and collect `Random` (default).
     Auto,
 }
 
@@ -67,7 +67,7 @@ pub struct PlanOpts {
 
 impl Default for PlanOpts {
     fn default() -> Self {
-        PlanOpts { seed: 1, budget: 30_000, rivals: Rivals::Auto }
+        PlanOpts { seed: 1, budget: 60_000, rivals: Rivals::Auto }
     }
 }
 
@@ -387,9 +387,40 @@ fn cell_key(g: &Game) -> (u32, u32, u64) {
 /// from it with random input; new cells join the archive. Selection favours the most
 /// babies saved and the tile-graph distance to the next baby. Returns the input from the
 /// start to the tick the level is won (end-of-level timer started).
-fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Option<Vec<[u16; 4]>> {
+/// Result of [`go_explore`].
+enum Explore {
+    Found(Vec<[u16; 4]>),
+    /// Won, but under the level's par time by this many ticks: the level-complete screen
+    /// would then ask for a name (keyboard text entry, which neither the oracle's pad
+    /// script nor `scenario_trace` can type), so the run could not continue and save.
+    TooFast(u32),
+    GaveUp,
+}
+
+/// Follows a won game (no input) to the level-complete screen: ticks under par, if any.
+fn under_par(g: &Game) -> Option<u32> {
+    let mut g = g.clone();
+    for _ in 0..3000 {
+        if g.game_state.mode == LEVELCOMPLETE_MODE {
+            if g.frontend.grade == 0 {
+                let w = g.frogger.player[0].world_num as usize;
+                let l = g.frogger.player[0].level_num as usize;
+                let par = g.layout.world_visual_data[w].level_visual_data[l].par_time;
+                let t = g.frontend.time_for_level as u32;
+                return Some(par.saturating_sub(t) * 6 + 6);
+            }
+            return None;
+        }
+        if !step(&mut g, [0; 4], [0; 4]) {
+            return None;
+        }
+    }
+    None
+}
+
+fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
     const MAX_CELLS: usize = 6000;
-    let sim_budget: u64 = std::env::var("F2_PLAN_SIM_BUDGET").ok().and_then(|s| s.parse().ok()).unwrap_or(6_000_000);
+    let sim_budget: u64 = std::env::var("F2_PLAN_SIM_BUDGET").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000_000);
     let mut index: HashMap<(u32, u32, u64), usize> = HashMap::new();
     let d0 = { let t = baby_targets(g0); pl.player_dist(g0, 0, &t) };
     let mut cells = vec![Cell { state: Box::new(g0.clone()), prev: [0; 4], t: 0, parent: None, seg: Vec::new(), visits: 0, saved: 0, dist: d0 }];
@@ -416,8 +447,8 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Option<Vec<[u16; 4]>
             .iter()
             .map(|c| {
                 let lvl = if c.saved == max_saved { 1.0 } else { 0.15f64.powi((max_saved - c.saved) as i32) };
-                let near = (-(c.dist - min_d).max(0.0) / 12.0).exp().max(0.02);
-                lvl * near / (1.0 + c.visits as f64).sqrt()
+                let near = (-(c.dist - min_d).max(0.0) / 20.0).exp().max(0.02);
+                lvl * near / (1.0 + c.visits as f64)
             })
             .collect();
         let total: f64 = weights.iter().sum();
@@ -451,7 +482,11 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Option<Vec<[u16; 4]>
             }
             if pl.goal(&g) {
                 eprintln!("plan: go-explore goal at t={t} after {iter} iterations, {sim} sim ticks, {} cells", cells.len());
-                return Some(path_of(&cells, parent, seg));
+                if let Some(d) = under_par(&g) {
+                    eprintln!("plan: under par by {d} ticks");
+                    return Explore::TooFast(d);
+                }
+                return Explore::Found(path_of(&cells, parent, seg));
             }
             if g.frogger.player[0].lives < lives0 || is_dead(&g, 0) {
                 break;
@@ -474,7 +509,7 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Option<Vec<[u16; 4]>
         }
     }
     eprintln!("plan: go-explore gave up ({sim} sim ticks, {} cells)", cells.len());
-    None
+    Explore::GaveUp
 }
 
 /// Simulates `seq` from a clone of `base`.
@@ -516,7 +551,7 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
     };
     let n = if kind == Kind::Single { 1 } else { players };
     let rivals = match (o.rivals, kind) {
-        (Rivals::Auto, Kind::Battle) => Rivals::Random,
+        (Rivals::Auto, Kind::Battle | Kind::Collect) => Rivals::Random,
         (Rivals::Auto, _) => Rivals::Plan,
         (r, _) => r,
     };
@@ -568,7 +603,27 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
     // Single player: archive search first (puzzles, platforms); the receding-horizon loop
     // below only runs when it gives up.
     if kind == Kind::Single {
-        if let Some(path) = go_explore(&mut pl, &g, o) {
+        // Under par: wait at the start (the whole search then runs from the later start).
+        let mut wait = 0u32;
+        let mut found = None;
+        for _ in 0..5 {
+            let mut root = g.clone();
+            for _ in 0..wait {
+                step(&mut root, [0; 4], [0; 4]);
+            }
+            pl.visited = vec![false; root.map.tiles.len()];
+            match go_explore(&mut pl, &root, o) {
+                Explore::Found(p) => {
+                    let mut v = vec![[0u16; 4]; wait as usize];
+                    v.extend(p);
+                    found = Some(v);
+                    break;
+                }
+                Explore::TooFast(d) => wait += d + 120,
+                Explore::GaveUp => break,
+            }
+        }
+        if let Some(path) = found {
             for held in path {
                 if !commit(&mut g, held, &mut prev, &mut recs, &mut t) {
                     alive = false;
@@ -675,9 +730,14 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
                         held[0] = PAD_CROSS;
                     }
                 }
+            } else if g.multi.match_winner != -1 && g.game_state.mode != INGAME_MODE {
+                // DoEndMulti's menu: DOWN to "quit" (menuOption 1), then CROSS -> frontend.
+                match g.frontend.menu_option {
+                    0 => held[0] = PAD_DOWN,
+                    1 if prev[0] == 0 => held[0] = PAD_CROSS,
+                    _ => {}
+                }
             }
-            let save_before = g.effects.len();
-            let _ = save_before;
             if !commit(&mut g, held, &mut prev, &mut recs, &mut t) {
                 alive = false;
                 end_note.push_str(" frontend");
