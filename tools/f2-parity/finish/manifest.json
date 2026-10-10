@@ -127,11 +127,11 @@
       "level": 0,
       "players": 0,
       "mp_mode": 0,
-      "ticks": 60048,
+      "ticks": 8181,
       "key": "4-0.key",
-      "seed": 1,
+      "seed": 2,
       "rivals": "auto",
-      "plan": "kind Single players 1 goal no ticks 60048 afc 60048 babies 0 wins [0] match_winner -1"
+      "plan": "kind Single players 1 goal @7244 ticks 8181 afc 240 babies 0 wins [0] match_winner -1 moved-on@7941 level 4-0"
     },
     "fin-4-1": {
       "world": 4,
