@@ -441,6 +441,12 @@ impl AudioEngine {
         self.mixer().music_position()
     }
 
+    /// Precise playback position of the current track in source frames (see
+    /// [`Mixer::music_playhead`]); advances per device callback, not per 4096-frame chunk.
+    pub fn music_playhead(&self) -> Option<f64> {
+        self.mixer().music_playhead()
+    }
+
     // ---- volumes -----------------------------------------------------------------------
 
     /// Extra output gain (0.0..=1.0), not in the original.
