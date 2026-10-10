@@ -18,7 +18,8 @@
 //!
 //! Schema v2 ([`SCHEMA_V2`]) is v1 plus optional sections, appended after
 //! `cam_target` in this order: `players_ext`, `garib_ext`, `babies`,
-//! `camera`, `script`, `triggers`, `specfx`, `sprites`, `tongue`, `hud`.
+//! `camera`, `script`, `triggers`, `specfx`, `sprites`, `tongue`, `hud`, `mp`
+//! (local multiplayer, diff section `multi`).
 //! A section that is absent (`None`) is not written at all, so a v1 line is
 //! a valid frame (all sections `None`) and a v1 frame re-serialises to the
 //! same bytes. An emitter may fill any subset of the sections; the diff only
@@ -260,6 +261,43 @@ pub struct HudState {
     pub store_frame_count: u32,
 }
 
+/// One `mpl[i]` (Common/multi.h `MPINFO`), `i < NUM_FROGS`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MpPlayerState {
+    /// Rounds won (race and battle).
+    pub wins: i16,
+    pub lap: i16,
+    /// Race: lap time and time penalty (frames).
+    pub timer: u32,
+    pub penalty: u32,
+    /// Race: checkpoint.
+    pub check: i16,
+    /// Battle: score / trail length.
+    pub score: i16,
+    pub trail: i16,
+    pub ready: i8,
+    pub lasttile: i16,
+}
+
+/// Local multiplayer (Common/multi.c globals), key `mp`; present while
+/// `gameState.multi == MULTILOCAL` (2).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MpState {
+    /// `multiplayerMode`: 1 race, 2 battle, 3 collect.
+    pub mode: i32,
+    /// `started`: 0 waiting, 1 countdown, 2 running.
+    pub started: i32,
+    pub num_multi_items: u32,
+    /// `gameWinner` / `matchWinner` (-1, a player, 127 = draw).
+    pub game_winner: i8,
+    pub match_winner: i8,
+    /// `multiTimer.time`, `endTimer.time`.
+    pub multi_timer: u16,
+    pub end_timer: u16,
+    pub initial_cam_height: i32,
+    pub mpl: Vec<MpPlayerState>,
+}
+
 /// Game state after one `GameLoop` tick.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceFrame {
@@ -315,6 +353,8 @@ pub struct TraceFrame {
     pub tongue: Option<Vec<TongueState>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hud: Option<HudState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mp: Option<MpState>,
 }
 
 impl TraceFrame {
@@ -330,6 +370,7 @@ impl TraceFrame {
             || self.sprites.is_some()
             || self.tongue.is_some()
             || self.hud.is_some()
+            || self.mp.is_some()
     }
 
     /// The canonical JSON line (no newline).
@@ -429,6 +470,14 @@ pub(crate) fn sample_v2(seq: u32) -> TraceFrame {
     f.sprites = Some(SpritesState { count: 40, particles: 0 });
     f.tongue = Some(vec![TongueState { flags: 1, radius: 0x708000, can_tongue: 1, ..Default::default() }]);
     f.hud = Some(HudState { score_timer: 90, go_timer: 0, hand_angle: 4096, ..Default::default() });
+    f.mp = Some(MpState {
+        mode: 2,
+        started: 2,
+        game_winner: -1,
+        match_winner: 127,
+        mpl: vec![MpPlayerState { wins: 1, trail: 8, lasttile: -1, ..Default::default() }],
+        ..Default::default()
+    });
     f
 }
 
@@ -457,7 +506,7 @@ mod tests {
         assert_eq!(f.v, SCHEMA_V2);
         assert!(f.players_ext.is_some() && f.garib_ext.is_some() && f.babies.is_some() && f.camera.is_some());
         assert!(f.script.is_some() && f.triggers.is_some() && f.specfx.is_some() && f.sprites.is_some());
-        assert!(f.tongue.is_some() && f.hud.is_some());
+        assert!(f.tongue.is_some() && f.hud.is_some() && f.mp.is_some());
         assert_eq!(f.to_json_line(), line, "v2 field order or formatting drifted");
     }
 

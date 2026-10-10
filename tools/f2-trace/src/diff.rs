@@ -11,7 +11,7 @@
 //! Every field belongs to a *section* ([`section_of`]): the v1 groups `core`,
 //! `players`, `enemies`, `platforms`, `garibs`, `babies`, `camera`, `hud`
 //! and the optional v2 sections `script`, `triggers`, `specfx`, `sprites`,
-//! `tongue` (plus v2 additions to `players`, `camera`, `babies`, `hud`).
+//! `tongue`, `multi` (key `mp`) (plus v2 additions to `players`, `camera`, `babies`, `hud`).
 //! The report lists the first divergence per section; `Options::sections`
 //! restricts the comparison. An optional v2 section that one side does not
 //! have (a v1 trace, or an emitter that does not fill it yet) is not compared
@@ -97,6 +97,7 @@ pub fn section_of(path: &str) -> &'static str {
         "specfx" => "specfx",
         "sprites" => "sprites",
         "tongue" => "tongue",
+        "mp" => "multi",
         "<frame>" => "<frame>",
         _ => "core",
     }
@@ -104,10 +105,10 @@ pub fn section_of(path: &str) -> &'static str {
 
 /// Every section name [`section_of`] can return (for `--sections` validation).
 pub const SECTIONS: &[&str] =
-    &["core", "players", "enemies", "platforms", "garibs", "babies", "camera", "hud", "script", "triggers", "specfx", "sprites", "tongue"];
+    &["core", "players", "enemies", "platforms", "garibs", "babies", "camera", "hud", "script", "triggers", "specfx", "sprites", "tongue", "multi"];
 
 /// Top-level keys of optional (v2) sections.
-pub const OPTIONAL: &[&str] = &["players_ext", "garib_ext", "babies", "camera", "hud", "script", "triggers", "specfx", "sprites", "tongue"];
+pub const OPTIONAL: &[&str] = &["players_ext", "garib_ext", "babies", "camera", "hud", "script", "triggers", "specfx", "sprites", "tongue", "mp"];
 
 impl Report {
     pub fn identical(&self) -> bool {

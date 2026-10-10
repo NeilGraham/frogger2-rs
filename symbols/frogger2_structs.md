@@ -198,6 +198,31 @@ sizeof 8: r 0, g 1, b 2, mode 3 (u8), min 4, max 6 (short). `.data` = {120,120,1
 `demoTimeout` 0x036bc680, collect.c `pauseTimer` 0x036c2448. hud.c:
 `handAngle` 0x036c1ab0 (`+= gameSpeed`, wraps at 0x3c000), `storeFrameCount` 0x0048994c.
 
+## MPINFO (Common/multi.h) — `mpl[4]` @ 0x036bc440, sizeof 44 (0x2c)
+
+| off | field | type | confirmed by |
+|---|---|---|---|
+| 0 | wins | short | UpdateRace/round win `mpl[w].wins++` (index*0x16 shorts) |
+| 2 | lap | short | |
+| 4 | timer | ulong | |
+| 8 | penalty | ulong | |
+| 12 | check | short | |
+| 14 | score | short | |
+| 16 | trail | short | 8 (`MULTI_BATTLE_TRAILLENGTH`) after reset in the oracle trace |
+| 18 | ready | char | |
+| 20 | lasttile | short | |
+| 24 | path | BATTLENODE* | |
+| 28 / 30 | scrX / scrY | short | |
+| 32 | penalText | TEXTOVERLAY* | UpdateRace `*(0x36bc460+i*44)+0x21` (draw) |
+| 36 | numText | TEXTOVERLAY* | RunMultiplayer `*(0x36bc464+i*44)` draw/xPos/yPos |
+| 40 | nameText | TEXTOVERLAY* | (PC only) |
+
+multi.c globals: `multiplayerMode` 0x036bc500, `started` 0x00489df8, `numMultiItems`
+0x00489dfc, `initialCamHeight` 0x00489e00, `gameWinner`/`matchWinner` 0x0047a12b/0x0047a12c
+(signed char), `multiTimer` 0x036bc420, `endTimer` 0x036bc508 (TIMERs).
+`GoMulti` (0x00422e40) reads `options.numPlayers` 0x0047a370, `levelSelection` 0x0047a380,
+`currentPlayer` 0x0047a384, `playerChar[4]` 0x0047a5c0 (bytes).
+
 ## gameSpeed (0x00474070) users that matter per tick
 
 RunGameLoop (`idleTime -= gameSpeed`), UpDateOnScreenInfo (HUD fades,

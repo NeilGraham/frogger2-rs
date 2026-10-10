@@ -192,6 +192,9 @@ def write_ini(path, args, root_w):
         f"start.level={args.level or ''}",
         f"start.keys={'scenario.key' if args.keys else ''}",
         f"start.after={args.start_after}",
+        f"start.multi={args.multi}",
+        f"start.chars={args.chars}",
+        f"start.mp_mode={args.mp_mode}",
         f"trace.enable={1 if args.trace else 0}",
         f"trace.from={args.trace_from}",
         f"trace.version={args.trace_version}",
@@ -311,6 +314,11 @@ def main():
     g.add_argument("--level", metavar="W-L", help="start arcade level W-L directly (scenario mode)")
     g.add_argument("--keys", metavar="FILE", help="scenario: .key recording replayed as held pad input (with --level)")
     g.add_argument("--start-after", type=int, default=2, help="frontend frames before --demo/--level fires")
+    g.add_argument("--multi", type=int, choices=[0, 2, 3, 4], default=0,
+                   help="with --level: start a local multiplayer match with N frogs (frontend GoMulti)")
+    g.add_argument("--chars", default="0,1,2,3", help="--multi: frog characters per player (frogger.h FROG_*)")
+    g.add_argument("--mp-mode", type=int, choices=[0, 1, 2, 3], default=0,
+                   help="--multi: override multiGameTypes[world] (1 race, 2 battle, 3 collect; 0 = level default)")
     g.add_argument("--trace-from", choices=["level", "all"], default="level")
     g.add_argument("--exit-ticks", type=int, default=0, help="end after N traced ticks")
     g.add_argument("--trace-version", type=int, choices=[1, 2], default=1,
@@ -339,6 +347,8 @@ def main():
             raise SystemExit("run: --demo/--level take W-L, e.g. 0-0")
     if args.demo and args.level:
         raise SystemExit("run: --demo and --level are exclusive")
+    if args.multi and not args.level:
+        raise SystemExit("run: --multi needs --level")
     if args.keys and not args.level:
         raise SystemExit("run: --keys needs --level")
 

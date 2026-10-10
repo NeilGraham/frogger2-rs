@@ -194,7 +194,38 @@ pub struct Hud {
     pub store_frame_count: u32,
 }
 
-/// All v2 sections (the oracle always writes every one).
+/// One `mpl[i]` (Common/multi.h `MPINFO`), `i < NUM_FROGS`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MpPlayer {
+    pub wins: i16,
+    pub lap: i16,
+    pub timer: u32,
+    pub penalty: u32,
+    pub check: i16,
+    pub score: i16,
+    pub trail: i16,
+    pub ready: i8,
+    pub lasttile: i16,
+}
+
+/// Local multiplayer state (Common/multi.c), written as `"mp"` while
+/// `gameState.multi == MULTILOCAL`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Mp {
+    /// `multiplayerMode` (1 race, 2 battle, 3 collect).
+    pub mode: i32,
+    pub started: i32,
+    pub num_multi_items: u32,
+    pub game_winner: i8,
+    pub match_winner: i8,
+    /// `multiTimer.time`, `endTimer.time`.
+    pub multi_timer: u16,
+    pub end_timer: u16,
+    pub initial_cam_height: i32,
+    pub mpl: Vec<MpPlayer>,
+}
+
+/// All v2 sections (the oracle always writes every one; `mp` only in a multiplayer game).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct V2 {
     pub players_ext: Vec<PlayerExt>,
@@ -211,6 +242,7 @@ pub struct V2 {
     pub particle_count: i16,
     pub tongue: Vec<Tongue>,
     pub hud: Hud,
+    pub mp: Option<Mp>,
 }
 
 /// `[a,b,c]` lists of objects: `{` + body + `}` per element.
@@ -328,6 +360,22 @@ impl V2 {
             ",\"hud\":{{\"score_timer\":{},\"mode_timer\":{},\"go_timer\":{},\"demo_timeout\":{},\"hand_angle\":{},\"store_frame_count\":{}}}",
             h.score_timer, h.mode_timer, h.go_timer, h.demo_timeout, h.hand_angle, h.store_frame_count
         );
+        if let Some(m) = &self.mp {
+            let _ = write!(
+                s,
+                ",\"mp\":{{\"mode\":{},\"started\":{},\"num_multi_items\":{},\"game_winner\":{},\"match_winner\":{},\
+                 \"multi_timer\":{},\"end_timer\":{},\"initial_cam_height\":{},\"mpl\":",
+                m.mode, m.started, m.num_multi_items, m.game_winner, m.match_winner, m.multi_timer, m.end_timer, m.initial_cam_height
+            );
+            objs(s, &m.mpl, |s, p| {
+                let _ = write!(
+                    s,
+                    "\"wins\":{},\"lap\":{},\"timer\":{},\"penalty\":{},\"check\":{},\"score\":{},\"trail\":{},\"ready\":{},\"lasttile\":{}",
+                    p.wins, p.lap, p.timer, p.penalty, p.check, p.score, p.trail, p.ready, p.lasttile
+                );
+            });
+            s.push('}');
+        }
     }
 }
 
@@ -601,6 +649,17 @@ pub fn sample_v2() -> Frame {
             has_thing: 0,
         }],
         hud: Hud { score_timer: 90, mode_timer: 8, go_timer: 0, demo_timeout: 25, hand_angle: 61440, store_frame_count: 77 },
+        mp: Some(Mp {
+            mode: 1,
+            started: 2,
+            num_multi_items: 3,
+            game_winner: -1,
+            match_winner: 127,
+            multi_timer: 6,
+            end_timer: 0,
+            initial_cam_height: -409600,
+            mpl: vec![MpPlayer { wins: 1, lap: 2, timer: 3000, penalty: 60, check: 4, score: -1, trail: 8, ready: 1, lasttile: -1 }, MpPlayer::default()],
+        }),
     });
     f
 }
