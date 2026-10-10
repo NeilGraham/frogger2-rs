@@ -65,6 +65,19 @@ impl Rng {
 /// For `|cos| > 4096` `acos` yields NaN, which MSVC 6 `_ftol` turns into
 /// `0x8000000000000000`, i.e. **0** after truncation to `long`.
 pub fn arccos(cos: i32) -> i32 {
+    // RETAIL: the exe runs with Direct3D's x87 control word (24-bit precision), so
+    // `cos/4096.0F`, the `acos` result and the product are each rounded to `float`.
+    // With 53-bit maths arccos(0) would be 1023 (PI2 = 6.283185308 > 2*pi); the
+    // retail game gets 1024 (exact 90-degree turns: Orientate -> (0,-2896,0,2896)).
+    let c = cos as f32 / 4096.0f32;
+    let a = (c as f64).acos() as f32;
+    let r = (a as f64 * (4096.0 / PI2)) as f32;
+    ftol32(r as f64)
+}
+
+/// `arccos` evaluated in double precision (the source compiled on a 53-bit FPU), for
+/// difftests against the C on the host.
+pub fn arccos_f64(cos: i32) -> i32 {
     ftol32((cos as f64 / 4096.0).acos() * (4096.0 / PI2))
 }
 

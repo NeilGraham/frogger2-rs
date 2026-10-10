@@ -18,13 +18,14 @@
         "tools/tasks.py status works",
         ".github/workflows/ci.yml runs fmt/clippy/test"
       ],
-      "status": "in_progress",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: workspace, CI, tasks"
       ]
     },
     {
@@ -38,13 +39,14 @@
       "accept": [
         "docs/DECISIONS.md lists each PLAN \u00a79 item with chosen default"
       ],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": true,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: defaults applied; see DECISIONS.md"
       ]
     },
     {
@@ -346,7 +348,8 @@
       "artifacts": [],
       "history": [
         "2026-10-09 created",
-        "2026-10-09T14:42:49-06:00 done: f2-mods layered case-insensitive VFS + mod.toml"
+        "2026-10-09T14:42:49-06:00 done: f2-mods layered case-insensitive VFS + mod.toml",
+        "2026-10-09T17:03:40-06:00 done: "
       ]
     },
     {
@@ -551,13 +554,14 @@
         "crates/f2-game"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: merged (waves D/E/F1)"
       ]
     },
     {
@@ -571,13 +575,14 @@
         "crates/f2-game"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: merged (waves D/E/F1)"
       ]
     },
     {
@@ -591,13 +596,14 @@
         "crates/f2-game"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: merged (waves D/E/F1)"
       ]
     },
     {
@@ -611,13 +617,14 @@
         "crates/f2-game"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: merged (waves D/E/F1)"
       ]
     },
     {
@@ -631,13 +638,14 @@
         "crates/f2-game"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: merged (waves D/E/F1)"
       ]
     },
     {
@@ -674,13 +682,14 @@
         "crates/f2fix"
       ],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T18:01:59-06:00 done: demos 0-0, 1-0, 6-1: Rust trace identical to retail oracle (v2, all sections, 1556 ticks each)"
       ]
     },
     {
@@ -711,13 +720,14 @@
       ],
       "files": [],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: story flow + FMV (F1) + bink"
       ]
     },
     {
@@ -729,13 +739,14 @@
       ],
       "files": [],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T17:03:40-06:00 done: saves/language/training (F1); cheats in wave G"
       ]
     },
     {

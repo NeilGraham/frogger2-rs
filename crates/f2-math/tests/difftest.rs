@@ -298,7 +298,11 @@ fn msvc_ftol_semantics() {
     assert_eq!(ftol32(4294967296.0 + 5.0), 5);
     assert_eq!(ftol32(-1.9), -1);
     assert_eq!(util_sqrt(u32::MAX), 0); // 2^32 wraps
-    assert_eq!(arccos(-4096), 2047);
+                                        // RETAIL (24-bit x87): float(pi) * 4096/PI2 rounds to 2048.0 (53-bit maths: 2047).
+    assert_eq!(arccos(-4096), 2048);
+    assert_eq!(arccos_f64(-4096), 2047);
+    assert_eq!(arccos(0), 1024);
+    assert_eq!(arccos_f64(0), 1023);
     assert_eq!(arccos(4096), 0);
 }
 

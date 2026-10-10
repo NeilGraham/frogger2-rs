@@ -47,7 +47,14 @@ fn build_c() -> Result<(), String> {
     let same = |s: String| s;
     copy(&common, "fixed.c", &|s: String| s.replace("2147483648L", "((unsigned int)2147483648U)"))?;
     copy(&common, "fixed.h", &same)?;
-    copy(&common, "maths.c", &same)?;
+    // RETAIL: the exe runs on Direct3D's 24-bit x87 control word, so arccos rounds
+    // every step to float (see `f2_math::arccos`); emulate that on the SSE host.
+    copy(&common, "maths.c", &|s: String| {
+        s.replace(
+            "return (long)(acos(cos/4096.0F)*(4096/PI2));",
+            "{ float _x = cos/4096.0F; float _a = (float)acos(_x); float _r = (float)(_a*(4096/PI2)); return (long)_r; }",
+        )
+    })?;
     copy(&common, "maths.h", &same)?;
     copy(&common, "types.c", &same)?;
     copy(&common, "newpsx.h", &same)?;

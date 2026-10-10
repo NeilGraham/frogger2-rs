@@ -67,6 +67,11 @@ fn main() -> Result<(), String> {
         if let Ok(t) = std::env::var("F2_HEAD_DBG") {
             if t.split(',').any(|x| x.parse::<u32>().ok() == Some(n + 1)) {
                 eprintln!("tick {} head {:?}", n + 1, g.tongue.head_matrix);
+                if let Some(f) = g.frogger.frog[0] {
+                    let a = &g.actor2.actors[f].actor;
+                    let an = a.actual_actor.animation.as_ref().map(|x| (x.current_animation, x.anim_time, x.animation_speed));
+                    eprintln!("  q {:?} place {:?} anim {:?}", a.q_rot, a.actual_actor.placement, an);
+                }
             }
         }
         let mut f = g.trace_frame();
