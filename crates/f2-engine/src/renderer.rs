@@ -705,13 +705,14 @@ impl Renderer {
     }
 
     fn emit_ctx(&self, alpha_mul: f32) -> EmitCtx<'_> {
-        EmitCtx { view: &self.view, opts: &self.options, textures: &self.textures, alpha_mul }
+        EmitCtx { view: &self.view, opts: &self.options, textures: &self.textures, alpha_mul, override_tex: None, gouraud: None }
     }
 
     /// Transforms and draws an actor (`XformActor` + `DrawActor`).
     pub fn draw_actor(&mut self, model: &Model, actor: &mut Actor) {
         let mut frames = std::mem::take(&mut self.frames);
-        draw_actor(&self.emit_ctx(actor.xlu.clamp(0.0, 1.0)), model, actor, &mut frames);
+        let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
+        draw_actor(&cx, model, actor, &mut frames);
         self.frames = frames;
     }
 

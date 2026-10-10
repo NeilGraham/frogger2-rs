@@ -94,7 +94,44 @@ fn print_text(r: &mut Renderer, font: FontId, x: i16, y: i16, text: &str, scale:
     let (k, _) = r.overlay_scale(0.0, 0.0);
     let res = k * OVERLAY_SPACE / 640.0;
     let s = scale as f32 / 4096.0 * res;
-    r.draw_text_overlay_ex(font, x as f32, y as f32, text, rgba, s, centred, dy_px);
+    let text = expand_prompts(text);
+    r.draw_text_overlay_ex(font, x as f32, y as f32, &text, rgba, s, centred, dy_px);
+}
+
+thread_local! {
+    /// Button names for the `@X`/`@T`/`@S`/`@C` codes (set by the host each frame).
+    static PROMPTS: std::cell::RefCell<Vec<(char, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Sets the names `@X` (cross), `@T` (triangle), `@S` (square), `@C` (circle) expand to.
+pub fn set_button_prompts(p: Vec<(char, String)>) {
+    PROMPTS.with(|c| *c.borrow_mut() = p);
+}
+
+/// The key-name substitutions of the PC font code (`DrawFontStringAtLoc`, mdxFont.cpp,
+/// source not preserved): `@X` etc. become the bound key/button name.
+pub fn expand_prompts(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('@') {
+        return text.into();
+    }
+    PROMPTS.with(|p| {
+        let p = p.borrow();
+        let mut out = String::with_capacity(text.len() + 8);
+        let mut it = text.chars().peekable();
+        while let Some(c) = it.next() {
+            if c == '@' {
+                if let Some(&n) = it.peek() {
+                    if let Some((_, name)) = p.iter().find(|(k, _)| *k == n) {
+                        out.push_str(name);
+                        it.next();
+                        continue;
+                    }
+                }
+            }
+            out.push(c);
+        }
+        out.into()
+    })
 }
 
 /// Shadow offset of `PrintTextOverlays`: 6 pixels (`font`) / 4 (`fontSmall`), constant

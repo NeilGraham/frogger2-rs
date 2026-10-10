@@ -330,9 +330,13 @@ pub(crate) struct EmitCtx<'a> {
     pub opts: &'a RenderOptions,
     pub textures: &'a TextureRegistry,
     pub alpha_mul: f32,
+    /// `overrideTex` of the actor being drawn.
+    pub override_tex: Option<TexHandle>,
+    /// Gouraud RGB set with `SetObjectGouraudValues`.
+    pub gouraud: Option<[f32; 3]>,
 }
 
-/// Port of `PCRenderObject` (mdxRender.cpp:2090) without `overrideTex`:
+/// Port of `PCRenderObject` (mdxRender.cpp:2090) (`overrideTex` from the context):
 /// pushes the visible faces of `mesh` using the transformed vertices `tv`.
 /// `per_object_fog` reproduces the object path (`cFog` from the first face);
 /// the landscape path fogs per vertex.
@@ -347,7 +351,7 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, pe
     for (fi, face) in mesh.faces.iter().enumerate() {
         let crc = mesh.textures.get(fi).copied().unwrap_or(0);
         // Faces whose texture is not loaded are skipped (`tex` NULL).
-        let Some(tex) = cx.textures.current(crc) else { continue };
+        let Some(tex) = cx.override_tex.or_else(|| cx.textures.current(crc)) else { continue };
         let get = |k: usize| tv.get(face[k] as usize).copied().flatten();
         let (Some(a), Some(b), Some(c)) = (get(0), get(1), get(2)) else { continue };
         let p = [a, b, c];
@@ -365,7 +369,10 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, pe
         }
         let mut v = [TlVertex::default(); 3];
         for k in 0..3 {
-            let col = mesh.colors.get(fi * 3 + k).copied().unwrap_or([1.0; 4]);
+            let mut col = mesh.colors.get(fi * 3 + k).copied().unwrap_or([1.0; 4]);
+            if let Some(g) = cx.gouraud {
+                col = [g[0], g[1], g[2], col[3]];
+            }
             let uv = mesh.face_uv.get(fi * 3 + k).copied().unwrap_or([0, 0]);
             let vz = p[k][2];
             v[k] = TlVertex {

@@ -394,6 +394,10 @@ fn draw_actor_list(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &
         ea.anim_time = mdx.animation.as_ref().map_or(0.0, |an| an.anim_time);
         use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE, OBJECT_FLAGS_WAVE};
         ea.extra_flags = mdx.root_object_flags & (OBJECT_FLAGS_ADDITIVE | OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE);
+        // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours).
+        ea.override_tex = a2.override_tex.as_deref().and_then(|n| r.textures.by_name(&n.to_ascii_lowercase()));
+        // `SetActorGouraudValues` on the multiplayer portraits (options.c:685).
+        ea.gouraud = game.options.portrait_actor.iter().position(|&p| p == Some(id)).map(|i| game.options.portrait_gouraud[i].map(|c| c as f32 / 255.0));
         r.draw_actor(&scene.banks[b].models[m], ea);
     }
 }

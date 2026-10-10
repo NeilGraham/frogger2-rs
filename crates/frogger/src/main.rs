@@ -5,20 +5,24 @@
 //! frogger --headless --frames N [--level W L | --frontend | --multi W L N] [--size WxH] --screenshot out.png [display options]
 //! display options: --profile authentic|enhanced, --msaa N, --render-scale S, --hud-probe
 //! ```
-//! Until the frontend is ported: no arguments plays the startup FMVs (HASBROS, BLITZS)
-//! and loads Garden 1; `--level W L` starts `INGAME_MODE` directly on that level,
+//! No arguments (windowed) runs the game's own start-up (`--boot`: title, logo FMVs,
+//! frontend); dev shortcuts: `--level W L` starts `INGAME_MODE` directly on that level,
 //! `--frontend` the frontend level (start screen), `--multi W L N` local multiplayer with
-//! N frogs, `--demo W L` a recorded demo, `--boot` the game's own start-up (title, logo
-//! FMVs, frontend).
+//! N frogs, `--demo W L` a recorded demo, `--video NAME` one FMV. Headless without a level option loads Garden 1.
+//! `--pad-script FILE` drives player 1's pad: lines `TICK BUTTONS` hold the buttons
+//! (`cross+up`, `none`, or a hex mask) from that tick on; `TICK shot FILE.png` writes a
+//! screenshot before that tick (headless).
 //! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 fullscreen, Esc quit (Enter/Esc skip videos);
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
 mod app;
+mod book;
 mod controls;
 mod data;
 mod fx;
 mod overlay;
+mod padscript;
 mod render;
 mod video;
 
@@ -51,13 +55,19 @@ struct Args {
     render_scale: Option<f32>,
     hud_probe: bool,
     screenshot_rebind: bool,
+    pad_script: Option<PathBuf>,
+    video: Option<String>,
+    save: Option<PathBuf>,
+    dev_unlock: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: frogger [--data DIR] [--mute] [--level WORLD LEVEL | --frontend | --boot | --multi WORLD LEVEL FROGS | --demo WORLD LEVEL] [--size WxH] [--fullscreen]\n\
+        "usage: frogger [--data DIR] [--mute] [--level WORLD LEVEL | --frontend | --boot | --multi WORLD LEVEL FROGS | --demo WORLD LEVEL | --video NAME] [--size WxH] [--fullscreen]\n\
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
+         \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
+         saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 controls, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
          \x20     F9 fog, F12 draw distance"
@@ -84,6 +94,10 @@ fn parse_args() -> Args {
         render_scale: None,
         hud_probe: false,
         screenshot_rebind: false,
+        pad_script: None,
+        video: None,
+        save: None,
+        dev_unlock: false,
     };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
@@ -97,6 +111,9 @@ fn parse_args() -> Args {
                 a.level = Some((w, l));
             }
             "--frontend" => a.frontend = true,
+            "--save" => a.save = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--dev-unlock" => a.dev_unlock = true,
+            "--video" => a.video = Some(it.next().unwrap_or_else(|| usage())),
             "--boot" => a.boot = true,
             "--multi" => {
                 let w = num(it.next());
@@ -129,6 +146,7 @@ fn parse_args() -> Args {
             "--render-scale" => a.render_scale = Some(it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
             "--hud-probe" => a.hud_probe = true,
             "--screenshot-rebind" => a.screenshot_rebind = true,
+            "--pad-script" => a.pad_script = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -162,6 +180,7 @@ fn main() {
     eprintln!("frogger: data {}", data.rendition.display());
 
     let steps: Vec<Step> = match args.level {
+        _ if args.video.is_some() => vec![Step::Video(args.video.clone().unwrap())],
         _ if args.frontend => vec![Step::Frontend],
         _ if args.boot => vec![Step::Boot],
         _ if args.demo.is_some() => {
@@ -173,15 +192,31 @@ fn main() {
             vec![Step::Multi(w, l, n)]
         }
         Some((w, l)) => vec![Step::Level(w, l)],
-        // Startup FMVs, then Garden 1 (frontend not ported yet).
         None if args.headless => vec![Step::Level(0, 0)],
-        None => vec![Step::Video("hasbros".into()), Step::Video("blitzs".into()), Step::Level(0, 0)],
+        // The game's own start-up: title, logo FMVs, frontend.
+        None => vec![Step::Boot],
     };
     let res = if args.headless { headless(data, &cfg, &args, steps) } else { run_window(data, cfg, &args, steps) };
     if let Err(e) = res {
         eprintln!("frogger: {e}");
         std::process::exit(1);
     }
+}
+
+/// `--dev-unlock`: a save block (`MakeSaveGameBlock`) with every level open and
+/// completed and the training done (arcade machine, multiplayer, book pages).
+fn dev_unlock_save() -> Vec<u8> {
+    let mut g = f2_game::Game::new();
+    g.savegame.global_music_vol = f2_game::menus::MAX_SOUND_VOL;
+    g.savegame.global_sound_vol = f2_game::menus::MAX_SOUND_VOL;
+    g.frogger.player[0].lives = 3;
+    for w in g.layout.world_visual_data.iter_mut() {
+        for l in w.level_visual_data.iter_mut() {
+            l.level_open = f2_game::layout::LEVEL_OPEN;
+            l.level_completed = 1;
+        }
+    }
+    g.make_save_game_block()
 }
 
 fn make_audio(cfg: &Config, mute: bool) -> AudioEngine {
@@ -202,6 +237,17 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.set_display(cfg.profile, cfg.display_settings(Profile::Enhanced));
     app.set_input(cfg.bindings(), cfg.input.deadzone, cfg.hop_buffer_frames(Profile::Enhanced));
     app.hud_probe = args.hud_probe;
+    // Headless runs only read a save given explicitly and never write one.
+    app.save_data = match (&args.save, args.dev_unlock) {
+        (_, true) => Some(dev_unlock_save()),
+        (Some(p), _) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
+        _ => None,
+    };
+    app.pad_script = match &args.pad_script {
+        Some(p) => Some(padscript::PadScript::load(p)?),
+        None => None,
+    };
+    let frames = app.pad_script.as_ref().map_or(args.frames as u64, |s| (args.frames as u64).max(s.last_tick() + 1));
     app.push_steps(steps);
     let kb = f2_platform::KeyboardState::default();
     // First update loads the level (no time passes), then exactly N ticks.
@@ -211,7 +257,14 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     }
     // Debug: `F2_SHOT_UNTIL=tongue|ring|decal|lightning` stops at the first tick showing it.
     let until = std::env::var("F2_SHOT_UNTIL").ok();
-    for _ in 0..args.frames {
+    for _ in 0..frames {
+        let shots: Vec<PathBuf> = app.pad_script.as_ref().map_or(Vec::new(), |s| s.shots_at(app.ticks).cloned().collect());
+        for out in shots {
+            app.draw(w, h);
+            let img = app.r.render_to_image(app.clear_color()).map_err(|e| e.to_string())?;
+            img.write_png(&out).map_err(|e| e.to_string())?;
+            eprintln!("frogger: tick {}: mode {}, wrote {}", app.ticks, app.game.game_state.mode, out.display());
+        }
         if let Some(u) = &until {
             use f2_game::specfx::FxDraw;
             let g = &app.game;
@@ -279,6 +332,9 @@ struct Host {
     cfg: Config,
     mute: bool,
     hud_probe: bool,
+    pad_script: Option<padscript::PadScript>,
+    save_path: PathBuf,
+    dev_unlock: bool,
     steps: Vec<Step>,
     app: Option<App>,
     gfx: Option<Gfx>,
@@ -333,6 +389,12 @@ impl WindowApp for Host {
                     }
                 }
                 app.hud_probe = self.hud_probe;
+                app.pad_script = self.pad_script.take();
+                app.save_path = Some(self.save_path.clone());
+                if self.dev_unlock {
+                    app.save_data = Some(dev_unlock_save());
+                    app.save_path = None;
+                }
                 app.push_steps(std::mem::take(&mut self.steps));
                 self.app = Some(app);
                 self.gfx = Some(g);
@@ -397,6 +459,13 @@ impl WindowApp for Host {
                 eprintln!("frogger: saving config: {e}");
             }
         }
+        if let Some((music, sfx)) = app.requests.save_volumes.take() {
+            self.cfg.audio.music = music.clamp(0, 100) as u8;
+            self.cfg.audio.sfx = sfx.clamp(0, 100) as u8;
+            if let Err(e) = self.cfg.save_default() {
+                eprintln!("frogger: saving config: {e}");
+            }
+        }
         if app.requests.quit {
             return Flow::Exit;
         }
@@ -453,6 +522,12 @@ fn run_window(data: data::Data, cfg: Config, args: &Args, steps: Vec<Step>) -> R
         data: Some(data),
         mute: args.mute,
         hud_probe: args.hud_probe,
+        pad_script: match &args.pad_script {
+            Some(p) => Some(padscript::PadScript::load(p)?),
+            None => None,
+        },
+        save_path: args.save.clone().unwrap_or_else(|| f2_platform::paths::save_dir().join("savegame.dat")),
+        dev_unlock: args.dev_unlock,
         fullscreen: wc.fullscreen,
         cfg,
         steps,
