@@ -197,7 +197,7 @@ impl Game {
             let n = self.frogmove.curr_tile[p].map_or(SVector::default(), |t| self.map.tiles[t.idx()].normal);
             FVector { vx: n.vx as i32, vy: n.vy as i32, vz: n.vz as i32 }
         };
-        if self.frogger.player[p].is_croaking.time % 2 == 0 {
+        if self.frogger.player[p].is_croaking.time.is_multiple_of(2) {
             let effect_pos = self.frog_position(p);
             self.prep_for_priority_effect();
             let fx = self.create_special_effect_direct(FXTYPE_CROAK, &effect_pos, &up, 81920, 4096, 410, 6144);
