@@ -26,6 +26,12 @@ Data goes to `$F2_DATA_ROOT` or the platform data dir (`~/.local/share/frogger2-
 Use `--data-root game-data` to keep it inside the checkout (gitignored). `--oracle` additionally
 extracts the original exe for developer parity testing.
 
+## Documentation
+
+- [docs/USER-GUIDE.md](docs/USER-GUIDE.md): playing it: import, controls, profiles, config, saves, troubleshooting
+- [docs/TOOLS.md](docs/TOOLS.md): importer, viewer, exporter, script compiler, modkit, trace/parity tools, oracle runner
+- [docs/BUILDING.md](docs/BUILDING.md): building, packaging, WSL notes
+
 ## Layout
 
 | Path | What |
