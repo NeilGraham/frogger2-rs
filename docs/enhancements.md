@@ -9,12 +9,43 @@ profiles:
 
 ## Fixes (see `research/known-bugs.md` for root causes)
 
-- [ ] Camera divide-by-zero crash (#4)
-- [ ] Pause resumes wrong music (#7)
-- [ ] Particle over-spawn/render (#10)
-- [ ] Stuck after vacuum tube on last level (#11)
-- [ ] Frame-rate–dependent glide (#9) — fixed by architecture; verify
-- [ ] Audit every `gameSpeed`-scaled update for other FPS-dependent behaviour
+Gameplay options (P6-1) live in `f2_game::enhance::GameOptions` (part of `SessionConfig`,
+`Game::set_game_options`); every hook is a no-op in the authentic profile and in recorded
+demos (`DEMO_MODE` always replays retail behaviour), so the 0-0 / 1-0 / 6-1 demo traces stay
+identical to the oracle. Host side: `crates/frogger/src/gameplay.rs`, config `[gameplay]`
+(`docs/BUILDING.md`), edited in game with F10 -> Tab -> Gameplay.
+
+- [x] Camera divide-by-zero crash (#4): `SlurpCamPosition`'s `(gameSpeed<<12)/FMul(camSpeed,
+  transCamSpeedMult)` with a zero divisor; the port guards it in both profiles (logs, factor
+  4096 = snap) — a crash is never "authentic" (`cam.rs` `slurp_factor`). The multiplayer
+  `camDiv` division is guarded too (#26).
+- [x] Pause resumes wrong music (#7): free by construction — retail `UnPauseAudio` resumes with a bare
+  MCI `PLAY` (no track / position) after `PauseAudio`'s `STOP` (suspected cause: the device does not
+  resume the level's track; Garden is the first audio track); the port pauses and resumes the same music stream (`f2-audio`
+  `pause_audio`/`unpause_audio`), so the level's own track continues.
+- [x] Particle over-spawn/render (#10): a frame-rate artefact, resolved by the fixed 60 Hz tick.
+  Retail spawns smoke on `frameCount&1` (rendered frames, `enemies.c:1239`), repeats
+  `actFrameCount`-gated spawns when several frames share one count, and specfx fades use
+  `(fade*gameSpeed)>>12`, which truncates to 0 at high FPS so effects never fade and fill the
+  pools (512 particles, `maxSpecfx`); new effects then silently fail. Pools are capped, no leak.
+  In the port one tick = one retail 60 FPS frame and effects spawn only in the tick (never per
+  rendered frame), so no toggle is needed.
+- [x] Stuck after vacuum tube on last level (#11): toggle `fix_tube_softlock` (enhanced
+  default on). Swampy 3 (`script-6-4.fev`): `KillFrog` leaves `currPlatform` set, so a frog that
+  dies on a tube still satisfies `FrogOnPlatform` and is fired out by `SpringP`; if it respawns
+  mid-flight the landing trigger never fires and the tube is parked in the shaft -> softlock.
+  Fix: a dead frog is not on a platform (`evenfunc.rs` `frog_on_platform`). Root cause found by
+  source/script reading, not yet reproduced in a run.
+- [x] Frame-rate–dependent glide (#9) — fixed by architecture (fixed 60 Hz tick, `gameSpeed`
+  is always 4096).
+- [x] Audit every `gameSpeed`-scaled update for other FPS-dependent behaviour: all 81 uses in
+  `f2-game` are evaluated with `gameSpeed == 4096`, i.e. exactly retail at 60 FPS. In retail
+  they fall in four groups: linear (FPS-independent up to rounding: frog/enemy/platform motion,
+  idle timers, camera, multiplayer timers), truncating `>>12` (frozen at high FPS: baby idle,
+  specfx/particle/sprite/overlay/text fades, procedural textures), clamped `.min(4092)` (enemy
+  slerps slow down at low FPS) and per-frame exponential curves (tongue, `enemies.rs:743`). None
+  needs a fix while the simulation runs at a fixed 60 Hz; anything that renders between ticks
+  must interpolate, never re-run simulation code.
 
 ## Display
 
@@ -58,11 +89,26 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
 
 ## Gameplay & QoL
 
-- [ ] Save slots + auto-save
-- [ ] Skip FMV, fast-forward cutscenes
-- [ ] Level select / practice mode (E3 level-select code exists: `E3_Demo.c`)
-- [ ] Speedrun timer (in-game time + real time), splits, ghost replays (we have deterministic input recording!)
-- [ ] Assist options: infinite lives, slower enemies, checkpoint tweaks
+- [x] Save slots + auto-save: `gameplay.save_slot` 1..4 (slot 1 = `saves/savegame.dat`, slot N =
+  `saves/slotN/savegame.dat`, format unchanged); Gameplay page: change slot, Enter loads it
+  (restarts at the title), "Save now" writes `MakeSaveGameBlock` to the slot. `auto_save = false`
+  stops writing the game's own saves (level complete, resets).
+- [x] Skip FMV: any key / pad button skips (`skip_fmv_any_key`, enhanced; authentic keeps
+  Enter/Esc); `skip_intro_logos` drops the Hasbro/Blitz logo FMVs. [ ] fast-forward cutscenes
+- [x] Level select / practice mode: F10 -> Level select lists every story chapter (`BookStart`
+  from that chapter) and every single-player level (`ArcadeStart`, practice), unlocked or not;
+  `--story N` / `--practice W L`. Built as a host page over `Game::start_story/start_arcade`
+  instead of porting the unused `E3_Demo.c` state machine.
+- [x] Speedrun timer: IGT = 60 Hz ticks in `INGAME_MODE` (the `actFrameCount` advance while
+  playing; pause, level complete and loading excluded), per level and per run, split at
+  `LEVELCOMPLETE_MODE`; RTA wall clock from the first level of a run; shown top right;
+  splits appended to `<config>/saves/splits.csv`, best per level shown as +/- delta.
+  [ ] ghost replays
+- [x] Assist options: infinite lives (`KillFrog` skips `lives--`), invulnerability (enemy hits
+  ignored in `NMEDamageFrog`; hazard tiles/falls/script deaths still kill), slower enemies
+  (`enemy_speed` 25..100 %: on skipped ticks every enemy and platform is frozen in time — path
+  time stamps advance with `actFrameCount` — so they resume where they were; at <100 % motion
+  is stepped like a lower frame rate). [ ] checkpoint tweaks
 - [ ] Accessibility: colour-blind safe HUD, text scaling, reduced flashing
 - [ ] Unlock cut content where it exists in data (City single-player levels were commented out; check data)
 - [ ] Debug/dev menu (original debug code under `#ifndef FINAL_MASTER`)

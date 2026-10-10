@@ -13,14 +13,14 @@ Legend for "Port": **free** = disappears by construction in the Rust architectur
 | 1 | Max resolution 1024×768-ish; no widescreen | Config dialog list; 4:3 projection & overlay maths | High-res + widescreen, sprite/coin scaling | free (any res) + widescreen rules |
 | 2 | 16-bit colour only | `DDrawCreateSurfaces(…,16…)` hard-coded | 32-bit | free |
 | 3 | Half-screen / wrong-colour fullscreen images, garbled level-select book in 32-bit | 16bpp assumptions in backdrop/surface copies | fixed | free |
-| 4 | Camera divide-by-zero crash | `cam.c` | fixed | fix |
+| 4 | Camera divide-by-zero crash | `cam.c:539` `SlurpCamPosition`: `(gameSpeed<<12)/FMul(camSpeed,transCamSpeedMult)` with a zero divisor | fixed | fix (guarded in both profiles, `cam.rs` `slurp_factor`) |
 | 5 | Config window sometimes empty resolution list / hidden mouse | device enumeration | always show window | free (own launcher/settings) |
 | 6 | **Music doesn't loop / end-of-level music skipped on Vista+** | MCI CD-audio notify no longer delivered | WAV music from `music\` | free (streamed ripped tracks) |
-| 7 | Pause always resumes Garden track | `PrepareSong` logic on resume | fixed | toggle→fix |
+| 7 | Pause always resumes Garden track | `UnPauseAudio` (pcaudio.c:764) resumes with a bare MCI `PLAY` (no track/position) after `STOP` (suspected; Garden = first audio track) | fixed | free (music stream paused/resumed) |
 | 8 | Needs CD in drive for videos | `FindFrogger2CD` | play from `Video\` | free (imported data dir) |
 | 9 | **Gliding lasts longer at high FPS (windowed)** | variable-timestep integration in frog glide | not fixed | free (fixed 60 Hz sim) |
-| 10 | Particles render wrong / too many | particle spawn tied to frame count? | not fixed | investigate → toggle |
-| 11 | Last level: can get stuck after vacuum tube | level script / tile setup | not fixed | fix after root cause |
+| 10 | Particles render wrong / too many | frame-rate artefact: smoke on `frameCount&1` (rendered frames, enemies.c:1239), `actFrameCount`-gated spawns repeated when frames share a count, specfx fades `(fade*gameSpeed)>>12` truncating to 0 at high FPS so pools (512 particles / `maxSpecfx`) fill and new effects fail | not fixed | free (fixed 60 Hz tick) |
+| 11 | Last level: can get stuck after vacuum tube | Swampy 3 (`script-6-4.fev`): `KillFrog` leaves `currPlatform` set, so a dead frog still satisfies `FrogOnPlatform` (evenfunc.c:90) and is fired out by `EV_SPRING_P` (script.c:1071, no dead check); respawning mid-flight skips the landing trigger and the tube is parked -> softlock. Designers guarded tube 5 only. (Source reading; not reproduced yet) | not fixed | toggle `fix_tube_softlock` (enhanced): dead frog is not on a platform |
 | 12 | Software renderer half-screen, purple/green | SoftStation 565/555 mismatch | n/a | free (no software renderer) |
 | 13 | Settings corrupted after DirectX failure | registry write on failure path | — | free (own config file) |
 | 14 | No FPS cap (game runs uncapped in windowed mode) | — | FPS cap | free (vsync/pacing) |

@@ -159,6 +159,12 @@ impl Game {
 
     /// Port of `FrogOnPlatform` (Common/evenfunc.c:90).
     pub fn frog_on_platform(&self, pl: i32, id: i32) -> bool {
+        // P6-1 (#11, enhanced): `KillFrog` leaves `currPlatform` set, so a frog that died on
+        // a vacuum tube (Swampy 3, script-6-4) is still fired out by `SpringP` and respawns
+        // behind the parked tube -> softlock. A dead frog is not "on" a platform.
+        if self.game_options().fix_tube_softlock_on() && self.frogger.player.get(pl as usize).is_some_and(|p| p.frog_state & FROGSTATUS_ISDEAD != 0) {
+            return false;
+        }
         match self.platform.curr_platform.get(pl as usize).copied().flatten() {
             Some(p) => self.platform.platform_list.array[p.idx()].uid == id,
             None => false,

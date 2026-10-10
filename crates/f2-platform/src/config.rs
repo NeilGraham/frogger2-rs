@@ -21,6 +21,49 @@ pub struct Config {
     /// Selected imported rendition (e.g. `usa`, `eu`); `None` = first installed.
     pub rendition: Option<String>,
     pub input: Input,
+    /// Gameplay / QoL options (`[gameplay]`, P6-1); they apply in the enhanced profile only.
+    pub gameplay: Gameplay,
+}
+
+/// `[gameplay]`: enhanced-profile gameplay and QoL options (`docs/enhancements.md`). The
+/// authentic profile ignores everything here except `save_slot`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Gameplay {
+    /// Assist: dying never costs a life.
+    pub infinite_lives: bool,
+    /// Assist: enemies cannot hurt the frog.
+    pub invulnerable: bool,
+    /// Assist: enemy/platform speed in percent (25..=100).
+    pub enemy_speed: u32,
+    /// Any key or pad button skips an FMV (authentic: Enter/Esc only).
+    pub skip_fmv_any_key: bool,
+    /// Skip the Hasbro / Blitz logo FMVs at start-up.
+    pub skip_intro_logos: bool,
+    /// Show the speedrun timer (in-game time + real time) and write splits.
+    pub speedrun_timer: bool,
+    /// Save slot 1..=4 (slot 1 = `saves/savegame.dat`, slot N = `saves/slotN/savegame.dat`).
+    pub save_slot: u8,
+    /// Write the game's automatic saves (after a level); off = only "Save now" in the menu.
+    pub auto_save: bool,
+    /// Fix known bug #11 (softlock after a vacuum tube on the last level).
+    pub fix_tube_softlock: bool,
+}
+
+impl Default for Gameplay {
+    fn default() -> Self {
+        Gameplay {
+            infinite_lives: false,
+            invulnerable: false,
+            enemy_speed: 100,
+            skip_fmv_any_key: true,
+            skip_intro_logos: false,
+            speedrun_timer: false,
+            save_slot: 1,
+            auto_save: true,
+            fix_tube_softlock: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -236,6 +279,7 @@ impl Default for Config {
             data_root: None,
             rendition: None,
             input: Input::default(),
+            gameplay: Gameplay::default(),
         }
     }
 }

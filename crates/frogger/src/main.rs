@@ -12,7 +12,9 @@
 //! `--pad-script FILE` drives player 1's pad: lines `TICK BUTTONS` hold the buttons
 //! (`cross+up`, `none`, or a hex mask) from that tick on; `TICK shot FILE.png` writes a
 //! screenshot before that tick (headless).
-//! Keys: F1 free camera, F2 tile overlay, F10 controls (rebinding), F11 fullscreen, Esc quit (Enter/Esc skip videos);
+//! Keys: F1 free camera, F2 tile overlay, F10 settings (controls / gameplay / level select;
+//! Tab switches page), F11 fullscreen, Esc quit (Enter/Esc skip videos; any key in the
+//! enhanced profile);
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
@@ -21,6 +23,7 @@ mod book;
 mod controls;
 mod data;
 mod fx;
+mod gameplay;
 mod overlay;
 mod padscript;
 mod render;
@@ -45,6 +48,8 @@ struct Args {
     boot: bool,
     multi: Option<(u32, u32, i32)>,
     demo: Option<(u32, u32)>,
+    choice: Option<gameplay::LevelChoice>,
+    screenshot_settings: Option<gameplay::Tab>,
     headless: bool,
     frames: u32,
     screenshot: Option<PathBuf>,
@@ -67,8 +72,10 @@ fn usage() -> ! {
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
          \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
+         practice: [--practice WORLD LEVEL | --story CHAPTER] (level select through a game session)\n\
+         \x20      [--screenshot-settings controls|gameplay|levels] (headless: F10 page in the screenshot)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
-         keys: F1 free camera, F2 tile overlay, F10 controls, F11 fullscreen, Esc quit (Enter/Esc skip videos)\n\
+         keys: F1 free camera, F2 tile overlay, F10 settings (Tab: controls/gameplay/level select), F11 fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
          \x20     F9 fog, F12 draw distance"
     );
@@ -84,6 +91,8 @@ fn parse_args() -> Args {
         boot: false,
         multi: None,
         demo: None,
+        choice: None,
+        screenshot_settings: None,
         headless: false,
         frames: 120,
         screenshot: None,
@@ -125,6 +134,20 @@ fn parse_args() -> Args {
                 let w = num(it.next());
                 let l = num(it.next());
                 a.demo = Some((w, l));
+            }
+            "--practice" => {
+                let w = num(it.next());
+                let l = num(it.next());
+                a.choice = Some(gameplay::LevelChoice::Arcade(w, l));
+            }
+            "--story" => a.choice = Some(gameplay::LevelChoice::Story(num(it.next()))),
+            "--screenshot-settings" => {
+                a.screenshot_settings = Some(match it.next().as_deref() {
+                    Some("controls") => gameplay::Tab::Controls,
+                    Some("gameplay") => gameplay::Tab::Gameplay,
+                    Some("levels") => gameplay::Tab::Levels,
+                    _ => usage(),
+                })
             }
             "--headless" => a.headless = true,
             "--frames" => a.frames = num(it.next()),
@@ -182,6 +205,7 @@ fn main() {
     let steps: Vec<Step> = match args.level {
         _ if args.video.is_some() => vec![Step::Video(args.video.clone().unwrap())],
         _ if args.frontend => vec![Step::Frontend],
+        _ if args.choice.is_some() => vec![Step::Choice(args.choice.unwrap())],
         _ if args.boot => vec![Step::Boot],
         _ if args.demo.is_some() => {
             let (w, l) = args.demo.unwrap();
@@ -237,6 +261,7 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.set_display(cfg.profile, cfg.display_settings(Profile::Enhanced));
     app.set_input(cfg.bindings(), cfg.input.deadzone, cfg.hop_buffer_frames(Profile::Enhanced));
     app.hud_probe = args.hud_probe;
+    app.set_gameplay(cfg.gameplay.clone(), None);
     // Headless runs only read a save given explicitly and never write one.
     app.save_data = match (&args.save, args.dev_unlock) {
         (_, true) => Some(dev_unlock_save()),
@@ -285,6 +310,9 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
         while app.video.is_some() {
             app.end_video();
         }
+    }
+    if let Some(tab) = args.screenshot_settings {
+        app.open_settings(tab);
     }
     if args.screenshot_rebind {
         // Demo of the F10 screen: rebind Down to Up's key (conflict message), then start
@@ -395,6 +423,10 @@ impl WindowApp for Host {
                     app.save_data = Some(dev_unlock_save());
                     app.save_path = None;
                 }
+                // P6-1: gameplay options, save slots (next to slot 1's file), splits.
+                let slot1 = (!self.dev_unlock).then(|| self.save_path.clone());
+                app.set_gameplay(self.cfg.gameplay.clone(), slot1);
+                app.speedrun = gameplay::Speedrun::new(Some(f2_platform::paths::save_dir().join("splits.csv")));
                 app.push_steps(std::mem::take(&mut self.steps));
                 self.app = Some(app);
                 self.gfx = Some(g);
@@ -455,6 +487,13 @@ impl WindowApp for Host {
         }
         if std::mem::take(&mut app.requests.save_bindings) {
             self.cfg.set_bindings(&app.bindings);
+            if let Err(e) = self.cfg.save_default() {
+                eprintln!("frogger: saving config: {e}");
+            }
+        }
+        if std::mem::take(&mut app.requests.save_gameplay) {
+            self.cfg.gameplay = app.gameplay.clone();
+            self.cfg.profile = app.profile;
             if let Err(e) = self.cfg.save_default() {
                 eprintln!("frogger: saving config: {e}");
             }

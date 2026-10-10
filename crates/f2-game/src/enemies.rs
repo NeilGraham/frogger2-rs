@@ -388,6 +388,9 @@ impl Game {
         if self.frogger.player[p].frog_state & FROGSTATUS_ISSAFE != 0 || self.nme(nme).flags & ENEMY_NEW_NODAMAGE != 0 {
             return;
         }
+        if self.game_options().invulnerable_on() {
+            return; // P6-1: invulnerability assist (enhanced only).
+        }
 
         if self.game_state.mode == INGAME_MODE {
             if self.nme(nme).flags & ENEMY_NEW_ONEHITKILL != 0 {

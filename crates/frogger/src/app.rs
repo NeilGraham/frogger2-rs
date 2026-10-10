@@ -3,6 +3,7 @@
 
 use crate::controls::{Act, ControlsUi};
 use crate::data::Data;
+use crate::gameplay::{GAct, GameplayUi, LevelChoice, LevelSelectUi, Speedrun, Tab};
 use crate::overlay::{GameFonts, TileScroll};
 use crate::render::{self, FlyCam, LevelScene, Snap};
 use crate::video::VideoPlayer;
@@ -12,7 +13,7 @@ use f2_formats::objbank::ObjectBank;
 use f2_game::define::{mode, MULTILOCAL, SINGLEPLAYER};
 use f2_game::ids::ActorId;
 use f2_game::{Effect, Game, TickInput};
-use f2_platform::{dik, Bindings, ControllerFamily, DisplaySettings, HopBuffer, InputMapper, KeyboardState, PadData, Profile, RawEvent, RawPad, TextureFilter};
+use f2_platform::{dik, Bindings, Gameplay, ControllerFamily, DisplaySettings, HopBuffer, InputMapper, KeyboardState, PadData, Profile, RawEvent, RawPad, TextureFilter};
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
@@ -36,6 +37,9 @@ pub enum Step {
     Multi(u32, u32, i32),
     /// The recorded demo of a level (`DEMO_MODE`, `DEMOS\RECORD-W-L.KEY`).
     Demo(u32, u32),
+    /// Level select / practice (P6-1): a story chapter or an arcade level through a game
+    /// session, as the F10 level-select page starts it.
+    Choice(LevelChoice),
 }
 
 /// Host-only toggles requested by hotkeys, applied by the window layer.
@@ -47,6 +51,8 @@ pub struct Requests {
     pub save_bindings: bool,
     /// The game changed the music / sound volume (0..=100): persist them in the config.
     pub save_volumes: Option<(i32, i32)>,
+    /// The gameplay tab changed `[gameplay]` / the profile: persist them (P6-1).
+    pub save_gameplay: bool,
 }
 
 pub struct App {
@@ -126,6 +132,17 @@ pub struct App {
     /// The texture last copied onto the arcade screen (`menus.arcade_screen_copy`) and
     /// the source image it came from.
     arcade_copied: Option<(String, TexHandle)>,
+    // ---- P6-1 gameplay QoL
+    /// `[gameplay]` options (assists apply in the enhanced profile).
+    pub gameplay: Gameplay,
+    /// Slot 1's `savegame.dat` (other slots live next to it, `gameplay::slot_path`).
+    pub save_slot1: Option<std::path::PathBuf>,
+    /// Speedrun timer (shown when `gameplay.speedrun_timer`, enhanced profile).
+    pub speedrun: Speedrun,
+    /// Page of the F10 settings screen.
+    tab: Tab,
+    gameplay_ui: GameplayUi,
+    level_ui: LevelSelectUi,
 }
 
 impl App {
@@ -191,6 +208,12 @@ impl App {
             save_data: None,
             pad_script: None,
             arcade_copied: None,
+            gameplay: Gameplay::default(),
+            save_slot1: None,
+            speedrun: Speedrun::default(),
+            tab: Tab::default(),
+            gameplay_ui: GameplayUi::default(),
+            level_ui: LevelSelectUi::default(),
         };
         app.rebuild_renderer();
         app.install_game_hooks();
@@ -349,6 +372,7 @@ impl App {
                     }
                 }
                 Step::Frontend => self.start_frontend(),
+                Step::Choice(c) => self.start_choice(c),
                 Step::Boot => {
                     let cfg = self.session_config();
                     self.game = Game::new_session(cfg);
@@ -434,7 +458,98 @@ impl App {
     fn session_config(&self) -> f2_game::session::SessionConfig {
         let mut cfg = f2_game::session::SessionConfig::new(std::sync::Arc::new(self.data.clone()));
         cfg.save_data = self.save_data.clone().or_else(|| self.save_path.as_ref().and_then(|p| std::fs::read(p).ok()));
+        cfg.options = self.game_options();
         cfg
+    }
+
+    // ------------------------------------------------------------ P6-1 gameplay QoL
+
+    /// Sets the `[gameplay]` options and slot 1's save file (host start-up).
+    pub fn set_gameplay(&mut self, gp: Gameplay, slot1: Option<std::path::PathBuf>) {
+        self.gameplay = gp;
+        self.save_slot1 = slot1;
+        self.apply_save_slot();
+        self.game.set_game_options(self.game_options());
+    }
+
+    /// The simulation options for the current profile and `[gameplay]`.
+    pub fn game_options(&self) -> f2_game::enhance::GameOptions {
+        crate::gameplay::game_options(self.profile, &self.gameplay)
+    }
+
+    /// Host QoL (FMV skipping, logos, timer, auto-save) is on in the enhanced profile.
+    fn qol(&self) -> bool {
+        self.profile == Profile::Enhanced
+    }
+
+    /// Points `save_path` at the selected slot.
+    fn apply_save_slot(&mut self) {
+        if let Some(p) = &self.save_slot1 {
+            self.save_path = Some(crate::gameplay::slot_path(p, self.gameplay.save_slot));
+        }
+    }
+
+    /// Writes the current progress (`MakeSaveGameBlock`) to the selected slot.
+    pub fn save_now(&mut self) -> Result<std::path::PathBuf, String> {
+        let path = self.save_path.clone().ok_or("saving is disabled (no save file)")?;
+        let data = self.game.make_save_game_block();
+        write_save(&path, &data)?;
+        Ok(path)
+    }
+
+    /// Starts a story chapter or a practice (arcade) level from the level-select page; a
+    /// session (title / frontend) is created first if there is none.
+    pub fn start_choice(&mut self, c: LevelChoice) {
+        if !self.has_session() {
+            self.start_frontend();
+        }
+        self.end_video();
+        self.video_queue.clear();
+        match c {
+            LevelChoice::Story(n) => self.game.start_story(n),
+            LevelChoice::Arcade(w, l) => self.game.start_arcade(w, l),
+        }
+        self.dispatch_effects();
+        self.process_level_loads();
+        // A fresh level: no interpolation from the previous scene.
+        self.prev.clear();
+        self.prev_cam = None;
+    }
+
+    /// A key on the gameplay / level-select pages.
+    fn settings_key(&mut self, k: u8) {
+        let act = match self.tab {
+            Tab::Gameplay => self.gameplay_ui.key(k, &mut self.profile, &mut self.gameplay),
+            _ => self.level_ui.key(k),
+        };
+        match act {
+            GAct::None => {}
+            GAct::Close => self.toggle_controls(),
+            GAct::Changed => {
+                self.apply_display();
+                self.apply_save_slot();
+                self.game.set_game_options(self.game_options());
+                self.requests.save_gameplay = true;
+                self.gameplay_ui.msg.clear();
+            }
+            GAct::LoadSlot => {
+                self.apply_save_slot();
+                self.requests.save_gameplay = true;
+                self.toggle_controls();
+                self.start_frontend();
+                self.osd = Some((format!("save slot {} loaded", self.gameplay.save_slot), 2.5));
+            }
+            GAct::SaveNow => {
+                self.gameplay_ui.msg = match self.save_now() {
+                    Ok(p) => format!("saved to slot {} ({})", self.gameplay.save_slot, p.display()),
+                    Err(e) => e,
+                };
+            }
+            GAct::Start(c) => {
+                self.toggle_controls();
+                self.start_choice(c);
+            }
+        }
     }
 
     /// The real start-up: a game session (`CommonInit`), straight into the frontend
@@ -587,12 +702,24 @@ impl App {
         self.requests.save_bindings = true;
     }
 
+    /// Opens the settings screen on `tab` (headless screenshots).
+    pub fn open_settings(&mut self, tab: Tab) {
+        if self.controls.is_none() {
+            self.toggle_controls();
+        }
+        self.tab = tab;
+    }
+
     /// Opens (or closes) the rebinding screen.
     pub fn toggle_controls(&mut self) {
         self.controls = match self.controls {
             Some(_) => None,
             None => Some(ControlsUi::default()),
         };
+        if self.controls.is_some() {
+            self.level_ui = LevelSelectUi::build(&self.game);
+            self.gameplay_ui.msg.clear();
+        }
         self.kb.pressed.clear();
         self.kb.down = [false; 256];
         self.acc = Duration::ZERO;
@@ -600,6 +727,13 @@ impl App {
 
     /// A raw pad event (button / strong stick push) from the host.
     pub fn pad_event(&mut self, ev: RawEvent) {
+        if self.video.is_some() && self.controls.is_none() && self.qol() && self.gameplay.skip_fmv_any_key && matches!(ev, RawEvent::PadButton(..)) {
+            self.end_video(); // P6-1: skip FMVs with any button
+            return;
+        }
+        if self.tab != Tab::Controls {
+            return;
+        }
         if let Some(ui) = &mut self.controls {
             if ui.raw(&mut self.bindings, ev) == Act::Changed {
                 self.apply_bindings();
@@ -636,7 +770,18 @@ impl App {
     fn hotkeys(&mut self, pressed: &[u8]) {
         for &k in pressed {
             if self.controls.is_some() {
-                self.controls_key(k);
+                let capturing = self.controls.as_ref().is_some_and(|c| c.rebind.is_some());
+                if k == dik::TAB && !capturing {
+                    self.tab = self.tab.next();
+                } else if self.tab == Tab::Controls {
+                    self.controls_key(k);
+                } else {
+                    self.settings_key(k);
+                }
+                continue;
+            }
+            if self.video.is_some() && self.qol() && self.gameplay.skip_fmv_any_key && k != dik::F11 {
+                self.end_video(); // P6-1: any key skips an FMV
                 continue;
             }
             match k {
@@ -732,8 +877,16 @@ impl App {
         if let Some(b) = self.pad_override {
             pads[0] = b;
         }
+        self.game.set_game_options(self.game_options()); // P6-1
         self.game.tick(TickInput { pads });
         self.ticks += 1;
+        if self.qol() && self.gameplay.speedrun_timer {
+            let p = &self.game.frogger.player[0];
+            let (m, w, l) = (self.game.game_state.mode, p.world_num as u32, p.level_num as u32);
+            if let Some(s) = self.speedrun.on_tick(m, w, l, std::time::Instant::now()) {
+                eprintln!("frogger: split {}-{}: {} (run {})", s.world, s.level, crate::gameplay::fmt_frames(s.igt), crate::gameplay::fmt_frames(s.total_igt));
+            }
+        }
         self.dispatch_effects();
         self.process_level_loads();
         self.grab_textures();
@@ -809,6 +962,11 @@ impl App {
             Effect::PlayMusic { track, looped } => self.audio.play_music(track, looped),
             Effect::StopMusic => self.audio.stop_music(),
             Effect::PlayVideo { name } => {
+                use f2_game::story::{FMV, FMV_BLITZ_LOGO, FMV_HASBRO_LOGO};
+                let logo = [FMV_HASBRO_LOGO, FMV_BLITZ_LOGO].iter().any(|&i| FMV[i as usize].name.eq_ignore_ascii_case(&name));
+                if logo && self.qol() && self.gameplay.skip_intro_logos {
+                    return; // P6-1: skip the start-up logos
+                }
                 if self.video.is_some() {
                     self.video_queue.push_back(name);
                 } else {
@@ -817,9 +975,13 @@ impl App {
             }
             Effect::SaveGame { data } => {
                 let Some(path) = self.save_path.clone() else { return };
-                let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &data)) {
-                    eprintln!("frogger: saving {}: {e}", path.display());
+                if self.qol() && !self.gameplay.auto_save {
+                    // P6-1: auto-save off; "Save now" in the gameplay page writes the slot.
+                    eprintln!("frogger: auto-save off, not writing {}", path.display());
+                    return;
+                }
+                if let Err(e) = write_save(&path, &data) {
+                    eprintln!("frogger: {e}");
                 }
             }
             Effect::Rumble { player, strength, frames } => self.rumble.push((player, strength, frames)),
@@ -926,8 +1088,28 @@ impl App {
             self.audio.set_listener(Listener { cam_source: s.map(|x| (x * 10.0 * 4096.0) as i32), view: self.r.view.v_matrix });
         }
         self.draw_hud();
+        if self.qol() && self.gameplay.speedrun_timer && self.controls.is_none() {
+            if let Some(font) = self.font_id {
+                let ow = self.r.output_size().0 as f32;
+                let mut y = 72.0;
+                for l in self.speedrun.lines(std::time::Instant::now()) {
+                    self.r.draw_text(font, ow - 170.0, y, &l, [255, 255, 160, 255], 1.0, None);
+                    y += 14.0;
+                }
+            }
+        }
         if let (Some(ui), Some(font)) = (&self.controls, self.font_id) {
-            ui.draw(&mut self.r, font, &self.bindings, self.families[0]);
+            match self.tab {
+                Tab::Controls => ui.draw(&mut self.r, font, &self.bindings, self.families[0]),
+                tab => {
+                    let ow = crate::controls::draw_backdrop(&mut self.r, font, tab.title());
+                    if tab == Tab::Gameplay {
+                        self.gameplay_ui.draw(&mut self.r, font, self.profile, &self.gameplay, ow);
+                    } else {
+                        self.level_ui.draw(&mut self.r, font, ow);
+                    }
+                }
+            }
         }
     }
 
@@ -997,6 +1179,12 @@ impl App {
     pub fn has_session(&self) -> bool {
         self.game.session.data.is_some()
     }
+}
+
+/// Writes a `savegame.dat` (creating its directory).
+fn write_save(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(path, data)).map_err(|e| format!("saving {}: {e}", path.display()))
 }
 
 fn on_off(b: bool) -> &'static str {

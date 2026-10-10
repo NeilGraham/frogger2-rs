@@ -115,15 +115,11 @@ impl ControlsUi {
     }
 
     pub fn draw(&self, r: &mut Renderer, font: FontId, b: &Bindings, family: ControllerFamily) {
-        let (iw, ih) = (r.view.width as f32, r.view.height as f32);
-        r.draw_quad(Quad2D::rect(0.0, 0.0, iw, ih, [0.0, 0.0, 1.0, 1.0], None, [0, 0, 0, 225], Blend::Semi));
-        let (ow, _) = r.output_size();
-        let ow = ow as f32;
+        let ow = draw_backdrop(r, font, "CONTROLS - PLAYER 1");
         let white = [255, 255, 255, 255];
         let grey = [170, 170, 170, 255];
         let yellow = [255, 230, 80, 255];
-        r.draw_text(font, 0.0, 14.0, "CONTROLS - PLAYER 1", white, 1.5, Some(ow / 2.0));
-        r.draw_text(font, 0.0, 40.0, &format!("pad prompts: {}", family.name()), grey, 1.0, Some(ow / 2.0));
+        r.draw_text(font, 0.0, 40.0, &format!("pad prompts: {}   (Tab: gameplay / level select)", family.name()), grey, 1.0, Some(ow / 2.0));
         let (x0, x1, mut y) = (24.0, 220.0, 64.0);
         for (i, &a) in ACTIONS.iter().enumerate() {
             let sel = i == self.sel;
@@ -153,6 +149,15 @@ impl ControlsUi {
         r.draw_text(font, 0.0, y + 30.0, "Up/Down select   Enter rebind   A add extra", grey, 1.0, Some(ow / 2.0));
         r.draw_text(font, 0.0, y + 46.0, "Backspace reset action   R reset all   F10/Esc close", grey, 1.0, Some(ow / 2.0));
     }
+}
+
+/// The settings screen's dimmed backdrop and page title; returns the output width.
+pub fn draw_backdrop(r: &mut Renderer, font: FontId, title: &str) -> f32 {
+    let (iw, ih) = (r.view.width, r.view.height);
+    r.draw_quad(Quad2D::rect(0.0, 0.0, iw, ih, [0.0, 0.0, 1.0, 1.0], None, [0, 0, 0, 225], Blend::Semi));
+    let ow = r.output_size().0 as f32;
+    r.draw_text(font, 0.0, 14.0, title, [255, 255, 255, 255], 1.5, Some(ow / 2.0));
+    ow
 }
 
 #[cfg(test)]
