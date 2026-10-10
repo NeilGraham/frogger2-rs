@@ -878,8 +878,47 @@ enum Explore {
     /// Won, but under the level's par time by this many ticks: the level-complete screen
     /// would then ask for a name (keyboard text entry, which neither the oracle's pad
     /// script nor `scenario_trace` can type), so the run could not continue and save.
-    TooFast(u32),
+    TooFast(u32, Vec<[u16; 4]>),
     GaveUp,
+}
+
+/// Inserts `pad` idle ticks into `path` (tried at points from the end backwards, where
+/// no button is held) and replays from `root`: the first variant that still wins and is
+/// not under par.
+fn pad_for_par(pl: &Planner, root: &Game, path: &[[u16; 4]], pad: u32) -> Option<Vec<[u16; 4]>> {
+    let mut at = path.len();
+    let mut tries = 0;
+    while at > 0 && tries < 200 {
+        at = at.saturating_sub(37);
+        if path[at] != [0; 4] {
+            continue;
+        }
+        tries += 1;
+        let mut v = path[..at].to_vec();
+        v.extend(std::iter::repeat_n([0u16; 4], pad as usize));
+        v.extend_from_slice(&path[at..]);
+        let mut g = root.clone();
+        let mut prev = [0u16; 4];
+        let mut won = None;
+        for (i, &h) in v.iter().enumerate() {
+            if !step(&mut g, prev, h) {
+                break;
+            }
+            prev = h;
+            if pl.goal(&g) {
+                won = Some(i + 1);
+                break;
+            }
+        }
+        if let Some(n) = won {
+            if under_par(&g).is_none() {
+                eprintln!("plan: padded {pad} idle ticks at t={at} (try {tries})");
+                v.truncate(n);
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 /// Follows a won game (no input) to the level-complete screen: ticks under par, if any.
@@ -987,7 +1026,7 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts) -> Explore {
                 }
                 if let Some(d) = under_par(&g) {
                     eprintln!("plan: under par by {d} ticks");
-                    return Explore::TooFast(d);
+                    return Explore::TooFast(d, path_of(&cells, parent, seg));
                 }
                 return Explore::Found(path_of(&cells, parent, seg));
             }
@@ -1213,7 +1252,18 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
                     found = Some(v);
                     break;
                 }
-                Explore::TooFast(d) => wait += d + 120,
+                Explore::TooFast(d, p) => {
+                    // Pad the found route with idle ticks somewhere along it (latest
+                    // first), so the level is not finished under par; else restart the
+                    // search from a later start.
+                    if let Some(v) = pad_for_par(&pl, &root, &p, d + 120) {
+                        let mut w = vec![[0u16; 4]; wait as usize];
+                        w.extend(v);
+                        found = Some(w);
+                        break;
+                    }
+                    wait += d + 120;
+                }
                 Explore::GaveUp => break,
             }
         }
