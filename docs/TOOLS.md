@@ -11,16 +11,28 @@ Imports your own copy of the game into a rendition directory (`game/`, `video/`,
 `oracle/` with `--oracle`).
 
 ```sh
-f2-import <image.cue|.zip|.bin|.iso|disc dir|install dir> [--data-root DIR] [--oracle] [--no-music] [--verify] [--flac] [--as NAME]
+f2-import <SOURCE> [--data-root DIR] [--oracle] [--no-music] [--verify] [--flac] [--as NAME] [--music DIR] [--drive-offset N]
+f2-import --list-drives
 f2-import --list [--data-root DIR]
 f2-import --verify-installed [rendition] [--data-root DIR]
+f2-import --convert cue|ccd|mds|mds-sub|nrg|nrg1|toc|iso IMAGE OUTDIR
 ```
+
+`SOURCE`: `.cue`/`.bin`, `.ccd`/`.img`, `.mds`/`.mdf`, `.nrg`, `.toc`, `.iso`, a `.zip` of any of
+these, an optical drive (`D:` / `/dev/sr0` / its mount point), a disc folder or an install folder.
+Full support matrix: [asset-import.md](asset-import.md) §2.
 
 - `--data-root DIR`: output root (default `$F2_DATA_ROOT` or the platform data dir).
 - `--as NAME`: rendition name override (otherwise detected, e.g. `usa`, `eu`).
 - `--oracle`: also extract the retail exe and Bink DLL for developer parity runs.
 - `--no-music`: skip CD audio tracks. `--flac`: write music as lossless FLAC instead of WAV.
-- `--verify`: verify the CD audio track hash while importing.
+- `--verify`: check every track of the image against the Redump per-track hashes.
+- `--music DIR`: take missing music tracks 02–12 from WAV (16-bit PCM) / FLAC files named by
+  track number (`02.wav`, `Track 02.flac`, `track02.wav`, `… (Track 02).wav`) or cue name
+  (`garden.wav`).
+- `--drive-offset N`: drive rips: use this read offset (samples) instead of detecting it.
+- `--list-drives`: optical drives, disc labels, Frogger 2 detection, mounted-image paths, TOC.
+- `--convert`: developer tool re-encoding an image into another container (used to test the readers).
 - `--list`: show imported renditions. `--verify-installed`: re-check imported files.
 
 Example: `cargo run --release -p f2-import -- --data-root game-data "path/to/disc.zip"`.

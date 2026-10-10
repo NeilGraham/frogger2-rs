@@ -22,4 +22,6 @@ f2-etc = { path = "../../tools/f2-etc" }
 f2-formats = { path = "../f2-formats" }
 f2-math = { path = "../f2-math" }
 f2-net = { path = "../f2-net" }
+f2-import = { path = "../f2-import" }
+f2-media = { path = "../f2-media" }
 wgpu = "=30.0.1"

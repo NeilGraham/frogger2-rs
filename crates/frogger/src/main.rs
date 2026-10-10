@@ -34,6 +34,7 @@ mod controls;
 mod data;
 mod mods;
 mod editor;
+mod firstrun;
 mod fx;
 mod netplay;
 mod gameplay;
@@ -259,6 +260,10 @@ fn main() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("frogger: {e}");
+            // First run: offer the import screen (windowed runs); a successful import restarts the game.
+            if !args.headless && args.data.is_none() && firstrun::run(&cfg, &e) {
+                firstrun::relaunch();
+            }
             std::process::exit(1);
         }
     };
