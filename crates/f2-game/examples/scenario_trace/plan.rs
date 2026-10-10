@@ -274,9 +274,57 @@ fn end_level_targets(g: &Game) -> Vec<u32> {
     out
 }
 
+/// A hop from tile `i` through `tilePtrs[k]` as `GetNextTile` resolves it (a `JOIN` tile
+/// leads on to its neighbour closest to the current tile's up/down) and whether
+/// `GameTileTooHigh` allows it: `(dest, extra cost)`; too high for a superhop = extra 40,
+/// superhop only = extra cost 1. Barred tiles are left to the per-state costs.
+fn hop_edge(g: &Game, i: usize, k: usize) -> Option<(u32, u32)> {
+    use f2_game::frogmove::{MAX_HOP_HEIGHT, MAX_SUPERHOP_HEIGHT};
+    let n = g.map.tiles.len();
+    let ct = &g.map.tiles[i];
+    let dot = |a: &f2_math::SVector, b: &f2_math::SVector| (a.vx as i64 * b.vx as i64 + a.vy as i64 * b.vy as i64 + a.vz as i64 * b.vz as i64) >> 12;
+    let mut dest = ct.tile_ptrs[k]?;
+    if dest.idx() >= n {
+        return None;
+    }
+    if g.map.tiles[dest.idx()].state == tilestate::JOIN {
+        let join = &g.map.tiles[dest.idx()];
+        let mut best: Option<(i64, usize)> = None;
+        for (m, tp) in join.tile_ptrs.iter().enumerate() {
+            if let Some(tp) = tp {
+                let t = dot(&ct.normal, &join.dir_vector[m]).abs();
+                if tp.idx() != i && best.is_none_or(|(bt, _)| t > bt) {
+                    best = Some((t, m));
+                }
+            }
+        }
+        dest = join.tile_ptrs[best?.1]?;
+        if dest.idx() >= n || g.map.tiles[dest.idx()].state == tilestate::JOIN {
+            return None;
+        }
+    }
+    let dt = &g.map.tiles[dest.idx()];
+    let diff = f2_math::SVector::new(
+        (dt.centre.vx as i32 - ct.centre.vx as i32) as i16,
+        (dt.centre.vy as i32 - ct.centre.vy as i32) as i16,
+        (dt.centre.vz as i32 - ct.centre.vz as i32) as i16,
+    );
+    // height in world units (normal is 4.12), compared like the 20.12 constants.
+    let height = dot(&diff, &ct.normal) << 12;
+    if height > MAX_SUPERHOP_HEIGHT as i64 {
+        // Too high from the tile centre; the static model is not exact (walls, frog
+        // position), so keep the edge at a high price instead of cutting the graph.
+        Some((dest.0, 40))
+    } else if height > MAX_HOP_HEIGHT as i64 {
+        Some((dest.0, 1))
+    } else {
+        Some((dest.0, 0))
+    }
+}
+
 /// Gate switches: (gate tile, trigger tiles) for every `EV_SETTILE_P` that sets a tile to
 /// a passable state under a frog trigger (`OnPath`, `FrogOnTile`, `FrogOnPlatform`).
-fn gate_switches(g: &Game) -> Vec<(u32, Vec<u32>)> {
+fn gate_switches(g: &Game) -> Vec<Switch> {
     fn sets(g: &Game, cmds: &[f2_formats::fev::Command], out: &mut Vec<u32>) {
         use f2_formats::fev::Command as C;
         for c in cmds {
@@ -294,7 +342,30 @@ fn gate_switches(g: &Game) -> Vec<(u32, Vec<u32>)> {
             }
         }
     }
-    fn walk(g: &mut Game, cmds: &[f2_formats::fev::Command], out: &mut Vec<(u32, Vec<u32>)>) {
+    fn flags_of(t: &f2_formats::fev::Trigger, out: &mut Vec<u8>) {
+        use f2_formats::fev::Trigger as T;
+        match t {
+            T::FlagSet { flag } => out.push(*flag),
+            T::And(a, b) | T::Or(a, b) => {
+                flags_of(a, out);
+                flags_of(b, out);
+            }
+            _ => {}
+        }
+    }
+    /// Trigger tiles of the blocks that `SetFlag` `flag`.
+    fn setters(g: &mut Game, cmds: &[f2_formats::fev::Command], flag: u8, out: &mut Vec<u32>) {
+        use f2_formats::fev::Command as C;
+        for c in cmds {
+            if let C::On { trigger, block, .. } | C::If { trigger, block } = c {
+                if block.iter().any(|b| matches!(b, C::SetFlag { flag: f } if *f == flag)) {
+                    trigger_tiles(g, trigger, out);
+                }
+                setters(g, block, flag, out);
+            }
+        }
+    }
+    fn walk(g: &mut Game, all: &[f2_formats::fev::Command], cmds: &[f2_formats::fev::Command], out: &mut Vec<Switch>) {
         use f2_formats::fev::Command as C;
         for c in cmds {
             if let C::On { trigger, block, .. } | C::If { trigger, block } = c {
@@ -303,31 +374,57 @@ fn gate_switches(g: &Game) -> Vec<(u32, Vec<u32>)> {
                 if !gates.is_empty() {
                     let mut tiles = Vec::new();
                     trigger_tiles(g, trigger, &mut tiles);
-                    if !tiles.is_empty() {
-                        for gt in gates {
-                            out.push((gt, tiles.clone()));
+                    for &gt in &gates {
+                        if !tiles.is_empty() {
+                            out.push(Switch { gate: gt, flag: None, tiles: tiles.clone() });
+                        }
+                        // A gate opened when script flags are set: the flags' setters.
+                        let mut flags = Vec::new();
+                        flags_of(trigger, &mut flags);
+                        for f in flags {
+                            let mut ts = Vec::new();
+                            setters(g, all, f, &mut ts);
+                            if !ts.is_empty() {
+                                out.push(Switch { gate: gt, flag: Some(f), tiles: ts });
+                            }
                         }
                     }
                 }
-                walk(g, block, out);
+                walk(g, all, block, out);
             }
         }
     }
     let mut out = Vec::new();
     if let Some(s) = g.script.script_buffer.clone() {
-        walk(&mut g.clone(), &s.commands, &mut out);
+        walk(&mut g.clone(), &s.commands, &s.commands, &mut out);
     }
     out
+}
+
+/// A gate switch ([`gate_switches`]).
+struct Switch {
+    gate: u32,
+    /// Script flag the gate's trigger waits for (the switch sets it), if any.
+    flag: Option<u8>,
+    tiles: Vec<u32>,
+}
+
+impl Switch {
+    /// Still to be pressed: the gate is closed and the flag not set yet.
+    fn open(&self, g: &Game) -> bool {
+        g.map.tiles.get(self.gate as usize).is_some_and(|x| x.state == tilestate::BARRED)
+            && self.flag.is_none_or(|f| g.script.script_flags.get((f >> 3) as usize).is_none_or(|b| b & (1 << (f & 7)) == 0))
+    }
 }
 
 impl Dist {
     fn new(g: &Game) -> Dist {
         let n = g.map.tiles.len();
         let mut rev = vec![Vec::new(); n];
-        for (i, t) in g.map.tiles.iter().enumerate() {
-            for nb in t.tile_ptrs.iter().flatten() {
-                if nb.idx() < n {
-                    rev[nb.idx()].push((i as u32, 0));
+        for i in 0..n {
+            for k in 0..4 {
+                if let Some((d, extra)) = hop_edge(g, i, k) {
+                    rev[d as usize].push((i as u32, extra));
                 }
             }
         }
@@ -475,7 +572,7 @@ struct Planner {
     /// Waypoint stage reached on the archive search's current path.
     wp: usize,
     /// [`gate_switches`].
-    switches: Vec<(u32, Vec<u32>)>,
+    switches: Vec<Switch>,
 }
 
 /// Outcome of a candidate.
@@ -518,7 +615,7 @@ impl Planner {
             return d as f64;
         }
         // Behind a closed gate: head for a switch that opens one (then the target is near).
-        let sw: Vec<u32> = self.switches.iter().filter(|(gt, _)| g.map.tiles.get(*gt as usize).is_some_and(|x| x.state == tilestate::BARRED)).flat_map(|(_, ts)| ts.iter().copied()).collect();
+        let sw: Vec<u32> = self.switches.iter().filter(|s| s.open(g)).flat_map(|s| s.tiles.iter().copied()).collect();
         if sw.is_empty() {
             return FAR as f64;
         }
@@ -1001,9 +1098,35 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
         let t = pl.targets(&g0);
         let d: Vec<u32> = t.iter().map(|&x| pl.dist.to(&g0, &[x]).get(g0.frogmove.curr_tile[0].map_or(0, |c| c.idx())).copied().unwrap_or(FAR)).collect();
         let pd = pl.player_dist(&g0, 0, &pl.targets(&g0));
-        eprintln!("plan: gate switches {:?} start dist {pd}", pl.switches.iter().map(|(g, t)| (*g, t.len())).collect::<Vec<_>>());
+        eprintln!("plan: gate switches {:?} start dist {pd}", pl.switches.iter().map(|s| (s.gate, s.flag, s.tiles.len())).collect::<Vec<_>>());
+        if let (Ok(v), Some(start)) = (std::env::var("F2_PLAN_DEBUG_ROUTE"), g0.frogmove.curr_tile[0]) {
+            // BFS over the raw tile_ptrs to tile v, with each hop as the planner models it.
+            let target: usize = v.parse().unwrap_or(0);
+            let n = g0.map.tiles.len();
+            let mut prev = vec![usize::MAX; n];
+            let mut q = std::collections::VecDeque::from([start.idx()]);
+            prev[start.idx()] = start.idx();
+            while let Some(c) = q.pop_front() {
+                for nb in g0.map.tiles[c].tile_ptrs.iter().flatten() {
+                    if nb.idx() < n && prev[nb.idx()] == usize::MAX {
+                        prev[nb.idx()] = c;
+                        q.push_back(nb.idx());
+                    }
+                }
+            }
+            let mut path = vec![target];
+            while prev.get(*path.last().unwrap()).is_some_and(|&p| p != usize::MAX && p != *path.last().unwrap()) {
+                path.push(prev[*path.last().unwrap()]);
+            }
+            path.reverse();
+            for w in path.windows(2) {
+                let k = g0.map.tiles[w[0]].tile_ptrs.iter().position(|p| p.is_some_and(|p| p.idx() == w[1])).unwrap_or(9);
+                let t = g0.map.tile(TileId(w[1] as u32));
+                eprintln!("plan:   hop {} -> {} (state {} y {} normal {:?}) model {:?}", w[0], w[1], t.state, t.centre.vy, (g0.map.tiles[w[0]].normal.vx, g0.map.tiles[w[0]].normal.vy, g0.map.tiles[w[0]].normal.vz), if k < 4 { hop_edge(&g0, w[0], k) } else { None });
+            }
+        }
         if std::env::var_os("F2_PLAN_DEBUG_SCRIPT").is_some() {
-            for (gt, ts) in &pl.switches {
+            for Switch { gate: gt, tiles: ts, .. } in &pl.switches {
                 let c = |t: u32| {
                     let x = g0.map.tile(TileId(t));
                     (t, x.state, x.centre.vx, x.centre.vy, x.centre.vz, x.tile_ptrs.iter().flatten().map(|p| p.0).collect::<Vec<_>>())
