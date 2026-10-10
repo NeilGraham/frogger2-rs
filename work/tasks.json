@@ -846,6 +846,25 @@
         "2026-10-09 created",
         "2026-10-09T19:13:45-06:00 done: modding: overrides, glTF, f2-etc, level manifests, F2S behaviour scripts, editor"
       ]
+    },
+    {
+      "id": "P6-3",
+      "title": "In-game button mapping page (game-styled) in Settings, using the PS1-style controller API",
+      "stage": "P6",
+      "deps": [
+        "P6-1"
+      ],
+      "status": "done",
+      "owner": null,
+      "needs_owner": false,
+      "files": [],
+      "accept": [],
+      "notes": "",
+      "artifacts": [],
+      "history": [
+        "2026-10-09T22:42:59-06:00 added",
+        "2026-10-09T23:40:32-06:00 done: keyboard + controller mapping pages included in Settings"
+      ]
     }
   ]
 }
