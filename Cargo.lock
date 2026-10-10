@@ -865,6 +865,7 @@ dependencies = [
  "f2-audio",
  "f2-bink",
  "f2-engine",
+ "f2-etc",
  "f2-formats",
  "f2-game",
  "f2-math",
