@@ -136,20 +136,62 @@ impl Game {
         a.object_controller.and_then(|m| self.models.get(m)).is_some_and(|m| m.find_sub_object(sub_name).is_some())
     }
 
-    // TODO(port): FindFrogSubObjects (PC/actor.cpp:129) - head/breast post-matrices are
-    // renderer state; needs player[].character (frogger.c wave).
+    // FindFrogSubObjects (PC/actor.cpp:129): see `view.rs`.
 
     /// Port of `UpdateFrogCroak` (PC/actor.cpp:168), called by `DrawLoop` after
-    /// `UpdateFrogTongue(0)`. The breast/head post-matrix swelling (`croakDir`) is renderer
-    /// state and is not simulated; the croak ring, timer and baby reply are.
+    /// `UpdateFrogTongue(0)`: breast/head post-matrix swelling (`croakDir`; the head
+    /// post-matrix moves the tongue source), croak ring, timer and baby reply.
     pub fn update_frog_croak(&mut self, pl: i32) {
         use crate::frogmove::FROGSTATUS_ISCROAKING;
         use crate::specfx::FXTYPE_CROAK;
         use f2_math::{FVector, SVector};
         let p = pl as usize;
         if self.frogger.player[p].frog_state & FROGSTATUS_ISCROAKING == 0 {
-            // breastMatrix/headPostMatrix reset (renderer only).
+            if let Some(b) = self.tongue.breast_post.as_mut() {
+                *b = [1.0; 3];
+                self.tongue.croak_dir = 0;
+            }
+            if let Some(h) = self.tongue.head_post.as_mut() {
+                *h = [1.0; 3];
+            }
             return;
+        }
+        // Breast/head swelling: headPostMatrix feeds headMatrix (CalcTongueSource).
+        if let (Some(mut b), Some(mut h)) = (self.tongue.breast_post, self.tongue.head_post) {
+            let speed = self.time_info_speed();
+            let cd = &mut self.tongue.croak_dir;
+            if *cd > 1 {
+                *cd = cd.wrapping_sub((speed as i32).max(1) as i8);
+                if *cd < 1 {
+                    *cd = 1;
+                }
+            } else if b[0] < 1.5 && *cd == 0 {
+                let kb = 1.0 + 0.1 * speed;
+                b.iter_mut().for_each(|v| *v *= kb);
+                if b[0] >= 1.5 {
+                    *cd = 10;
+                    b = [1.5; 3];
+                }
+                let kh = 1.0 + 0.08 * speed;
+                h.iter_mut().for_each(|v| *v *= kh);
+                if h[0] >= 1.5 {
+                    h = [1.5; 3];
+                }
+            } else if b[0] > 1.0 && *cd == 1 {
+                let kb = 1.0 - 0.1 * speed;
+                b.iter_mut().for_each(|v| *v *= kb);
+                if b[0] <= 1.0 {
+                    *cd = 2;
+                    b = [1.0; 3];
+                }
+                let kh = 1.0 - 0.08 * speed;
+                h.iter_mut().for_each(|v| *v *= kh);
+                if h[0] <= 1.0 {
+                    h = [1.0; 3];
+                }
+            }
+            self.tongue.breast_post = Some(b);
+            self.tongue.head_post = Some(h);
         }
         let up = {
             let n = self.frogmove.curr_tile[p].map_or(SVector::default(), |t| self.map.tiles[t.idx()].normal);

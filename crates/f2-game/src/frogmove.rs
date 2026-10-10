@@ -3,7 +3,8 @@
 //!
 //! PC notes: the port models the hardware renderer (`rHardware == 1`), so the
 //! `if (!rHardware) shadow->draw = 0` branches are dropped. `FindFrogSubObjects`
-//! (head/breast matrices, PC/actor.cpp) is rendering-only and not ported.
+//! (head/breast matrices, PC/actor.cpp) lives in `view.rs`: the head matrix (with the
+//! croak-swollen `headPostMatrix`) drives the tongue source.
 
 use f2_math::{
     add_to_vector_ff, add_to_vector_fs, add_to_vector_sf, add_vector_sfs, add_vector_ssf, cross_product_fff, distance_between_points_fs,
@@ -361,7 +362,7 @@ impl Game {
         self.orientate_frog_to_curr_tile(pu);
 
         // FindFrogSubObjects(p) (PC/actor.cpp:129): the head matrix CalcTongueSource uses
-        // (breast post-matrix: rendering only).
+        // and the head/breast post-matrices UpdateFrogCroak swells.
         self.find_frog_sub_objects(pu);
 
         if !(self.game_state.multi != SINGLEPLAYER && self.multi.multiplayer_mode == MULTIMODE_BATTLE) {
