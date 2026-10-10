@@ -9,12 +9,10 @@
 //! and applies window / swap-chain changes). Items the authentic profile makes inert are
 //! greyed out with a hint.
 //!
-//! Extension point (controller mapping): [`MapPage`] is generic over [`Device`]. The
-//! keyboard page is `Device::Keyboard`; a controller page is `Device::Gamepad` with the same
-//! widgets, capture (pad buttons / stick pushes) and conflict handling, labelled through
-//! `ControllerFamily`. The Controls page lists it as "Controller mapping (coming soon)";
-//! enabling it means routing raw pad events to [`App::settings_raw_pad`] (already done)
-//! and turning the item on.
+//! Mapping pages: [`MapPage`] is generic over [`Device`]: Controls -> Keyboard mapping
+//! (`Device::Keyboard`, key captures) and Controls -> Controller mapping (`Device::Gamepad`,
+//! pad button / stick captures from [`App::settings_raw_pad`], labels through the player's
+//! `ControllerFamily`). Both use f2-platform's `Bindings` / `Rebind` API.
 
 use super::App;
 use crate::overlay::expand_prompts;
@@ -22,6 +20,7 @@ use f2_engine::{Blend, Font, FontId, Quad2D, Renderer};
 use f2_game::levplay::{PAD_CIRCLE, PAD_CROSS, PAD_DOWN, PAD_L1, PAD_L2, PAD_LEFT, PAD_R1, PAD_R2, PAD_RIGHT, PAD_SELECT, PAD_SQUARE, PAD_START, PAD_TRIANGLE, PAD_UP};
 use f2_platform::bindings::{ConflictPolicy, RebindMode, ACTIONS, DEFAULT_DEADZONE};
 use f2_platform::config::ENHANCED_HOP_BUFFER_FRAMES;
+use f2_platform::controller::{FaceLayout, StickMode};
 use f2_platform::window::VideoMode;
 use f2_platform::{dik, Binding, ControllerFamily, FpsCorner, KeyboardState, PadData, Profile, RawEvent, Rebind, RebindStatus, TextureFilter, WindowMode};
 use std::time::Instant;
@@ -154,6 +153,8 @@ pub enum Id {
     KeyboardMap,
     ControllerMap,
     Deadzone,
+    StickMode,
+    FaceLayout,
     Rumble,
     RumbleStrength,
     HopBuffer,
@@ -449,7 +450,7 @@ impl App {
         if ui.map.as_ref().is_some_and(|m| m.capture.is_some()) {
             let keyboard = ui.map.as_ref().is_some_and(|m| m.device == Device::Keyboard);
             if keyboard {
-                for &k in &kb.pressed {
+                for &k in &kb.pressed.clone() {
                     self.map_capture(RawEvent::Key(k));
                     if self.settings.as_ref().and_then(|s| s.map.as_ref()).is_none_or(|m| m.capture.is_none()) {
                         break;
@@ -668,8 +669,18 @@ impl App {
             }
             Page::Controls => {
                 add(Id::KeyboardMap, "Keyboard mapping", String::new(), "Rebind the keys of each action and player.", true, false);
-                add(Id::ControllerMap, "Controller mapping", "Coming soon".into(), "Controller buttons use the default layout for now.", false, false);
+                add(Id::ControllerMap, "Controller mapping", String::new(), "Rebind the controller buttons and stick directions of each player.", true, false);
                 add(Id::Deadzone, "Stick dead zone", format!("{}%", (c.input.deadzone * 100.0).round()), "How far the stick must move before it counts.", true, true);
+                let sm = match c.input.stick_mode {
+                    StickMode::FourWay => "4-way",
+                    StickMode::Raw => "Raw (PC)",
+                };
+                add(Id::StickMode, "Stick as d-pad", sm.into(), "4-way: one direction at a time, like a PS1 d-pad. Raw: each axis on its own (PC retail; diagonals press two).", true, true);
+                let fl = match c.input.face_layout {
+                    FaceLayout::Positional => "Positional",
+                    FaceLayout::NintendoLabels => "Nintendo labels",
+                };
+                add(Id::FaceLayout, "Button layout", fl.into(), "Positional: the bottom face button is Cross on every pad. Nintendo labels: A confirms, B goes back (Nintendo pads only).", true, true);
                 add(Id::Rumble, "Rumble", on_off(c.input.rumble), "Controller vibration.", true, true);
                 add(Id::RumbleStrength, "Rumble strength", format!("{}%", (c.input.rumble_scale * 100.0).round()), "Vibration intensity.", c.input.rumble, true);
                 let hop = c.hop_buffer_frames(Profile::Enhanced);
@@ -809,18 +820,27 @@ impl App {
                 self.set_game_volume(true, 100);
                 self.set_game_volume(false, 100);
             }
-            Id::KeyboardMap => {
+            Id::KeyboardMap | Id::ControllerMap => {
                 if !ok {
                     return false;
                 }
+                let d = if id == Id::KeyboardMap { Device::Keyboard } else { Device::Gamepad };
                 if let Some(ui) = &mut self.settings {
-                    ui.map = Some(MapPage::new(Device::Keyboard));
+                    ui.map = Some(MapPage::new(d));
                 }
             }
-            Id::ControllerMap => return false,
             Id::Deadzone => {
                 self.cfg.input.deadzone = step_num(self.cfg.input.deadzone, dir, 0.05, 0.05, 0.95);
                 self.deadzone = self.cfg.input.deadzone;
+                self.requests.apply_input = true;
+            }
+            Id::StickMode => {
+                self.cfg.input.stick_mode = step(&[StickMode::FourWay, StickMode::Raw], self.cfg.input.stick_mode, dir);
+                self.requests.apply_input = true;
+            }
+            Id::FaceLayout => {
+                self.cfg.input.face_layout = step(&[FaceLayout::Positional, FaceLayout::NintendoLabels], self.cfg.input.face_layout, dir);
+                self.requests.apply_input = true;
             }
             Id::Rumble => {
                 self.cfg.input.rumble = !self.cfg.input.rumble;
@@ -846,6 +866,8 @@ impl App {
                 self.cfg.input.rumble = true;
                 self.cfg.input.rumble_scale = 1.0;
                 self.cfg.input.hop_buffer_frames = None;
+                self.cfg.input.stick_mode = Default::default();
+                self.cfg.input.face_layout = Default::default();
                 self.deadzone = DEFAULT_DEADZONE;
                 self.hop_frames = ENHANCED_HOP_BUFFER_FRAMES;
                 self.apply_bindings();
@@ -1187,7 +1209,6 @@ impl App {
             Some(m) => (Some(m.sel), m.scroll),
             None => (ui.row[ui.page], ui.scroll[ui.page]),
         };
-        let capturing = map.is_some_and(|m| m.capture.is_some());
         for (i, it) in items.iter().enumerate().skip(scroll).take(VISIBLE) {
             let y = ROW_Y0 + (i - scroll) as f32 * ROW_H;
             let selected = sel == Some(i);
@@ -1212,7 +1233,7 @@ impl App {
             };
             let vy = y + 40.0;
             let vx = 3560.0;
-            let value = if capturing && selected { it.value.clone() } else { it.value.clone() };
+            let value = it.value.clone();
             let w = c.width(&small, &value, 1.0).min(1500.0);
             c.text(r, fonts.small, &small, false, vx, vy, &value, vcol, 1, 1.0);
             if it.arrows && it.enabled && selected {
@@ -1258,7 +1279,7 @@ impl App {
                 desc = m.msg.clone();
                 dcol = [120, 255, 120, 255];
             } else if sel.is_some_and(|s| s >= 1 && s <= ACTIONS.len()) {
-                desc = "@X Change   Ins Add key   @S / Del Clear   @C Reset action".into();
+                desc = if m.device == Device::Keyboard { "@X Change   Ins Add key   @S / Del Clear   @C Reset action" } else { "@X Change   @S Clear   @C Reset action" }.into();
             }
         } else if !ui.msg.is_empty() {
             desc = ui.msg.clone();

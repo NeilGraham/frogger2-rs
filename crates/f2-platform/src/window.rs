@@ -64,7 +64,7 @@ fn monitor(window: &Window) -> Option<winit::monitor::MonitorHandle> {
 pub fn video_modes(window: &Window) -> Vec<VideoMode> {
     let Some(m) = monitor(window) else { return Vec::new() };
     let mut v: Vec<VideoMode> = m.video_modes().map(|h| VideoMode { width: h.size().width, height: h.size().height, refresh_mhz: h.refresh_rate_millihertz() }).collect();
-    v.sort_by(|a, b| (b.width * b.height, b.width, b.refresh_mhz).cmp(&(a.width * a.height, a.width, a.refresh_mhz)));
+    v.sort_by_key(|m| std::cmp::Reverse((m.width * m.height, m.width, m.refresh_mhz)));
     v.dedup();
     v
 }

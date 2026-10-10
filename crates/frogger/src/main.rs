@@ -526,6 +526,9 @@ struct Host {
     logged: Option<(f2_platform::WindowMode, u32, u32)>,
     /// Window size / position changed: save the config on exit.
     window_dirty: bool,
+    /// `F2_WINDOW_TEST=1`: steps through the window modes / resolutions every 3 s, logging
+    /// what was requested and what the window became, then exits (platform check).
+    window_test: Option<(usize, Instant)>,
     last: Instant,
     error: Option<String>,
 }
@@ -735,12 +738,11 @@ impl WindowApp for Host {
                 for i in 0..4 {
                     app.families[i] = p.family_for_player(i);
                 }
-                if self.cfg.input.controllers != c || self.cfg.input.pad_devices != p.preferred() {
-                    self.cfg.input.controllers = c;
-                    self.cfg.input.pad_devices = p.preferred();
-                    if let Err(e) = self.cfg.save_default() {
-                        eprintln!("frogger: saving config: {e}");
-                    }
+                if app.cfg.input.controllers != c || app.cfg.input.pad_devices != p.preferred() {
+                    // The app's copy is the one the settings screen edits and saves.
+                    app.cfg.input.controllers = c;
+                    app.cfg.input.pad_devices = p.preferred();
+                    app.requests.save_config = true;
                 }
             }
         }
@@ -760,11 +762,72 @@ impl WindowApp for Host {
         }
         if std::mem::take(&mut rq.apply_input) {
             if let Some(p) = &mut self.gamepads {
-                p.rumble_scale = if app.cfg.input.rumble { app.cfg.input.rumble_scale } else { 0.0 };
+                let i = &app.cfg.input;
+                p.rumble_scale = if i.rumble { i.rumble_scale } else { 0.0 };
+                p.stick_mode = i.stick_mode;
+                p.deadzone = i.deadzone;
+                p.face_layout = i.face_layout;
+                for n in 0..4 {
+                    app.families[n] = p.family_for_player(n);
+                }
             }
         }
         if app.requests.quit {
             return Flow::Exit;
+        }
+        if let Some((n, t)) = self.window_test {
+            if t.elapsed() >= Duration::from_secs(3) {
+                use f2_platform::WindowMode as M;
+                let v = &mut app.cfg.video;
+                let what = match n {
+                    0 => {
+                        v.select_mode(M::Borderless);
+                        "select Borderless"
+                    }
+                    1 => {
+                        v.select_mode(M::Fullscreen);
+                        "select Fullscreen (exclusive)"
+                    }
+                    2 => {
+                        app.requests.toggle_fullscreen = true;
+                        "Alt+Enter (expect Windowed)"
+                    }
+                    3 => {
+                        app.requests.toggle_fullscreen = true;
+                        "Alt+Enter (expect exclusive Fullscreen)"
+                    }
+                    4 => {
+                        v.select_mode(M::Windowed);
+                        v.resolution = Some([1024, 768]);
+                        "Windowed 1024x768"
+                    }
+                    5 => {
+                        v.resolution = Some([800, 600]);
+                        "Windowed 800x600"
+                    }
+                    6 => {
+                        v.select_mode(M::Fullscreen);
+                        v.resolution = Some([1280, 720]);
+                        "exclusive Fullscreen 1280x720"
+                    }
+                    7 => {
+                        v.select_mode(M::Borderless);
+                        v.resolution = Some([640, 480]);
+                        "Borderless, render 640x480"
+                    }
+                    8 => {
+                        v.select_mode(M::Windowed);
+                        v.resolution = None;
+                        "Windowed, auto"
+                    }
+                    _ => return Flow::Exit,
+                };
+                eprintln!("frogger: window test step {n}: {what}");
+                if n != 2 && n != 3 {
+                    app.requests.apply_window = true;
+                }
+                self.window_test = Some((n + 1, Instant::now()));
+            }
         }
         let toggle = std::mem::take(&mut app.requests.toggle_fullscreen);
         if toggle {
@@ -854,6 +917,7 @@ fn run_window(data: data::Data, mut cfg: Config, args: &Args, steps: Vec<Step>, 
         mode_req: (wc.mode != f2_platform::WindowMode::Windowed).then(|| (wc.mode, Instant::now())),
         logged: None,
         window_dirty: false,
+        window_test: std::env::var_os("F2_WINDOW_TEST").map(|_| (0, Instant::now())),
         cfg,
         steps,
         net,

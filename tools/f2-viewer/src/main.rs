@@ -287,7 +287,7 @@ fn prefer_x11_on_wsl() {
 
 fn run_window(data: data::Data, size: (u32, u32), start_mode: Option<Mode>) -> Result<(), String> {
     prefer_x11_on_wsl();
-    let cfg = WindowConfig { title: "Frogger 2 asset viewer".into(), width: size.0, height: size.1, fullscreen: false, resizable: true };
+    let cfg = WindowConfig { title: "Frogger 2 asset viewer".into(), width: size.0, height: size.1, resizable: true, ..Default::default() };
     let v = Viewer {
         data: Some(data),
         app: None,

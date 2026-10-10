@@ -90,33 +90,67 @@ players. Rumble follows the `rumble` / `rumble_scale` options.
 | F7 | Cycle texture filter (nearest / linear / anisotropic) |
 | F8 | Toggle widescreen (Hor+ FOV and anchored HUD) |
 | F9 | Toggle fog |
-| F10 | Settings (pauses the simulation); Tab switches page: Controls, Gameplay, Level select |
-| F11 or Alt+Enter | Toggle fullscreen |
+| F10 | Settings screen (pauses the simulation), same as "Settings" in the pause menu |
+| Shift+F10 | Advanced screen (raw controls / gameplay pages and the level select); Tab switches page |
+| F11 or Alt+Enter | Toggle between windowed and your fullscreen type (see below) |
 | F12 | Cycle draw distance (1x / 2x / 4x) |
 
 Changing an option with F3, F4, F6 to F9 or F12 switches to the enhanced profile, because the
 authentic profile is fixed. These toggles are for quick A/B comparison and are not saved; put
 permanent choices in `config.toml`.
 
-### Settings (F10)
+### Settings
 
-F10 opens the settings screen; Tab cycles its pages:
+Open the settings screen with **Settings** in the pause menu (Start / Esc during a level, or in
+the frontend: directly below *Continue*), with **Settings** at the end of the frontend's
+*Extras* list, or with F10. It looks and sounds like the game's own menus. Up/Down choose a
+row, Left/Right change the value, Cross/Enter selects, Triangle/Esc goes back; Left/Right on
+the page tabs, L1/R1 or Tab switch pages. Everything applies at once and is saved to
+`config.toml`; every page has *Reset to defaults*. Closing it returns to the pause menu /
+Extras with *Settings* still selected. Rows the authentic profile makes inert are greyed out
+with a hint.
 
-- **Controls**: rebinding (below).
-- **Gameplay**: assists (infinite lives, invulnerability, enemy speed), FMV skipping, intro logo
-  skip, speedrun timer, save slot (1 to 4, Enter loads it, "Save now"), auto-save, the tube
-  softlock fix. Assists and fixes only apply in the enhanced profile; see
-  [enhancements.md](enhancements.md).
-- **Level select**: start any story chapter or level for practice through a normal game session
-  (also `--practice WORLD LEVEL` / `--story CHAPTER`).
+- **Display**: window mode (Windowed / Borderless / Fullscreen = exclusive, with the refresh
+  rate), resolution (*Auto* shows the live size; a fixed size resizes the window, picks the
+  exclusive video mode, or sets the render size in borderless), VSync, frame cap
+  (Off/30/60/120/144/240 or a custom value from the file), profile, and in the enhanced profile
+  widescreen, render scale, anti-aliasing, texture filter, perspective-correct textures, draw
+  distance and fog; brightness (a final multiply) and the FPS counter (corner of your choice;
+  rendered FPS, frame time and the 60 Hz simulation rate; works in menus, levels and videos).
+- **Audio**: master, music and effects volume (music/effects are the same values as the game's
+  Sound Options), mute while the window is in the background.
+- **Controls**: *Keyboard mapping* and *Controller mapping* pages (below), stick dead zone,
+  stick as d-pad (4-way / raw), button layout (positional / Nintendo labels), rumble on/off and
+  strength, hop input buffer (enhanced profile).
+- **Gameplay**: assists (infinite lives, invulnerability, enemy speed), FMV skipping, intro
+  logo skip, speedrun timer, save slot (Left/Right choose, Cross loads it and restarts at the
+  title), "Save now", auto-save, the tube softlock fix (all but the save slot apply in the
+  enhanced profile only, see [enhancements.md](enhancements.md)), and the text language (only
+  languages present in your imported data; new text switches at once, menus already on screen
+  change when next opened or at the next level).
 
-Changes are saved to `config.toml` (`[gameplay]`).
+The level select (practice any story chapter or level) is on the advanced screen (Shift+F10,
+Tab to *Level select*; also `--practice WORLD LEVEL` / `--story CHAPTER`).
 
-### Rebinding (Controls page)
+### Window modes and Alt+Enter
 
-Up/Down select an action, Enter rebinds (press a key, pad button or stick direction; Esc
-cancels), A adds an extra binding, Backspace resets that action, R resets everything. Conflicts
-are moved to the new action and reported. Changes are saved to `config.toml`.
+Alt+Enter and F11 switch between windowed and your *fullscreen type*: borderless fullscreen by
+default; once you choose *Fullscreen* (exclusive) in Display settings, the toggle goes windowed
+<-> exclusive (choosing *Borderless* again switches it back). Enter is hidden from the game
+while Alt is held, so Alt+Enter never selects a menu item. The Display page always shows the
+real state (also after Alt+Enter, or when the system takes the game out of fullscreen). The
+window mode, fullscreen type, resolution, refresh rate and the windowed size and position are
+remembered.
+
+### Button mapping (Controls page)
+
+*Keyboard mapping* lists every action (directions, super hop / select, tongue, croak, back,
+pause, L1/R1/L2/R2, select) with its keys for the chosen player (1-4). Cross/Enter on an action
+waits for a new key (Esc cancels) that replaces its keys; Insert adds an extra key; Square/Delete
+clears the action; Circle resets it to the PC default; *Reset all to defaults* restores every
+player. If the key is already used, the screen says by which action and offers *Swap* (that
+action gets your old key), *Unbind other* or *Cancel*. *Controller mapping* is the same page for
+pad buttons and stick directions. Changes apply at once and are saved to `config.toml`.
 
 ## Profiles: authentic vs enhanced
 
@@ -144,11 +178,17 @@ language = "us"             # us, uk, fr, de, it
 # rendition = "usa"         # which imported rendition (default: first installed)
 
 [video]
-width = 640
+width = 640                 # windowed size (remembered)
 height = 480
-fullscreen = false
+window_mode = "windowed"    # "windowed" | "borderless" | "fullscreen" (exclusive)
+fullscreen_type = "borderless"  # what Alt+Enter / F11 toggle to: "borderless" | "exclusive"
+# resolution = [1920, 1080] # absent = auto; see the Display page
+# refresh_mhz = 144000      # exclusive fullscreen refresh rate (absent = highest)
+# window_pos = [100, 100]   # windowed position (remembered)
 vsync = true
 frame_cap = 0               # 0 = uncapped
+brightness = 100            # percent
+show_fps = "off"            # "off" | "top_right" | "top_left" | "bottom_right" | "bottom_left"
 
 [display]                   # enhanced profile only; defaults shown
 hor_plus = true
@@ -189,14 +229,14 @@ fix_tube_softlock = true
 enabled = []                # mod ids in load order (later wins)
 # dir = "/path"             # mods directory (default: platform data dir)
 
-[[input.bindings]]          # normally written by the F10 screen
+[[input.bindings]]          # normally written by the Settings screen
 player = 1
 button = "CROSS"
 inputs = ["key:RETURN", "pad:SOUTH"]
 ```
 
 `[input] controllers` selects the device per player (default keyboard; pads are named
-`joypad0`, ...). Let the game write the file once (it saves when you change a setting in F10) to
+`joypad0`, ...). Let the game write the file once (it saves when you change a setting in Settings) to
 see the exact value spellings. Display options are described further in
 [BUILDING.md](BUILDING.md).
 
@@ -250,7 +290,7 @@ a mod (modding.md, "Level editor"); `--mod ID` is an alias of `--mods` that can 
   disables audio output.
 - **Gamepad not detected**: on Linux make sure your user can read `/dev/input/event*` (udev
   rules); press a button after plugging in. Assign devices in `[input] controllers`.
-- **Controls got messed up**: press R in the F10 screen to reset all bindings, or delete the
+- **Controls got messed up**: Settings -> Controls -> Keyboard mapping -> *Reset all to defaults*, or delete the
   `[[input.bindings]]` entries from `config.toml`.
 
 ## FAQ

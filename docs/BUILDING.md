@@ -48,11 +48,29 @@ Data goes to `$F2_DATA_ROOT` or the platform data dir (`~/.local/share/frogger2-
 profile = "enhanced"      # "authentic" = retail look (parity screenshots), "enhanced" = default
 
 [video]
-width = 640               # window size (any resolution/aspect; resizable)
+width = 640               # windowed size (any resolution/aspect; resizable; remembered)
 height = 480
-fullscreen = false        # borderless fullscreen; F11 toggles
+window_mode = "windowed"  # "windowed" | "borderless" | "fullscreen" (exclusive video mode)
+fullscreen_type = "borderless"  # Alt+Enter / F11 toggle windowed <-> this ("borderless" | "exclusive")
+# resolution = [1920, 1080]  # absent = auto. Windowed: inner size; exclusive: video mode;
+                          # borderless: render-target size (scaled to the screen)
+# refresh_mhz = 144000    # exclusive fullscreen refresh rate (absent = highest for the size)
+# window_pos = [100, 100] # windowed outer position (remembered)
+fullscreen = false        # legacy: true without window_mode starts in fullscreen_type
 vsync = true
 frame_cap = 0             # fps cap, 0 = uncapped (sim is fixed 60 Hz, rendering interpolated)
+brightness = 100          # percent, final-pass multiply (100 = no extra pass)
+show_fps = "off"          # FPS counter corner: off | top_right | top_left | bottom_right | bottom_left
+
+[audio]
+master = 100              # 0..100
+music = 100               # 0..100 (the game's Sound Options write these too)
+sfx = 100
+muted = false             # null audio output
+mute_unfocused = false    # silence while the window is in the background
+
+# All of the above (and [display], [gameplay], [input]) are edited in game: Settings in the
+# pause menu / Extras, or F10.
 
 # Overrides of the enhanced profile only (authentic is fixed). Values shown are the defaults.
 [display]
@@ -67,7 +85,7 @@ perspective_correct = true  # retail: affine texturing
 draw_distance = 1.0       # far-clip multiplier (0.25..16)
 fog = false               # linear fog to the level's clear colour, ending at the far clip
 
-# Gameplay / QoL (enhanced profile only, except save_slot). Edited in game: F10, Tab -> Gameplay.
+# Gameplay / QoL (enhanced profile only, except save_slot). Edited in game: Settings -> Gameplay.
 [gameplay]
 infinite_lives = false    # assist: dying never costs a life
 invulnerable = false      # assist: enemies can't hurt the frog (hazard tiles / falls still kill)
@@ -80,10 +98,19 @@ auto_save = true          # off: the game's own saves are not written; use "Save
 fix_tube_softlock = true  # known bug #11 fix
 ```
 
-F10 opens the settings screen; Tab cycles its pages: Controls (rebinding), Gameplay (the
-`[gameplay]` options, profile, save slot load / "Save now"), Level select (every story chapter
-and single-player level as practice, regardless of the save; also `--story N` /
-`--practice W L` on the command line).
+The in-game Settings screen (pause menu / Extras "Settings", or F10) edits all of this: Display,
+Audio, Controls (keyboard / controller mapping), Gameplay. The game-side "Settings" entries are
+behind `GameOptions::settings_menu` (off in f2-game, so parity / demos / netplay are unchanged;
+the `frogger` host turns it on offline). Shift+F10 opens the older advanced screen: Controls,
+Gameplay and Level select (every story chapter and single-player level as practice, regardless
+of the save; also `--story N` / `--practice W L` on the command line). Headless screenshots:
+`--screenshot-page display|audio|controls|gameplay[:ROW]`, `--screenshot-keymap
+normal|capture|conflict`, `--show-fps`. Platform check of the window modes: `F2_WINDOW_TEST=1`
+makes the windowed game step through borderless, exclusive fullscreen, Alt+Enter both ways,
+windowed 1024x768 / 800x600, exclusive 1280x720, borderless with a 640x480 render size and
+back to windowed (3 s each), logging what was requested and what the window became
+(`frogger: window now ...`), then exit. Point `F2_CONFIG_DIR` at a scratch directory: the
+steps are saved like settings changes.
 
 Authentic profile = Vert- projection (`FOV = 450` scaled by `width/640`), overlays stretched
 over the whole screen, no AA, bilinear without mipmaps, affine texturing, retail far clip, fog
@@ -139,8 +166,9 @@ is in `packaging/flatpak/`. The CI `release` job (manual dispatch) runs these sc
   gives several keys/buttons/stick directions per action. Absent = the retail keymap plus the
   default pad mapping; the legacy `keymap` list still loads.
 - `hop_buffer_frames` (enhanced profile only, default 6, 0 = off), `rumble`, `rumble_scale`.
-- In game, **F10** opens the controls screen (simulation paused): Up/Down select, Enter rebinds
-  (press a key / pad button / stick direction; Esc cancels), A adds an extra binding, Backspace
-  resets the action, R resets all. Conflicts are moved to the new action and reported. Changes
-  save to `config.toml`. Pad hot-plug auto-assigns controllers; rumble follows `rumble_scale`.
+- In game, Settings -> Controls -> Keyboard / Controller mapping (simulation paused): Cross/Enter
+  rebinds (press a key, or a pad button / stick direction on the controller page; Esc cancels),
+  Insert adds an extra key, Square/Delete clears, Circle resets the action, "Reset all" restores
+  the defaults; a conflict offers Swap / Unbind other / Cancel. Changes save to `config.toml`.
+  (Shift+F10 -> Controls is the older raw page.) Pad hot-plug auto-assigns controllers; rumble follows `rumble_scale`.
   `frogger --headless --level 0 0 --screenshot-rebind --screenshot out.png` renders the screen.

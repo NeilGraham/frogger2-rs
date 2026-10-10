@@ -13,7 +13,7 @@ Gameplay options (P6-1) live in `f2_game::enhance::GameOptions` (part of `Sessio
 `Game::set_game_options`); every hook is a no-op in the authentic profile and in recorded
 demos (`DEMO_MODE` always replays retail behaviour), so the 0-0 / 1-0 / 6-1 demo traces stay
 identical to the oracle. Host side: `crates/frogger/src/gameplay.rs`, config `[gameplay]`
-(`docs/BUILDING.md`), edited in game with F10 -> Tab -> Gameplay.
+(`docs/BUILDING.md`), edited in game with Settings (pause menu / Extras / F10) -> Gameplay.
 
 - [x] Camera divide-by-zero crash (#4): `SlurpCamPosition`'s `(gameSpeed<<12)/FMul(camSpeed,
   transCamSpeedMult)` with a zero divisor; the port guards it in both profiles (logs, factor
@@ -95,7 +95,7 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
   stops writing the game's own saves (level complete, resets).
 - [x] Skip FMV: any key / pad button skips (`skip_fmv_any_key`, enhanced; authentic keeps
   Enter/Esc); `skip_intro_logos` drops the Hasbro/Blitz logo FMVs. [ ] fast-forward cutscenes
-- [x] Level select / practice mode: F10 -> Level select lists every story chapter (`BookStart`
+- [x] Level select / practice mode: Shift+F10 -> Level select lists every story chapter (`BookStart`
   from that chapter) and every single-player level (`ArcadeStart`, practice), unlocked or not;
   `--story N` / `--practice W L`. Built as a host page over `Game::start_story/start_arcade`
   instead of porting the unused `E3_Demo.c` state machine.
