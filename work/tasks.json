@@ -701,13 +701,14 @@
       ],
       "files": [],
       "accept": [],
-      "status": "todo",
+      "status": "done",
       "owner": null,
       "needs_owner": false,
       "notes": "",
       "artifacts": [],
       "history": [
-        "2026-10-09 created"
+        "2026-10-09 created",
+        "2026-10-09T18:07:30-06:00 done: menus/options/charsel ported (wave G) + host frontend rendering (book, arcade screen, portraits, volumes, boot flow)"
       ]
     },
     {
