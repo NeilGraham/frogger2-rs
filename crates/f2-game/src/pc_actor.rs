@@ -138,5 +138,67 @@ impl Game {
 
     // TODO(port): FindFrogSubObjects (PC/actor.cpp:129) - head/breast post-matrices are
     // renderer state; needs player[].character (frogger.c wave).
-    // TODO(port): UpdateFrogCroak (PC/actor.cpp:168) - needs player/specfx/babyfrog state.
+
+    /// Port of `UpdateFrogCroak` (PC/actor.cpp:168), called by `DrawLoop` after
+    /// `UpdateFrogTongue(0)`. The breast/head post-matrix swelling (`croakDir`) is renderer
+    /// state and is not simulated; the croak ring, timer and baby reply are.
+    pub fn update_frog_croak(&mut self, pl: i32) {
+        use crate::frogmove::FROGSTATUS_ISCROAKING;
+        use crate::specfx::FXTYPE_CROAK;
+        use f2_math::{FVector, SVector};
+        let p = pl as usize;
+        if self.frogger.player[p].frog_state & FROGSTATUS_ISCROAKING == 0 {
+            // breastMatrix/headPostMatrix reset (renderer only).
+            return;
+        }
+        let up = {
+            let n = self.frogmove.curr_tile[p].map_or(SVector::default(), |t| self.map.tiles[t.idx()].normal);
+            FVector { vx: n.vx as i32, vy: n.vy as i32, vz: n.vz as i32 }
+        };
+        if self.frogger.player[p].is_croaking.time % 2 == 0 {
+            let effect_pos = self.frog_position(p);
+            self.prep_for_priority_effect();
+            let fx = self.create_special_effect_direct(FXTYPE_CROAK, &effect_pos, &up, 81920, 4096, 410, 6144);
+            if let Some(f) = fx {
+                self.specfx.fx_mut(f).spin = 25;
+                self.set_fx_colour(fx, 191, 255, 0);
+            }
+            // moolardCheat ("mullard" sample) is never set in a normal game.
+            self.play_voice(pl, "frogcroak");
+        }
+
+        let afc = self.act_frame_count;
+        self.frogger.player[p].is_croaking.update(-1, afc);
+        if self.frogger.player[p].is_croaking.time == 0 {
+            self.frogger.player[p].frog_state &= !FROGSTATUS_ISCROAKING;
+
+            // check for nearest baby frog
+            let baby = self.get_nearest_baby_frog();
+            if baby != -1 {
+                let b = baby as usize;
+                let up_vec = crate::frogger::UP_VEC;
+                let mut pos = SVector { vx: (up_vec.vx >> 12) as i16, vy: (up_vec.vy >> 12) as i16, vz: (up_vec.vz >> 12) as i16, ..SVector::default() };
+                pos.vx = pos.vx.wrapping_mul(20);
+                pos.vy = pos.vy.wrapping_mul(20);
+                pos.vz = pos.vz.wrapping_mul(20);
+                if let Some(a) = self.babyfrog.baby_list[b].baby.and_then(|id| self.actor2.actors.get(id)) {
+                    let bp = a.actor.position;
+                    pos.vx = pos.vx.wrapping_add(bp.vx);
+                    pos.vy = pos.vy.wrapping_add(bp.vy);
+                    pos.vz = pos.vz.wrapping_add(bp.vz);
+                }
+                self.prep_for_priority_effect();
+                let fx = self.create_special_effect_direct(FXTYPE_CROAK, &pos, &up, 81920, 4096, 410, 6144);
+                if let Some(f) = fx {
+                    let n = self.baby_icon_index(b) as usize;
+                    self.specfx.fx_mut(f).spin = 25;
+                    // BUG(original): babyList[n] with a bad offset2 reads past the array.
+                    if let Some(c) = self.babyfrog.baby_list.get(n).map(|b| b.fx_colour) {
+                        self.set_fx_colour(fx, c[0], c[1], c[2]);
+                    }
+                }
+                self.play_sample(crate::pcaudio::gen_sfx(crate::pcaudio::GEN_BABYREPLY), Some(pos), 0, crate::anim::SAMPLE_VOLUME, -1);
+            }
+        }
+    }
 }

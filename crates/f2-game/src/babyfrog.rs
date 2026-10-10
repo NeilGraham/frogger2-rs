@@ -114,7 +114,7 @@ impl Game {
     }
 
     /// `babyList[i].enemy->path->nodes->offset2` icon ordering hack.
-    fn baby_icon_index(&self, i: usize) -> u32 {
+    pub(crate) fn baby_icon_index(&self, i: usize) -> u32 {
         let off2 = self.babyfrog.baby_list[i].enemy.map_or(0, |e| {
             let path = self.enemies.enemy_list.array[e.idx()].path;
             if path.num_nodes > 0 {
