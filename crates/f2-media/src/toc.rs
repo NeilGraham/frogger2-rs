@@ -216,7 +216,7 @@ mod tests {
         data[..12].copy_from_slice(&crate::sector::SYNC);
         data[15] = 1;
         // Audio: 2 pregap + 4 sectors; sample bytes [0x01, 0x02] stored big-endian.
-        for p in data[2 * 2352..].chunks_exact_mut(2) {
+        for p in data[2 * 2352..].as_chunks_mut::<2>().0 {
             p.copy_from_slice(&[0x02, 0x01]);
         }
         std::fs::write(dir.join("data.bin"), &data).unwrap();

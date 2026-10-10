@@ -302,6 +302,9 @@ fn write_file(root: &Path, rel: &str, data: &[u8], files: &mut BTreeMap<String, 
     Ok(())
 }
 
+/// Receives chunks of 16-bit stereo PCM.
+pub(crate) type PcmSink<'a> = &'a mut dyn FnMut(&[u8]) -> io::Result<()>;
+
 /// Writes one music track (`music/trackNN.wav|flac`) from 16-bit stereo PCM produced by
 /// `fill`, which calls its argument with successive chunks. Returns the relative path.
 pub(crate) fn write_music_track(
@@ -310,7 +313,7 @@ pub(crate) fn write_music_track(
     pcm_len: u64,
     flac_out: bool,
     files: &mut BTreeMap<String, String>,
-    fill: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
+    fill: &mut dyn FnMut(PcmSink<'_>) -> io::Result<()>,
 ) -> io::Result<String> {
     let ext = if flac_out { "flac" } else { "wav" };
     let rel = format!("music/track{number:02}.{ext}");

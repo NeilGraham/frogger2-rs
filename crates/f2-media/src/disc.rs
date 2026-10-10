@@ -393,7 +393,7 @@ impl Disc {
                 out.extend_from_slice(&s[..RAW as usize]);
             }
             if t.swap && t.kind == TrackKind::Audio {
-                for p in out.chunks_exact_mut(2) {
+                for p in out.as_chunks_mut::<2>().0 {
                     p.swap(0, 1);
                 }
             }

@@ -10,7 +10,7 @@ Scratch tools used: a ~40-line Python ISO9660 reader over raw 2352-byte sectors,
 |---|---|---|
 | `Redump/Frogger 2 - Swampy's Revenge (USA).zip` | 12 `.bin` + `.cue` (one FILE per track) | **canonical** |
 | `Redump/Frogger 2 - Swampy's Revenge (Europe) (En,Fr,De,It).zip` | 12 `.bin` + `.cue` | multi-language |
-| `MyAbandonware/…_ISO-Version.zip` | single `FROGGER2.bin` (490 MB) + `.cue` with INDEX offsets | same USA layout, one file |
+| `MyAbandonware/…_ISO-Version.zip` | single `FROGGER2.bin` (490 MB) + `.cue` with INDEX offsets | same USA layout, one file; all 12 tracks hash-identical to the Redump USA dump (checked 2026-10-09 with `f2-import --verify`) |
 | `MyAbandonware/…_RIP-Version.zip` | installed-style folder (scene rip "MYTH") | data byte-identical to USA `DATA1.CAB`; **exe is cracked** (different hash) — do not use as reference exe |
 | `MyAbandonware/Game Extras/…NoCD-Patcher.zip` | crack | not used; the port has no CD check |
 

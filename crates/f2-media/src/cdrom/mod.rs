@@ -68,7 +68,7 @@ impl Toc {
         }
         let len = (u16::from_be_bytes([b[0], b[1]]) as usize + 2).min(b.len());
         let mut toc = Toc::default();
-        for d in b[4..len].chunks_exact(8) {
+        for d in b[4..len].as_chunks::<8>().0 {
             let addr = if msf { (u32::from(d[5]) * 60 + u32::from(d[6])) * 75 + u32::from(d[7]) - 150 } else { u32::from_be_bytes([d[4], d[5], d[6], d[7]]) };
             let audio = d[1] & 0x04 == 0;
             match d[2] {
@@ -365,7 +365,7 @@ impl ImageDrive {
                 out[o..o + take].copy_from_slice(&src);
                 if t.swap {
                     // Byte order is per sample pair; `within` is even for aligned reads.
-                    for q in out[o..o + take].chunks_exact_mut(2) {
+                    for q in out[o..o + take].as_chunks_mut::<2>().0 {
                         q.swap(0, 1);
                     }
                 }
@@ -417,7 +417,7 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         let mut img = vec![0u8; 40 * 2352];
         img[..12].copy_from_slice(&crate::sector::SYNC);
-        for (i, s) in img[10 * 2352..].chunks_exact_mut(4).enumerate() {
+        for (i, s) in img[10 * 2352..].as_chunks_mut::<4>().0.iter_mut().enumerate() {
             s.copy_from_slice(&(i as u32).wrapping_mul(2654435761).to_le_bytes());
         }
         let p = dir.join("x.img");

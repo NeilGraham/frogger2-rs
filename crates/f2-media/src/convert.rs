@@ -97,7 +97,7 @@ pub fn write_image(disc: &Disc, fmt: OutFormat, dir: &Path, stem: &str) -> io::R
             for s in b.chunks(RAW as usize) {
                 if big_endian {
                     let mut v = s.to_vec();
-                    for p in v.chunks_exact_mut(2) {
+                    for p in v.as_chunks_mut::<2>().0 {
                         p.swap(0, 1);
                     }
                     w.write_all(&v)?;

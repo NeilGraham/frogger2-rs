@@ -88,13 +88,13 @@ enum Item {
 
 enum Msg {
     Event(Event),
-    Done(Result<Manifest, String>),
+    Done(Result<Box<Manifest>, String>),
 }
 
 enum Status {
     Menu,
     Running { stage: String, fraction: f32, log: Vec<String> },
-    Done(Manifest),
+    Done(Box<Manifest>),
     Failed(String),
 }
 
@@ -156,7 +156,7 @@ impl Screen {
                 Source::Path(p) => f2_import::import(&p, &root, &opts),
                 Source::Drive(d) => f2_import::import_drive(&d, &root, &opts),
             };
-            let _ = tx.send(Msg::Done(r.map_err(|e| e.to_string())));
+            let _ = tx.send(Msg::Done(r.map(Box::new).map_err(|e| e.to_string())));
         });
         self.job = Some(rx);
         self.status = Status::Running { stage: "starting".into(), fraction: 0.0, log: Vec::new() };
@@ -675,7 +675,7 @@ mod tests {
             files: Default::default(),
         });
         m.music_note = Some(f2_import::NO_AUDIO_NOTE.into());
-        s.status = Status::Done(m);
+        s.status = Status::Done(Box::new(m));
         shot(&mut s, "done");
         s.status = Status::Failed("FROGGER2/DATA1.CAB not found on disc".into());
         shot(&mut s, "failed");

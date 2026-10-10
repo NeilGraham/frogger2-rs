@@ -6,8 +6,8 @@
 original source. It runs on modern systems (Linux, Windows, macOS) with a widescreen-capable
 renderer, gamepad support and rebindable controls.
 
-**It contains no game data.** You need your own copy of the game (a disc image such as a Redump
-dump, a physical disc's files, or an existing install folder). The importer extracts what the port
+**It contains no game data.** You need your own copy of the game (the CD in a drive, a disc
+image in any common format, or an existing install folder). The importer extracts what the port
 needs into a local data directory. Nothing copyrighted is ever distributed with this project.
 
 Status: in development; see the Status section of [PLAN.md](../PLAN.md). Some menus/options
@@ -22,11 +22,14 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
    cargo build --release -p frogger -p f2-import -p f2-viewer
    ```
 
-2. Import your copy. The argument can be a `.zip`, `.cue`/`.bin`, `.iso`, a disc folder or an
-   install folder:
+2. Import your copy. Easiest: just start `frogger` — with no data it opens an **import screen**
+   that lists your CD/DVD drives ("Import from the Frogger 2 disc in D:"), lets you pick an image
+   file or folder, or accepts a file dragged onto the window; when the import finishes the game
+   starts. Or use the command-line importer (see [Importing your game](#importing-your-game)):
 
    ```sh
    target/release/f2-import "/path/to/Frogger 2 - Swampy's Revenge (USA).zip"
+   target/release/f2-import D:                    # the CD in drive D: (Linux: /dev/sr0)
    target/release/f2-import --list                # show imported renditions
    target/release/f2-import --verify-installed    # check the imported files
    ```
@@ -47,6 +50,31 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
    Useful options: `--fullscreen`, `--size 1920x1080`, `--mute`, `--profile authentic|enhanced`.
    `frogger --help` prints the full list (including developer shortcuts such as
    `--level WORLD LEVEL`, `--multi WORLD LEVEL FROGS`, `--demo WORLD LEVEL`, `--video NAME`).
+
+## Importing your game
+
+Any of these works (full matrix and technical notes: [asset-import.md](asset-import.md)):
+
+| You have | Do | Music |
+|---|---|---|
+| The CD in a drive (Windows or Linux) | import screen, or `f2-import D:` / `f2-import /dev/sr0` | ripped from the disc; the drive's read offset is detected and the rip checked against the known Redump hashes ("verified (offset +N)") |
+| A disc image: `.cue`/`.bin` (one or many `.bin`), CloneCD `.ccd`/`.img`, Alcohol `.mds`/`.mdf`, Nero `.nrg`, cdrdao `.toc`/`.bin`, or a `.zip` holding one | pick the file (the `.cue`/`.ccd`/`.mds`/`.nrg`/`.toc`, or the `.zip`) | from the image |
+| An image mounted in Windows Explorer ("Mount") | pick its drive letter | the importer finds the image file behind the drive; a mounted `.iso` has no music (see below) |
+| A plain `.iso`, a copied disc folder, or an installed game folder | pick it | none — add `--music <folder>` |
+
+**Music for data-only sources.** A `.iso` (and Windows' mounted ISOs, disc folders and installs)
+contains no CD audio. The game runs fine without it; to add music, import again with
+`f2-import <source> --music <folder>`, where the folder holds the 11 tracks as WAV (16-bit) or FLAC
+named by track number (`02.wav` … `12.wav`, `Track 02.flac`, `track02.wav`) or by name
+(`garden.wav`, `frontend.flac`, …). You can also copy `trackNN.wav`/`.flac` files into the
+rendition's `music/` folder yourself. MP3/Ogg are not supported (convert them to FLAC).
+
+**Not supported:** MAME `.chd` (convert with `chdman extractcd -i game.chd -o game.cue`),
+DiscJuggler `.cdi`, `.7z`/`.rar` archives (extract them first) — the importer says so and how.
+
+A scratched disc: read errors are retried (slower, sector by sector); sectors that still fail become
+silence and the import log/manifest say how many. `f2-import --list-drives` shows what the importer
+sees in your drives.
 
 ## Controls
 
