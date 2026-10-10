@@ -531,9 +531,13 @@ struct Host {
     gamepads: Option<Gamepads>,
     /// Present pass (brightness / borderless render resolution), created on demand.
     present: Option<present::Present>,
-    /// A requested window mode and when it was requested (the real state follows
-    /// asynchronously; until then the observed state does not overwrite the config).
-    mode_req: Option<(f2_platform::WindowMode, Instant)>,
+    /// The window transition in flight (the real state follows asynchronously; until it
+    /// settles the observed state does not overwrite the config and resizes are not saved).
+    mode_req: Option<ModeReq>,
+    /// A mode / resolution change requested while a transition was in flight: applied once
+    /// it settles (latest settings win). Overlapping OS transitions confuse the platform's
+    /// saved windowed placement (a monitor-sized "windowed" window).
+    mode_next: bool,
     /// Last logged window state.
     logged: Option<(f2_platform::WindowMode, u32, u32)>,
     /// Window size / position changed: save the config on exit.
@@ -545,14 +549,40 @@ struct Host {
     error: Option<String>,
 }
 
+/// A requested window mode, when it was requested and when the window last changed size.
+struct ModeReq {
+    mode: f2_platform::WindowMode,
+    at: Instant,
+    last_resize: Instant,
+}
+
+impl ModeReq {
+    fn new(mode: f2_platform::WindowMode) -> ModeReq {
+        let now = Instant::now();
+        ModeReq { mode, at: now, last_resize: now }
+    }
+
+    /// The transition is over: the window reached the mode and stopped resizing (or the
+    /// platform never got there).
+    fn settled(&self, actual: f2_platform::WindowMode) -> bool {
+        const QUIET: Duration = Duration::from_millis(250);
+        (actual == self.mode && self.last_resize.elapsed() >= QUIET) || self.at.elapsed() >= Duration::from_secs(2)
+    }
+}
+
 impl Host {
-    /// Applies `cfg.video`'s window mode / resolution to the window.
+    /// Applies `cfg.video`'s window mode / resolution to the window, or queues it while a
+    /// previous transition is still in flight.
     fn apply_window(&mut self, window: &window::Window) {
         let Some(app) = &mut self.app else { return };
+        if self.mode_req.is_some() {
+            self.mode_next = true;
+            return;
+        }
         let v = &app.cfg.video;
         let msg = window::apply_mode(window, v.window_mode, v.resolution, v.refresh_mhz, [v.width, v.height]);
         eprintln!("frogger: window: {msg}");
-        self.mode_req = Some((v.window_mode, Instant::now()));
+        self.mode_req = Some(ModeReq::new(v.window_mode));
     }
 
     /// Follows the real window state: mode (the OS can leave fullscreen), size, monitor
@@ -567,10 +597,11 @@ impl Host {
             app.win.modes = window::video_modes(window);
             app.win.desktop = window::monitor_mode(window);
         }
-        let pending = match self.mode_req {
-            Some((m, t)) if m != actual && t.elapsed() < Duration::from_secs(2) => true,
+        let mut settled = None;
+        let pending = match &self.mode_req {
+            Some(r) if !r.settled(actual) => true,
             Some(_) => {
-                self.mode_req = None;
+                settled = self.mode_req.take();
                 false
             }
             None => false,
@@ -578,6 +609,16 @@ impl Host {
         if !pending && app.cfg.video.observe_mode(actual) {
             eprintln!("frogger: window mode changed outside the game: {}", actual.name());
             self.window_dirty = true;
+        }
+        if let Some(r) = settled {
+            if r.mode == f2_platform::WindowMode::Windowed && actual == f2_platform::WindowMode::Windowed {
+                let v = &app.cfg.video;
+                window::fix_windowed(window, v.resolution.unwrap_or([v.width, v.height]));
+            }
+            if std::mem::take(&mut self.mode_next) {
+                self.apply_window(window);
+                return;
+            }
         }
         if self.logged != Some((actual, size.0, size.1)) {
             self.logged = Some((actual, size.0, size.1));
@@ -701,6 +742,9 @@ impl WindowApp for Host {
         if let Some(g) = &mut self.gfx {
             g.surface.resize(&g.ctx.device, size.width, size.height);
         }
+        if let Some(r) = &mut self.mode_req {
+            r.last_resize = Instant::now();
+        }
         // Windowed: remember the size; a user resize away from a fixed resolution makes it
         // "Auto" (the setting always shows the real state).
         if let Some(app) = &mut self.app {
@@ -793,7 +837,9 @@ impl WindowApp for Host {
             return Flow::Exit;
         }
         if let Some((n, t)) = self.window_test {
-            if t.elapsed() >= Duration::from_secs(3) {
+            // Steps 10-12 follow each other quickly (rapid switching in the settings screen).
+            let wait = if (10..=12).contains(&n) { Duration::from_millis(80) } else { Duration::from_secs(3) };
+            if t.elapsed() >= wait {
                 use f2_platform::WindowMode as M;
                 let v = &mut app.cfg.video;
                 let what = match n {
@@ -837,6 +883,14 @@ impl WindowApp for Host {
                         v.resolution = None;
                         "Windowed, auto"
                     }
+                    9 | 11 => {
+                        v.select_mode(M::Borderless);
+                        "rapid: Borderless"
+                    }
+                    10 | 12 => {
+                        v.select_mode(M::Windowed);
+                        "rapid: Windowed (expect a normal window at the saved size)"
+                    }
                     _ => return Flow::Exit,
                 };
                 eprintln!("frogger: window test step {n}: {what}");
@@ -863,6 +917,12 @@ impl WindowApp for Host {
         }
         self.observe_window(frame.window);
         let (Some(app), Some(g)) = (&mut self.app, &mut self.gfx) else { return Flow::Continue };
+        // A mode switch can end without a final `Resized` (or with a stale one): the surface
+        // always follows the real client size.
+        let inner = frame.window.inner_size();
+        if inner.width > 0 && inner.height > 0 && (inner.width, inner.height) != (g.surface.config.width, g.surface.config.height) {
+            g.surface.resize(&g.ctx.device, inner.width, inner.height);
+        }
 
         let (w, h) = (g.surface.config.width, g.surface.config.height);
         let v = &app.cfg.video;
@@ -931,7 +991,8 @@ fn run_window(data: data::Data, mut cfg: Config, args: &Args, steps: Vec<Step>, 
         save_path: args.save.clone().unwrap_or_else(|| f2_platform::paths::save_dir().join("savegame.dat")),
         dev_unlock: args.dev_unlock,
         present: None,
-        mode_req: (wc.mode != f2_platform::WindowMode::Windowed).then(|| (wc.mode, Instant::now())),
+        mode_req: (wc.mode != f2_platform::WindowMode::Windowed).then(|| ModeReq::new(wc.mode)),
+        mode_next: false,
         logged: None,
         window_dirty: false,
         window_test: std::env::var_os("F2_WINDOW_TEST").map(|_| (0, Instant::now())),

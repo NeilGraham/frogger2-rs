@@ -614,7 +614,7 @@ impl App {
         let gate = |e: bool, desc: &str| if e { desc.to_string() } else { format!("{desc} {ENH_HINT}") };
         match ui.page() {
             Page::Display => {
-                add(Id::WindowMode, "Window mode", self.win.mode.name().into(), "Windowed, borderless fullscreen or exclusive fullscreen. Alt+Enter / F11 toggle windowed and your fullscreen choice.", true, true);
+                add(Id::WindowMode, "Window mode", v.window_mode.name().into(), "Windowed, borderless fullscreen or exclusive fullscreen. Alt+Enter / F11 toggle windowed and your fullscreen choice.", true, true);
                 let res = match v.resolution {
                     None => format!("Auto ({}x{})", self.win.size.0, self.win.size.1),
                     Some([w, h]) => format!("{w}x{h}"),
@@ -713,7 +713,9 @@ impl App {
         let v = &mut self.cfg.video;
         match id {
             Id::WindowMode => {
-                let m = step(&WindowMode::ALL, self.win.mode, dir);
+                // Step from the requested mode: the window follows asynchronously, and
+                // repeated presses must not restart from a stale state.
+                let m = step(&WindowMode::ALL, v.window_mode, dir);
                 v.select_mode(m);
                 if m != WindowMode::Fullscreen {
                     v.refresh_mhz = None;

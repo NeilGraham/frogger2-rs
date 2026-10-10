@@ -109,6 +109,8 @@ pub fn apply_mode(window: &Window, mode: WindowMode, resolution: Option<[u32; 2]
         WindowMode::Windowed => {
             if window.fullscreen().is_some() {
                 window.set_fullscreen(None);
+                // Leaving fullscreen restores the saved placement, which can be maximized.
+                window.set_maximized(false);
             }
             let [w, h] = resolution.unwrap_or(windowed_size);
             let _ = window.request_inner_size(LogicalSize::new(w.max(160), h.max(120)));
@@ -170,6 +172,31 @@ pub trait WindowApp {
     }
     fn resized(&mut self, _window: &Arc<Window>, _size: PhysicalSize<u32>) {}
     fn frame(&mut self, frame: Frame<'_>) -> Flow;
+}
+
+/// After a switch to windowed has settled: restores the wanted client size (logical
+/// points) when the platform restored a different placement, and re-centres a window that
+/// covers its whole monitor (a placement saved mid-transition), keeping the title bar
+/// reachable.
+pub fn fix_windowed(window: &Window, size: [u32; 2]) {
+    if window.fullscreen().is_some() || window.is_maximized() {
+        return;
+    }
+    let scale = window.scale_factor();
+    let [w, h] = [size[0].max(160), size[1].max(120)];
+    let inner = window.inner_size();
+    if (inner.width, inner.height) == (logical_to_physical(w, scale), logical_to_physical(h, scale)) {
+        return;
+    }
+    let _ = window.request_inner_size(LogicalSize::new(w, h));
+    let (Some(m), Ok(pos)) = (monitor(window), window.outer_position()) else { return };
+    let (mp, ms, outer) = (m.position(), m.size(), window.outer_size());
+    if outer.width >= ms.width || outer.height >= ms.height || pos.y < mp.y {
+        let (pw, ph) = (logical_to_physical(w, scale) as i32, logical_to_physical(h, scale) as i32);
+        let x = mp.x + (ms.width as i32 - pw).max(0) / 2;
+        let y = mp.y + (ms.height as i32 - ph).max(0) / 2;
+        window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+    }
 }
 
 /// Switches between borderless fullscreen and windowed.
