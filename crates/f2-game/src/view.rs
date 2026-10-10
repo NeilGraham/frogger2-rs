@@ -715,6 +715,42 @@ impl Game {
         });
     }
 
+    /// Render-only (reads the state, changes nothing): the object sprites of actor `id` as
+    /// [`transform_actor_sprites`](Self::transform_actor_sprites) would leave them with
+    /// `draw` on, from the actor's current placement and (possibly frozen) animation time.
+    ///
+    /// For hosts whose view is wider than the 640×480 one the simulation culls against
+    /// (Enhanced Hor+): an actor `ActorListDraw` rejected has its sprites killed and not
+    /// repositioned, although it can be on a wider screen. Empty when the actor has no
+    /// object sprites for its current model.
+    pub fn posed_object_sprites(&self, id: ActorId) -> Vec<(crate::ids::SpriteId, crate::sprite::Sprite)> {
+        let mut out = Vec::new();
+        let Some(a2) = self.actor2.actors.get(id) else { return out };
+        let a = &a2.actor.actual_actor;
+        let Some(mid) = a.object_controller else { return out };
+        let Some(ptrs) = a2.obj_sprites.as_ref().filter(|(m, _)| *m == mid).map(|(_, p)| p) else { return out };
+        let Some(model) = self.models.get(mid) else { return out };
+        let animated = a.animation.is_some();
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        let p = a.placement;
+        let top = actor_top(p.pos, &p.q_rot);
+        let mut next = 0;
+        transform_object_sprites(&model.xform_tree, &top, [1.0; 3], &p, animated, time, &mut next, &mut |i, pos, sx, sy, xlu| {
+            let Some(Some(sid)) = ptrs.get(i) else { return };
+            let mut sp = *self.sprite.get(*sid);
+            sp.draw = 1;
+            sp.g = 0xff;
+            sp.scale_x = ftol16(sx);
+            sp.scale_y = ftol16(sy);
+            sp.a = xlu;
+            sp.offset_x = -16;
+            sp.offset_y = -16;
+            sp.pos = SVector { vx: ftol16(pos[0]), vy: ftol16(pos[1]), vz: ftol16(pos[2]), pad: 0 };
+            out.push((*sid, sp));
+        });
+        out
+    }
+
     /// Port of `KillObjectSprites` (mdxActor.cpp:115): an actor culled by `ActorListDraw`
     /// hides its object sprites.
     fn kill_object_sprites(&mut self, id: ActorId) {

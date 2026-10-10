@@ -15,11 +15,12 @@
 use f2_engine::math::{mtx_cat, mtx_xfm, quaternion_to_matrix, Mat4, IDENTITY};
 use f2_engine::scene::{Frame, TlVertex, Tri, DIST, SZ_SCALE};
 use f2_engine::{Renderer, TexHandle};
-use f2_game::ids::SpecFxId;
+use f2_game::ids::{SpecFxId, SpriteId};
 use f2_game::specfx::{FxDraw, FXTYPE_CROAK, FXTYPE_GARIBCOLLECT, FXTYPE_WAKE, FXTYPE_WATERRIPPLE, NUM_RINGSEGS};
-use f2_game::sprite::{SPRITE_ADDITIVE, SPRITE_FLAGS_ROTATE};
+use f2_game::sprite::{Sprite, SPRITE_ADDITIVE, SPRITE_FLAGS_ROTATE};
 use f2_game::Game;
 use f2_math::{FVector, SVector};
+use std::collections::HashMap;
 
 type V3 = [f32; 3];
 
@@ -147,6 +148,7 @@ pub fn process_shadows(r: &mut Renderer, game: &Game) {
     let Some(tex) = tex_of(r, game.specfx.textures.txtr_solid_ring) else { return };
     let actors = &game.actor2.actors;
     let scale_div = f2_game::map::SCALE as f32;
+    let wide = r.view.widened();
     for i in 0..(game.frogger.num_frogs.clamp(0, 4) as usize) {
         let Some(fid) = game.frogger.frog[i] else { continue };
         let Some(f) = actors.get(fid) else { continue };
@@ -184,7 +186,10 @@ pub fn process_shadows(r: &mut Renderer, game: &Game) {
         }
         let Some(a) = nme.nme_actor.and_then(|a| actors.get(a)) else { continue };
         let (Some(sh), Some(t)) = (a.actor.shadow.as_ref(), nme.in_tile) else { continue };
-        if a.clipped != 0 {
+        // `clipped` is the simulation's 640×480 bounding-box test (and stale for actors
+        // `ActorListDraw` skipped): a widened Hor+ view draws every shadow and lets the
+        // projection clip it.
+        if a.clipped != 0 && !wide {
             continue;
         }
         let tile = game.map.tile(t);
@@ -207,7 +212,10 @@ pub fn process_shadows(r: &mut Renderer, game: &Game) {
         }
         let Some(a) = plt.plt_actor.and_then(|a| actors.get(a)) else { continue };
         let (Some(sh), Some(t)) = (a.actor.shadow.as_ref(), plt.in_tile[0]) else { continue };
-        if a.clipped != 0 {
+        // `clipped` is the simulation's 640×480 bounding-box test (and stale for actors
+        // `ActorListDraw` skipped): a widened Hor+ view draws every shadow and lets the
+        // projection clip it.
+        if a.clipped != 0 && !wide {
             continue;
         }
         let tile = game.map.tile(t);
@@ -512,8 +520,10 @@ fn draw_tongue(r: &mut Renderer, game: &Game, pl: usize) {
 // ------------------------------------------------------------------ sprites
 
 /// Port of `PrintSprites` / `ZSortSpriteList` / `PrintSprite` (pcsprite.c:107/290/392).
-/// `far_clip` is `farClip`.
-pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32) {
+/// `far_clip` is `farClip`. `posed` replaces sprites of the list by a render-side copy
+/// (object sprites of actors the simulation culled but a widened Hor+ view shows, see
+/// [`crate::render::widened_object_sprites`]); empty = retail.
+pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32, posed: &HashMap<SpriteId, Sprite>) {
     if game.sprite.count == 0 {
         return;
     }
@@ -522,6 +532,7 @@ pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32) {
     let frog_z = if game.frogger.frog[0].is_some() { r.view.xfm_point([0.0; 3]).map_or(0.0, |m| m[2]) } else { 0.0 };
     let mut list: Vec<(f32, f32, f32, SprIdx)> = Vec::new();
     for (id, s) in game.sprite.iter_list().take(MAX_ARRAY_SPRITES) {
+        let s = posed.get(&id).unwrap_or(s);
         let p = [s.pos.vx as f32 * 0.1, s.pos.vy as f32 * 0.1, s.pos.vz as f32 * 0.1];
         let sc = r.view.xfm_point(p).unwrap_or([0.0; 3]);
         if sc[2] - frog_z < far_clip {
@@ -533,7 +544,8 @@ pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32) {
     let fov = r.view.fov;
     let sprite_mul = r.view.proj_scale();
     for &(sx, sy, sz, SprIdx(idx)) in list.iter().rev() {
-        let s = game.sprite.get(f2_game::ids::SpriteId(idx));
+        let id = f2_game::ids::SpriteId(idx);
+        let s = posed.get(&id).unwrap_or_else(|| game.sprite.get(id));
         if s.draw == 0 || s.texture == 0 || s.scale_x == 0 || s.scale_y == 0 || sz == 0.0 {
             continue;
         }

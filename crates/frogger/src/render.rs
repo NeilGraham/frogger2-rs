@@ -317,7 +317,8 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
             if let Some(((b, m), a)) = &mut scene.placeholder_frog {
                 r.draw_actor(&scene.banks[*b].models[*m], a);
             }
-            fx::print_sprites(r, game, ctx.far_clip);
+            let posed = if r.view.widened() { widened_object_sprites(game) } else { HashMap::new() };
+            fx::print_sprites(r, game, ctx.far_clip, &posed);
             if !matches!(mode, MULTI_WINRACE_MODE | MULTI_WINBATTLE_MODE | MULTI_WINCOLLECT_MODE | LEVELCOMPLETE_MODE) {
                 fx::draw_special_fx(r, game);
             }
@@ -405,6 +406,33 @@ fn draw_actor_list(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &
         ea.gouraud = game.options.portrait_actor.iter().position(|&p| p == Some(id)).map(|i| game.options.portrait_gouraud[i].map(|c| c as f32 / 255.0));
         r.draw_actor(&scene.banks[b].models[m], ea);
     }
+}
+
+/// Enhanced Hor+ wider than 4:3: the object sprites (e.g. the sarge ants' bodies) of the
+/// actors the simulation's `ActorListDraw` culled against its 640×480 view, posed render-side.
+/// The simulation kills such sprites (`KillObjectSprites`, `draw = 0`) and does not move
+/// them, but their meshes are drawn regardless, so without this a wide screen shows the
+/// legs without the body. Those actors also do not animate (`UpdateAnims` is skipped), so
+/// mesh and sprites keep the pose of their last on-screen frame, as in retail.
+/// The simulation state is only read.
+pub fn widened_object_sprites(game: &Game) -> HashMap<f2_game::ids::SpriteId, f2_game::sprite::Sprite> {
+    let mut out = HashMap::new();
+    for list in 0..2 {
+        for id in game.actor_draw_list(list) {
+            let a2 = &game.actor2.actors[id];
+            if a2.draw == 0 || a2.flags & f2_game::actor2::ACTOR_DRAW_NEVER != 0 || a2.actor.actual_actor.placement.draw == 0 {
+                continue;
+            }
+            let Some((_, ptrs)) = a2.obj_sprites.as_ref() else { continue };
+            // `ActorListDraw` transformed (and so placed) the sprites of every actor it drew;
+            // all of them off means it culled this one.
+            if ptrs.iter().flatten().any(|&sid| game.sprite.get(sid).draw != 0) {
+                continue;
+            }
+            out.extend(game.posed_object_sprites(id));
+        }
+    }
+    out
 }
 
 pub(crate) fn tl(sx: f32, sy: f32, vz: f32, c: [u8; 4]) -> TlVertex {

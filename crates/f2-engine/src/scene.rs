@@ -123,6 +123,10 @@ impl Camera {
     }
 }
 
+/// `horizClip` / `vertClip` (mdxRender.cpp): `XfmPoint`'s camera-space x/y rejection.
+pub const HORIZ_CLIP: f32 = 3000.0;
+pub const VERT_CLIP: f32 = 2500.0;
+
 /// Projection state: `vMatrix`, `FOV`, clip planes, viewport (`mdxRender.cpp:46-120`).
 #[derive(Clone, Debug)]
 pub struct View {
@@ -159,8 +163,8 @@ impl View {
             height: height as f32,
             near_clip: 10.0,
             far_clip: 1200.0,
-            horiz_clip: 3000.0,
-            vert_clip: 2500.0,
+            horiz_clip: HORIZ_CLIP,
+            vert_clip: VERT_CLIP,
             no_clip: false,
             camera: None,
             hor_plus: false,
@@ -176,6 +180,31 @@ impl View {
     /// The 3D viewport `[x, y, w, h]`.
     pub fn vp(&self) -> [f32; 4] {
         self.viewport.unwrap_or([0.0, 0.0, self.width, self.height])
+    }
+
+    /// Enhanced Hor+: how far the visible 3D area reaches past the original 640×480
+    /// frustum, as `[x, y]` multiples of its half extent (`1` = the 4:3 edge): above 1
+    /// horizontally on wide screens, vertically on tall ones. Always `[1, 1]` without Hor+.
+    ///
+    /// The simulation culls against the 640×480 view (`ActorListDraw`, `CheckBoundingBox`,
+    /// `IsPointVisible`); the host uses this to draw what that culling dropped but a wider
+    /// screen shows.
+    pub fn hor_plus_extent(&self) -> [f32; 2] {
+        if !self.hor_plus {
+            return [1.0, 1.0];
+        }
+        let [_, _, w, h] = self.vp();
+        let s = self.proj_scale();
+        if !s.is_finite() || s <= 0.0 {
+            return [1.0, 1.0];
+        }
+        [(w / s / 640.0).max(1.0), (h / s / 480.0).max(1.0)]
+    }
+
+    /// Whether Hor+ shows more than the original 4:3 frustum (see [`Self::hor_plus_extent`]).
+    pub fn widened(&self) -> bool {
+        let [x, y] = self.hor_plus_extent();
+        x > 1.0 || y > 1.0
     }
 
     /// `rXRes/640` of `InitOneOverTable`; with [`hor_plus`](Self::hor_plus), the
@@ -490,5 +519,23 @@ mod tests {
         // Pillarboxed viewport: centred on the viewport.
         let v = View { hor_plus: true, viewport: Some([100.0, 0.0, 640.0, 480.0]), ..View::new(840, 480) };
         assert_eq!(v.project([0.0, 0.0, 110.0]).unwrap(), [420.0, 240.0, 110.0]);
+    }
+
+    #[test]
+    fn hor_plus_extent_past_the_4_3_frustum() {
+        // Without Hor+ (authentic, also on wide screens) the view is never widened.
+        assert_eq!(View::new(2560, 1080).hor_plus_extent(), [1.0, 1.0]);
+        assert!(!View::new(2560, 1080).widened());
+        let hp = |w, h| View { hor_plus: true, ..View::new(w, h) };
+        assert_eq!(hp(1280, 960).hor_plus_extent(), [1.0, 1.0]);
+        assert!(!hp(640, 480).widened());
+        // 32:9: 3840/(1080/480) = 1706.67 of 640 → 2.667 wide; tall 3:4 → 1.778 high.
+        let [x, y] = hp(3840, 1080).hor_plus_extent();
+        assert!((x - 8.0 / 3.0).abs() < 1e-4 && y == 1.0);
+        let [x, y] = hp(1080, 1440).hor_plus_extent();
+        assert!(x == 1.0 && (y - 16.0 / 9.0).abs() < 1e-4);
+        // Ultrawide clamp: the pillarboxed viewport counts, not the window.
+        let v = View { hor_plus: true, viewport: Some([100.0, 0.0, 640.0, 480.0]), ..View::new(840, 480) };
+        assert!(!v.widened());
     }
 }

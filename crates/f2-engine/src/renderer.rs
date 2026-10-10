@@ -627,6 +627,12 @@ impl Renderer {
             let vx = ((iw as f32 - vw) / 2.0).floor();
             self.view.viewport = Some([vx, 0.0, vw, ih as f32]);
         }
+        // Hor+ on a wide (tall) screen: `XfmPoint`'s camera-space box grows with the visible
+        // area so sprites and effects past the old 4:3 edges are not rejected. [1, 1] (the
+        // original constants) otherwise.
+        let [kx, ky] = self.view.hor_plus_extent();
+        self.view.horiz_clip = crate::scene::HORIZ_CLIP * kx;
+        self.view.vert_clip = crate::scene::VERT_CLIP * ky;
         self.frames.clear();
         self.backdrops.clear();
         self.overlays.clear();

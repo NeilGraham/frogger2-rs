@@ -61,6 +61,22 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
   4:3 area; elements centred in the left/right third stick to the screen edges, centred and
   full-screen ones stay centred, i.e. backdrops pillarboxed), FMVs pillarboxed (aspect kept),
   ultrawide clamp (`display.max_aspect`: pillarboxed 3D viewport, HUD anchored to it)
+- [x] Hor+ past the 4:3 frustum: the simulation keeps culling against its 640×480 view
+  (`f2-game` `view.rs`: `ActorListDraw` sphere test, `CheckBoundingBox` → `ACTOR2::clipped`,
+  `IsPointVisible`/`OutcodeCheck` for effects) because those results feed game state and
+  must not depend on the window. When Hor+ shows more than 4:3 (`View::hor_plus_extent`,
+  wide or tall), the host draws what that culling dropped: (1) object sprites (e.g. the
+  sarge ants' bodies in Subterranean 4-1) that `KillObjectSprites` turned off are posed
+  render-side (`Game::posed_object_sprites`, read-only; `render::widened_object_sprites`),
+  so off-4:3 actors are no longer drawn as legs only; (2) enemy/platform shadows ignore
+  the 4:3 `clipped` flag (stale for culled actors); (3) `XfmPoint`'s camera-space
+  `horizClip`/`vertClip` box scales with the visible area (sprites, effects). Meshes and
+  the landscape were already drawn whole (the renderer's screen rejection uses the real
+  viewport). Known limits, kept for sim parity: actors outside the 4:3 frustum do not
+  animate (`UpdateAnims` only runs for actors `ActorListDraw` accepts, as in retail), so
+  they hold the pose of their last on-screen frame; special effects whose origin is
+  outside 4:3 are not spawned/updated by the simulation (`IsPointVisible`). Authentic and
+  4:3 are unchanged (extent `[1, 1]`, empty pose set).
 - [x] High refresh (interpolated rendering; follow camera derives from the interpolated frog
   position, free camera moves per frame; `video.frame_cap`)
 - [x] MSAA (`display.msaa`, 4×), supersampling (`display.render_scale`), anisotropic/trilinear

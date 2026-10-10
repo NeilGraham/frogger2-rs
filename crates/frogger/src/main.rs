@@ -1042,15 +1042,7 @@ mod tests {
         options: Option<f2_engine::RenderOptions>,
         hud: bool,
     ) -> f2_engine::RgbaImage {
-        let data = data::Data::locate(&Config::default(), Some(root.to_path_buf())).expect("data");
-        let mut app = App::new(data, &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
-        app.set_display(profile, DisplaySettings::ENHANCED);
-        app.push_steps([Step::Level(0, 0)]);
-        app.update(Duration::ZERO, &f2_platform::KeyboardState::default(), &[], true);
-        assert!(app.scene.is_some(), "Garden 1 failed to load");
-        for _ in 0..120 {
-            app.tick(&[]);
-        }
+        let mut app = level_app(ctx, root, (0, 0), 120, profile);
         if let Some(o) = options {
             app.r.options = o;
         }
@@ -1060,6 +1052,20 @@ mod tests {
         }
         app.draw(w, h);
         app.r.render_to_image(app.clear_color()).expect("render")
+    }
+
+    /// Level `world`/`level` loaded headless in `profile` and run for `ticks` ticks.
+    fn level_app(ctx: &GpuContext, root: &std::path::Path, (world, level): (u32, u32), ticks: u32, profile: Profile) -> App {
+        let data = data::Data::locate(&Config::default(), Some(root.to_path_buf())).expect("data");
+        let mut app = App::new(data, &ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm, AudioEngine::null(44100), Config::default().input_mapper());
+        app.set_display(profile, DisplaySettings::ENHANCED);
+        app.push_steps([Step::Level(world, level)]);
+        app.update(Duration::ZERO, &f2_platform::KeyboardState::default(), &[], true);
+        assert!(app.scene.is_some(), "level {world}-{level} failed to load");
+        for _ in 0..ticks {
+            app.tick(&[]);
+        }
+        app
     }
 
     /// The authentic profile must stay pixel-identical to the pre-enhancement renderer:
@@ -1215,5 +1221,67 @@ mod tests {
         assert!(same * 100 >= total * 97, "centre crop matches 4:3 render: {same}/{total}");
         let auth = garden1(&ctx, &root, 2560, 1080, Profile::Authentic, None, false);
         assert!(auth.pixels != wide.pixels);
+    }
+
+    /// Hor+ wider than 4:3 draws what the simulation's 640×480 culling dropped. In the
+    /// Subterranean ant nest (4-1) the sarge ants' bodies are object sprites; one outside
+    /// the 4:3 frustum has them killed by `ActorListDraw`, which used to leave only its legs
+    /// on a 32:9 screen. The render-side pose must draw them, outside the central 4:3 band,
+    /// without touching the simulation.
+    #[test]
+    fn widescreen_draws_sim_culled_object_sprites() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let (w, h) = (2000, 563);
+        let mut app = level_app(&ctx, &root, (4, 1), 200, Profile::Enhanced);
+        app.game.overlays.draw_overlays = false;
+        app.game.textover.num_entries = 0;
+        let sum = app.game.checksum();
+        app.draw(w, h);
+        assert!(app.r.view.widened());
+        let posed = render::widened_object_sprites(&app.game);
+        assert!(!posed.is_empty(), "no sim-culled object sprites in the 32:9 ant nest");
+        // Some of them land on the wide screen outside the 4:3 band.
+        let band = (w as f32 - h as f32 * 4.0 / 3.0) / 2.0;
+        let outside = posed
+            .values()
+            .filter_map(|s| app.r.view.xfm_point([s.pos.vx as f32 * 0.1, s.pos.vy as f32 * 0.1, s.pos.vz as f32 * 0.1]))
+            .filter(|p| (p[0] < band || p[0] > w as f32 - band) && p[0] >= 0.0 && p[0] < w as f32 && p[1] >= 0.0 && p[1] < h as f32)
+            .count();
+        assert!(outside > 0, "no culled sprite projects outside the 4:3 band");
+        let with = app.r.render_to_image(app.clear_color()).expect("render");
+        assert_eq!(app.game.checksum(), sum, "drawing changed the simulation");
+        // Baseline: the same frame without the render-side pose (the old behaviour).
+        let culled: Vec<_> = app.game.actor2.act_list.ids(&app.game.actor2.actors);
+        let mut saved = Vec::new();
+        for id in culled {
+            if app.game.posed_object_sprites(id).iter().any(|(sid, _)| posed.contains_key(sid)) {
+                saved.push((id, app.game.actor2.actors[id].obj_sprites.take()));
+            }
+        }
+        app.draw(w, h);
+        let without = app.r.render_to_image(app.clear_color()).expect("render");
+        for (id, s) in saved {
+            app.game.actor2.actors[id].obj_sprites = s;
+        }
+        let (mut out_band, mut in_band) = (0usize, 0usize);
+        for y in 0..h {
+            for x in 0..w {
+                if with.pixel(x, y) != without.pixel(x, y) {
+                    if (x as f32) < band || (x as f32) >= w as f32 - band {
+                        out_band += 1;
+                    } else {
+                        in_band += 1;
+                    }
+                }
+            }
+        }
+        assert!(out_band > 200, "culled sprites drawn outside the 4:3 band: {out_band} px (inside: {in_band})");
+        // In 4:3 nothing changes: the view is not widened and the retail culling stands.
+        app.draw(1440, 1080);
+        assert!(!app.r.view.widened());
     }
 }
