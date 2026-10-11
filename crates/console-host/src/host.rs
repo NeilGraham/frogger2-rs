@@ -536,14 +536,8 @@ pub const SAVE_DIRS: &[&str] = &["/data/frogger2", "/user/data/frogger2", "/down
 
 /// Where `frogger.log` goes: the first writable place the user can reach over FTP
 /// (internal storage, then a USB drive), the app-private ones last.
-pub const LOG_DIRS: &[&str] = &[
-    "/data/frogger2",
-    "/user/data/frogger2",
-    "/mnt/usb0/frogger2",
-    "/mnt/usb1/frogger2",
-    "/download0/frogger2",
-    "/user/temp/frogger2",
-];
+pub const LOG_DIRS: &[&str] =
+    &["/data/frogger2", "/user/data/frogger2", "/mnt/usb0/frogger2", "/mnt/usb1/frogger2", "/download0/frogger2", "/user/temp/frogger2"];
 
 /// The first of `dirs` that can be created and written to.
 pub fn writable_dir(dirs: &[&str]) -> Option<std::path::PathBuf> {

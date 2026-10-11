@@ -85,7 +85,7 @@ fi
 "$PCC" -Wall -Werror -DVERSION_TAG="\"${KLOG_REV:0:7}\"" -o "$OUT/payloads/klogsrv-ps5.elf" "$KSRC/main.c"
 
 cp "$ROOT/tools/ps5/hw-test-README.txt" "$OUT/README.txt"
-(cd "$OUT" && find . -type f ! -path './ps5-other-formats/PPSA*/*' -printf '%P\t%s\n' | sort > MANIFEST.txt)
+(cd "$OUT" && find . -type f ! -path './ps5-other-formats/PPSA*/*' ! -name MANIFEST.txt -printf '%P\t%s\n' | sort > MANIFEST.txt)
 du -sh "$OUT"
 if [ -n "$COPY" ]; then
     echo "#### copying to $COPY"

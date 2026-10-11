@@ -106,8 +106,8 @@ pub fn run() -> i32 {
     let (bright, dim) = if fails == 0 { (0xff00_d040u32, 0xff00_6020) } else { (0xff20_20e0, 0xff10_1070) };
     let mut frame = 0u64;
     loop {
-        video.fill(if (frame / 60) % 2 == 0 { bright } else { dim });
-        if frame % 600 == 0 {
+        video.fill(if (frame / 60).is_multiple_of(2) { bright } else { dim });
+        if frame.is_multiple_of(600) {
             log(&format!("smoke: frame {frame}"));
         }
         frame += 1;
