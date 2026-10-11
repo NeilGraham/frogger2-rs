@@ -66,7 +66,18 @@ impl Rng {
 ///
 /// For `|cos| > 4096` `acos` yields NaN, which MSVC 6 `_ftol` turns into
 /// `0x8000000000000000`, i.e. **0** after truncation to `long`.
+#[inline]
 pub fn arccos(cos: i32) -> i32 {
+    // Phase 3S: exact table of `arccos_float` over its whole finite domain (tested).
+    if (-4096..=4096).contains(&cos) {
+        crate::tables::ACOS[(cos + 4096) as usize] as i32
+    } else {
+        arccos_float(cos)
+    }
+}
+
+/// The float evaluation of [`arccos`] (the reference its table is generated from).
+pub fn arccos_float(cos: i32) -> i32 {
     // RETAIL: the exe runs with Direct3D's x87 control word (24-bit precision), so
     // `cos/4096.0F`, the `acos` result and the product are each rounded to `float`.
     // With 53-bit maths arccos(0) would be 1023 (PI2 = 6.283185308 > 2*pi); the
@@ -369,13 +380,10 @@ fn normalise_components(comps: &mut [i32], num: u32, l: u32, s: u32) {
     if m == 0 {
         return;
     }
-    // find top bit
-    let mut n = num as i32;
-    let mut tb: i32 = 31;
-    while (n as u32) & 0x8000_0000 == 0 {
-        n = n.wrapping_shl(1);
-        tb -= 1;
-    }
+    // find top bit (phase 3S: `leading_zeros` instead of the shift loop; `num != 0` here,
+    // since `num == 0` gives `l == utilSqrt(0) == 0` and returned above)
+    debug_assert!(num != 0);
+    let tb: i32 = 31 - num.leading_zeros() as i32;
     if tb > 18 {
         let s = (30 - tb) as u32;
         let d = (tb - 18) as u32;

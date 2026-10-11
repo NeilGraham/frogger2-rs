@@ -836,13 +836,14 @@ impl Game {
 
     /// The overlay half of `DrawLoop` (PC/drawloop.cpp:322): `PrintSpriteOverlays(0)`,
     /// `PrintTextOverlays()`, `PrintSpriteOverlays(1)`, `PrintSpriteOverlays(2)`.
+    ///
+    /// Phase 3S: the three sprite-overlay passes run as one before the text (sprite and
+    /// text overlays are independent; see `print_sprite_overlays_state_012`).
     pub fn print_overlays_state(&mut self) {
-        self.print_sprite_overlays_state(0);
+        self.print_sprite_overlays_state_012();
         self.sync_collect_text(true);
         self.print_text_overlays_state();
         self.sync_collect_text(false);
-        self.print_sprite_overlays_state(1);
-        self.print_sprite_overlays_state(2);
     }
 }
 

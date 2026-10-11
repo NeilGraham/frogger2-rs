@@ -54,8 +54,20 @@ impl Game {
                 }
                 false
             }
-            TriggerFunc::EnemyAtFlag { id, flag } => self.enemy_at_flag(id, flag),
-            TriggerFunc::PlatformAtFlag { id, flag } => self.platform_at_flag(id, flag),
+            TriggerFunc::EnemyAtFlag { id, flag } => {
+                if self.flag_snap.active {
+                    self.snap_at_flag(true, id, flag)
+                } else {
+                    self.enemy_at_flag(id, flag)
+                }
+            }
+            TriggerFunc::PlatformAtFlag { id, flag } => {
+                if self.flag_snap.active {
+                    self.snap_at_flag(false, id, flag)
+                } else {
+                    self.platform_at_flag(id, flag)
+                }
+            }
             TriggerFunc::PathAtFlag { path, flag } => {
                 // Port of `PathAtFlag` (Common/evenfunc.c:258).
                 let p = match path {
@@ -215,6 +227,39 @@ impl Game {
         false
     }
 
+    /// [`enemy_at_flag`](Self::enemy_at_flag) / [`platform_at_flag`](Self::platform_at_flag)
+    /// answered from a compact `(uid, fromNode)` copy of the list (in list order), taken on
+    /// first use inside `UpdateEvents` and dropped whenever an event runs (the only thing
+    /// that can change enemies or platforms while triggers are evaluated). Same answers;
+    /// a big level (2-2: 10 `EnemyAtFlag` triggers × 115 enemies) no longer walks the
+    /// whole list per trigger.
+    fn snap_at_flag(&mut self, enemies: bool, id: i32, flag: i32) -> bool {
+        let s = &mut self.flag_snap;
+        let (valid, v) = if enemies { (&mut s.enemies_valid, &mut s.enemies) } else { (&mut s.platforms_valid, &mut s.platforms) };
+        if !*valid {
+            v.clear();
+            if enemies {
+                let el = &self.enemies.enemy_list;
+                let mut c = el.head.first;
+                while let Some(e) = c {
+                    let n = &el.array[e.idx()];
+                    v.push((n.uid, n.path.from_node as i32));
+                    c = n.links.next;
+                }
+            } else {
+                let pl = &self.platform.platform_list;
+                let mut c = pl.head.first;
+                while let Some(p) = c {
+                    let n = &pl.array[p.idx()];
+                    v.push((n.uid, n.path.from_node as i32));
+                    c = n.links.next;
+                }
+            }
+            *valid = true;
+        }
+        v.iter().any(|&(uid, from)| (id == 0 || uid == id) && from == flag)
+    }
+
     /// Port of `PlatformAtFlag` (Common/evenfunc.c:243).
     pub fn platform_at_flag(&self, id: i32, flag: i32) -> bool {
         let pl = &self.platform.platform_list;
@@ -321,5 +366,23 @@ impl Game {
         let t = self.map.tile(tile);
         let (dir, normal) = (t.dir_vector[self.frogmove.frog_facing[p] as usize & 3], t.normal);
         orientate_ss(&mut self.actor2.actors[act].actor.q_rot, &dir, &normal);
+    }
+}
+
+/// See [`Game::snap_at_flag`]. Empty / inactive outside `UpdateEvents`.
+#[derive(Clone, Default)]
+pub(crate) struct FlagSnap {
+    pub active: bool,
+    pub enemies_valid: bool,
+    pub platforms_valid: bool,
+    pub enemies: Vec<(i32, i32)>,
+    pub platforms: Vec<(i32, i32)>,
+}
+
+impl FlagSnap {
+    /// Drops both snapshots (an event ran, or `UpdateEvents` ends).
+    pub fn invalidate(&mut self) {
+        self.enemies_valid = false;
+        self.platforms_valid = false;
     }
 }

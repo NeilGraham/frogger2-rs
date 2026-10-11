@@ -190,7 +190,7 @@ impl Game {
         };
         self.specfx.fx_mut(fx).particles = Some(parts);
 
-        let e = self.specfx.fx(fx).clone();
+        let e = self.specfx.fx(fx).head();
         let mut up = FVector::default();
         set_vector_ff(&mut up, &e.normal);
         scale_vector(&mut up, 200);
@@ -251,7 +251,7 @@ impl Game {
             let p = a.actor.position;
             set_vector_ss(&mut self.specfx.fx_mut(fx).origin, &p);
         }
-        let e = self.specfx.fx(fx).clone();
+        let e = self.specfx.fx(fx).head();
         let mut i = e.num_p;
         let mut alive = 0;
         let mut s = e.sprites;
@@ -306,7 +306,7 @@ impl Game {
             let lifetime = self.specfx.fx(fx).lifetime;
             if self.particle.get(pid).bounce != 0 && (lifetime == -1 || self.act_frame_count < lifetime as u32) {
                 self.particle.get_mut(pid).bounce = 0;
-                let f = self.specfx.fx(fx).clone();
+                let f = self.specfx.fx(fx).head();
                 {
                     let sp = self.sprite.get_mut(sid);
                     set_vector_ss(&mut sp.pos, &f.origin);

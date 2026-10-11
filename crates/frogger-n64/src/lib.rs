@@ -45,6 +45,8 @@ mod demo;
 mod f2z_probe;
 #[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
 mod probes;
+#[cfg(all(target_vendor = "nintendo64", feature = "simbench"))]
+mod simbench;
 
 #[cfg(all(target_vendor = "nintendo64", feature = "r3d-test", not(feature = "bringup")))]
 mod r3dtest;
@@ -80,7 +82,9 @@ pub extern "C" fn f2n64_init() {
     unsafe {
         APP = Some(r3dtest::R3dTest::new())
     };
-    #[cfg(not(any(feature = "bringup", feature = "r3d-test")))]
+    #[cfg(all(feature = "simbench", not(any(feature = "bringup", feature = "r3d-test"))))]
+    simbench::run_all();
+    #[cfg(not(any(feature = "bringup", feature = "r3d-test", feature = "simbench")))]
     {
         let boot = app::Boot::parse(option_env!("F2N64_BOOT"));
         log!("f2n64_init: boot {:?}", boot);

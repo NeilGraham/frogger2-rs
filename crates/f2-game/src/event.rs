@@ -415,6 +415,16 @@ impl Game {
 
     /// Port of `UpdateEvents` (Common/event.c:322).
     pub fn update_events(&mut self) {
+        // Phase 3S: trigger evaluation may use the `(uid, fromNode)` list snapshots
+        // (`evenfunc.rs` `snap_at_flag`), dropped after every event.
+        self.flag_snap.active = true;
+        self.flag_snap.invalidate();
+        self.update_events_inner();
+        self.flag_snap.active = false;
+        self.flag_snap.invalidate();
+    }
+
+    fn update_events_inner(&mut self) {
         self.event.triggers_reset = false;
 
         let mut cur = self.event.trigger_list.head.first;
@@ -431,7 +441,12 @@ impl Game {
                 // rising-edge triggers fire when the trigger is not previously fired
                 if !(flags & TRIGGER_RISING != 0 && flags & TRIGGER_FIRED != 0) {
                     let ev = self.event.trigger_list.get(t).event.clone();
+                    // Events (scripts) change state and evaluate triggers themselves:
+                    // no snapshot while one runs, a fresh one afterwards.
+                    self.flag_snap.active = false;
                     self.call_event(&ev);
+                    self.flag_snap.active = true;
+                    self.flag_snap.invalidate();
 
                     // we need to skip trying to do anything else this gameloop if the
                     // triggers were reset!

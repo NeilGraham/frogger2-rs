@@ -154,29 +154,53 @@ pub struct ReactiveAnim {
     pub type_: i32,
 }
 
-/// `ENEMY` (`enemies.h:85`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Phase 3S: `repr(C)` with the fields `UpdateEnemies` reads for every enemy first;
+/// `ser_order!` keeps the serialized field order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct Enemy {
     pub links: Links<EnemyId>,
-    /// `next != NULL`: the enemy is in `enemyList`.
-    pub linked: bool,
-    pub uid: i32,
     pub nme_actor: Option<ActorId>,
-    pub flags: u32,
-    pub reactive_number: i16,
-    pub speed: Fixed,
-    pub curr_normal: FVector,
-    pub delta_normal: FVector,
     pub active: u8,
-    pub is_waiting: i16,
-    pub is_snapping: i16,
-    pub is_idle: i16,
-    pub facing: u8,
     pub visible: i8,
+    pub is_waiting: i16,
+    pub flags: u32,
     pub in_tile: Option<TileId>,
     pub path: Path,
     pub update: [Option<EnemyUpdate>; ENEMY_UPDATEFUNCS],
+    pub speed: Fixed,
+    pub curr_normal: FVector,
+    pub delta_normal: FVector,
+    pub is_snapping: i16,
+    pub is_idle: i16,
+    pub facing: u8,
+    /// `next != NULL`: the enemy is in `enemyList`.
+    pub linked: bool,
+    pub reactive_number: i16,
+    pub uid: i32,
 }
+
+crate::ser_order!(Enemy, "Enemy", EnemyWire {
+    links: Links<EnemyId>,
+    linked: bool,
+    uid: i32,
+    nme_actor: Option<ActorId>,
+    flags: u32,
+    reactive_number: i16,
+    speed: Fixed,
+    curr_normal: FVector,
+    delta_normal: FVector,
+    active: u8,
+    is_waiting: i16,
+    is_snapping: i16,
+    is_idle: i16,
+    facing: u8,
+    visible: i8,
+    in_tile: Option<TileId>,
+    path: Path,
+    update: [Option<EnemyUpdate>; ENEMY_UPDATEFUNCS],
+});
 
 impl HasLinks<EnemyId> for Enemy {
     fn links(&self) -> &Links<EnemyId> {
@@ -1041,7 +1065,7 @@ impl Game {
     /// Port of `UpdateTileSnapper` (Common/enemies.c:1068).
     pub fn update_tile_snapper(&mut self, cur: EnemyId) {
         let act = self.nact(cur);
-        let a2 = self.actor2.actors[act].clone();
+        let a2 = A2Snap::of(&self.actor2.actors[act]);
         let afc = self.act_frame_count;
         let ws = self.frogger.wait_scale;
         let mut path = self.nme(cur).path;
@@ -1102,9 +1126,9 @@ impl Game {
                     self.nme_mut(cur).curr_normal = cn;
                     let to_position = self.node_position(&path, path.from_node as i32);
                     let mut dir = FVector::default();
-                    sub_vector_fss(&mut dir, &to_position, &a2.actor.position);
+                    sub_vector_fss(&mut dir, &to_position, &a2.position);
                     make_unit(&mut dir);
-                    let q1 = a2.actor.q_rot;
+                    let q1 = a2.q_rot;
                     orientate(&mut self.actor2.actors[act].actor.q_rot, &dir, &cn);
                     let q2 = self.actor2.actors[act].actor.q_rot;
                     let speed = fmul(node0.speed, self.game_speed).min(4092);
@@ -1115,13 +1139,13 @@ impl Game {
                 if a2.effects & EF_LIGHTNING != 0 {
                     let to_position = self.node_position(&path, path.from_node as i32);
                     let mut dir = FVector::default();
-                    sub_vector_fss(&mut dir, &to_position, &a2.actor.position);
+                    sub_vector_fss(&mut dir, &to_position, &a2.position);
                     if magnitude_f(&dir) >> 12 != 0 {
                         make_unit(&mut dir);
                         let mut v = self.nme(cur).curr_normal;
                         scale_vector_ff(&mut v, node0.offset2);
                         let mut source = SVector::default();
-                        add_vector_sfs(&mut source, &v, &a2.actor.position);
+                        add_vector_sfs(&mut source, &v, &a2.position);
 
                         // (sic: `if FAST ...; if SLOW ... else ...` - FAST creates two effects)
                         if a2.effects & EF_FAST != 0 {
@@ -1141,7 +1165,7 @@ impl Game {
 
                 // Play sound when snapping
                 let sample = self.path_node(&path, path.from_node as i32).sample;
-                self.play_sample(sample, Some(a2.actor.position), 0, SAMPLE_VOLUME, -1);
+                self.play_sample(sample, Some(a2.position), 0, SAMPLE_VOLUME, -1);
 
                 self.actor_animate(act, NMEANIM_SNAP_ATTACK, false, false, a2.anim_speed, false);
                 self.actor_animate(act, NMEANIM_SNAP_IDLE, true, true, a2.anim_speed, false);
@@ -1157,8 +1181,8 @@ impl Game {
         let afc = self.act_frame_count;
         let mut path = self.nme(cur).path;
         let node0 = self.path_node(&path, 0);
-        let a2 = self.actor2.actors[act].clone();
-        let apos = a2.actor.position;
+        let a2 = A2Snap::of(&self.actor2.actors[act]);
+        let apos = a2.position;
 
         match self.nme(cur).is_snapping {
             -2 => {
@@ -2461,4 +2485,31 @@ pub(crate) fn check_path_orientation_safe(g: &Game, path: &Path) -> i32 {
         return 0;
     }
     crate::path::check_path_orientation(&g.map, nodes)
+}
+
+/// Phase 3S: the fields of an `ACTOR2` the snapper/vent updates read, copied at their start
+/// (they used to clone the whole actor, strings and vectors included, every tick).
+#[derive(Clone, Copy)]
+struct A2Snap {
+    radius: Fixed,
+    position: SVector,
+    q_rot: IQuaternion,
+    effects: u32,
+    value1: Fixed,
+    anim_speed: Fixed,
+    depth_shift: i8,
+}
+
+impl A2Snap {
+    fn of(a: &crate::actor2::Actor2) -> A2Snap {
+        A2Snap {
+            radius: a.radius,
+            position: a.actor.position,
+            q_rot: a.actor.q_rot,
+            effects: a.effects,
+            value1: a.value1,
+            anim_speed: a.anim_speed,
+            depth_shift: a.depth_shift,
+        }
+    }
 }

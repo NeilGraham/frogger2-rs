@@ -20,7 +20,7 @@ use crate::map::Map;
 pub const PATH_MAKENODETILEPTRS: u32 = 1 << 0;
 
 /// `PATHNODE` (`path.h`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathNode {
     /// `worldTile`.
     pub world_tile: Option<TileId>,

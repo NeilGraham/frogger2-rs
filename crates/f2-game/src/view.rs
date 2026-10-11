@@ -50,48 +50,36 @@ const PI2: f64 = core::f64::consts::PI * 2.0;
 const EPSILON: f32 = 0.00001;
 const HALFPI: f32 = 1.570_796_4;
 
-struct Tables {
-    sin: [f32; 4096],
-    acos: [f32; 4096],
+/// `InitMaths` (mdxMath.cpp:53): tables behind `sinFast`/`acosFast`. Phase 3S: generated
+/// statics (`view_tables.rs`, checked by `fast_tables_match_init_maths`) instead of a lazily
+/// built table (its atomic access costs a `sync` per lookup on the VR4300).
+#[inline(always)]
+fn sin_tab(i: usize) -> f32 {
+    f32::from_bits(crate::view_tables::SIN_BITS[i])
 }
 
-/// `InitMaths` (mdxMath.cpp:53): tables behind `sinFast`/`acosFast`.
-fn tables() -> &'static Tables {
-    // A pure function of nothing: a racing second initialiser builds identical tables.
-    static T: once_cell::race::OnceBox<Tables> = once_cell::race::OnceBox::new();
-    T.get_or_init(|| {
-        let mut t = Box::new(Tables { sin: [0.0; 4096], acos: [0.0; 4096] });
-        for i in 0..4096 {
-            t.acos[i] = f2_math::detfloat::acos((i as f64 - 2048.0) / 2048.0) as f32;
-            t.sin[i] = f2_math::detfloat::sin((i as f64 * PI2) / 4096.0) as f32;
-        }
-        t
-    })
+#[inline(always)]
+fn acos_tab(i: usize) -> f32 {
+    f32::from_bits(crate::view_tables::ACOS_BITS[i])
 }
 
 fn sin_fast(x: f32) -> f32 {
     let i = (x as f64 * (4096.0 / PI2)) as i64;
-    tables().sin[(i & 4095) as usize]
+    sin_tab((i & 4095) as usize)
 }
 
 fn acos_fast(x: f32) -> f32 {
     let i = ((x as f64 * 2048.0) + 2048.0) as i64;
-    tables().acos[(i & 4095) as usize]
+    acos_tab((i & 4095) as usize)
 }
 
 /// The `PushMatrix` macro body (mdxMath.h:86) / `guMtxCatF`: `a · b`, affine.
 pub fn mtx_cat(a: &Mat4, b: &Mat4) -> Mat4 {
-    let mut r = [[0f32; 4]; 4];
-    for i in 0..3 {
-        for j in 0..3 {
-            r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-        }
-    }
-    for j in 0..3 {
-        r[3][j] = a[3][0] * b[0][j] + a[3][1] * b[1][j] + a[3][2] * b[2][j] + b[3][j];
-    }
-    r[3][3] = 1.0;
-    r
+    // Built as one array literal (phase 3S: no zeroing `memset` call first); every entry is
+    // the same expression as before.
+    let c = |i: usize, j: usize| a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+    let t = |j: usize| a[3][0] * b[0][j] + a[3][1] * b[1][j] + a[3][2] * b[2][j] + b[3][j];
+    [[c(0, 0), c(0, 1), c(0, 2), 0.0], [c(1, 0), c(1, 1), c(1, 2), 0.0], [c(2, 0), c(2, 1), c(2, 2), 0.0], [t(0), t(1), t(2), 1.0]]
 }
 
 fn gu_scale(dx: f32, dy: f32, dz: f32) -> Mat4 {
@@ -226,6 +214,96 @@ impl KeyTime for QKey {
     }
 }
 
+/// Phase 3S: per key channel of a [`RootObject`], whether the key times are strictly
+/// increasing as `f32` (then [`find_to_from`]'s answer is unique, whatever the hint) and
+/// the index the last search found there (a pure speed hint shared by every actor of the
+/// model; it never changes a result).
+#[derive(Debug, Default)]
+pub struct KeyChannel {
+    pub mono: bool,
+    hint: core::sync::atomic::AtomicU32,
+}
+
+impl Clone for KeyChannel {
+    fn clone(&self) -> Self {
+        KeyChannel { mono: self.mono, hint: core::sync::atomic::AtomicU32::new(self.hint.load(core::sync::atomic::Ordering::Relaxed)) }
+    }
+}
+
+impl PartialEq for KeyChannel {
+    fn eq(&self, o: &Self) -> bool {
+        self.mono == o.mono
+    }
+}
+
+impl KeyChannel {
+    fn of<K: KeyTime>(keys: &[K]) -> KeyChannel {
+        KeyChannel { mono: keys.windows(2).all(|w| (w[0].time() as f32) < (w[1].time() as f32)), hint: Default::default() }
+    }
+}
+
+/// The original search, remembering its answer as the channel's next starting point.
+fn fallback<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: &KeyChannel) -> (usize, usize, f32) {
+    let r = find_to_from(keys, time, e_key);
+    ch.hint.store(r.0 as u32, core::sync::atomic::Ordering::Relaxed);
+    r
+}
+
+/// [`find_to_from`] using `ch` (phase 3S): for strictly increasing key times and a
+/// non-NaN `time` the original binary search (whose range always contains the answer)
+/// returns the unique `i` with `t(i) == time`, else the last `i` with `t(i) < time`, so a
+/// short scan from any start finds the same keys; the scan starts at the channel's last
+/// answer and falls back to the original search when it would be long.
+fn find_to_from_ch<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: Option<&KeyChannel>) -> (usize, usize, f32) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let n = keys.len();
+    let Some(ch) = ch.filter(|c| c.mono && n >= 2 && !time.is_nan() && (0..n as i32).contains(&(e_key as i32))) else {
+        return find_to_from(keys, time, e_key);
+    };
+    let t = |i: usize| keys[i].time() as f32;
+    let mut i = ch.hint.load(Relaxed) as usize;
+    if i >= n {
+        i = e_key as usize;
+    }
+    const MAX_STEPS: u32 = 6;
+    let mut steps = 0;
+    // Find h = the last index with t(h) <= time (None: t(0) > time).
+    let h = if t(i) <= time {
+        while i + 1 < n && t(i + 1) <= time {
+            i += 1;
+            steps += 1;
+            if steps > MAX_STEPS {
+                return fallback(keys, time, e_key, ch);
+            }
+        }
+        Some(i)
+    } else {
+        loop {
+            if i == 0 {
+                break None;
+            }
+            i -= 1;
+            steps += 1;
+            if steps > MAX_STEPS {
+                return fallback(keys, time, e_key, ch);
+            }
+            if t(i) <= time {
+                break Some(i);
+            }
+        }
+    };
+    if let Some(h) = h {
+        ch.hint.store(h as u32, Relaxed);
+        if h + 1 < n {
+            let (from_key, to_key) = (h, h + 1);
+            let temp = (keys[to_key].time().wrapping_sub(keys[from_key].time())).unsigned_abs() as f32;
+            let interp = (time - keys[from_key].time() as f32) / temp;
+            return (from_key, to_key, interp);
+        }
+    }
+    (n - 1, n - 1, 1.0)
+}
+
 /// Port of `FindToFromVKeys`/`FindToFromQKeys` (mdxObject.cpp:229/305): `(from, to, interp)`.
 fn find_to_from<K: KeyTime>(keys: &[K], time: f32, e_key: i16) -> (usize, usize, f32) {
     let num_keys = keys.len() as i32;
@@ -279,11 +357,19 @@ pub struct RootObject {
     pub scale_keys: Vec<VKey>,
     pub rotate_keys: Vec<QKey>,
     pub bbox: Option<[Vec3; 8]>,
+    /// Phase 3S: key search info of the move / scale / rotate channels.
+    pub channels: [KeyChannel; 3],
 }
 
 impl RootObject {
     pub fn from_object(o: &Object) -> RootObject {
-        RootObject { move_keys: o.move_keys.clone(), scale_keys: o.scale_keys.clone(), rotate_keys: o.rotate_keys.clone(), bbox: o.bbox }
+        RootObject {
+            move_keys: o.move_keys.clone(),
+            scale_keys: o.scale_keys.clone(),
+            rotate_keys: o.rotate_keys.clone(),
+            bbox: o.bbox,
+            channels: [KeyChannel::of(&o.move_keys), KeyChannel::of(&o.scale_keys), KeyChannel::of(&o.rotate_keys)],
+        }
     }
 }
 
@@ -292,8 +378,29 @@ impl RootObject {
 /// `lastMKey`, `lastSKey`, `lastRKey`.
 #[allow(clippy::too_many_arguments)]
 fn object_local(mk: &[VKey], sk: &[VKey], rk: &[QKey], animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
+    object_local_r(mk, sk, rk, None, animated, time, last, actor_scale, parent_scale)
+}
+
+/// [`object_local`] for a [`RootObject`].
+#[inline]
+fn object_local_k(k: &RootObject, animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
+    object_local_r(&k.move_keys, &k.scale_keys, &k.rotate_keys, Some(&k.channels), animated, time, last, actor_scale, parent_scale)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn object_local_r(
+    mk: &[VKey],
+    sk: &[VKey],
+    rk: &[QKey],
+    ch: Option<&[KeyChannel; 3]>,
+    animated: bool,
+    time: f32,
+    last: &mut [i16; 3],
+    actor_scale: Vec3,
+    parent_scale: Vec3,
+) -> (Mat4, Vec3) {
     let translation = if mk.len() > 1 && animated {
-        let (f, t, i) = find_to_from(mk, time, last[0]);
+        let (f, t, i) = find_to_from_ch(mk, time, last[0], ch.map(|c| &c[0]));
         last[0] = f as i16;
         if (mk[t].time as f32 - time) < ANIMSNAP_THRESHHOLD {
             mk[t].v
@@ -304,7 +411,7 @@ fn object_local(mk: &[VKey], sk: &[VKey], rk: &[QKey], animated: bool, time: f32
         mk.first().map_or([0.0; 3], |k| k.v)
     };
     let scale = if sk.len() > 1 && animated {
-        let (f, t, i) = find_to_from(sk, time, last[1]);
+        let (f, t, i) = find_to_from_ch(sk, time, last[1], ch.map(|c| &c[1]));
         last[1] = f as i16;
         if (sk[t].time as f32 - time) < ANIMSNAP_THRESHHOLD {
             sk[t].v
@@ -315,7 +422,7 @@ fn object_local(mk: &[VKey], sk: &[VKey], rk: &[QKey], animated: bool, time: f32
         sk.first().map_or([1.0; 3], |k| k.v)
     };
     let mut rotmat = if rk.len() > 1 && animated {
-        let (f, t, i) = find_to_from(rk, time, last[2]);
+        let (f, t, i) = find_to_from_ch(rk, time, last[2], ch.map(|c| &c[2]));
         last[2] = f as i16;
         if (rk[t].time as f32 - time) < ANIMSNAP_THRESHHOLD * ROTATESNAP_MULT {
             quaternion_to_matrix(&rk[t].q)
@@ -395,17 +502,22 @@ pub struct XNode {
     pub xlu: u8,
     /// `MDX_OBJECTSPRITE` placement: `x, y, z, sx, sy` per object sprite.
     pub sprites: Vec<[i16; 5]>,
+    /// Phase 3S: this object or a descendant has sprites (`sprite_count() > 0`).
+    pub has_sprites: bool,
 }
 
 impl XNode {
     pub fn from_object(o: &Object) -> XNode {
-        XNode {
+        let mut x = XNode {
             name: o.name.clone(),
             keys: RootObject::from_object(o),
             children: o.children.iter().map(XNode::from_object).collect(),
             xlu: o.xlu,
             sprites: o.sprites.iter().map(|s| [s.pos[0], s.pos[1], s.pos[2], s.size[0], s.size[1]]).collect(),
-        }
+            has_sprites: false,
+        };
+        x.has_sprites = x.sprite_count() > 0;
+        x
     }
 
     fn sprite_count(&self) -> usize {
@@ -429,22 +541,74 @@ fn transform_object_sprites(
     f: &mut dyn FnMut(usize, Vec3, f32, f32, u8),
 ) {
     for me in chain {
+        // Phase 3S: an object without sprites in its subtree calls `f` for nothing and its
+        // matrices only feed that subtree: skipped (sprite indices count sprites only).
+        if !me.has_sprites {
+            continue;
+        }
         let mut last = [0i16; 3];
-        let (rotmat, scale) = object_local(&me.keys.move_keys, &me.keys.scale_keys, &me.keys.rotate_keys, animated, time, &mut last, p.scale, parent_scale);
+        let (rotmat, scale) = object_local_k(&me.keys, animated, time, &mut last, p.scale, parent_scale);
         let m1 = mtx_cat(&rotmat, top);
         let a = p.scale;
-        let obj = mtx_cat(&gu_scale(scale[0] * a[0], scale[1] * a[1], scale[2] * a[2]), &m1);
-        for s in &me.sprites {
-            let sx = 2.0 * (s[3] as f32 * a[0] * scale[0]);
-            let sy = 2.0 * (s[4] as f32 * a[1] * scale[1]);
-            // "TEMPORARY" SPRITE FIX: the sprite's z is negated.
-            let t = mtx_xfm(&obj, [s[0] as f32, s[1] as f32, -(s[2] as f32)]);
-            f(*next, [t[0] * 10.0, t[1] * 10.0, t[2] * 10.0], sx, sy, me.xlu);
-            *next += 1;
+        if !me.sprites.is_empty() {
+            let obj = mtx_cat(&gu_scale(scale[0] * a[0], scale[1] * a[1], scale[2] * a[2]), &m1);
+            for s in &me.sprites {
+                let sx = 2.0 * (s[3] as f32 * a[0] * scale[0]);
+                let sy = 2.0 * (s[4] as f32 * a[1] * scale[1]);
+                // "TEMPORARY" SPRITE FIX: the sprite's z is negated.
+                let t = mtx_xfm(&obj, [s[0] as f32, s[1] as f32, -(s[2] as f32)]);
+                f(*next, [t[0] * 10.0, t[1] * 10.0, t[2] * 10.0], sx, sy, me.xlu);
+                *next += 1;
+            }
         }
         if !me.children.is_empty() {
             transform_object_sprites(&me.children, &m1, scale, p, animated, time, next, f);
         }
+    }
+}
+
+/// `*dst = v` unless it already holds `v` (phase 3S: avoids dirtying cache lines).
+#[inline(always)]
+fn set<T: PartialEq + Copy>(dst: &mut T, v: T) {
+    if *dst != v {
+        *dst = v;
+    }
+}
+
+/// `*dst = v` unless every float already has the same bit pattern (`==` would treat
+/// `-0.0` and `0.0` as equal).
+#[inline(always)]
+fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) {
+    if dst.iter().zip(v.iter()).any(|(a, b)| a.to_bits() != b.to_bits()) {
+        *dst = v;
+    }
+}
+
+/// The sphere test of `ActorListDraw` (mdxActor.cpp:139) for an actor without
+/// `ACTOR_ALWAYSDRAW`: whether its bounding sphere is on screen.
+#[inline]
+pub fn sphere_visible(model: &crate::assets::ModelInfo, p: &MdxPlacement, view: &ViewXform) -> bool {
+    let tc = model.true_centre;
+    let t_pos = [tc[0] * p.scale[0], tc[1] * p.scale[1], tc[2] * p.scale[2]];
+    let rotmat = quaternion_to_matrix(&p.q_rot);
+    let t2 = mtx_xfm(&rotmat, t_pos);
+    let t_pos = [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]];
+    {
+        // Phase 3S: the depth test needs only the view-space z (the same sum as
+        // `mtx_xfm`'s third component); the projection is computed only if it passes.
+        let m = &view.matrix;
+        let z = m[0][2] * t_pos[0] + m[1][2] * t_pos[1] + m[2][2] * t_pos[2] + m[3][2];
+        let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
+        let mut radius = model.actor_radius * scale;
+        let depth = z + view.dist as f32;
+        if !(depth + radius > view.near_clip && depth - radius < view.far_clip) {
+            return false;
+        }
+        let wh = view.xfm_point_f(t_pos);
+        if wh[2] > view.near_clip {
+            radius = (view.fov as f32 * radius * (view.x_res * (1.0 / 640.0))) / (wh[2] + view.dist as f32);
+        }
+        (wh[0] > -radius && wh[0] < view.x_res + radius) && (wh[1] > -radius && wh[1] < view.y_res + radius)
     }
 }
 
@@ -458,35 +622,47 @@ fn ftol16(v: f32) -> i16 {
 /// given placement; the object's `postMatrix` is the identity (`headPostMatrix`).
 pub fn sub_object_matrix(chain: &[XNode], name: &str, p: &MdxPlacement, animated: bool, time: f32) -> Option<Mat4> {
     // FindObj order: chain[i], then chain[i+1..] (recursively), then chain[i].children.
-    fn find(chain: &[XNode], i: usize, name: &str, top: &Mat4, ps: Vec3, a: &Ctx) -> Option<Mat4> {
+    // Phase 3S: the search needs names only, so it runs first and the matrices are then
+    // computed along the found object's ancestor path alone (a sibling's matrix never
+    // feeds another object's, and `TransformObject`'s key search starts from fresh key
+    // hints per object), instead of for every object visited.
+    fn find<'a>(chain: &'a [XNode], i: usize, name: &str, path: &mut Vec<&'a XNode>) -> bool {
         let me = &chain[i];
-        let mut last = [0i16; 3];
-        let (rotmat, scale) = object_local(&me.keys.move_keys, &me.keys.scale_keys, &me.keys.rotate_keys, a.animated, a.time, &mut last, a.scale, ps);
-        let m1 = mtx_cat(&rotmat, top);
         if me.name.eq_ignore_ascii_case(name) {
-            let s = gu_scale(scale[0] * a.scale[0], scale[1] * a.scale[1], scale[2] * a.scale[2]);
-            return Some(mtx_cat(&IDENTITY, &mtx_cat(&s, &m1)));
+            path.push(me);
+            return true;
         }
-        if i + 1 < chain.len() {
-            if let Some(m) = find(chain, i + 1, name, top, ps, a) {
-                return Some(m);
-            }
+        if i + 1 < chain.len() && find(chain, i + 1, name, path) {
+            return true;
         }
-        if !me.children.is_empty() {
-            return find(&me.children, 0, name, &m1, scale, a);
+        if !me.children.is_empty() && find(&me.children, 0, name, path) {
+            path.push(me);
+            return true;
         }
-        None
-    }
-    struct Ctx {
-        animated: bool,
-        time: f32,
-        scale: Vec3,
+        false
     }
     if chain.is_empty() {
         return None;
     }
-    let top = actor_top(p.pos, &p.q_rot);
-    find(chain, 0, name, &top, [1.0; 3], &Ctx { animated, time, scale: p.scale })
+    let mut path = Vec::new();
+    if !find(chain, 0, name, &mut path) {
+        return None;
+    }
+    // `path` is target first, then its ancestors.
+    let mut top = actor_top(p.pos, &p.q_rot);
+    let mut ps = [1.0; 3];
+    for (k, me) in path.iter().rev().enumerate() {
+        let mut last = [0i16; 3];
+        let (rotmat, scale) = object_local_k(&me.keys, animated, time, &mut last, p.scale, ps);
+        let m1 = mtx_cat(&rotmat, &top);
+        if k + 1 == path.len() {
+            let s = gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]);
+            return Some(mtx_cat(&IDENTITY, &mtx_cat(&s, &m1)));
+        }
+        top = m1;
+        ps = scale;
+    }
+    None
 }
 
 // ---- mdxRender.cpp / mdxActor.cpp: projection and clipping --------------------------
@@ -509,11 +685,18 @@ impl ViewXform {
 
     /// `-FOV * oneOver[fftol(z) + DIST]` (`oneOver[i] = (rXRes/640)/i`, `fftol` truncates).
     fn oozd_f(&self, z: f32) -> f32 {
+        self.oozd_k(z, self.x_res / 640.0)
+    }
+
+    /// [`oozd_f`](Self::oozd_f) with `k = x_res / 640.0` computed by the caller (the same
+    /// division gives the same bits; phase 3S hoists it out of the bounding-box loop).
+    #[inline(always)]
+    fn oozd_k(&self, z: f32, k: f32) -> f32 {
         let i = (z as i32).wrapping_add(self.dist);
         if i <= 0 {
             return 0.0;
         }
-        let one_over = (self.x_res / 640.0) / i as f32;
+        let one_over = k / i as f32;
         -(self.fov as f32) * one_over
     }
 
@@ -538,6 +721,7 @@ impl ViewXform {
         const INWARD: u32 = 0x10;
         const OUTWARD: u32 = 0x20;
         let mtx = mtx_cat(m, &self.matrix);
+        let kx = self.x_res / 640.0;
         let mut ocs = [0u32; 8];
         for (k, b) in bbox.iter().enumerate() {
             let mut oc = 0;
@@ -547,7 +731,7 @@ impl ViewXform {
             } else if z > self.far_clip {
                 oc |= OUTWARD;
             } else if z >= self.near_clip && z <= self.far_clip {
-                let o = self.oozd_f(z);
+                let o = self.oozd_k(z, kx);
                 x = self.x_res / 2.0 + x * o;
                 y = self.y_res / 2.0 + y * o;
                 if x < 0.0 {
@@ -649,20 +833,27 @@ impl Game {
 
     /// The root object's `OBJECT_FLAGS_CLIPPED` as `TransformObject` sets it (only the
     /// root's flag is ever read, by `CopyActorList`).
-    fn transform_root_object(&mut self, id: ActorId, no_clip: bool) {
-        let Some(view) = self.specfx.view else { return };
+    pub(crate) fn transform_root_object(&mut self, id: ActorId, no_clip: bool) {
+        let Some(view) = self.specfx.view.as_ref() else { return };
         let a = &self.actor2.actors[id].actor.actual_actor;
-        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)).cloned() else { return };
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return };
         let Some(root) = model.root_object.as_ref() else { return };
         let animated = a.animation.is_some();
         let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
         let p = a.placement;
         let mut last = p.last_keys;
-        let (rotmat, scale) = object_local(&root.move_keys, &root.scale_keys, &root.rotate_keys, animated, time, &mut last, p.scale, [1.0; 3]);
-        let top = actor_top(p.pos, &p.q_rot);
-        let m1 = mtx_cat(&rotmat, &top);
-        let obj = mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1);
-        let clipped = root.bbox.as_ref().is_some_and(|b| view.check_bounding_box(b, &obj)) && !no_clip;
+        let (rotmat, scale) = object_local_k(root, animated, time, &mut last, p.scale, [1.0; 3]);
+        // Phase 3S: the object matrix only feeds the (pure) bounding-box test, whose result
+        // is unused without a box or with `noClip`: computed only when it matters.
+        let clipped = match root.bbox.as_ref() {
+            Some(b) if !no_clip => {
+                let top = actor_top(p.pos, &p.q_rot);
+                let m1 = mtx_cat(&rotmat, &top);
+                let obj = mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1);
+                view.check_bounding_box(b, &obj)
+            }
+            _ => false,
+        };
         let a = &mut self.actor2.actors[id].actor.actual_actor;
         a.placement.last_keys = last;
         if clipped {
@@ -670,6 +861,150 @@ impl Game {
         } else {
             a.root_object_flags &= !OBJECT_FLAGS_CLIPPED;
         }
+    }
+
+    /// Phase 3S probe: `[quat_slerp, sin_fast, acos_fast, find_to_from_ch (fghip rotate
+    /// keys, frog time), find_to_from (same, binary search)]` cycles x n.
+    pub fn probe_key_parts(&self, id: ActorId, n: u32, clock: &mut dyn FnMut() -> u32) -> [u32; 5] {
+        let mut r = [0u32; 5];
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return r };
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        let Some(node) = model.xform_tree.first().and_then(|x| x.children.first()) else { return r };
+        let q1 = [0.1f32, 0.7, 0.2, 0.68];
+        let q2 = [0.3f32, 0.6, -0.1, 0.73];
+        let t0 = clock();
+        for _ in 0..n {
+            core::hint::black_box(quat_slerp(core::hint::black_box(&q1), &q2, core::hint::black_box(0.37)));
+        }
+        let t1 = clock();
+        for _ in 0..n {
+            core::hint::black_box(sin_fast(core::hint::black_box(1.234)));
+        }
+        let t2 = clock();
+        for _ in 0..n {
+            core::hint::black_box(acos_fast(core::hint::black_box(0.4321)));
+        }
+        let t3 = clock();
+        let rk = &node.keys.rotate_keys;
+        for _ in 0..n {
+            core::hint::black_box(find_to_from_ch(rk, core::hint::black_box(time), 0, Some(&node.keys.channels[2])));
+        }
+        let t4 = clock();
+        for _ in 0..n {
+            let mut last = [0i16; 3];
+            core::hint::black_box(object_local_k(&node.keys, true, core::hint::black_box(time), &mut last, [1.0; 3], [1.0; 3]));
+        }
+        let t5 = clock();
+        r = [t1.wrapping_sub(t0), t2.wrapping_sub(t1), t3.wrapping_sub(t2), t4.wrapping_sub(t3), t5.wrapping_sub(t4)];
+        r
+    }
+
+    /// Phase 3S probe: the head matrix of actor `id` (`name`), its parts timed separately
+    /// `n` times: `[actor_top, object_local over the 4 path objects, mtx_cat x4, whole]`.
+    pub fn probe_head_parts(&self, id: ActorId, name: &str, n: u32, clock: &mut dyn FnMut() -> u32) -> [u32; 5] {
+        let mut r = [0u32; 5];
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return r };
+        let animated = a.animation.is_some();
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        let p = a.placement;
+        // the path (first match in FindObj order), as sub_object_matrix finds it
+        fn find<'a>(chain: &'a [XNode], i: usize, name: &str, path: &mut Vec<&'a XNode>) -> bool {
+            let me = &chain[i];
+            if me.name.eq_ignore_ascii_case(name) {
+                path.push(me);
+                return true;
+            }
+            if i + 1 < chain.len() && find(chain, i + 1, name, path) {
+                return true;
+            }
+            if !me.children.is_empty() && find(&me.children, 0, name, path) {
+                path.push(me);
+                return true;
+            }
+            false
+        }
+        let mut path = Vec::new();
+        if model.xform_tree.is_empty() || !find(&model.xform_tree, 0, name, &mut path) {
+            return r;
+        }
+        let t0 = clock();
+        for _ in 0..n {
+            core::hint::black_box(actor_top(core::hint::black_box(p.pos), &p.q_rot));
+        }
+        let t1 = clock();
+        let mut rs = Vec::new();
+        for _ in 0..n {
+            rs.clear();
+            let mut ps = [1.0; 3];
+            for me in path.iter().rev() {
+                let mut last = [0i16; 3];
+                let (rotmat, scale) = object_local_k(&me.keys, animated, core::hint::black_box(time), &mut last, p.scale, ps);
+                rs.push(rotmat);
+                ps = scale;
+            }
+        }
+        let t2 = clock();
+        let mut top = IDENTITY;
+        for _ in 0..n {
+            for m in &rs {
+                top = mtx_cat(m, core::hint::black_box(&top));
+            }
+        }
+        core::hint::black_box(top);
+        let t3 = clock();
+        for _ in 0..n {
+            core::hint::black_box(self.actor_sub_object_matrix(id, core::hint::black_box(name)));
+        }
+        let t4 = clock();
+        r[0] = t1.wrapping_sub(t0);
+        r[1] = t2.wrapping_sub(t1);
+        r[2] = t3.wrapping_sub(t2);
+        r[3] = t4.wrapping_sub(t3);
+        r[4] = path.len() as u32;
+        r
+    }
+
+    /// Phase 3S probe: cycles of the parts of `transform_root_object` for actor `id`, each
+    /// repeated `n` times: `[object_local, actor_top, 2 mtx_cat, check_bounding_box]`.
+    pub fn probe_root_parts(&self, id: ActorId, n: u32, clock: &mut dyn FnMut() -> u32) -> [u32; 4] {
+        let mut r = [0u32; 4];
+        let Some(view) = self.specfx.view.as_ref() else { return r };
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return r };
+        let Some(root) = model.root_object.as_ref() else { return r };
+        let Some(b) = root.bbox.as_ref() else { return r };
+        let animated = a.animation.is_some();
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        let p = a.placement;
+        let t0 = clock();
+        let mut out = None;
+        for _ in 0..n {
+            let mut last = p.last_keys;
+            out = Some(core::hint::black_box(object_local_k(root, animated, core::hint::black_box(time), &mut last, p.scale, [1.0; 3])));
+        }
+        let (rotmat, scale) = out.unwrap();
+        let t1 = clock();
+        let mut top = IDENTITY;
+        for _ in 0..n {
+            top = core::hint::black_box(actor_top(core::hint::black_box(p.pos), &p.q_rot));
+        }
+        let t2 = clock();
+        let mut obj = IDENTITY;
+        for _ in 0..n {
+            let m1 = mtx_cat(&rotmat, core::hint::black_box(&top));
+            obj = core::hint::black_box(mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1));
+        }
+        let t3 = clock();
+        let mut c = false;
+        for _ in 0..n {
+            c ^= view.check_bounding_box(b, core::hint::black_box(&obj));
+        }
+        core::hint::black_box(c);
+        let t4 = clock();
+        r = [t1.wrapping_sub(t0), t2.wrapping_sub(t1), t3.wrapping_sub(t2), t4.wrapping_sub(t3)];
+        r
     }
 
     /// Port of `XformActor` (mdxActor.cpp:547): `UpdateAnims`, then the object transform.
@@ -681,8 +1016,8 @@ impl Game {
         self.transform_root_object(id, no_clip);
         self.transform_actor_sprites(id);
         // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
-        if let Some(name) = self.tongue.head_object.clone() {
-            if self.frogger.frog[0] == Some(id) {
+        if self.frogger.frog[0] == Some(id) {
+            if let Some(name) = self.tongue.head_object.clone() {
                 if let Some(mut m) = self.actor_sub_object_matrix(id, &name) {
                     // TransformObject: objMatrix = postMatrix . top (headPostMatrix).
                     if let Some([x, y, z]) = self.tongue.head_post {
@@ -696,14 +1031,14 @@ impl Game {
 
     /// The object sprites of `TransformObject` (mdxObject.cpp:461) for actor `id`: the sprites
     /// the model's objects point at follow the actor (position, size, `xlu`, `draw`).
-    fn transform_actor_sprites(&mut self, id: ActorId) {
+    pub(crate) fn transform_actor_sprites(&mut self, id: ActorId) {
         let a2 = &self.actor2.actors[id];
         let a = &a2.actor.actual_actor;
         let Some(mid) = a.object_controller else { return };
         // After `ChangeModel` the controller is the shared bank model (NULL sprite pointers).
         let Some(ptrs) = a2.obj_sprites.as_ref().filter(|(m, _)| *m == mid).map(|(_, p)| p) else { return };
         let Some(model) = self.models.get(mid) else { return };
-        if model.xform_tree.iter().map(XNode::sprite_count).sum::<usize>() == 0 {
+        if !model.xform_tree.iter().any(|x| x.has_sprites) {
             return;
         }
         let animated = a.animation.is_some();
@@ -825,81 +1160,102 @@ impl Game {
 
     /// Port of `CopyActorList` (PC/Main.cpp:621), minus texture sliding (render only).
     pub fn copy_actor_list(&mut self) {
-        let frog0 = self.frogger.frog[0].and_then(|f| self.actor2.actors.get(f)).map(|a| a.actor.position);
-        for id in self.actor2.act_list.ids(&self.actor2.actors) {
-            let c = &mut self.actor2.actors[id];
-            if let Some(f0) = frog0 {
-                c.distance_from_frog = distance_between_points_ss(&c.actor.position, &f0);
-            }
-            if c.actor.actual_actor.object_controller.is_none() {
-                continue;
-            }
-            c.clipped = (c.actor.actual_actor.root_object_flags & OBJECT_FLAGS_CLIPPED != 0) as i8;
-            let draw = c.draw != 0;
-            let pos = c.actor.position;
-            let size = c.actor.size;
-            let q = c.actor.q_rot;
-            let p = &mut c.actor.actual_actor.placement;
-            if !draw {
-                p.visible = 0;
-                p.draw = 0;
-                continue;
-            }
-            p.visible = 1;
-            p.draw = 1;
-            p.pos = [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1];
-            const S: f32 = 1.0 / 4096.0;
-            p.scale = [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S];
-            if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
-                p.q_rot = [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S];
-            }
+        let frog0 = self.frog0_position();
+        // Walks the links in place (the body never changes the list).
+        let mut cur = self.actor2.act_list.first;
+        while let Some(id) = cur {
+            cur = self.actor2.actors[id].links.next;
+            self.copy_actor(id, frog0);
+        }
+    }
+
+    /// `frog[0]`'s position as `CopyActorList` reads it (before the loop).
+    pub(crate) fn frog0_position(&self) -> Option<SVector> {
+        self.frogger.frog[0].and_then(|f| self.actor2.actors.get(f)).map(|a| a.actor.position)
+    }
+
+    /// The loop body of `CopyActorList` for actor `id`.
+    pub(crate) fn copy_actor(&mut self, id: ActorId, frog0: Option<SVector>) {
+        let c = &mut self.actor2.actors[id];
+        // Phase 3S: fields are only stored when their bits change, so unchanged actors
+        // keep clean cache lines (no write-backs on the N64); the values are the same.
+        if let Some(f0) = frog0 {
+            set(&mut c.distance_from_frog, distance_between_points_ss(&c.actor.position, &f0));
+        }
+        if c.actor.actual_actor.object_controller.is_none() {
+            return;
+        }
+        set(&mut c.clipped, (c.actor.actual_actor.root_object_flags & OBJECT_FLAGS_CLIPPED != 0) as i8);
+        let draw = c.draw != 0;
+        let pos = c.actor.position;
+        let size = c.actor.size;
+        let q = c.actor.q_rot;
+        let p = &mut c.actor.actual_actor.placement;
+        if !draw {
+            set(&mut p.visible, 0);
+            set(&mut p.draw, 0);
+            return;
+        }
+        set(&mut p.visible, 1);
+        set(&mut p.draw, 1);
+        set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
+        const S: f32 = 1.0 / 4096.0;
+        set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
+        if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
+            set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
         }
     }
 
     /// Port of `ActorListDraw` (mdxActor.cpp:139): the sphere test that decides whether
     /// an actor is transformed (animated, bounding box clipped) this frame.
     pub fn actor_list_draw(&mut self, list: u32) {
-        let Some(view) = self.specfx.view else {
-            for id in self.actor_draw_list(list) {
-                self.view.draw_this_objects_sprites = self.actor2.actors[id].actor.actual_actor.placement.draw as u32;
-                self.update_actor_anim(id);
-                self.transform_actor_sprites(id);
+        let ids = self.actor2.act_list.ids(&self.actor2.actors);
+        self.actor_list_draw_ids(list, &ids);
+    }
+
+    /// [`actor_list_draw`](Self::actor_list_draw) over a snapshot of `actList` (the actors
+    /// of draw list `list` in it, in order). Phase 3S: `DrawLoop` takes one snapshot for
+    /// both lists; `ActorListDraw` never creates, frees or re-lists actors, so it is the
+    /// same as a snapshot per list.
+    pub fn actor_list_draw_ids(&mut self, list: u32, ids: &[ActorId]) {
+        let view = self.specfx.view;
+        for &id in ids {
+            if self.actor2.actors[id].actor.actual_actor.list_num == list {
+                self.actor_list_draw_one(id, view.as_ref());
             }
+        }
+    }
+
+    /// `ActorListDraw`'s test for actor `id` with a view: `(visible, ACTOR_ALWAYSDRAW,
+    /// placement.draw)`, `None` without a model.
+    pub(crate) fn actor_visibility(&self, id: ActorId, view: &ViewXform) -> Option<(bool, bool, u32)> {
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let model = a.object_controller.and_then(|m| self.models.get(m))?;
+        let p = a.placement;
+        let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
+        let visible = if draw_override { true } else { sphere_visible(model, &p, view) };
+        Some((visible, draw_override, p.draw as u32))
+    }
+
+    /// The loop body of `ActorListDraw` for actor `id` (`view` = the current
+    /// `specfx.view`; without one nothing is culled).
+    pub(crate) fn actor_list_draw_one(&mut self, id: ActorId, view: Option<&ViewXform>) {
+        let Some(view) = view else {
+            self.view.draw_this_objects_sprites = self.actor2.actors[id].actor.actual_actor.placement.draw as u32;
+            self.update_actor_anim(id);
+            self.transform_actor_sprites(id);
             return;
         };
-        for id in self.actor_draw_list(list) {
-            let a = &self.actor2.actors[id].actor.actual_actor;
-            let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { continue };
-            self.view.draw_this_objects_sprites = a.placement.draw as u32;
-            let p = a.placement;
-            let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
-            let visible = if draw_override {
-                true
-            } else {
-                let tc = model.true_centre;
-                let t_pos = [tc[0] * p.scale[0], tc[1] * p.scale[1], tc[2] * p.scale[2]];
-                let rotmat = quaternion_to_matrix(&p.q_rot);
-                let t2 = mtx_xfm(&rotmat, t_pos);
-                let t_pos = [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]];
-                let wh = view.xfm_point_f(t_pos);
-                let t2 = mtx_xfm(&view.matrix, t_pos);
-                let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
-                let mut radius = model.actor_radius * scale;
-                let depth = t2[2] + view.dist as f32;
-                if depth + radius > view.near_clip && depth - radius < view.far_clip {
-                    if wh[2] > view.near_clip {
-                        radius = (view.fov as f32 * radius * (view.x_res * (1.0 / 640.0))) / (wh[2] + view.dist as f32);
-                    }
-                    (wh[0] > -radius && wh[0] < view.x_res + radius) && (wh[1] > -radius && wh[1] < view.y_res + radius)
-                } else {
-                    false
-                }
-            };
-            if visible {
-                self.xform_actor(id, draw_override);
-            } else {
-                self.kill_object_sprites(id);
-            }
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return };
+        self.view.draw_this_objects_sprites = a.placement.draw as u32;
+        let p = a.placement;
+        let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
+        let visible = if draw_override { true } else { sphere_visible(model, &p, view) };
+        if visible {
+            self.xform_actor(id, draw_override);
+        } else {
+            self.kill_object_sprites(id);
         }
     }
 
@@ -933,6 +1289,57 @@ mod tests {
         assert_eq!(m[0][0], -1.0);
         let p = mtx_xfm(&m, [0.0, 0.0, 50.0]);
         assert!((p[2] - 50.0).abs() < 1e-4);
+    }
+
+    /// The hinted search equals the original binary search for strictly increasing keys,
+    /// any valid hint, cached hint and time (incl. exact key times, before/after the keys).
+    #[test]
+    fn hinted_key_search_matches_binary_search() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..3000 {
+            let n = 2 + (rnd() % 60) as usize;
+            let mut t = (rnd() % 7) as i32 - 3;
+            let keys: Vec<VKey> = (0..n)
+                .map(|_| {
+                    t += 1 + (rnd() % 5) as i32;
+                    VKey { time: t, v: [0.0; 3] }
+                })
+                .collect();
+            let ch = KeyChannel::of(&keys);
+            assert!(ch.mono);
+            for _ in 0..200 {
+                let time = match rnd() % 4 {
+                    0 => keys[(rnd() % n as u64) as usize].time as f32,
+                    1 => (rnd() % (t as u64 + 10)) as f32 - 5.0,
+                    _ => ((rnd() % 100_000) as f32 / 100_000.0) * (t + 6) as f32 - 3.0,
+                };
+                let e = (rnd() % n as u64) as i16;
+                ch.hint.store((rnd() % (n as u64 + 3)) as u32, core::sync::atomic::Ordering::Relaxed);
+                let a = find_to_from(&keys, time, e);
+                let b = find_to_from_ch(&keys, time, e, Some(&ch));
+                assert_eq!(
+                    (a.0, a.1, a.2.to_bits()),
+                    (b.0, b.1, b.2.to_bits()),
+                    "time {time} hint {e} keys {:?}",
+                    keys.iter().map(|k| k.time).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    /// The generated `sinFast`/`acosFast` tables equal `InitMaths`' computation.
+    #[test]
+    fn fast_tables_match_init_maths() {
+        for i in 0..4096 {
+            assert_eq!(sin_tab(i).to_bits(), (f2_math::detfloat::sin((i as f64 * PI2) / 4096.0) as f32).to_bits(), "sin {i}");
+            assert_eq!(acos_tab(i).to_bits(), (f2_math::detfloat::acos((i as f64 - 2048.0) / 2048.0) as f32).to_bits(), "acos {i}");
+        }
     }
 
     #[test]

@@ -600,3 +600,108 @@ softer (half-size render target, see RDRAM above).
   arena for level texture files would make loads deterministic.
 - Not done: multiplayer, arcade-machine screen copy, subtractive blend (approximated),
   real-hardware check (RDP fill rate, PI speed, SRAM on a flashcart).
+
+## 3S: simulation speed-up (zero behaviour change)
+
+### Method
+- **Benchmark** (`f2_game::simbench`): fixed scenarios run back to back without rendering —
+  frontend (idle), arcade 0-0, 2-0, 2-2, 4-1, 6-0 (idle, 600 ticks; the heaviest levels by host
+  cost of all 40 arcade levels: `sim_bench --all-levels`) and the attract demos 0-0, 1-0, 6-1
+  (1500 ticks, gameplay). Host: `cargo run --release -p f2-game --example sim_bench`. N64:
+  `F2N64_FEATURES=simbench tools/n64/build.sh` (add `profile` for one `PROF` window per
+  scenario, window index = scenario index). Each scenario logs `Game::checksum` (netsync's
+  full-state hash, floats by bit pattern) after its last tick: **the N64 checksums equal the
+  host's**, so the MIPS build computes bit-identical state.
+- **Parity** after every change: `f2-parity check --corpus all` (102 cases) + the three demo
+  traces (`demo_trace`), all Rust traces sha1-hashed and compared with the pre-3S hashes
+  (`b0818758…`, `148391ab…`, `592b9d2a…` for the demos), plus the simbench checksums.
+- `Game::checksum` no longer builds the `Debug` text of the event state as a `String`
+  (megabytes on 2-2 — the N64 ran out of heap); it streams it into the hasher (same value).
+
+### Result (ares v148, simbench `Game::tick` mean / worst per tick, µs)
+
+Same scenarios, same ticks, same end-of-run checksums (host = N64) before and after.
+"After" = commit `28a02a7` (simbench ROM; a different build of the same code moves these
+by ±5–10 %, see the cost-model note below).
+
+| scenario | actors | before mean | before worst | after mean | after worst | speed-up |
+|---|---:|---:|---:|---:|---:|---:|
+| frontend | 67 | 10749 | 17241 | 8395 | 16246 | 1.28× |
+| 0-0 Garden 1 | 116 | 12786 | 15180 | 9367 | 11162 | 1.37× |
+| 2-0 | 131 | 27566 | 32358 | 15622 | 18069 | 1.76× |
+| 2-2 | 197 | 26545 | 28382 | 15776 | 17484 | 1.68× |
+| 4-1 | 148 | 20986 | 23721 | 12419 | 14033 | 1.69× |
+| 6-0 | 121 | 17006 | 18953 | 11524 | 13277 | 1.48× |
+| demo 0-0 | 116 | 13233 | 15641 | 9806 | 11852 | 1.35× |
+| demo 1-0 | 117 | 11210 | 13220 | 8028 | 9642 | 1.40× |
+| demo 6-1 | 141 | 19227 | 23129 | 11785 | 15027 | 1.63× |
+| **sum** | | **159308** | | **102722** | | **1.55×** |
+
+In the full game (`F2N64_BOOT="level 0 0"`, renderer + audio running, frog idle) the
+`perf` log's `Game::tick` for Garden 1 went from 13.0–13.8 ms (§2G) to **8.4–8.5 ms**.
+
+Per-phase split after (µs/tick, 0-0 / 2-0 / demo 6-1): actor pass (CopyActorList +
+ActorListDraw) 4760 / 6990 / 5500, enemies 1600 / 2930 / 2500, platforms 890 / 1630 / 560,
+procedural textures + overlays 590 / 1090 / 670, rest of GameLoop 600 / 690 / 590, special
+effects 220 / 1620 / 530. Actor pass for Garden 1 (probe): CopyActorList ~0.9 ms (116
+actors), sphere tests ~1.5 ms, XformActor of the ~20 visible actors ~1.7 ms (root object
+~0.9 ms, frog head matrix ~0.25 ms).
+
+The 2–3× target was not reached: what remains is the faithful float work (every FPU op
+costs ~5 cycles in ares: the sphere test is ~950 cycles hot per actor, a root bounding box
+~1700, `object_local` with a slerp ~2000–4500) and D-cache traffic over 100–200 actors of
+~128 hot bytes each, all of it observable game state.
+
+Baseline profile (Garden 1, self time): `actor_list_draw` 15 % (`xfm_point_f` 6.8 %),
+`update_path_platform` 6.9 %, `copy_actor_list` 6.3 %, `list::Head::ids` 5.2 %,
+`xform_actor` 4.3 %, `ftol` 4.9 % (inlined everywhere), `distance_between_points_ss` 3.4 %;
+2-0: `iquat_slerp` 7.1 %, `make_unit` 6.8 %, `run_fx_update` (callers) 11 %, `orientate` 3.3 %.
+
+
+### What changed (all exact: each commit parity-verified)
+Every commit: 102 `f2-parity` cases + 3 demo traces byte-identical to the pre-3S hashes,
+simbench checksums equal on host and N64; workspace tests, clippy `-D warnings`, fmt clean.
+- f2-math: exact `rsin`/`rcos`/`arccos` lookup tables (float path kept for other inputs;
+  lookups tested against it); `utilSqrt` without `f64` (equal over all 2^32 inputs); `FMul`
+  as one 64-bit product (proof in the doc comment + 20M-pair test; 31 → 14 cycles);
+  `leading_zeros` top-bit search in `MakeUnit`/`NormaliseQuaternion`.
+- Actor pass: `CopyActorList` fused with `ActorListDraw(0)` in one `actList` walk (fields
+  written only when they change); sphere test checks depth before projecting; root object
+  matrix only when its bounding-box test counts; object sprites skip sprite-less subtrees;
+  head matrix along the ancestor path only; keyframe search hinted for strictly increasing
+  key times (unique answer; falls back to the original search); `sinFast`/`acosFast`
+  tables as generated statics; `mtx_cat` without `memset`; hashed `ModelTable::get`.
+- Data layout: `repr(C)` hot-first layouts of `Actor2`/`Actor`/`MdxActor`, `Platform`,
+  `Enemy`, `GameTile` with `ser_order!` keeping the serialized field order (netsync checksum
+  unchanged); D1 misses (i686 callgrind, 8 KiB direct-mapped) −15 % on 0-0.
+- Algorithms: `EnemyAtFlag`/`PlatformAtFlag` from a per-`UpdateEvents` `(uid, fromNode)`
+  snapshot (2-2 events 2.9 → 1.5 ms); `FindNearestTileS` skips square roots that cannot win
+  (rotating enemies, 6-0 −1.4 ms); one sprite-overlay pass instead of three; no whole
+  actor/platform/effect clones in hot updates (`SpecFx::head`); procedural textures reuse
+  their surface buffer.
+- Tooling: `f2_game::simbench` scenarios + `examples/sim_bench.rs` (host) +
+  `F2N64_FEATURES=simbench` (N64: per-scenario mean/worst, checksums, per-phase times via
+  `Game::phase_hook`, cost probes); `F2N64_TUNE` A/B masks run variants in one ROM.
+
+### Cost model learned (ares v148)
+Integer ALU op 1 cycle; every FPU op ~5 (`mul.s`/`add.s`, dependent or not); `div.s` ~30;
+cold 16-byte D-cache line ~46; 16-bit atomics are emulated (slow). Code/heap layout alone
+moves a build's numbers by ±5–12 % (16 KiB direct-mapped I-cache, 8 KiB D-cache), so only
+same-ROM A/B (`F2N64_TUNE`) or deterministic callgrind cache simulation can judge small
+changes.
+
+### Tried and reverted
+Memo tables of the per-actor sphere test / root matrix (memo memory traffic > float work
+saved); bit-twiddled exact shortcuts of `mtx_cat` with identity/translate/scale matrices (no
+faster than the FPU ops); hot-first `.text` ordering (per-tick hot code ~250 KiB);
+`opt-level` "s"/2; `#[inline(never)]` on matrix helpers; precomputed first-key rotation;
+passing the model through `XformActor` (A/B: +0.2 %); splitting the actor pass into
+visibility and transform loops (A/B: 0 %).
+
+### Next candidates
+Exact speed-ups left are small each: lazily shared bounding-box corner products (corners
+are axis-aligned combinations; ~10 % of `CheckBoundingBox`); a cheaper exact `rsin` for
+large angles (frontend swarms call the float path ~30×/tick); `Enemy` clones in enemy
+updates; text-overlay slot layout. Bigger wins need the work itself to go: e.g. running
+the simulation at 30 Hz with the renderer (behaviour change, owner decision) or moving the
+float transforms to the RSP like the renderer (2R).

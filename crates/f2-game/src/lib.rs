@@ -72,6 +72,7 @@ pub mod ptexture; // wave E
 pub mod savegame;
 pub mod script; // wave D
 pub mod session;
+pub mod simbench; // phase 3S: benchmark scenarios (host + N64)
 pub mod specfx;
 pub mod sprite; // wave E
 pub mod story;
@@ -82,6 +83,40 @@ pub mod tongue;
 pub mod trace;
 pub mod training;
 pub mod view; // P3-T: MDX view model / culling
+mod view_tables; // phase 3S: generated sinFast/acosFast tables
+
+/// `Serialize`/`Deserialize` for a struct whose declaration order (memory layout) differs
+/// from its serialized field order: a mirror struct `$wire` lists the fields in serialized
+/// order (phase 3S keeps the netsync checksum and any serialized form unchanged).
+#[macro_export]
+#[doc(hidden)]
+macro_rules! ser_order {
+    ($ty:ident, $name:literal, $wire:ident { $( $(#[$m:meta])* $f:ident : $t:ty ),* $(,)? }) => {
+        #[derive(serde::Serialize)]
+        #[serde(rename = $name)]
+        struct $wire<'a> {
+            $( $(#[$m])* $f: &'a $t, )*
+        }
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                $wire { $( $f: &self.$f, )* }.serialize(s)
+            }
+        }
+        const _: () = {
+            #[derive(serde::Deserialize)]
+            #[serde(rename = $name)]
+            struct Owned {
+                $( $(#[$m])* $f: $t, )*
+            }
+            impl<'de> serde::Deserialize<'de> for $ty {
+                fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                    let o = Owned::deserialize(d)?;
+                    Ok($ty { $( $f: o.$f, )* })
+                }
+            }
+        };
+    };
+}
 
 use f2_math::Rng;
 use prelude::*;
@@ -202,6 +237,13 @@ pub struct Game {
     pub enhance: enhance::EnhanceState,
     // P7b: mod behaviour scripts (empty = authentic).
     pub modscript: modscript::ModScriptState,
+    /// Phase 3S profiling glue: called with a [`simbench::phase`] id at fixed points of a
+    /// tick (not game state; `None` in the game).
+    pub phase_hook: Option<fn(u32)>,
+    /// Phase 3S: `(uid, path.fromNode)` snapshots of the enemy/platform lists for
+    /// `EnemyAtFlag`/`PlatformAtFlag` while `UpdateEvents` evaluates triggers (not game
+    /// state; see `evenfunc.rs`).
+    pub(crate) flag_snap: evenfunc::FlagSnap,
 }
 
 impl Game {
@@ -230,7 +272,16 @@ impl Game {
         self.act_frame_count = self.act_frame_count.wrapping_add(1);
         // LoopFunc (PC/Main.cpp): ProcessUserInput, then GameLoop, then DrawLoop.
         self.process_user_input(input.pads);
+        self.phase(simbench::phase::INPUT);
         self.game_loop();
+        self.phase(simbench::phase::GAME_LOOP_REST);
+    }
+
+    #[inline]
+    pub(crate) fn phase(&self, id: u32) {
+        if let Some(h) = self.phase_hook {
+            h(id);
+        }
     }
 
     /// The rest of `LoopFunc` (PC/Main.cpp:686) after `GameLoop`: `CopyActorList`, then
@@ -238,23 +289,50 @@ impl Game {
     /// sprites/effects, overlays). Also run once after a level is started from the
     /// frontend (`InitDemoMode`/`InitLevel` happen inside the frontend's `GameLoop`).
     pub fn after_game_loop(&mut self) {
-        self.copy_actor_list();
-        self.draw_loop_actors();
+        self.copy_and_draw_actors();
+        self.phase(simbench::phase::ACTOR_LIST_DRAW);
         self.draw_loop_3d_state(); // wave E
+        self.phase(simbench::phase::DRAW_3D);
         self.draw_screen_transition();
         self.draw_loop_2d_state(); // wave E
+        self.phase(simbench::phase::DRAW_2D);
     }
 
-    /// `DrawLoop` (PC/drawloop.cpp:142) up to `UpdateFrogTongue`: `CalcViewMatrix`,
-    /// `farClip`, `ActorListDraw(0/1)` (animation advances only for drawn actors).
-    fn draw_loop_actors(&mut self) {
+    /// `CopyActorList`, then `DrawLoop` (PC/drawloop.cpp:142) up to `UpdateFrogTongue`:
+    /// `CalcViewMatrix`, `farClip`, `ActorListDraw(0/1)` (animation advances only for
+    /// drawn actors).
+    ///
+    /// Phase 3S: one walk of `actList` runs `CopyActorList`'s body and, right after it,
+    /// `ActorListDraw(0)`'s for the same actor (the actor's data is still in the cache),
+    /// collecting list 1 for the second pass. Same results as the separate passes:
+    /// `CalcViewMatrix` reads only the camera and fog; an actor's `ActorListDraw` reads and
+    /// writes only that actor (its placement copied just before), sprites, the tongue's head
+    /// matrix, sounds and `Random()` (in the same order as before, as `CopyActorList` makes
+    /// none of those calls); `CopyActorList` reads only its own actor and `frog[0]`'s
+    /// position (unchanged by drawing); neither creates, frees nor re-lists actors.
+    fn copy_and_draw_actors(&mut self) {
         use define::mode::*;
         if matches!(self.game_state.mode, ARTVIEWER_MODE | STARTUP_MODE | TEASERSCREEN_MODE) {
+            self.copy_actor_list();
             return;
         }
         self.calc_view_matrix();
-        self.actor_list_draw(0);
-        self.actor_list_draw(1);
+        let view = self.specfx.view;
+        let frog0 = self.frog0_position();
+        let mut ids1 = Vec::new();
+        let mut cur = self.actor2.act_list.first;
+        while let Some(id) = cur {
+            cur = self.actor2.actors[id].links.next;
+            self.copy_actor(id, frog0);
+            match self.actor2.actors[id].actor.actual_actor.list_num {
+                0 => self.actor_list_draw_one(id, view.as_ref()),
+                1 => ids1.push(id),
+                _ => {}
+            }
+        }
+        for id in ids1 {
+            self.actor_list_draw_one(id, view.as_ref());
+        }
         // DrawLoop (PC/drawloop.cpp:250): UpdateFrogTongue(0) after ActorListDraw(1).
         if self.game_state.multi == define::SINGLEPLAYER && self.frogger.frog[0].is_some() {
             self.update_frog_tongue(0);

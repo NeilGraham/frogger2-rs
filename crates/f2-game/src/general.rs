@@ -105,6 +105,39 @@ pub fn find_nearest_tile_f(map: &Map, v: FVector) -> Option<TileId> {
 
 /// Port of `FindNearestTileS` (Common/general.c:166).
 pub fn find_nearest_tile_s(map: &Map, v: SVector) -> Option<TileId> {
+    // Phase 3S: `DistanceBetweenPointsSS(v, c) >> 12` is `g(u)` of the wrapped squared
+    // distance `u` (`utilSqrt`), and `g` is non-decreasing for `u < NEAREST_SAFE` (above,
+    // the float rounds to 2^32 and `utilSqrt` wraps to 0). `d_best` is a safe `u` with
+    // `g(d_best) == closest_dist`, so a tile with safe `u >= d_best` cannot be strictly
+    // closer and its square root is skipped. Same result as the plain scan (tested).
+    let mut closest = None;
+    let mut closest_dist = 500000;
+    let mut d_best = u32::MAX;
+    for (i, t) in map.tiles.iter().enumerate() {
+        let (dx, dy, dz) = (v.vx as i32 - t.centre.vx as i32, v.vy as i32 - t.centre.vy as i32, v.vz as i32 - t.centre.vz as i32);
+        let u = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)).wrapping_add(dz.wrapping_mul(dz)) as u32;
+        let safe = u < NEAREST_SAFE;
+        if safe && u >= d_best {
+            continue;
+        }
+        let dist = f2_math::fsqrt(u as i32) >> 12;
+        if dist < closest_dist {
+            closest = Some(TileId(i as u32));
+            closest_dist = dist;
+            d_best = if safe { u } else { u32::MAX };
+        } else if dist == closest_dist && safe && u < d_best {
+            d_best = u;
+        }
+    }
+    closest
+}
+
+/// Squared distances below this have a non-decreasing `utilSqrt` (see `find_nearest_tile_s`).
+const NEAREST_SAFE: u32 = 0xFFFF_FF00;
+
+/// The plain scan `find_nearest_tile_s` must equal (tests).
+#[cfg(test)]
+fn find_nearest_tile_s_ref(map: &Map, v: SVector) -> Option<TileId> {
     let mut closest = None;
     let mut closest_dist = 500000;
     for (i, t) in map.tiles.iter().enumerate() {
@@ -115,6 +148,41 @@ pub fn find_nearest_tile_s(map: &Map, v: SVector) -> Option<TileId> {
         }
     }
     closest
+}
+
+#[cfg(test)]
+mod nearest_tests {
+    use super::*;
+
+    #[test]
+    fn nearest_tile_matches_plain_scan() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..400 {
+            let mut map = Map::default();
+            let n = (rnd() % 300) as usize;
+            let spread = [100i64, 3000, 32767][round % 3];
+            let c = |r: u64| ((r % (2 * spread as u64 + 1)) as i64 - spread) as i16;
+            for _ in 0..n {
+                let t = crate::map::GameTile { centre: SVector::new(c(rnd()), c(rnd()), c(rnd())), ..Default::default() };
+                map.tiles.push(t);
+            }
+            // duplicate centres and equal distances (ties)
+            if n > 4 {
+                let t = map.tiles[1].clone();
+                map.tiles[3] = t;
+            }
+            for _ in 0..50 {
+                let v = SVector::new(c(rnd()), c(rnd()), c(rnd()));
+                assert_eq!(find_nearest_tile_s(&map, v), find_nearest_tile_s_ref(&map, v));
+            }
+        }
+    }
 }
 
 #[inline]

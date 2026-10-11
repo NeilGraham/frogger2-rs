@@ -243,6 +243,46 @@ pub struct SpecFx {
     pub draw: Option<FxDraw>,
 }
 
+impl SpecFx {
+    /// Phase 3S: a copy of every field but `act` (`None`), for the update functions that
+    /// snapshot their effect while mutating other state (they never read `act`); a full
+    /// clone allocated the `act` vector every update.
+    pub(crate) fn head(&self) -> SpecFx {
+        SpecFx {
+            normal: self.normal,
+            vel: self.vel,
+            scale: self.scale,
+            origin: self.origin,
+            rebound: self.rebound,
+            particles: self.particles,
+            sprites: self.sprites,
+            tex: self.tex,
+            follow: self.follow,
+            act: None,
+            ty: self.ty,
+            start: self.start,
+            end: self.end,
+            angle: self.angle,
+            spin: self.spin,
+            speed: self.speed,
+            accn: self.accn,
+            tilt: self.tilt,
+            gravity: self.gravity,
+            lifetime: self.lifetime,
+            num_p: self.num_p,
+            fade: self.fade,
+            fade_alpha: self.fade_alpha,
+            r: self.r,
+            g: self.g,
+            b: self.b,
+            a: self.a,
+            update_type: self.update_type,
+            update: self.update,
+            draw: self.draw,
+        }
+    }
+}
+
 /// The `txtr*` texture handles found by `InitSpecFXList` (CRCs of `name.bmp`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FxTextures {
@@ -784,7 +824,7 @@ impl Game {
                 };
                 self.specfx.fx_mut(id).particles = Some(parts);
                 self.specfx.fx_mut(id).tex = tx.txtr_flash;
-                let e = self.specfx.fx(id).clone();
+                let e = self.specfx.fx(id).head();
                 let ss = self.sprite.chain(Some(spr), n);
                 let ps = self.particle.chain(Some(parts), n);
                 for (s, p) in ss.into_iter().zip(ps) {
@@ -898,7 +938,7 @@ impl Game {
                     return None;
                 };
                 self.specfx.fx_mut(id).sprites = Some(spr);
-                let e = self.specfx.fx(id).clone();
+                let e = self.specfx.fx(id).head();
                 for s in self.sprite.chain(Some(spr), n) {
                     {
                         let sp = self.sprite.get_mut(s);
@@ -958,7 +998,7 @@ impl Game {
                 };
                 self.specfx.fx_mut(id).particles = Some(parts);
                 if let Some(p2) = self.specfx.allocate_p2() {
-                    let e = self.specfx.fx(id).clone();
+                    let e = self.specfx.fx(id).head();
                     let pl = self.specfx.p2_mut(p2);
                     set_vector_ss(&mut pl.point, &e.origin);
                     set_vector_ff(&mut pl.normal, &e.normal);
@@ -976,7 +1016,7 @@ impl Game {
                     }
                     e.fade = e.a as i32 / life.max(1);
                 }
-                let e = self.specfx.fx(id).clone();
+                let e = self.specfx.fx(id).head();
                 let tmp = e.speed / 30;
                 let ss = self.sprite.chain(Some(spr), n);
                 let ps = self.particle.chain(Some(parts), n);
@@ -1054,7 +1094,7 @@ impl Game {
                 };
                 self.specfx.fx_mut(id).particles = Some(parts);
                 self.specfx.fx_mut(id).tex = tx.txtr_electric;
-                let e = self.specfx.fx(id).clone();
+                let e = self.specfx.fx(id).head();
                 for p in self.particle.chain(Some(parts), n) {
                     let pp = self.particle.get_mut(p);
                     set_vector_ss(&mut pp.pos, &e.origin);
@@ -1228,7 +1268,7 @@ impl Game {
             m
         }
 
-        let fx = self.specfx.fx(id).clone();
+        let fx = self.specfx.fx(id).head();
         if fx.tex == 0 {
             return;
         }
@@ -1393,14 +1433,14 @@ impl Game {
     fn update_fx_smoke(&mut self, fx: SpecFxId) {
         let gs = self.game_speed;
         self.follow_origin(fx);
-        let e = self.specfx.fx(fx).clone();
+        let e = self.specfx.fx(fx).head();
         let mut dead = false;
         let mut s = e.sprites;
         let mut i = e.num_p;
         while i > 0 {
             i -= 1;
             let Some(sid) = s else { break };
-            let e = self.specfx.fx(fx).clone();
+            let e = self.specfx.fx(fx).head();
             let fo = e.fade.wrapping_mul(gs) >> 12;
             {
                 let sp = self.sprite.get_mut(sid);
@@ -1464,7 +1504,7 @@ impl Game {
     fn update_fx_swarm(&mut self, fx: SpecFxId) {
         let gs = self.game_speed;
         self.follow_origin(fx);
-        let e = self.specfx.fx(fx).clone();
+        let e = self.specfx.fx(fx).head();
         let _speed = fmul(e.speed, gs);
         let limit = e.accn;
         let j = (fx.0.wrapping_mul(SIZEOF_SPECFX) & (40 + 64 + 128 + 256)) as i32;
@@ -1491,7 +1531,7 @@ impl Game {
         let gs = self.game_speed;
         self.follow_origin(fx);
         let vs = 4096 - gs / 50;
-        let e = self.specfx.fx(fx).clone();
+        let e = self.specfx.fx(fx).head();
         let mut alive = 0;
         let mut s = e.sprites;
         let mut p = e.particles;
@@ -1572,7 +1612,7 @@ impl Game {
 
     /// Port of `UpdateFXLightning` (Common/specfx.c:1279).
     fn update_fx_lightning(&mut self, fx: SpecFxId) {
-        let e = self.specfx.fx(fx).clone();
+        let e = self.specfx.fx(fx).head();
         let mut target = SVector::default();
         let mut aim = FVector::default();
         if let Some(fp) = self.follow_pos(fx) {
@@ -1660,7 +1700,7 @@ impl Game {
         let mut q2 = IQuaternion::default();
         fixed_get_quaternion_from_rotation(&mut q2, &q3);
 
-        let e = self.specfx.fx(fx).clone();
+        let e = self.specfx.fx(fx).head();
         let mut speed = fmul(e.accn, gs);
         if speed > 4092 {
             speed = 4092;
@@ -2419,7 +2459,7 @@ mod tests {
     fn decal_fades_and_dies_at_lifetime() {
         let mut g = game();
         let fx = g.create_special_effect(FXTYPE_WAKE, &SVector::new(0, 0, 0), &up(), 81920, 410, 205, 2048).unwrap();
-        let e = g.specfx.fx(fx).clone();
+        let e = g.specfx.fx(fx).head();
         // life = (2048*60)>>12 = 30 frames; fade = 255/30
         assert_eq!(e.lifetime, 30);
         assert_eq!(e.fade, 8);
