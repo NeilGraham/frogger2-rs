@@ -246,7 +246,7 @@ impl Game {
     #[inline]
     pub(crate) fn phase(&self, id: u32) {
         if let Some(h) = self.phase_hook {
-            h(if id >= 100 { id - 100 + 11 } else { id });
+            h(id);
         }
     }
 
@@ -255,9 +255,7 @@ impl Game {
     /// sprites/effects, overlays). Also run once after a level is started from the
     /// frontend (`InitDemoMode`/`InitLevel` happen inside the frontend's `GameLoop`).
     pub fn after_game_loop(&mut self) {
-        self.copy_actor_list();
-        self.phase(simbench::phase::COPY_ACTOR_LIST);
-        self.draw_loop_actors();
+        self.copy_and_draw_actors();
         self.phase(simbench::phase::ACTOR_LIST_DRAW);
         self.draw_loop_3d_state(); // wave E
         self.phase(simbench::phase::DRAW_3D);
@@ -266,29 +264,41 @@ impl Game {
         self.phase(simbench::phase::DRAW_2D);
     }
 
-    /// `DrawLoop` (PC/drawloop.cpp:142) up to `UpdateFrogTongue`: `CalcViewMatrix`,
-    /// `farClip`, `ActorListDraw(0/1)` (animation advances only for drawn actors).
-    fn draw_loop_actors(&mut self) {
+    /// `CopyActorList`, then `DrawLoop` (PC/drawloop.cpp:142) up to `UpdateFrogTongue`:
+    /// `CalcViewMatrix`, `farClip`, `ActorListDraw(0/1)` (animation advances only for
+    /// drawn actors).
+    ///
+    /// Phase 3S: one walk of `actList` runs `CopyActorList`'s body and, right after it,
+    /// `ActorListDraw(0)`'s for the same actor (the actor's data is still in the cache),
+    /// collecting list 1 for the second pass. Same results as the separate passes:
+    /// `CalcViewMatrix` reads only the camera and fog; an actor's `ActorListDraw` reads and
+    /// writes only that actor (its placement copied just before), sprites, the tongue's head
+    /// matrix, sounds and `Random()` (in the same order as before, as `CopyActorList` makes
+    /// none of those calls); `CopyActorList` reads only its own actor and `frog[0]`'s
+    /// position (unchanged by drawing); neither creates, frees nor re-lists actors.
+    fn copy_and_draw_actors(&mut self) {
         use define::mode::*;
         if matches!(self.game_state.mode, ARTVIEWER_MODE | STARTUP_MODE | TEASERSCREEN_MODE) {
+            self.copy_actor_list();
             return;
         }
         self.calc_view_matrix();
-        // One walk of actList splits it into the two draw lists (`listNum` never changes
-        // after creation and ActorListDraw neither creates nor frees actors).
-        let (mut ids0, mut ids1) = (Vec::with_capacity(self.actor2.act_list.count.max(0) as usize), Vec::new());
+        let view = self.specfx.view;
+        let frog0 = self.frog0_position();
+        let mut ids1 = Vec::new();
         let mut cur = self.actor2.act_list.first;
         while let Some(id) = cur {
-            let a = &self.actor2.actors[id];
-            if a.actor.actual_actor.list_num == 0 {
-                ids0.push(id);
-            } else if a.actor.actual_actor.list_num == 1 {
-                ids1.push(id);
+            cur = self.actor2.actors[id].links.next;
+            self.copy_actor(id, frog0);
+            match self.actor2.actors[id].actor.actual_actor.list_num {
+                0 => self.actor_list_draw_one(id, view.as_ref()),
+                1 => ids1.push(id),
+                _ => {}
             }
-            cur = a.links.next;
         }
-        self.actor_list_draw_ids(0, &ids0);
-        self.actor_list_draw_ids(1, &ids1);
+        for id in ids1 {
+            self.actor_list_draw_one(id, view.as_ref());
+        }
         // DrawLoop (PC/drawloop.cpp:250): UpdateFrogTongue(0) after ActorListDraw(1).
         if self.game_state.multi == define::SINGLEPLAYER && self.frogger.frog[0].is_some() {
             self.update_frog_tongue(0);

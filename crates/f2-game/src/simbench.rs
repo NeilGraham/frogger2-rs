@@ -27,27 +27,8 @@ pub mod phase {
     pub const ACTOR_LIST_DRAW: u32 = 8;
     pub const DRAW_3D: u32 = 9;
     pub const DRAW_2D: u32 = 10;
-    pub const COUNT: usize = 18;
-    pub const NAMES: [&str; COUNT] = [
-        "input",
-        "frogs",
-        "platforms",
-        "enemies",
-        "specfx",
-        "events",
-        "loop-rest",
-        "copyactors",
-        "actordraw",
-        "draw3d",
-        "draw2d",
-        "ad:loop+other",
-        "ad:anim",
-        "ad:root",
-        "ad:sprites",
-        "ad:vis",
-        "ad:head",
-        "ad:kill",
-    ];
+    pub const COUNT: usize = 11;
+    pub const NAMES: [&str; COUNT] = ["input", "frogs", "platforms", "enemies", "specfx", "events", "loop-rest", "copyactors", "actordraw", "draw3d", "draw2d"];
 }
 
 /// How a scenario starts.

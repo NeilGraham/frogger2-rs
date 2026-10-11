@@ -770,13 +770,9 @@ impl Game {
         if self.actor2.actors[id].actor.actual_actor.object_controller.is_none() {
             return;
         }
-        self.phase(100);
         self.update_actor_anim(id);
-        self.phase(101);
         self.transform_root_object(id, no_clip);
-        self.phase(102);
         self.transform_actor_sprites(id);
-        self.phase(103);
         // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
         if self.frogger.frog[0] == Some(id) {
             if let Some(name) = self.tongue.head_object.clone() {
@@ -922,39 +918,49 @@ impl Game {
 
     /// Port of `CopyActorList` (PC/Main.cpp:621), minus texture sliding (render only).
     pub fn copy_actor_list(&mut self) {
-        let frog0 = self.frogger.frog[0].and_then(|f| self.actor2.actors.get(f)).map(|a| a.actor.position);
+        let frog0 = self.frog0_position();
         // Walks the links in place (the body never changes the list).
         let mut cur = self.actor2.act_list.first;
         while let Some(id) = cur {
-            let c = &mut self.actor2.actors[id];
-            cur = c.links.next;
-            // Phase 3S: fields are only stored when their bits change, so unchanged actors
-            // keep clean cache lines (no write-backs on the N64); the values are the same.
-            if let Some(f0) = frog0 {
-                set(&mut c.distance_from_frog, distance_between_points_ss(&c.actor.position, &f0));
-            }
-            if c.actor.actual_actor.object_controller.is_none() {
-                continue;
-            }
-            set(&mut c.clipped, (c.actor.actual_actor.root_object_flags & OBJECT_FLAGS_CLIPPED != 0) as i8);
-            let draw = c.draw != 0;
-            let pos = c.actor.position;
-            let size = c.actor.size;
-            let q = c.actor.q_rot;
-            let p = &mut c.actor.actual_actor.placement;
-            if !draw {
-                set(&mut p.visible, 0);
-                set(&mut p.draw, 0);
-                continue;
-            }
-            set(&mut p.visible, 1);
-            set(&mut p.draw, 1);
-            set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
-            const S: f32 = 1.0 / 4096.0;
-            set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
-            if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
-                set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
-            }
+            cur = self.actor2.actors[id].links.next;
+            self.copy_actor(id, frog0);
+        }
+    }
+
+    /// `frog[0]`'s position as `CopyActorList` reads it (before the loop).
+    pub(crate) fn frog0_position(&self) -> Option<SVector> {
+        self.frogger.frog[0].and_then(|f| self.actor2.actors.get(f)).map(|a| a.actor.position)
+    }
+
+    /// The loop body of `CopyActorList` for actor `id`.
+    pub(crate) fn copy_actor(&mut self, id: ActorId, frog0: Option<SVector>) {
+        let c = &mut self.actor2.actors[id];
+        // Phase 3S: fields are only stored when their bits change, so unchanged actors
+        // keep clean cache lines (no write-backs on the N64); the values are the same.
+        if let Some(f0) = frog0 {
+            set(&mut c.distance_from_frog, distance_between_points_ss(&c.actor.position, &f0));
+        }
+        if c.actor.actual_actor.object_controller.is_none() {
+            return;
+        }
+        set(&mut c.clipped, (c.actor.actual_actor.root_object_flags & OBJECT_FLAGS_CLIPPED != 0) as i8);
+        let draw = c.draw != 0;
+        let pos = c.actor.position;
+        let size = c.actor.size;
+        let q = c.actor.q_rot;
+        let p = &mut c.actor.actual_actor.placement;
+        if !draw {
+            set(&mut p.visible, 0);
+            set(&mut p.draw, 0);
+            return;
+        }
+        set(&mut p.visible, 1);
+        set(&mut p.draw, 1);
+        set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
+        const S: f32 = 1.0 / 4096.0;
+        set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
+        if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
+            set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
         }
     }
 
@@ -970,36 +976,33 @@ impl Game {
     /// both lists; `ActorListDraw` never creates, frees or re-lists actors, so it is the
     /// same as a snapshot per list.
     pub fn actor_list_draw_ids(&mut self, list: u32, ids: &[ActorId]) {
-        let in_list = |g: &Game, id: ActorId| g.actor2.actors[id].actor.actual_actor.list_num == list;
-        let Some(view) = self.specfx.view else {
-            for &id in ids {
-                if !in_list(self, id) {
-                    continue;
-                }
-                self.view.draw_this_objects_sprites = self.actor2.actors[id].actor.actual_actor.placement.draw as u32;
-                self.update_actor_anim(id);
-                self.transform_actor_sprites(id);
+        let view = self.specfx.view;
+        for &id in ids {
+            if self.actor2.actors[id].actor.actual_actor.list_num == list {
+                self.actor_list_draw_one(id, view.as_ref());
             }
+        }
+    }
+
+    /// The loop body of `ActorListDraw` for actor `id` (`view` = the current
+    /// `specfx.view`; without one nothing is culled).
+    pub(crate) fn actor_list_draw_one(&mut self, id: ActorId, view: Option<&ViewXform>) {
+        let Some(view) = view else {
+            self.view.draw_this_objects_sprites = self.actor2.actors[id].actor.actual_actor.placement.draw as u32;
+            self.update_actor_anim(id);
+            self.transform_actor_sprites(id);
             return;
         };
-        for &id in ids {
-            let a = &self.actor2.actors[id].actor.actual_actor;
-            if a.list_num != list {
-                continue;
-            }
-            let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { continue };
-            self.view.draw_this_objects_sprites = a.placement.draw as u32;
-            let p = a.placement;
-            let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
-            let visible = if draw_override { true } else { sphere_visible(model, &p, &view) };
-            self.phase(104);
-            if visible {
-                self.xform_actor(id, draw_override);
-                self.phase(105);
-            } else {
-                self.kill_object_sprites(id);
-                self.phase(106);
-            }
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return };
+        self.view.draw_this_objects_sprites = a.placement.draw as u32;
+        let p = a.placement;
+        let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
+        let visible = if draw_override { true } else { sphere_visible(model, &p, view) };
+        if visible {
+            self.xform_actor(id, draw_override);
+        } else {
+            self.kill_object_sprites(id);
         }
     }
 
