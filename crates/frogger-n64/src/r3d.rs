@@ -461,7 +461,16 @@ impl R3d {
 
     fn register_mesh(&mut self, m: &MeshView) -> Result<MeshRes, LoadError> {
         let skinned = m.entry.is_skinned();
-        let mut res = MeshRes { id: m.entry.id, parts: Vec::new(), group_crc: Vec::new(), group_tex: Vec::new(), tex_gen: 0, pos_scale: m.entry.pos_scale(), skinned, tris: m.entry.n_tris };
+        let mut res = MeshRes {
+            id: m.entry.id,
+            parts: Vec::new(),
+            group_crc: Vec::new(),
+            group_tex: Vec::new(),
+            tex_gen: 0,
+            pos_scale: m.entry.pos_scale(),
+            skinned,
+            tris: m.entry.n_tris,
+        };
         let add = |cmds: &[u8], group: usize, tris: u16, center: [f32; 3], radius: f32| -> Result<Part, LoadError> {
             let desc = ffi::R3dGroupDesc {
                 verts: m.vertices.as_ptr(),
@@ -623,7 +632,8 @@ impl R3d {
         self.vis.extend(0..n as u16);
         let arena = &mut self.uni[self.uni_frame];
         arena.push(self.bones.get(first as usize).copied().unwrap_or_default());
-        let rec = DrawRec { u: arena.len() as u32 - 1, mesh: mesh.0, tex_override: p.override_tex.map_or(0, |t| t.0), bones: first, vis_first, vis_count: n as u32 };
+        let rec =
+            DrawRec { u: arena.len() as u32 - 1, mesh: mesh.0, tex_override: p.override_tex.map_or(0, |t| t.0), bones: first, vis_first, vis_count: n as u32 };
         self.lists[list as usize].push(rec);
     }
 

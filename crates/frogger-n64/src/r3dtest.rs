@@ -7,7 +7,6 @@
 //! tools/n64/export (`rom:/scene*.f2nm` + `.f2ns`), shown in turn for screenshots.
 //! Everything is logged with `R3D` prefixes (research/n64-performance.md).
 
-
 use crate::log;
 use crate::r3d::*;
 use crate::rt::{self, ticks, ticks_to_us};
@@ -185,7 +184,12 @@ impl R3dTest {
         r.flush(|_| {});
         rt::present();
         let probe_px = |x: f32, z: f32| {
-            let e = emulate_vertex(&draw_uniform(&clip_matrix(&translate(x, 0.0, z), &view, 1.0, false), &DrawParams::default()), &frame_uniform(&view), 6, [0, 0, 0]);
+            let e = emulate_vertex(
+                &draw_uniform(&clip_matrix(&translate(x, 0.0, z), &view, 1.0, false), &DrawParams::default()),
+                &frame_uniform(&view),
+                6,
+                [0, 0, 0],
+            );
             let (px, py) = ((e.0[0] / 4) as u32, (e.0[1] / 4) as u32);
             rt::probe_c(5, px << 16 | py)
         };

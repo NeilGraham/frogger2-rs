@@ -16,6 +16,7 @@
 //! All multi-byte fields are **big-endian** (the N64's byte order: the RSP reads vertices
 //! and the RDP reads texels and palettes without conversion).
 #![no_std]
+#![allow(clippy::needless_range_loop)]
 
 #[cfg(feature = "encode")]
 extern crate alloc;
@@ -556,7 +557,7 @@ impl<'a> File<'a> {
         if len == 0 {
             return Ok(&[]);
         }
-        if off % 8 != 0 {
+        if !off.is_multiple_of(8) {
             return Err(Error::Misaligned);
         }
         self.data.get(off..off.checked_add(len).ok_or(Error::OutOfBounds)?).ok_or(Error::OutOfBounds)

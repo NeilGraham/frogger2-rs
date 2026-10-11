@@ -180,11 +180,8 @@ fn main() {
     }
     let a = parse();
     let game = a.data.join("game");
-    let banks: Vec<ObjectBank> = a
-        .banks
-        .iter()
-        .map(|b| f2_engine::load::read_object_bank(game.join("objects").join(b)).unwrap_or_else(|e| panic!("{e}")))
-        .collect();
+    let banks: Vec<ObjectBank> =
+        a.banks.iter().map(|b| f2_engine::load::read_object_bank(game.join("objects").join(b)).unwrap_or_else(|e| panic!("{e}"))).collect();
     let world_id = f2_formats::crc("world.obe");
     let world = banks.iter().flat_map(|b| b.models.iter()).find(|m| m.id == world_id).expect("no world.obe in the banks");
 

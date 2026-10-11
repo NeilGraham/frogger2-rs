@@ -144,7 +144,8 @@ fn bounding_sphere(verts: &[Vertex]) -> ([i16; 3], u16) {
 /// (per bone for skinned meshes) fills the cache).
 pub fn encode_mesh(m: &MeshIn) -> EncodedMesh {
     let used = |i: usize| m.faces.iter().any(|f| f.v.contains(&(i as u16)));
-    let maxabs = m.positions.iter().enumerate().filter(|(i, _)| m.positions.len() < 4096 || used(*i)).flat_map(|(_, p)| p.iter()).fold(0f32, |a, &v| a.max(v.abs()));
+    let maxabs =
+        m.positions.iter().enumerate().filter(|(i, _)| m.positions.len() < 4096 || used(*i)).flat_map(|(_, p)| p.iter()).fold(0f32, |a, &v| a.max(v.abs()));
     let pos_shift = pos_shift_for(maxabs);
     let scale = pow2(pos_shift as i32);
     let qpos: Vec<[i16; 3]> = m.positions.iter().map(|p| p.map(|v| round_i32(v * scale).clamp(-32768, 32767) as i16)).collect();
@@ -234,7 +235,13 @@ pub fn encode_mesh(m: &MeshIn) -> EncodedMesh {
             }
             n_tris += tris.len() as u32;
             let (center, radius) = bounding_sphere(&verts);
-            out.batches.push(Batch { cmd_first: batch_cmd_first, cmd_count: (out.cmds.len() as u32 - batch_cmd_first) as u16, n_tris: tris.len() as u16, center, radius });
+            out.batches.push(Batch {
+                cmd_first: batch_cmd_first,
+                cmd_count: (out.cmds.len() as u32 - batch_cmd_first) as u16,
+                n_tris: tris.len() as u16,
+                center,
+                radius,
+            });
         }
         out.groups.push(Group {
             tex_crc: *crc,
@@ -392,7 +399,11 @@ pub fn encode_texture(t: &TexIn) -> EncodedTexture {
             continue;
         }
         let index = |c: u16| pal.iter().position(|&p| p == c).unwrap() as u8;
-        let texels: Vec<u8> = if fmt == TexFormat::Ci4 { img.chunks(2).map(|p| index(p[0]) << 4 | p.get(1).map_or(0, |&c| index(c))).collect() } else { img.iter().map(|&c| index(c)).collect() };
+        let texels: Vec<u8> = if fmt == TexFormat::Ci4 {
+            img.chunks(2).map(|p| index(p[0]) << 4 | p.get(1).map_or(0, |&c| index(c))).collect()
+        } else {
+            img.iter().map(|&c| index(c)).collect()
+        };
         pal.resize(max_colours, 0);
         return mk(fmt, w, h, pal, texels);
     }
@@ -437,7 +448,7 @@ pub struct FileBuilder {
 }
 
 fn align8(v: &mut Vec<u8>) {
-    while v.len() % 8 != 0 {
+    while !v.len().is_multiple_of(8) {
         v.push(0);
     }
 }
@@ -522,7 +533,15 @@ impl FileBuilder {
             e.write(&mut out[o..o + TEXTURE_ENTRY_SIZE]);
         }
         align8(&mut out);
-        let h = Header { version: VERSION, flags: 0, n_textures: self.textures.len() as u16, n_meshes: self.meshes.len() as u16, tex_table: tex_table as u32, mesh_table: mesh_table as u32, size: out.len() as u32 };
+        let h = Header {
+            version: VERSION,
+            flags: 0,
+            n_textures: self.textures.len() as u16,
+            n_meshes: self.meshes.len() as u16,
+            tex_table: tex_table as u32,
+            mesh_table: mesh_table as u32,
+            size: out.len() as u32,
+        };
         h.write(&mut out[..HEADER_SIZE]);
         out
     }
@@ -545,8 +564,18 @@ mod tests {
             for x in 0..n {
                 let uv = |x: usize, y: usize| [(x * 1026 / n) as i16, (y * 1026 / n) as i16];
                 let c = [255, 255, 255, 255];
-                faces.push(FaceIn { v: [id(x, y), id(x + 1, y), id(x + 1, y + 1)], uv: [uv(x, y), uv(x + 1, y), uv(x + 1, y + 1)], rgba: [c; 3], tex_crc: tex(faces.len()) });
-                faces.push(FaceIn { v: [id(x, y), id(x + 1, y + 1), id(x, y + 1)], uv: [uv(x, y), uv(x + 1, y + 1), uv(x, y + 1)], rgba: [c; 3], tex_crc: tex(faces.len()) });
+                faces.push(FaceIn {
+                    v: [id(x, y), id(x + 1, y), id(x + 1, y + 1)],
+                    uv: [uv(x, y), uv(x + 1, y), uv(x + 1, y + 1)],
+                    rgba: [c; 3],
+                    tex_crc: tex(faces.len()),
+                });
+                faces.push(FaceIn {
+                    v: [id(x, y), id(x + 1, y + 1), id(x, y + 1)],
+                    uv: [uv(x, y), uv(x + 1, y + 1), uv(x, y + 1)],
+                    rgba: [c; 3],
+                    tex_crc: tex(faces.len()),
+                });
             }
         }
         (pos, faces)
