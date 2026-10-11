@@ -65,8 +65,8 @@ fn rot_y(a: f32, m: Mat4) -> Mat4 {
 /// MDX-visible triangles of a draw, counted on the CPU with the shader model.
 fn visible_tris(f: &File, mesh: usize, model: &Mat4, view: &ViewParams) -> u32 {
     let m = f.mesh(mesh).unwrap();
-    let u = draw_uniform(&clip_matrix(model, view, m.entry.pos_scale(), false), &DrawParams::default());
-    let fr = frame_uniform(view);
+    let u = draw_uniform(&model_scaled(model, m.entry.pos_scale()), &DrawParams::default());
+    let fr = frame_uniform_vp(view, false);
     let mut n = 0;
     for g in m.groups() {
         let mut slots = [None; 49];
@@ -185,8 +185,8 @@ impl R3dTest {
         rt::present();
         let probe_px = |x: f32, z: f32| {
             let e = emulate_vertex(
-                &draw_uniform(&clip_matrix(&translate(x, 0.0, z), &view, 1.0, false), &DrawParams::default()),
-                &frame_uniform(&view),
+                &draw_uniform(&model_scaled(&translate(x, 0.0, z), 1.0), &DrawParams::default()),
+                &frame_uniform_vp(&view, false),
                 6,
                 [0, 0, 0],
             );

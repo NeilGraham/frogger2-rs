@@ -23,6 +23,22 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use f2_n64fmt::{File, MeshView};
 
+/// TEMP phase-3P probes (no-ops on the host).
+#[inline(always)]
+fn pt() -> u32 {
+    #[cfg(target_vendor = "nintendo64")]
+    return crate::rt::ticks();
+    #[cfg(not(target_vendor = "nintendo64"))]
+    0
+}
+#[inline(always)]
+fn pa(_i: usize, _t0: u32) -> u32 {
+    #[cfg(target_vendor = "nintendo64")]
+    return crate::rt::probe_add(_i, _t0);
+    #[cfg(not(target_vendor = "nintendo64"))]
+    0
+}
+
 /// A row-vector 4x4 matrix (`v' = v * M`, translation in row 3), as f2-engine `math.rs`.
 pub type Mat4 = [[f32; 4]; 4];
 
@@ -256,15 +272,57 @@ struct MeshRes {
     pos_scale: f32,
     skinned: bool,
     tris: u32,
+    /// Sphere enclosing every part's sphere (radius < 0: some part is never culled, or the
+    /// mesh is skinned): tested first, so wholly visible / invisible meshes skip the parts.
+    center: [f32; 3],
+    radius: f32,
+}
+
+/// Draw slot `i`'s last draw (see [`R3d::draw_slot`]): reusable while nothing it depends
+/// on changed. Boxed, so its uniforms stay put while the RSP reads them.
+struct SlotEntry {
+    /// `R3d::frame_no` of the draw (only the previous frame's are reused).
+    frame: u32,
+    view_gen: u32,
+    mesh: u32,
+    /// The model matrix's stamp (`MeshDraw::stamp`).
+    stamp: u32,
+    params: [u32; 6],
+    sent: u32,
+    /// Visible parts in that frame's `vis` (`R3d::prev_vis` in the next frame).
+    vis_first: u32,
+    vis_count: u32,
+    /// The uniform, in a ring of three: a miss writes the next one, as the RSP may still
+    /// read the one of each of the two frames before (the CPU starts recording frame N
+    /// before waiting for a framebuffer, i.e. while N-2 and N-1 can still be in flight).
+    cur: usize,
+    u: [R3dDrawUniform; 3],
+}
+
+/// Bit pattern of a draw's parameters (cache key).
+fn params_key(p: &DrawParams) -> [u32; 6] {
+    let g = p.gouraud.map_or([u32::MAX; 3], |g| g.map(f32::to_bits));
+    [
+        p.alpha_mul.to_bits(),
+        g[0],
+        g[1],
+        g[2],
+        p.override_tex.map_or(0, |t| t.0 as u32 + 1),
+        p.no_clip as u32 | (p.object_fog as u32) << 1,
+    ]
 }
 
 struct DrawRec {
-    /// Index of the draw's uniform in the current frame's arena.
+    /// Index of the draw's uniform in the current frame's arena, or (`ARENA_NONE`) the
+    /// uniform at `uptr` (a slot entry's).
     u: u32,
+    uptr: *const R3dDrawUniform,
     mesh: u32,
     tex_override: u16,
-    /// Index of the first bone uniform in `R3d::bones` (skinned), else `u32::MAX`.
-    bones: u32,
+    /// Skinned: the bone uniforms are `u..u + n_bones` of the arena (0: rigid).
+    n_bones: u16,
+    /// Drawn with the sky's projection (`noClip`: far plane at `NO_CLIP_FAR`).
+    no_clip: bool,
     /// Visible parts: `R3d::vis[vis_first..vis_first + vis_count]` (indices into `parts`).
     vis_first: u32,
     vis_count: u32,
@@ -277,6 +335,30 @@ struct CullPlanes {
     /// moved one pixel outwards, and `sqrt(1 + a^2)`.
     a: [f32; 4],
     n: [f32; 4],
+}
+
+/// A sphere enclosing every part's bounding sphere (radius < 0 if a part has none).
+fn enclosing_sphere(parts: &[Part]) -> ([f32; 3], f32) {
+    if parts.is_empty() || parts.iter().any(|p| p.radius < 0.0) {
+        return ([0.0; 3], -1.0);
+    }
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for p in parts {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p.center[k] - p.radius);
+            hi[k] = hi[k].max(p.center[k] + p.radius);
+        }
+    }
+    let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+    let r = parts
+        .iter()
+        .map(|p| {
+            let d = [p.center[0] - c[0], p.center[1] - c[1], p.center[2] - c[2]];
+            fast_sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 1.0001 + p.radius
+        })
+        .fold(0.0f32, f32::max);
+    (c, r * 1.0001 + 1.0)
 }
 
 /// The renderer (one per program).
@@ -293,38 +375,68 @@ pub struct R3d {
     uni_frame: usize,
     meshes: Vec<MeshRes>,
     lists: [Vec<DrawRec>; NUM_LISTS],
-    bones: Vec<R3dDrawUniform>,
     vis: Vec<u16>,
     handle_scratch: Vec<u16>,
     tex_scratch: Vec<u16>,
     draw_scratch: Vec<R3dDraw>,
     view: ViewParams,
     frame: R3dFrame,
+    /// `frame` with the sky's far plane (draws with `no_clip`).
+    frame_noclip: R3dFrame,
+    /// View x projection (f32) of the frame, for culling and per-object fog.
+    vp: Mat4,
     cull: CullPlanes,
     /// Triangles of the meshes queued this frame.
     pub queued_tris: u32,
     /// Triangles sent to the RSP after bounding-sphere culling (the RSP still rejects
     /// faces exactly like MDX).
     pub sent_tris: u32,
+    /// Bumped when the view changes between frames (invalidates `cache`).
+    view_gen: u32,
+    /// Per draw slot: the last draw queued in it.
+    slots: Vec<Option<alloc::boxed::Box<SlotEntry>>>,
+    /// The previous frame's `vis` (reused draws copy their parts from it).
+    prev_vis: Vec<u16>,
+    frame_no: u32,
+    /// Draws reused from the previous frame (statistics).
+    pub cache_hits: u32,
 }
 
-/// f32 → s15.16 split into (integer, fraction) halves (saturating).
+/// f32 → s15.16 split into (integer, fraction) halves (saturating; truncated towards zero
+/// like `trunc.w.s`, NaN → 0).
+///
+/// Integer-only (exponent / mantissa shifts): on the VR4300 the FPU path (multiply, two
+/// range compares, truncate, move) costs several times more, and a draw converts 16 values.
+#[inline]
 pub fn to_fixed(v: f32) -> (i16, u16) {
-    let s = v * 65536.0;
-    // Clamp then convert without Rust's saturating-cast checks (cheaper on the VR4300).
-    let x = if s >= 2_147_483_520.0 {
-        i32::MAX
-    } else if s > -2_147_483_520.0 {
-        // SAFETY: finite and within i32 range here.
-        unsafe { s.to_int_unchecked::<i32>() }
+    let b = v.to_bits();
+    let e = ((b >> 23) & 0xFF) as i32;
+    // |v| * 65536 = m * 2^(e - 127 - 23 + 16), m = 1.mantissa as a 24-bit integer.
+    let sh = e - 134;
+    let m = (b & 0x7F_FFFF) | 0x80_0000;
+    let mag: u32 = if sh >= 8 {
+        // |v| >= 32768 (or inf / NaN): saturate (NaN → 0).
+        if e == 0xFF && b & 0x7F_FFFF != 0 {
+            0
+        } else if b >> 31 != 0 {
+            return (i16::MIN, 0);
+        } else {
+            return (i16::MAX, 0xFFFF);
+        }
+    } else if sh >= 0 {
+        m << sh
+    } else if sh > -24 {
+        m >> -sh
     } else {
-        i32::MIN
+        0
     };
+    let x = if b >> 31 != 0 { (mag as i32).wrapping_neg() } else { mag as i32 };
     ((x >> 16) as i16, x as u16)
 }
 
 /// The folded clip-space matrix of a draw: `diag(s, s, s, 1) x model x view x P` with
 /// `P`: X = vx, Y = vy, W = vz + DIST, Z = a*W + b (z planes = MDX near/far).
+/// Reference for tests: the RSP folds [`model_scaled`] with [`view_proj`] itself.
 pub fn clip_matrix(model: &Mat4, view: &ViewParams, pos_scale: f32, no_clip: bool) -> Mat4 {
     let mv = mtx_cat(model, &view.view);
     let (n, f) = (view.near, if no_clip { NO_CLIP_FAR } else { view.far });
@@ -340,31 +452,79 @@ pub fn clip_matrix(model: &Mat4, view: &ViewParams, pos_scale: f32, no_clip: boo
     m
 }
 
-/// Packs a clip matrix and draw colour parameters into the `F2_DRAW` uniform.
+/// View x projection of a frame (row-vector, columns X, Y, Z, W): `clip_matrix(model) =
+/// model_scaled(model) x view_proj` (the RSP computes the product per draw, phase 3P).
+pub fn view_proj(view: &ViewParams, no_clip: bool) -> Mat4 {
+    let v = &view.view;
+    let (n, f) = (view.near, if no_clip { NO_CLIP_FAR } else { view.far });
+    let a = (f + n) / (f - n);
+    let b = -2.0 * f * n / (f - n);
+    let mut m = [[0f32; 4]; 4];
+    for (k, row) in m.iter_mut().enumerate() {
+        let (dz, w) = if k == 3 { (DIST, 1.0) } else { (0.0, 0.0) };
+        let vz = v[k][2] + dz;
+        *row = [v[k][0], v[k][1], a * vz + b * w, vz];
+    }
+    m
+}
+
+/// The model matrix with the mesh's position scale on the direction rows (what the
+/// `F2_DRAW` uniform carries; mesh positions are stored scaled integers).
+#[inline]
+pub fn model_scaled(model: &Mat4, pos_scale: f32) -> Mat4 {
+    let s = pos_scale;
+    [
+        [model[0][0] * s, model[0][1] * s, model[0][2] * s, 0.0],
+        [model[1][0] * s, model[1][1] * s, model[1][2] * s, 0.0],
+        [model[2][0] * s, model[2][1] * s, model[2][2] * s, 0.0],
+        [model[3][0], model[3][1], model[3][2], 1.0],
+    ]
+}
+
+/// Packs a scaled model matrix ([`model_scaled`]; lanes x, y, z of each row) and the draw's
+/// colour parameters into the `F2_DRAW` uniform.
 pub fn draw_uniform(m: &Mat4, p: &DrawParams) -> R3dDrawUniform {
-    let mut u = R3dDrawUniform::default();
+    let mut mtx_i = [0i16; 16];
+    let mut mtx_f = [0u16; 16];
     for r in 0..4 {
-        for c in 0..4 {
+        for c in 0..3 {
             let (i, f) = to_fixed(m[r][c]);
-            u.mtx_i[r * 4 + c] = i;
-            u.mtx_f[r * 4 + c] = f;
+            mtx_i[r * 4 + c] = i;
+            mtx_f[r * 4 + c] = f;
         }
     }
     // c = c_in * mul + add in the shader's <<7 units; +0x7F bias rounds 255 back to 255.
     let am = (p.alpha_mul.clamp(0.0, 1.0) * 32767.0) as i16;
-    match p.gouraud {
-        None => {
-            u.cmul = [0x7FFF, 0x7FFF, 0x7FFF, am];
-            u.cadd = [0x7F; 4];
-        }
+    let (cmul, cadd) = match p.gouraud {
+        None => ([0x7FFF, 0x7FFF, 0x7FFF, am], [0x7F; 4]),
         Some(g) => {
             let c = |v: f32| (((v.clamp(0.0, 1.0) * 255.0 + 0.5) as i16) << 7) | 0x7F;
-            u.cmul = [0, 0, 0, am];
-            u.cadd = [c(g[0]), c(g[1]), c(g[2]), 0x7F];
+            ([0, 0, 0, am], [c(g[0]), c(g[1]), c(g[2]), 0x7F])
+        }
+    };
+    R3dDrawUniform { mtx_i, mtx_f, cmul, cadd, fogc: [0; 4], fogm: [0xFF, 0, 0, 0] }
+}
+
+/// The RSP's fold (`F2FoldRow` in rsp_f2mdx.S) of a draw uniform's model rows with the
+/// frame's view x projection: s15.16 x s15.16 partial products accumulated like
+/// VMUDL/VMADM/VMADN/VMADH (the f x f term truncated), as s15.16 values.
+pub fn rsp_fold(u: &R3dDrawUniform, fr: &R3dFrame) -> [[i64; 4]; 4] {
+    let mut out = [[0i64; 4]; 4];
+    for (r, row) in out.iter_mut().enumerate() {
+        for (c, o) in row.iter_mut().enumerate() {
+            let mut acc: i64 = 0;
+            for k in 0..3 {
+                let (ai, af) = (fr.vp_i[k * 4 + c] as i64, fr.vp_f[k * 4 + c] as i64);
+                let (bi, bf) = (u.mtx_i[r * 4 + k] as i64, u.mtx_f[r * 4 + k] as i64);
+                acc += ((af * bf) >> 16) + ai * bf + af * bi + ((ai * bi) << 16);
+            }
+            if r == 3 {
+                acc += ((fr.vp_i[12 + c] as i64) << 16) + fr.vp_f[12 + c] as i64;
+            }
+            *o = acc.clamp(i32::MIN as i64, i32::MAX as i64);
         }
     }
-    u.fogm = [0xFF, 0, 0, 0];
-    u
+    out
 }
 
 /// Sets a draw uniform's fog fields (per vertex, per object from the origin's depth `w0`
@@ -402,11 +562,27 @@ pub fn frame_uniform(v: &ViewParams) -> R3dFrame {
             Some(f) => [0, 0, -((32767.0 / (f.end - f.start).max(1.0)).max(1.0) as i16), (f.end + DIST) as i16],
             None => [0, 0, 0, 0],
         },
+        vp_i: [0; 16],
+        vp_f: [0; 16],
         clip_text: 0,
         clip_size: 0,
         guard: v.guard,
         fog_rgba: v.fog.map_or(0, |f| f.rgba | 0xFF),
     }
+}
+
+/// [`frame_uniform`] with the view x projection for normal (`no_clip` false) or sky draws.
+pub fn frame_uniform_vp(v: &ViewParams, no_clip: bool) -> R3dFrame {
+    let mut fr = frame_uniform(v);
+    let vp = view_proj(v, no_clip);
+    for r in 0..4 {
+        for c in 0..4 {
+            let (i, f) = to_fixed(vp[r][c]);
+            fr.vp_i[r * 4 + c] = i;
+            fr.vp_f[r * 4 + c] = f;
+        }
+    }
+    fr
 }
 
 impl Default for R3d {
@@ -429,16 +605,22 @@ impl R3d {
             uni_frame: 0,
             meshes: Vec::new(),
             lists: Default::default(),
-            bones: Vec::with_capacity(256),
             vis: Vec::with_capacity(2048),
             handle_scratch: Vec::with_capacity(2048),
             tex_scratch: Vec::with_capacity(2048),
             draw_scratch: Vec::with_capacity(256),
             view: ViewParams::pc_default(320.0, 240.0),
             frame: R3dFrame::default(),
+            frame_noclip: R3dFrame::default(),
+            vp: IDENTITY,
             cull: CullPlanes::default(),
             queued_tris: 0,
             sent_tris: 0,
+            view_gen: 0,
+            slots: Vec::new(),
+            prev_vis: Vec::with_capacity(2048),
+            frame_no: 1,
+            cache_hits: 0,
         }
     }
 
@@ -489,6 +671,8 @@ impl R3d {
             pos_scale: m.entry.pos_scale(),
             skinned,
             tris: m.entry.n_tris,
+            center: [0.0; 3],
+            radius: -1.0,
         };
         let add = |cmds: &[u8], group: usize, tris: u16, center: [f32; 3], radius: f32| -> Result<Part, LoadError> {
             let desc = ffi::R3dGroupDesc {
@@ -515,6 +699,7 @@ impl R3d {
                 }
             }
         }
+        (res.center, res.radius) = enclosing_sphere(&res.parts);
         Ok(res)
     }
 
@@ -612,8 +797,18 @@ impl R3d {
 
     /// Starts a frame (call after `rt::begin_frame`).
     pub fn begin_frame(&mut self, view: &ViewParams) {
+        if *view != self.view {
+            self.view_gen = self.view_gen.wrapping_add(1);
+        }
         self.view = *view;
-        self.frame = frame_uniform(view);
+        self.frame_no = self.frame_no.wrapping_add(1);
+        // `vis` holds the previous frame's parts (flush keeps them).
+        core::mem::swap(&mut self.vis, &mut self.prev_vis);
+        self.vis.clear();
+        self.cache_hits = 0;
+        self.frame = frame_uniform_vp(view, false);
+        self.frame_noclip = frame_uniform_vp(view, true);
+        self.vp = view_proj(view, false);
         self.uni_frame = (self.uni_frame + 1) % 3;
         self.uni[self.uni_frame].clear();
         self.queued_tris = 0;
@@ -629,31 +824,66 @@ impl R3d {
     /// spheres, pushing the visible part indices to `vis`. Conservative: a culled batch is
     /// one whose every face MDX would reject (all vertices off-screen past one edge, or
     /// beyond near/far), so the image is unchanged.
-    fn cull_parts(&mut self, mesh: usize, m: &Mat4, no_clip: bool) -> u32 {
+    fn cull_parts(&mut self, mesh: usize, mp: &Mat4, no_clip: bool) -> u32 {
         let res = &self.meshes[mesh];
         let first = self.vis.len();
-        // Scale bound of the folded matrix (X, Y, W columns: view space, rotation x scale).
-        let rn = |r: usize| m[r][0] * m[r][0] + m[r][1] * m[r][1] + m[r][3] * m[r][3];
+        let vp = &self.vp;
+        // Scale bound: the X, Y, W columns of the view x projection are the (orthonormal)
+        // view rotation for the direction rows, so the folded rows are as long as the
+        // scaled model rows.
+        let rn = |r: usize| mp[r][0] * mp[r][0] + mp[r][1] * mp[r][1] + mp[r][2] * mp[r][2];
         let s = fast_sqrt(rn(0).max(rn(1)).max(rn(2))) * 1.0001;
         let (near, far) = (self.view.near, self.view.far);
         let CullPlanes { a, n } = self.cull;
+        // X, Y, W columns of the folded matrix (model x view x projection): computed once
+        // for meshes with several spheres, else each centre goes through both matrices.
+        let tests = (res.radius >= 0.0 && res.parts.len() > 1) as usize + res.parts.iter().filter(|p| p.radius >= 0.0).count();
+        let fold = |r: usize, c: usize| mp[r][0] * vp[0][c] + mp[r][1] * vp[1][c] + mp[r][2] * vp[2][c] + if r == 3 { vp[3][c] } else { 0.0 };
+        let f: Option<[[f32; 3]; 4]> = (tests > 2).then(|| core::array::from_fn(|r| [fold(r, 0), fold(r, 1), fold(r, 3)]));
+        let clip = |c: [f32; 3]| -> [f32; 3] {
+            match &f {
+                Some(f) => core::array::from_fn(|k| c[0] * f[0][k] + c[1] * f[1][k] + c[2] * f[2][k] + f[3][k]),
+                None => {
+                    let p: [f32; 3] = core::array::from_fn(|k| c[0] * mp[0][k] + c[1] * mp[1][k] + c[2] * mp[2][k] + mp[3][k]);
+                    let col = |k: usize| p[0] * vp[0][k] + p[1] * vp[1][k] + p[2] * vp[2][k] + vp[3][k];
+                    [col(0), col(1), col(3)]
+                }
+            }
+        };
+        // Sphere test: 1 = wholly outside a plane (culled), 2 = wholly inside all, 0 = both.
+        let test = |c: [f32; 3], radius: f32| -> u32 {
+            let [x, y, w] = clip(c);
+            let r = radius * s;
+            let d = [x - a[0] * w, -x - a[1] * w, y - a[2] * w, -y - a[3] * w];
+            if w + r <= near
+                || (!no_clip && w - r >= far)
+                || d[0] >= r * n[0]
+                || d[1] >= r * n[1]
+                || d[2] >= r * n[2]
+                || d[3] >= r * n[3]
+            {
+                return 1;
+            }
+            let inside = w - r > near
+                && (no_clip || w + r < far)
+                && d[0] <= -r * n[0]
+                && d[1] <= -r * n[1]
+                && d[2] <= -r * n[2]
+                && d[3] <= -r * n[3];
+            if inside {
+                2
+            } else {
+                0
+            }
+        };
+        let whole = if res.radius >= 0.0 && res.parts.len() > 1 { test(res.center, res.radius) } else { 0 };
+        if whole == 1 {
+            return 0;
+        }
         let mut sent = 0;
         for (i, p) in res.parts.iter().enumerate() {
-            if p.radius >= 0.0 {
-                let c = p.center;
-                let x = c[0] * m[0][0] + c[1] * m[1][0] + c[2] * m[2][0] + m[3][0];
-                let y = c[0] * m[0][1] + c[1] * m[1][1] + c[2] * m[2][1] + m[3][1];
-                let w = c[0] * m[0][3] + c[1] * m[1][3] + c[2] * m[2][3] + m[3][3];
-                let r = p.radius * s;
-                if w + r <= near
-                    || (!no_clip && w - r >= far)
-                    || x - a[0] * w >= r * n[0]
-                    || -x - a[1] * w >= r * n[1]
-                    || y - a[2] * w >= r * n[2]
-                    || -y - a[3] * w >= r * n[3]
-                {
-                    continue;
-                }
+            if whole == 0 && p.radius >= 0.0 && test(p.center, p.radius) == 1 {
+                continue;
             }
             self.vis.push(i as u16);
             sent += p.tris as u32;
@@ -662,25 +892,129 @@ impl R3d {
         (self.vis.len() - first) as u32
     }
 
+    /// `W` (view depth - DIST) of a model matrix's origin.
+    fn origin_w(&self, model: &Mat4) -> f32 {
+        let vp = &self.vp;
+        model[3][0] * vp[0][3] + model[3][1] * vp[1][3] + model[3][2] * vp[2][3] + vp[3][3]
+    }
+
     pub fn view(&self) -> &ViewParams {
         &self.view
     }
 
     /// Queues a rigid mesh draw with its model → world matrix.
     pub fn draw(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams) {
+        self.draw_slot(list, mesh, model, p, u32::MAX, 0);
+    }
+
+    /// [`draw`](Self::draw) as draw number `slot` of the frame with matrix stamp `stamp`
+    /// (`MeshDraw::stamp`): when the previous frame's draw `slot` had the same mesh, stamp,
+    /// parameters and view, its uniform and visible parts are reused (no conversion, no
+    /// culling, no copy). `slot` `u32::MAX` or `stamp` 0: no reuse.
+    pub fn draw_slot(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams, slot: u32, stamp: u32) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
-        let m = clip_matrix(model, &self.view, res.pos_scale, p.no_clip);
         self.queued_tris += res.tris;
-        let vis_first = self.vis.len() as u32;
-        let vis_count = self.cull_parts(mesh.0 as usize, &m, p.no_clip);
-        if vis_count == 0 {
-            return;
+        let cached = slot != u32::MAX && stamp != 0;
+        let pk = if cached { params_key(p) } else { [0; 6] };
+        if cached {
+            let i = slot as usize;
+            if self.slots.len() <= i {
+                self.slots.resize_with(i + 1, || None);
+            }
+            if let Some(e) = &mut self.slots[i] {
+                if e.frame == self.frame_no.wrapping_sub(1) && e.stamp == stamp && e.mesh == mesh.0 && e.view_gen == self.view_gen && e.params == pk {
+                    self.cache_hits += 1;
+                    self.sent_tris += e.sent;
+                    e.frame = self.frame_no;
+                    if e.vis_count == 0 {
+                        return;
+                    }
+                    let vis_first = self.vis.len() as u32;
+                    self.vis.extend_from_slice(&self.prev_vis[e.vis_first as usize..(e.vis_first + e.vis_count) as usize]);
+                    e.vis_first = vis_first;
+                    let uptr: *const R3dDrawUniform = &e.u[e.cur];
+                    let n = e.vis_count;
+                    self.push_rec_ptr(list, mesh, p, uptr, vis_first, n);
+                    return;
+                }
+            }
         }
-        let mut u = draw_uniform(&m, p);
-        draw_fog(&mut u, &self.view, p, m[3][3]);
+        let t0 = pt();
+        let mp = model_scaled(model, res.pos_scale);
+        let vis_first = self.vis.len() as u32;
+        let sent0 = self.sent_tris;
+        let vis_count = self.cull_parts(mesh.0 as usize, &mp, p.no_clip);
+        let t0 = pa(1, t0);
+        let mut u = R3dDrawUniform::default();
+        if vis_count != 0 {
+            u = draw_uniform(&mp, p);
+            let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(model) } else { 0.0 };
+            draw_fog(&mut u, &self.view, p, w0);
+        }
+        let t0 = pa(6, t0);
+        if cached {
+            let (frame, view_gen, sent) = (self.frame_no, self.view_gen, self.sent_tris - sent0);
+            let e = self.slots[slot as usize].get_or_insert_with(|| {
+                alloc::boxed::Box::new(SlotEntry {
+                    frame: 0,
+                    view_gen: 0,
+                    mesh: 0,
+                    stamp: 0,
+                    params: [0; 6],
+                    sent: 0,
+                    vis_first: 0,
+                    vis_count: 0,
+                    cur: 0,
+                    u: [R3dDrawUniform::default(); 3],
+                })
+            });
+            e.frame = frame;
+            e.view_gen = view_gen;
+            e.mesh = mesh.0;
+            e.stamp = stamp;
+            e.params = pk;
+            e.sent = sent;
+            e.vis_first = vis_first;
+            e.vis_count = vis_count;
+            if vis_count != 0 {
+                e.cur = (e.cur + 1) % 3;
+                e.u[e.cur] = u;
+                let uptr: *const R3dDrawUniform = &e.u[e.cur];
+                self.push_rec_ptr(list, mesh, p, uptr, vis_first, vis_count);
+            }
+        } else if vis_count != 0 {
+            self.push_rec(list, mesh, p, u, vis_first, vis_count);
+        }
+        pa(7, t0);
+    }
+
+    fn push_rec_ptr(&mut self, list: List, mesh: MeshId, p: &DrawParams, uptr: *const R3dDrawUniform, vis_first: u32, vis_count: u32) {
+        let rec = DrawRec {
+            u: u32::MAX,
+            uptr,
+            mesh: mesh.0,
+            tex_override: p.override_tex.map_or(0, |t| t.0),
+            n_bones: 0,
+            no_clip: p.no_clip,
+            vis_first,
+            vis_count,
+        };
+        self.lists[list as usize].push(rec);
+    }
+
+    fn push_rec(&mut self, list: List, mesh: MeshId, p: &DrawParams, u: R3dDrawUniform, vis_first: u32, vis_count: u32) {
         let arena = &mut self.uni[self.uni_frame];
         arena.push(u);
-        let rec = DrawRec { u: arena.len() as u32 - 1, mesh: mesh.0, tex_override: p.override_tex.map_or(0, |t| t.0), bones: u32::MAX, vis_first, vis_count };
+        let rec = DrawRec {
+            u: arena.len() as u32 - 1,
+            uptr: core::ptr::null(),
+            mesh: mesh.0,
+            tex_override: p.override_tex.map_or(0, |t| t.0),
+            n_bones: 0,
+            no_clip: p.no_clip,
+            vis_first,
+            vis_count,
+        };
         self.lists[list as usize].push(rec);
     }
 
@@ -688,27 +1022,34 @@ impl R3d {
     /// index, as `xform_actor` returns them).
     pub fn draw_skinned(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
-        let first = self.bones.len() as u32;
-        // Per-object fog depth: `W` of the root bone's origin (only needed with fog).
-        let w0 = match (self.view.fog, bones.first()) {
-            (Some(_), Some(b0)) if p.object_fog => clip_matrix(b0, &self.view, 1.0, p.no_clip)[3][3],
-            _ => 0.0,
-        };
-        for b in bones {
-            let m = clip_matrix(b, &self.view, res.pos_scale, p.no_clip);
-            let mut u = draw_uniform(&m, p);
-            draw_fog(&mut u, &self.view, p, w0);
-            self.bones.push(u);
+        if bones.is_empty() {
+            return;
         }
+        // Per-object fog depth: `W` of the root bone's origin (only needed with fog).
+        let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(&bones[0]) } else { 0.0 };
+        let pos_scale = res.pos_scale;
+        let first = self.uni[self.uni_frame].len() as u32;
+        for b in bones {
+            let mut u = draw_uniform(&model_scaled(b, pos_scale), p);
+            draw_fog(&mut u, &self.view, p, w0);
+            self.uni[self.uni_frame].push(u);
+        }
+        let res = &self.meshes[mesh.0 as usize];
         self.queued_tris += res.tris;
         self.sent_tris += res.tris;
         let vis_first = self.vis.len() as u32;
         let n = res.parts.len();
         self.vis.extend(0..n as u16);
-        let arena = &mut self.uni[self.uni_frame];
-        arena.push(self.bones.get(first as usize).copied().unwrap_or_default());
-        let rec =
-            DrawRec { u: arena.len() as u32 - 1, mesh: mesh.0, tex_override: p.override_tex.map_or(0, |t| t.0), bones: first, vis_first, vis_count: n as u32 };
+        let rec = DrawRec {
+            u: first,
+            uptr: core::ptr::null(),
+            mesh: mesh.0,
+            tex_override: p.override_tex.map_or(0, |t| t.0),
+            n_bones: bones.len().min(u16::MAX as usize) as u16,
+            no_clip: p.no_clip,
+            vis_first,
+            vis_count: n as u32,
+        };
         self.lists[list as usize].push(rec);
     }
 
@@ -724,8 +1065,7 @@ impl R3d {
             self.flush_list(list);
             after(list);
         }
-        self.bones.clear();
-        self.vis.clear();
+        // `vis` stays until the next `begin_frame` (reused draws copy from it).
     }
 
     fn flush_list(&mut self, list: List) {
@@ -757,12 +1097,16 @@ impl R3d {
         for r in recs {
             let res = &self.meshes[r.mesh as usize];
             let n = r.vis_count as usize;
+            let u: *const R3dDrawUniform = if r.uptr.is_null() { &self.uni[self.uni_frame][r.u as usize] } else { r.uptr };
+            let skinned = r.n_bones > 0 && res.skinned;
             self.draw_scratch.push(R3dDraw {
-                u: &self.uni[self.uni_frame][r.u as usize],
+                u,
                 groups: self.handle_scratch[off..].as_ptr(),
                 texs: self.tex_scratch[off..].as_ptr(),
                 n_groups: n as u32,
-                bones: if r.bones == u32::MAX || !res.skinned { core::ptr::null() } else { self.bones[r.bones as usize..].as_ptr() },
+                bones: if skinned { u } else { core::ptr::null() },
+                n_bones: if skinned { r.n_bones as u32 } else { 0 },
+                frame: if r.no_clip { &self.frame_noclip } else { core::ptr::null() },
             });
             off += n;
         }
@@ -776,13 +1120,22 @@ impl R3d {
         self.lists[list as usize].clear();
     }
 
+    /// Drops the lists queued this frame (nothing to draw), keeping the reusable draws.
+    pub fn discard_frame(&mut self) {
+        for l in &mut self.lists {
+            l.clear();
+        }
+    }
+
     /// Drops everything queued this frame without drawing it.
     pub fn discard(&mut self) {
         for l in &mut self.lists {
             l.clear();
         }
-        self.bones.clear();
         self.vis.clear();
+        // Mesh ids are reused after a reset: forget the reusable draws.
+        self.slots.clear();
+        self.prev_vis.clear();
     }
 
     /// C-side counters of the last flushed frame.
@@ -800,7 +1153,8 @@ impl R3d {
 /// Bit-level model of the RSP vertex shader (`rsp_f2mdx.S`) for host tests: returns the
 /// stored screen position (s13.2 x, y), z, clip byte and trivial-reject byte of a vertex.
 pub fn emulate_vertex(u: &R3dDrawUniform, fr: &R3dFrame, guard: i32, pos: [i16; 3]) -> ([i32; 2], i32, u8, u8) {
-    let m = |r: usize, c: usize| ((u.mtx_i[r * 4 + c] as i64) << 16) | u.mtx_f[r * 4 + c] as i64;
+    let mm = rsp_fold(u, fr);
+    let m = |r: usize, c: usize| mm[r][c];
     let sat = |v: i64| v.clamp(i32::MIN as i64, i32::MAX as i64);
     // Clip-space s15.16 (the RSP clamps the accumulator high half to s16).
     let cs: [i64; 4] = core::array::from_fn(|c| sat(pos[0] as i64 * m(0, c) + pos[1] as i64 * m(1, c) + pos[2] as i64 * m(2, c) + m(3, c)));
@@ -872,13 +1226,12 @@ mod tests {
     fn shader_model_matches_mdx_projection() {
         let mut view = ViewParams::pc_default(320.0, 240.0);
         view.view = look_at([30.0, 400.0, -500.0], [0.0, 0.0, 100.0]);
-        let fr = frame_uniform(&view);
+        let fr = frame_uniform_vp(&view, false);
         // A mesh at some world position with a rotation, stored with pos_shift 3.
         let (s, c) = (0.3f32.sin(), 0.3f32.cos());
         let model: Mat4 = [[c, 0.0, -s, 0.0], [0.0, 1.0, 0.0, 0.0], [s, 0.0, c, 0.0], [120.0, -5.0, 60.0, 1.0]];
         let shift = 3;
-        let m = clip_matrix(&model, &view, 1.0 / (1 << shift) as f32, false);
-        let u = draw_uniform(&m, &DrawParams::default());
+        let u = draw_uniform(&model_scaled(&model, 1.0 / (1 << shift) as f32), &DrawParams::default());
         let mut checked = 0;
         let mut seed = 12345u32;
         for _ in 0..2000 {
@@ -913,7 +1266,9 @@ mod tests {
                     let (sx, sy) = (scr[0] as f32 / 4.0, scr[1] as f32 / 4.0);
                     assert!((sx - e[0]).abs() <= 0.5 && (sy - e[1]).abs() <= 0.5, "{v:?}: rsp ({sx}, {sy}) mdx {e:?}");
                     let ez = v[2] * view.z_scale();
-                    assert!((z as f32 - ez).abs() <= 2.0, "z {z} vs {ez}");
+                    // The RSP folds two s15.16 matrices (model, view x projection): ~0.1 unit of
+                    // depth error, up to 3 of the 32767 z steps (0.01 % of the depth range).
+                    assert!((z as f32 - ez).abs() <= 3.0, "z {z} vs {ez}");
                     let inside_x = e[0] > 0.0 && e[0] < 319.0;
                     let inside_y = e[1] > 0.0 && e[1] < 239.0;
                     if (e[0] - 0.0).abs() > 0.5 && (e[0] - 319.0).abs() > 0.5 {
@@ -927,6 +1282,70 @@ mod tests {
             }
         }
         assert!(checked > 300, "only {checked} vertices checked");
+    }
+
+    /// The integer conversion equals the FPU one (multiply, truncate, saturate).
+    #[test]
+    fn to_fixed_matches_fpu() {
+        let fpu = |v: f32| -> (i16, u16) {
+            let s = v * 65536.0;
+            let x = if s.is_nan() {
+                0
+            } else if s >= 2_147_483_520.0 {
+                i32::MAX
+            } else if s > -2_147_483_520.0 {
+                s as i32
+            } else {
+                i32::MIN
+            };
+            ((x >> 16) as i16, x as u16)
+        };
+        let mut seed = 0x1234_5678u32;
+        let mut vals = vec![0.0f32, -0.0, 1.0, -1.0, 0.5, 1e-6, -1e-6, 1.0 / 65536.0, -1.0 / 65536.0, 32767.99, -32767.99, 32768.0, -32768.0, 1e9, -1e9, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e-40];
+        for _ in 0..200_000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let mag = [1.0f32, 0.01, 30.0, 3000.0, 32000.0][(seed >> 29) as usize % 5];
+            vals.push(((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 2.0 * mag);
+        }
+        for v in vals {
+            assert_eq!(to_fixed(v), fpu(v), "{v:e}");
+        }
+    }
+
+    /// A draw reused from the previous frame queues exactly what a fresh one would.
+    #[test]
+    fn reused_draws_match_fresh_ones() {
+        let mut view = ViewParams::pc_default(320.0, 240.0);
+        view.view = look_at([30.0, 400.0, -500.0], [0.0, 0.0, 100.0]);
+        let model: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [10.0, 0.0, 20.0, 1.0]];
+        let bytes = super::cull_tests::terrain();
+        let snapshot = |r: &R3d| -> (Vec<u16>, Vec<R3dDrawUniform>, u32) {
+            let us = r.lists[List::Normal as usize]
+                .iter()
+                .map(|d| if d.uptr.is_null() { r.uni[r.uni_frame][d.u as usize] } else { unsafe { *d.uptr } })
+                .collect();
+            (r.vis.clone(), us, r.sent_tris)
+        };
+        let mut fresh = R3d::new();
+        let ids = fresh.load_file(bytes.clone()).unwrap();
+        fresh.begin_frame(&view);
+        fresh.draw(List::Normal, ids[0], &model, &DrawParams::default());
+        let want = snapshot(&fresh);
+        let mut r = R3d::new();
+        let ids = r.load_file(bytes).unwrap();
+        for frame in 0..3 {
+            r.begin_frame(&view);
+            r.draw_slot(List::Normal, ids[0], &model, &DrawParams::default(), 0, 7);
+            assert_eq!(snapshot(&r), want, "frame {frame}");
+            assert!(!r.lists[List::Normal as usize][0].uptr.is_null());
+            assert_eq!(r.cache_hits, (frame > 0) as u32);
+            r.flush(|_| {});
+        }
+        // A changed view invalidates the reuse.
+        view.far = 900.0;
+        r.begin_frame(&view);
+        r.draw_slot(List::Normal, ids[0], &model, &DrawParams::default(), 0, 7);
+        assert_eq!(r.cache_hits, 0);
     }
 
     #[test]
@@ -964,7 +1383,7 @@ mod cull_tests {
     use f2_n64fmt::Cmd;
 
     /// A bumpy 24x24 grid (1152 faces) spanning 1200 x 1200 units.
-    fn terrain() -> Vec<u8> {
+    pub(super) fn terrain() -> Vec<u8> {
         let n = 24;
         let mut pos = Vec::new();
         for y in 0..=n {
@@ -1014,8 +1433,8 @@ mod cull_tests {
             let model = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [k as f32 * 20.0, 0.0, 0.0, 1.0]];
             r.draw(List::Normal, ids[0], &model, &DrawParams::default());
             let vis: Vec<u16> = r.vis.clone();
-            let u = draw_uniform(&clip_matrix(&model, &view, mv.entry.pos_scale(), false), &DrawParams::default());
-            let fr = frame_uniform(&view);
+            let u = draw_uniform(&model_scaled(&model, mv.entry.pos_scale()), &DrawParams::default());
+            let fr = frame_uniform_vp(&view, false);
             for (i, b) in batches.iter().enumerate() {
                 if vis.contains(&(i as u16)) {
                     kept += 1;

@@ -69,6 +69,10 @@ lib="$out/cargo/mips-nintendo64-none/$pdir/libfrogger_n64.a"
 
 echo "== [2/5] n32 -> o64 relabel"
 python3 -I "$here/n32-to-o64.py" "$lib" "$out/libfrogger_n64_o64.a"
+# compiler_builtins defines memcpy & co. as weak symbols; linked first, they would also
+# replace newlib's optimised MIPS versions for the C side. Localise them so every caller
+# (Rust and libdragon) links newlib's (phase 3P: ~2x faster block copies on the VR4300).
+"$N64_INST/bin/mips64-elf-objcopy" -L memcpy -L memmove -L memset -L memcmp -L bcmp "$out/libfrogger_n64_o64.a"
 "$N64_INST/bin/mips64-elf-ranlib" "$out/libfrogger_n64_o64.a"
 
 echo "== [3/5] DFS filesystem"

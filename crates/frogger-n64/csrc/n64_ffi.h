@@ -97,14 +97,16 @@ typedef struct {
     uint16_t fogm[4];       /* VCC masks: keep colour alpha (else constant), per-vertex fog */
 } __attribute__((aligned(8))) n64_r3d_draw_uniform_t;
 
-/* F2_FRAME uniform (56 bytes) + host fields. clip_text/clip_size are filled by C. */
-typedef struct {
+/* F2_FRAME uniform (120 bytes) + host fields. clip_text/clip_size are filled by C. */
+typedef struct n64_r3d_frame_s {
     int16_t vo[4];          /* x, y screen offset (s13.2), Zoff, 0 */
     int16_t vs[4];          /* S, S (-8 * FOV * scale), K integer, 0 */
     int16_t vlo[4];         /* x, y screen-reject low bound (s13.2), K fraction, 0 */
     int16_t vhi[4];         /* x, y screen-reject high bound (s13.2), 0, 0 */
     int16_t wone[4];        /* 1, 0, 1, 0 */
     int16_t fogf[4];        /* 0, 0, -32767 / (end - start), end - 10 */
+    int16_t vp_i[16];       /* view x projection (rows; lanes X, Y, Z, W), s15.16 integer halves */
+    uint16_t vp_f[16];      /* fraction halves */
     uint32_t clip_text, clip_size;
     uint32_t guard;         /* guard band in multiples of FOV*scale pixels (0 = 4) */
     uint32_t fog_rgba;      /* fog colour, 0 = leave */
@@ -116,7 +118,9 @@ typedef struct {
     const uint16_t *groups;               /* group handles */
     const uint16_t *texs;                 /* texture handle per group */
     uint32_t n_groups;
-    const n64_r3d_draw_uniform_t *bones;  /* skinned: uniform per bone, else NULL */
+    const n64_r3d_draw_uniform_t *bones;  /* skinned: uniform per bone (RDRAM, loaded by DMA), else NULL */
+    uint32_t n_bones;
+    const struct n64_r3d_frame_s *frame;  /* frame uniform for this draw (sky), NULL = the frame's */
 } n64_r3d_draw_t;
 
 /* Render state of a frame list. */

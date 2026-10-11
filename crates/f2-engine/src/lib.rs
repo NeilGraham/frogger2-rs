@@ -47,7 +47,7 @@ pub use font::Font;
 pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, Quad2D, Renderer, RgbaImage, OVERLAY_SPACE};
 #[cfg(feature = "gpu")]
 pub use renderer::{GpuContext, WindowSurface};
-pub use scene::{Camera, Fog, Frame, MeshDraw, MeshSink, RenderOptions, TlVertex, Tri, View, XluSort, MESH_SKIN};
+pub use scene::{Camera, Fog, Frame, MeshBackend, MeshDraw, MeshSink, RenderOptions, TlVertex, Tri, View, XluSort, MESH_SKIN};
 pub use soft::SoftTarget;
 pub use textures::{TexHandle, TextureRegistry};
 

@@ -109,6 +109,7 @@ struct Window {
     /// r3d: queueing the recorded draws / flushing the lists (CPU).
     r3d_queue: u32,
     r3d_flush: u32,
+    r3d_reused: u32,
 }
 
 /// The renderer side of the loaded level, outside [`App`] so the data source can free it
@@ -435,11 +436,115 @@ impl App {
             assets.texture_banks
         );
         self.heap_log("loaded");
+        #[cfg(feature = "profile")]
+        self.bench_draw();
         ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
         // The load took real time: do not try to catch it up.
         self.acc = 0;
         self.last = ticks();
         self.loaded = true;
+    }
+
+    /// TEMP (phase 3P): micro-benchmarks of the draw-side building blocks on real models.
+    #[cfg(feature = "profile")]
+    fn bench_draw(&mut self) {
+        use f2_engine::math::*;
+        let g = lv();
+        let Some(scene) = g.as_ref().and_then(|l| l.scene.as_ref()) else { return };
+        let cyc = |t: u32, n: u32| t * 2 / n.max(1);
+        // Pure arithmetic on hot data.
+        let q1 = [0.1f32, 0.2, 0.3, 0.927];
+        let q2 = [0.12f32, 0.18, 0.31, 0.925];
+        let t0 = ticks();
+        let mut acc = 0.0f32;
+        for i in 0..1000 {
+            acc += quat_slerp(&q1, &q2, i as f32 * 0.001)[0];
+        }
+        let t1 = ticks();
+        for i in 0..1000 {
+            acc += quaternion_to_matrix(&[q1[0] + i as f32 * 1e-6, q1[1], q1[2], q1[3]])[1][1];
+        }
+        let t2 = ticks();
+        let mut m = IDENTITY;
+        for i in 0..1000 {
+            m[3][0] = i as f32;
+            acc += mtx_cat(&m, &m)[3][0];
+        }
+        let t3 = ticks();
+        log!("bench: quat_slerp {} cyc, quaternion_to_matrix {} cyc, mtx_cat {} cyc [{}]", cyc(t1 - t0, 1000), cyc(t2 - t1, 1000), cyc(t3 - t2, 1000), acc as i32);
+        let t0 = ticks();
+        for i in 0..1000 {
+            acc += sin_fast(i as f32 * 0.001);
+        }
+        let t1 = ticks();
+        let mut iacc = 0i64;
+        for i in 0..1000 {
+            iacc += core::hint::black_box(i as f64 * 0.37) as i64;
+        }
+        let t2 = ticks();
+        for i in 0..1000 {
+            iacc += core::hint::black_box(i as f64 * 0.37) as i32 as i64;
+        }
+        let t3 = ticks();
+        for i in 0..1000 {
+            acc += core::hint::black_box(i as f32 * 0.37) * 1.0001;
+        }
+        let t4 = ticks();
+        let t5 = ticks();
+        for i in 0..1000 {
+            acc += acos_fast(core::hint::black_box(0.999 - i as f32 * 1e-4));
+        }
+        let t6 = ticks();
+        for i in 0..1000 {
+            acc += 1.0 / sin_fast(core::hint::black_box(0.03 + i as f32 * 1e-5));
+        }
+        let t7 = ticks();
+        for i in 0..1000 {
+            acc += core::hint::black_box(1.0f32 + i as f32 * 1e-5) / core::hint::black_box(3.0f32);
+        }
+        let t8 = ticks();
+        log!("bench: acos_fast {} cyc, 1/sin_fast {} cyc, div.s {} cyc", cyc(t6 - t5, 1000), cyc(t7 - t6, 1000), cyc(t8 - t7, 1000));
+        let t9 = ticks();
+        for _ in 0..1000 {
+            unsafe { core::arch::asm!("sync") };
+        }
+        let t10 = ticks();
+        let mut qa = [0.0f32; 4];
+        for i in 0..100 {
+            let q = quat_slerp(&q1, &q2, core::hint::black_box(0.5 + i as f32 * 1e-4));
+            qa[0] += q[0];
+        }
+        let t11 = ticks();
+        for i in 0..100 {
+            let q = quat_slerp(&q1, &q1, core::hint::black_box(0.5 + i as f32 * 1e-4));
+            qa[1] += q[0];
+        }
+        let t12 = ticks();
+        log!("bench: sync {} cyc, slerp(t~0.5) {} cyc, slerp(q,q) {} cyc [{}]", cyc(t10 - t9, 1000), cyc(t11 - t10, 100), cyc(t12 - t11, 100), (qa[0] + qa[1]) as i32);
+        log!("bench: sin_fast {} cyc, f64->i64 {} cyc, f64->i32 {} cyc, f32 mul {} cyc [{} {}]", cyc(t1 - t0, 1000), cyc(t2 - t1, 1000), cyc(t3 - t2, 1000), cyc(t4 - t3, 1000), acc as i32, iacc as i32);
+        // xform_actor on the level's animated models.
+        let mut done = 0;
+        for b in &scene.banks {
+            for model in &b.models {
+                if model.animations.is_empty() || done >= 6 {
+                    continue;
+                }
+                done += 1;
+                let n = f2_engine::anim::object_count(model) as u32;
+                let mut a = f2_engine::Actor { animated: true, ..Default::default() };
+                let t0 = ticks();
+                for i in 0..20 {
+                    a.anim_time = i as f32 * 0.7;
+                    let _ = f2_engine::xform_actor(model, &mut a);
+                }
+                let t1 = ticks();
+                for _ in 0..20 {
+                    let _ = f2_engine::anim::object_count(model);
+                }
+                let t2 = ticks();
+                log!("bench: xform_actor {:08x}: {} objects, {} cyc/object, object_count {} cyc", model.id, n, cyc(t1 - t0, 20 * n), cyc(t2 - t1, 20));
+            }
+        }
     }
 
     /// The banks' F2NM render meshes into r3d; returns the banks without their render
@@ -757,8 +862,25 @@ impl App {
             ctx.far_clip = render::far_clip(&self.game, scene);
         }
         let t_loop = ticks();
+        // Meshes go straight to r3d while the loop records them: begin its frame with the
+        // view the loop sets first (camera, near 10, far clip).
+        #[cfg(not(feature = "render-cpu"))]
+        {
+            self.r.set_camera(&ctx.cam);
+            self.r.view.near_clip = 10.0;
+            self.r.view.far_clip = ctx.far_clip;
+            l.r3d.begin_queue(&self.r);
+            if let Some(s) = self.r.mesh_sink.as_mut() {
+                // SAFETY: removed below, before anything else touches `l.r3d` / `l.gfx`.
+                s.backend = Some(alloc::boxed::Box::new(unsafe { crate::render_r3d::R3dBackend::new(&mut l.r3d, &l.gfx) }));
+            }
+        }
         if l.scene.is_some() || backdrop.is_some() {
             render::draw_loop(&mut self.r, l.scene.as_mut(), &self.game, &ctx);
+        }
+        #[cfg(not(feature = "render-cpu"))]
+        if let Some(s) = self.r.mesh_sink.as_mut() {
+            s.backend = None;
         }
         self.win.draw_loop += ticks().wrapping_sub(t_loop);
         if l.scene.is_some() {
@@ -830,6 +952,7 @@ impl App {
             w.tex_loads += l.r3d.stats.tex_loads;
             w.r3d_queue += l.r3d.stats.queue_ticks;
             w.r3d_flush += l.r3d.stats.flush_ticks;
+            w.r3d_reused += l.r3d.stats.reused;
         }
         w.max_frame = w.max_frame.max(t2.wrapping_sub(t0));
         let span = t2.wrapping_sub(self.win_start);
@@ -845,7 +968,7 @@ impl App {
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws ({} reused), {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -875,6 +998,7 @@ impl App {
             w.tris / f,
             w.rects / f,
             w.draws / f,
+            w.r3d_reused / f,
             w.rsp_tris / f,
             w.rsp_sent / f,
             w.rsp_groups / f,
@@ -885,6 +1009,11 @@ impl App {
             self.audio.music_track,
             self.audio.music_playing()
         );
+        {
+            let p: [u32; 8] = core::array::from_fn(|i| ticks_to_us(rt::PROBE[i].swap(0, core::sync::atomic::Ordering::Relaxed) / f));
+            let x: [u32; 3] = core::array::from_fn(|i| f2_engine::anim::XFORM_STATS[i].swap(0, core::sync::atomic::Ordering::Relaxed) / f);
+            log!("probe [{}] us/frame: {:?}; xform calls/misses/objects per frame {:?}", self.level_name, p, x);
+        }
         self.heap_log("running");
         #[cfg(feature = "profile")]
         unsafe {

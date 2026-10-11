@@ -118,8 +118,9 @@ pub struct R3dGroupDesc {
     pub skinned: u32,
 }
 
-/// `F2_DRAW` uniform (96 bytes): s15.16 matrix rows (x, y, z, translation) x lanes
-/// (X, Y, Z, W), integer then fraction halves; colour multiplier and addend; fog.
+/// `F2_DRAW` uniform (96 bytes): the model matrix (`r3d::model_scaled`: rows x, y, z,
+/// translation; lanes x, y, z, unused) in s15.16, integer then fraction halves (the RSP folds
+/// it with the frame's view x projection); colour multiplier and addend; fog.
 #[repr(C, align(8))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct R3dDrawUniform {
@@ -133,7 +134,7 @@ pub struct R3dDrawUniform {
     pub fogm: [u16; 4],
 }
 
-/// `F2_FRAME` uniform (first 56 bytes) + host fields.
+/// `F2_FRAME` uniform (first 120 bytes) + host fields.
 #[repr(C, align(8))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct R3dFrame {
@@ -144,6 +145,10 @@ pub struct R3dFrame {
     pub wone: [i16; 4],
     /// `[0, 0, -32767 / (end - start), end - 10]` (fog in W units).
     pub fogf: [i16; 4],
+    /// View x projection (row-vector, lanes X, Y, Z, W) in s15.16: the RSP folds each
+    /// draw's model matrix with it.
+    pub vp_i: [i16; 16],
+    pub vp_f: [u16; 16],
     pub clip_text: u32,
     pub clip_size: u32,
     pub guard: u32,
@@ -159,6 +164,10 @@ pub struct R3dDraw {
     pub texs: *const u16,
     pub n_groups: u32,
     pub bones: *const R3dDrawUniform,
+    /// Number of bone uniforms at `bones` (loaded by RSP DMA from the frame's arena).
+    pub n_bones: u32,
+    /// Frame uniform to draw with (`noClip`: the sky's projection), null = the frame's.
+    pub frame: *const R3dFrame,
 }
 
 #[repr(C)]
