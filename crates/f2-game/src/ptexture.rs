@@ -68,7 +68,10 @@ impl ProcTexture {
 
     /// Port of `PTSurfaceBlit` (PC/pcmisc.cpp:66), hardware path.
     fn blit(&mut self) {
-        self.surface = Some(self.buf1.iter().map(|&b| self.palette[b as usize]).collect());
+        // Phase 3S: refill the previous surface in place (same contents, no allocation).
+        let surf = self.surface.get_or_insert_with(Vec::new);
+        surf.clear();
+        surf.extend(self.buf1.iter().map(|&b| self.palette[b as usize]));
     }
 
     fn swap(&mut self) {
@@ -119,10 +122,14 @@ fn smooth_up(pt: &mut ProcTexture) {
 
 /// The water ripple filter: `res = sum8 >> 2; res -= buf2[p] + (buf2[p] >> damp); buf2[p] = max(res,0)`.
 fn water(pt: &mut ProcTexture, damp: u32) {
+    // Phase 3S: fixed-size views so the indexing below needs no bounds checks (every index
+    // is within 0..=1023); the buffers are 1024 bytes as before (shorter ones panic, as the
+    // indexing did).
+    let b: &[u8; 1024] = pt.buf1[..1024].try_into().expect("1024-byte buffer");
+    let b2: &mut [u8; 1024] = (&mut pt.buf2[..1024]).try_into().expect("1024-byte buffer");
     for i in (1..=30).rev() {
         for j in (1..=30).rev() {
             let p = ((i << 5) + j) as usize;
-            let b = &pt.buf1;
             let sum = b[p + 32] as i32
                 + b[p - 32] as i32
                 + b[p + 1] as i32
@@ -132,8 +139,8 @@ fn water(pt: &mut ProcTexture, damp: u32) {
                 + b[p - 33] as i32
                 + b[p - 31] as i32;
             let mut res = (sum >> 2) as i16;
-            res -= pt.buf2[p] as i16 + (pt.buf2[p] >> damp) as i16;
-            pt.buf2[p] = res.max(0) as u8;
+            res -= b2[p] as i16 + (b2[p] >> damp) as i16;
+            b2[p] = res.max(0) as u8;
         }
     }
 }
