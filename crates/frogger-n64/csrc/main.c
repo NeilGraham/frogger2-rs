@@ -160,6 +160,56 @@ void n64_audio_poll_impl(void) {
     if (audio_can_write()) mixer_try_play();
 }
 
+/* ---- FMV (libdragon fmv_play: H.264 + Opus wav64 next to it) ---- */
+#define FMV_CH 0 /* the music channel pair (the game stops its music around videos) */
+
+static void fmv_osd(void *ctx, int frame_idx, float time_sec, fmv_control_t *ctrl) {
+    /* Skippable with A / B / Start like the PC's key press. */
+    joypad_poll();
+    joypad_buttons_t b = joypad_get_buttons_pressed(JOYPAD_PORT_1);
+    if (frame_idx > 2 && (b.a || b.b || b.start)) ctrl->stop(ctrl);
+}
+
+/* Plays a video over the game's 320x240 16-bit display (no display re-init: the game's
+ * framebuffers stay); returns 0 if the file is missing. */
+uint32_t n64_fmv_play_impl(const char *path) {
+    if (!file_exists(path)) return 0;
+    rspq_wait();
+    if (music) {
+        mixer_ch_stop(MUSIC_CH);
+        wav64_close(music);
+        music = NULL;
+    }
+    fmv_parms_t p = {
+        .disable_display_init = true,
+        .disable_subtitles = true,
+        .audio_mixer_channel = FMV_CH,
+        .decode_ahead_pics = 4,
+        .osd_callback = fmv_osd,
+    };
+    fmv_play(path, &p);
+    display_set_fps_limit(0);
+    mixer_ch_set_limits(FMV_CH, 16, 128000, 0);
+    mixer_ch_set_limits(FMV_CH + 1, 16, 128000, 0);
+    cur_kind = -1;
+    cur_tex_loaded = 0;
+    cur_tlut_mode = -1;
+    return 1;
+}
+
+/* ---- saves: cartridge SRAM (256 Kbit) ---- */
+static bool sram_ok;
+
+uint32_t n64_save_read_impl(void *dst, uint32_t len) {
+    if (!sram_ok || len > 0x8000) return 0;
+    return sram_read(dst, 0, len) == (int)len ? len : 0;
+}
+
+uint32_t n64_save_write_impl(const void *src, uint32_t len) {
+    if (!sram_ok || len > 0x8000) return 0;
+    return sram_write(src, 0, len) == (int)len ? len : 0;
+}
+
 /* ---- misc ---- */
 void n64_log_impl(const char *msg, uint32_t len) { debugf("%.*s", (int)len, msg); }
 
@@ -843,7 +893,12 @@ int main(void) {
      * between simulation ticks and during loads (n64_audio_poll). */
     audio_init(32000, AUDIO_INIT_LATENCY_MS(500));
     mixer_init(MIXER_CHANNELS);
-    wav64_init_compression(3); /* Opus (music, FMV audio); VADPCM needs no init */
+    wav64_init_compression(2); /* ULC (music) */
+    wav64_init_compression(3); /* Opus (FMV audio); VADPCM needs no init */
+    video_register_codec(&h264_codec);
+    sram_init();
+    sram_ok = sram_detect() > 0;
+    debugf("save: SRAM %s\n", sram_ok ? "found" : "not found (progress is not saved)");
     /* The game's pitch control (SetFrequency) goes up to 100 kHz; Opus is 48 kHz. Allow
      * up to 4x the 32 kHz output (higher pitches are clamped by the Rust side). */
     for (int ch = 0; ch < MIXER_CHANNELS; ch++) mixer_ch_set_limits(ch, 16, 128000, 0);

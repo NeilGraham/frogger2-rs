@@ -248,4 +248,7 @@ extern "C" {
     pub fn n64_r3d_counts() -> u32;
     pub fn n64_tex_create_ntx(desc: *const NtxDesc) -> u32;
     pub fn n64_sfx_freq(handle: u32) -> u32;
+    pub fn n64_fmv_play(path: *const u8) -> u32;
+    pub fn n64_save_read(dst: *mut u8, len: u32) -> u32;
+    pub fn n64_save_write(src: *const u8, len: u32) -> u32;
 }

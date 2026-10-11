@@ -7,7 +7,10 @@
 //!   frame rate is whatever rendering allows.
 //! - **Data**: [`N64Data`] over the DFS (`data.rs`); levels load from inside the
 //!   simulation (`InitLevel` → `take_level_loads`).
-//! - **Video**: logo/story FMVs are skipped for now (`Effect::PlayVideo` ignored).
+//! - **Video**: logo/story FMVs (`Effect::PlayVideo`) play blocking with libdragon's
+//!   `fmv_play` over the game's display (`rom:/video/<name>.h264` + `.wav64`).
+//! - **Saves**: the PC save block in cartridge SRAM (`save.rs`): loaded at boot,
+//!   written on `Effect::SaveGame`.
 //! - **Rendering**: `render_r3d.rs` (meshes on the RSP, the rest through `render_cpu.rs`);
 //!   with the `render-cpu` feature the phase-2G CPU renderer draws everything.
 
@@ -50,11 +53,10 @@ pub const MAX_TICKS_PER_FRAME: u32 = 6;
 pub const WIDTH: u32 = 320;
 pub const HEIGHT: u32 = 240;
 
-/// How the ROM starts (build-time `F2N64_BOOT`): `frontend` (default: title → frontend, like
-/// the PC executable without its logo FMVs, with the training level marked done as an
-/// existing save would have it, since the N64 build has no save medium yet: the story book
-/// starts Garden 1 and the arcade machine is open), `frontend-fresh` (a new player: the book
-/// starts the training level) or `level W L` (straight into an arcade level).
+/// How the ROM starts (build-time `F2N64_BOOT`): `frontend` (default: logos → title →
+/// frontend like the PC executable, progress from the SRAM save: a new player's story book
+/// starts the training level), `frontend-trained` (testing: the training level marked done,
+/// as a save after it would have it) or `level W L` (straight into an arcade level).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Boot {
     Frontend { trained: bool },
@@ -63,12 +65,12 @@ pub enum Boot {
 
 impl Boot {
     pub fn parse(s: Option<&str>) -> Boot {
-        let Some(s) = s else { return Boot::Frontend { trained: true } };
+        let Some(s) = s else { return Boot::Frontend { trained: false } };
         let mut it = s.split_whitespace();
         match (it.next(), it.next().and_then(|w| w.parse().ok()), it.next().and_then(|l| l.parse().ok())) {
             (Some("level"), Some(w), Some(l)) => Boot::Level(w, l),
-            (Some("frontend-fresh"), _, _) => Boot::Frontend { trained: false },
-            _ => Boot::Frontend { trained: true },
+            (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
+            _ => Boot::Frontend { trained: false },
         }
     }
 }
@@ -212,7 +214,9 @@ impl App {
         };
         app.rebuild_renderer();
         f2_draw::overlay::set_button_prompts(vec![('X', "A".into()), ('C', "B".into()), ('S', "Z".into()), ('T', "C-Up".into())]);
-        let cfg = SessionConfig::new(app.data.clone());
+        let mut cfg = SessionConfig::new(app.data.clone());
+        cfg.save_data = crate::save::load();
+        log!("app: save game {}", if cfg.save_data.is_some() { "loaded from SRAM" } else { "not found (new player)" });
         let t0 = ticks();
         app.game = Game::new_session(cfg);
         app.install_game_hooks();
@@ -409,8 +413,17 @@ impl App {
             bi += 1;
             rt::audio_poll();
         }
+        // Models showing the story book's render-to-texture pages (256x256: more than r3d's
+        // one TMEM load) stay on the CPU path, which samples large textures in TMEM tiles.
+        let targets = [f2_formats::crc("page256a.bmp"), f2_formats::crc("page256b.bmp")];
         for b in &mut banks {
-            f2_n64fmt::bank::strip_geometry(b);
+            for m in &mut b.models {
+                if f2_n64fmt::bank::uses_texture(m, &targets) {
+                    self.r.cpu_models.push(m.id);
+                } else {
+                    f2_n64fmt::bank::strip_model(m);
+                }
+            }
         }
         log!("app: {total} r3d meshes for {} banks", banks.len());
         banks
@@ -540,8 +553,11 @@ impl App {
             Effect::UpdateHandle { handle, volume, pitch, pos, radius } => self.audio.update_handle(handle, volume, pitch, pos.map(sv), radius),
             Effect::PlayMusic { track, looped } => self.audio.play_music(track, looped),
             Effect::StopMusic => self.audio.stop_music(),
-            Effect::PlayVideo { name } => log!("app: video {name} skipped (FMV not ported yet)"),
-            Effect::SaveGame { data } => log!("app: save game ({} bytes) not stored (no save medium yet)", data.len()),
+            Effect::PlayVideo { name } => self.play_video(&name),
+            Effect::SaveGame { data } => {
+                let ok = crate::save::store(&data);
+                log!("app: save game ({} bytes) {}", data.len(), if ok { "written to SRAM" } else { "NOT written (no SRAM)" });
+            }
             Effect::Rumble { .. } => {}
             Effect::Log { text } => {
                 if cfg!(feature = "game-log") {
@@ -554,6 +570,23 @@ impl App {
             Effect::UnPauseAudio => self.audio.pause(false),
             Effect::Quit | Effect::OpenSettings => {}
         }
+    }
+
+    /// `StartVideoPlayback`: plays `rom:/video/<name>.h264` (blocking; skippable with A, B
+    /// or Start). The time it took is not caught up by the simulation.
+    fn play_video(&mut self, name: &str) {
+        if cfg!(feature = "small") {
+            log!("app: video {name} skipped (small ROM without FMV)");
+            return;
+        }
+        let path = alloc::format!("rom:/video/{}.h264", name.to_ascii_lowercase());
+        let t0 = ticks();
+        let ok = rt::fmv_play(&path);
+        log!("app: video {path} {} ({} ms)", if ok { "played" } else { "missing" }, ticks_to_us(ticks().wrapping_sub(t0)) / 1000);
+        self.audio.music_track = None;
+        self.acc = 0;
+        self.last = ticks();
+        self.loaded = true;
     }
 
     // ------------------------------------------------------------ drawing

@@ -148,6 +148,13 @@ pub fn encode_bank(bank: &ObjectBank) -> (Vec<u8>, BankStats) {
 /// UVs, normals, colours, textures; `Some(Mesh)` stays so "has a mesh" is unchanged). The
 /// hierarchy, keys, flags and sprites (what `xform_actor` and the draw loop read) are kept.
 pub fn strip_geometry(bank: &mut ObjectBank) {
+    for m in &mut bank.models {
+        strip_model(m);
+    }
+}
+
+/// [`strip_geometry`] of one model.
+pub fn strip_model(m: &mut Model) {
     fn strip(o: &mut Object) {
         if let Some(m) = o.mesh.as_mut() {
             *m = Mesh { vertices: Vec::new(), faces: Vec::new(), face_uv: Vec::new(), normals: Vec::new(), colors: Vec::new(), face_flags: Vec::new(), textures: Vec::new() };
@@ -157,13 +164,22 @@ pub fn strip_geometry(bank: &mut ObjectBank) {
             strip(c);
         }
     }
-    for m in &mut bank.models {
-        strip(&mut m.root);
-        for s in &mut m.root_siblings {
-            strip(s);
-        }
-        m.loc_mesh = None;
+    strip(&mut m.root);
+    for s in &mut m.root_siblings {
+        strip(s);
     }
+    m.loc_mesh = None;
+}
+
+/// Whether any face of the model uses one of the texture CRCs.
+pub fn uses_texture(m: &Model, crcs: &[u32]) -> bool {
+    let mut hit = false;
+    for_each_object(m, |_, o| {
+        if let Some(mesh) = &o.mesh {
+            hit |= mesh.textures.iter().any(|t| crcs.contains(t));
+        }
+    });
+    hit
 }
 
 #[cfg(test)]

@@ -3,7 +3,10 @@
 //! * [`pack_sfx`]: parses the 19 banks, dedupes identical samples across banks, encodes each unique
 //!   sample (VADPCM, or Opus where a documented rule says it is clearly smaller), writes `sfx/NNNN.wav64`
 //!   plus `sfx/index.bin` ([`index`] documents the format).
-//! * [`pack_music`]: `music/track02..12.wav` → `music/trackNN.wav64`, Opus stereo at about `kbps`.
+//! * [`pack_music`]: `music/track02..12.wav` → `music/trackNN.wav64`, ULC stereo at `kbps` (ABR).
+//!   Phase 3I measured libdragon's Opus at ~14 ms of VR4300 time per 60 Hz tick for one stereo
+//!   track in ares (a third of the CPU); ULC ("simple and fast transform codec") costs
+//!   ~2 ms at the same bitrate, so the music is ULC. [`pack_music_opus`] stays for comparison.
 //!
 //! ## Codec rule for sound effects
 //! Everything is encoded as VADPCM (4.5 bit/sample, near-free RSP cost, exact loop support). A sample is
@@ -411,9 +414,53 @@ pub fn predict_music_bytes(ctx: &Ctx, kbps: u32) -> u64 {
 /// Approximate wav64 header + Opus decoder-state bytes per file.
 pub const MUSIC_FILE_OVERHEAD: u64 = 64;
 
+/// Encodes the music tracks as ULC stereo at `kbps` (average bitrate mode), looping flag set
+/// (the runtime clears it for tracks the game plays once, `PrepareSong(.., FALSE)`).
+pub fn pack_music(ctx: &Ctx, kbps: u32) -> Result<ClassReport> {
+    let tracks = music_tracks(ctx);
+    if tracks.is_empty() {
+        return Err(format!("no music tracks under {}", ctx.rendition.join("music").display()));
+    }
+    let cache = ctx.cache_dir("music").map_err(|e| e.to_string())?;
+    let results: Vec<Result<Vec<u8>>> = par_map(&tracks, ctx.jobs, |(n, p)| {
+        let key = file_key(p, &format!("ulc-abr{kbps}-stereo-loop"));
+        let cached = cache.join(format!("track{n:02}-{key}.wav64"));
+        if let Ok(b) = std::fs::read(&cached) {
+            return Ok(b);
+        }
+        let tmp = cache.join(format!("tmp-{n:02}-{key}"));
+        let codec = format!("ulc,mode=abr,bitrate={kbps}");
+        let flags: Vec<String> = ["--wav-compress", &codec, "--wav-loop", "true"].iter().map(|s| s.to_string()).collect();
+        let out = audioconv(ctx, p, &tmp, &flags)?;
+        let b = std::fs::read(&out).map_err(|e| e.to_string())?;
+        std::fs::write(&cached, &b).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_dir_all(&tmp);
+        Ok(b)
+    });
+    let mut rep = ClassReport::default();
+    let mut total = 0u64;
+    for ((n, p), r) in tracks.iter().zip(results) {
+        let bytes = r.map_err(|e| format!("track{n:02}: {e}"))?;
+        let rel = format!("music/track{n:02}.wav64");
+        std::fs::write(ctx.out_path(&rel).map_err(|e| e.to_string())?, &bytes).map_err(|e| e.to_string())?;
+        total += bytes.len() as u64;
+        let (rate, ch, _, frames) = wav_info(p)?;
+        rep.files.push(PackedFile {
+            path: rel,
+            class: Class::Music,
+            bytes: bytes.len() as u64,
+            source_bytes: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
+            format: format!("ulc abr {kbps}kbps stereo loop"),
+            notes: vec![format!("{:.1}s {rate}Hz x{ch}", frames as f64 / f64::from(rate.max(1)))],
+        });
+    }
+    rep.notes.push(format!("music: {} tracks, {:.1}s, ULC stereo ABR {kbps} kbps: {total} bytes", tracks.len(), music_seconds(ctx)));
+    Ok(rep)
+}
+
 /// Encodes the music tracks at (about) `kbps` per stereo track, Opus, looping flag set (the runtime
 /// clears it with `wav64_set_loop(w, false)` for tracks the game plays once, `PrepareSong(.., FALSE)`).
-pub fn pack_music(ctx: &Ctx, kbps: u32) -> Result<ClassReport> {
+pub fn pack_music_opus(ctx: &Ctx, kbps: u32) -> Result<ClassReport> {
     let tracks = music_tracks(ctx);
     if tracks.is_empty() {
         return Err(format!("no music tracks under {}", ctx.rendition.join("music").display()));

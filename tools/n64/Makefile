@@ -10,7 +10,7 @@ include $(N64_INST)/include/n64.mk
 
 N64_ROM_TITLE = "FROGGER 2"
 N64_ROM_EXPANSIONPAK = required
-N64_ROM_SAVETYPE = none
+N64_ROM_SAVETYPE = sram256k
 
 CFLAGS += -I$(CSRC) -I$(BUILD_DIR)
 

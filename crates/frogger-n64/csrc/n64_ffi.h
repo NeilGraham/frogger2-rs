@@ -158,7 +158,10 @@ void n64_heap_stats(n64_heap_t *out);
 uint32_t n64_sfx_open(const char *path, uint32_t looped);
 void n64_sfx_close(uint32_t handle);
 uint32_t n64_sfx_channels(void);
-uint32_t n64_sfx_freq(uint32_t handle);            /* native rate of an opened sample, Hz */                   /* first sfx channel << 8 | count */
+uint32_t n64_sfx_freq(uint32_t handle);            /* native rate of an opened sample, Hz */
+uint32_t n64_fmv_play(const char *path);           /* blocking video playback; 0 = missing */
+uint32_t n64_save_read(void *dst, uint32_t len);   /* SRAM -> dst; returns len or 0 */
+uint32_t n64_save_write(const void *src, uint32_t len); /* src -> SRAM; returns len or 0 */                   /* first sfx channel << 8 | count */
 void n64_sfx_play(uint32_t handle, uint32_t ch, const n64_voice_t *v);
 void n64_ch_set(uint32_t ch, const n64_voice_t *v);
 void n64_ch_stop(uint32_t ch);

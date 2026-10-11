@@ -286,6 +286,9 @@ pub struct Renderer {
     /// T&L, e.g. the N64 RSP renderer); everything else (sprites, effects, 2D) still goes
     /// through the frames. Cleared by [`begin_frame`](Self::begin_frame).
     pub mesh_sink: Option<MeshSink>,
+    /// Models (`Model::id`) transformed on the CPU even with a mesh sink (e.g. meshes whose
+    /// textures the external back end cannot sample).
+    pub cpu_models: Vec<u32>,
     frames: Frames,
     backdrops: Vec<Quad2D>,
     overlays: Vec<Quad2D>,
@@ -475,6 +478,7 @@ impl Renderer {
             gpu_mips: false,
             sprite_clip: None,
             mesh_sink: None,
+            cpu_models: Vec::new(),
         };
         r.white = r.textures.add_image(1, 1, vec![255; 4]);
         r
@@ -496,6 +500,7 @@ impl Renderer {
             output: (640, 480),
             sprite_clip: None,
             mesh_sink: None,
+            cpu_models: Vec::new(),
         };
         r.white = r.textures.add_image(1, 1, vec![255; 4]);
         r
@@ -827,7 +832,7 @@ impl Renderer {
 
     /// Transforms and draws an actor (`XformActor` + `DrawActor`).
     pub fn draw_actor(&mut self, model: &Model, actor: &mut Actor) {
-        if let Some(mut sink) = self.mesh_sink.take() {
+        if let Some(mut sink) = self.mesh_sink.take_if(|_| !self.cpu_models.contains(&model.id)) {
             let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
             record_actor(&cx, model, actor, &mut sink);
             self.mesh_sink = Some(sink);
@@ -841,7 +846,7 @@ impl Renderer {
 
     /// Draws a static level model like `DrawLandscape` (key-0 pose).
     pub fn draw_landscape(&mut self, model: &Model) {
-        if let Some(mut sink) = self.mesh_sink.take() {
+        if let Some(mut sink) = self.mesh_sink.take_if(|_| !self.cpu_models.contains(&model.id)) {
             record_landscape(&self.emit_ctx(1.0), model, &mut sink);
             self.mesh_sink = Some(sink);
             return;

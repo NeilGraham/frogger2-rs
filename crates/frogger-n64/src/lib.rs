@@ -19,6 +19,7 @@ pub mod ffi;
 pub mod input;
 pub mod kernels;
 pub mod ntx;
+pub mod save;
 pub mod r3d;
 pub mod texconv;
 

@@ -234,7 +234,8 @@ fn fill(ctx: &Ctx, cfg: &BudgetConfig, files: &mut Vec<PackedFile>) -> Result<Ve
 
 /// Music + FMV: the best quality that fits `avail` bytes.
 fn media(ctx: &Ctx, cfg: &BudgetConfig, avail: u64) -> Result<(ClassReport, ClassReport)> {
-    const MUSIC_KBPS: [u32; 7] = [99, 96, 80, 64, 48, 40, 32];
+    // ULC stereo average bitrates, best first (see audio.rs: ULC, not Opus, for CPU time).
+    const MUSIC_KBPS: [u32; 7] = [128, 112, 96, 80, 64, 48, 32];
     const FMV_FLOOR: u64 = 10_000_000;
     let want_music = cfg.wants("music");
     let want_fmv = cfg.wants("fmv");
