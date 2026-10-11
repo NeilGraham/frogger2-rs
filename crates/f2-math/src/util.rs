@@ -145,15 +145,52 @@ fn rtrig_arg(x: i32) -> f64 {
 /// Angle is 4096 per turn; result is 4096-scaled. Evaluated with retail x87 PC24 semantics
 /// (argument and `*4096` product rounded to 24 bits); the 53-bit evaluation is
 /// [`rsin_f64`]. Both agree for |x| ≤ 10683.
+///
+/// Phase 3S: a lookup in the exact table of [`rsin_float`] for |x| ≤ 10683 (where the
+/// result is 4096-periodic and odd-symmetric, checked exhaustively by the tests), the
+/// float evaluation elsewhere. Same results for every `x`; ~20× cheaper on the VR4300.
 #[inline]
 pub fn rsin(x: i32) -> Fixed {
-    ftol32((detfloat::sin(rtrig_arg(x)) as f32) as f64 * 4096.0)
+    if (-10683..=10683).contains(&x) {
+        sin_lookup(x)
+    } else {
+        rsin_float(x)
+    }
 }
 
 /// Port of `rcos` (PC/libgte.h:7): `(fixed)(cos(((x)*(1.0f/4096.0f))*PI2)*4096)`, with
 /// retail x87 PC24 semantics (see [`rsin`]); 53-bit evaluation: [`rcos_f64`].
+/// Phase 3S: `rcos(x) == rsin_float((x + 1024) & 4095)` for |x| ≤ 10723 (tested), else the
+/// float evaluation.
 #[inline]
 pub fn rcos(x: i32) -> Fixed {
+    if (-10723..=10723).contains(&x) {
+        sin_lookup(x.wrapping_add(1024))
+    } else {
+        rcos_float(x)
+    }
+}
+
+/// `rsin_float(x & 4095)` from the half-period table.
+#[inline(always)]
+fn sin_lookup(x: i32) -> Fixed {
+    let v = crate::tables::SIN_HALF[(x & 2047) as usize] as i32;
+    if x & 2048 != 0 {
+        -v
+    } else {
+        v
+    }
+}
+
+/// The float evaluation of [`rsin`] (the reference the table is generated from).
+#[inline]
+pub fn rsin_float(x: i32) -> Fixed {
+    ftol32((detfloat::sin(rtrig_arg(x)) as f32) as f64 * 4096.0)
+}
+
+/// The float evaluation of [`rcos`].
+#[inline]
+pub fn rcos_float(x: i32) -> Fixed {
     ftol32((detfloat::cos(rtrig_arg(x)) as f32) as f64 * 4096.0)
 }
 
@@ -182,4 +219,27 @@ pub fn util_calc_angle(adj: i32, opp: i32) -> i32 {
 #[inline]
 pub fn util_calc_angle_f64(adj: i32, opp: i32) -> i32 {
     ftol32((detfloat::atan2(adj as f64, opp as f64) / 6.283185308) * 4096.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{arccos, arccos_float, rcos, rcos_float, rsin, rsin_float};
+
+    /// The lookups equal the float evaluations everywhere: exhaustively around the table
+    /// domains, and on a dense stride over all of `i32`.
+    #[test]
+    fn tables_match_float_reference() {
+        let check = |x: i32| {
+            assert_eq!(rsin(x), rsin_float(x), "rsin({x})");
+            assert_eq!(rcos(x), rcos_float(x), "rcos({x})");
+            assert_eq!(arccos(x), arccos_float(x), "arccos({x})");
+        };
+        (-40_000..=40_000).for_each(check);
+        let mut x = i32::MIN;
+        while let Some(n) = x.checked_add(9_973) {
+            check(x);
+            x = n;
+        }
+        check(i32::MAX);
+    }
 }

@@ -16,6 +16,7 @@ pub mod acostable;
 pub mod detfloat;
 pub mod fixed;
 pub mod maths;
+mod tables;
 pub mod types;
 pub mod util;
 pub mod vector;
