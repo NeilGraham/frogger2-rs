@@ -5,6 +5,8 @@
 //! (Latin-1). Parsed like `gameTextInit` (`PC/isllocal.c:32`): fields are
 //! separated by TAB or line breaks and surrounding quotes are stripped.
 
+use crate::prelude::*;
+
 use crate::read::{Error, Result};
 
 /// Language column order in the file (`LANG_UK`, `LANG_F`, `LANG_D`, `LANG_IT`, `LANG_US`).

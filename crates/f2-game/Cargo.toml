@@ -6,8 +6,21 @@ edition.workspace = true
 license = "GPL-3.0-or-later"
 publish.workspace = true
 
+[features]
+default = ["std"]
+# Off: `#![no_std]` + `alloc` (N64 and other OS-less targets; docs/PLATFORMS.md §5). `std`
+# adds the filesystem `DataSource` (`assets::DirData`, tools/tests) and the oracle trace
+# emitter (`trace`, `f2-trace` with serde_json). The simulation is identical either way.
+std = ["f2-math/std", "f2-formats/std", "serde/std", "dep:f2-trace"]
+
 [dependencies]
-f2-math = { path = "../f2-math" }
-f2-formats = { path = "../f2-formats" }
-serde = { workspace = true }
-f2-trace = { path = "../../tools/f2-trace" }
+f2-math = { path = "../f2-math", default-features = false }
+f2-formats = { path = "../f2-formats", default-features = false, features = ["serde"] }
+# Not `workspace = true`: the workspace entry enables serde's default `std` feature.
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+f2-trace = { path = "../../tools/f2-trace", optional = true }
+# `view.rs` sin/acos table cache without std's `OnceLock` (needs pointer-wide atomics,
+# which `Arc` needs anyway).
+once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
+# Float maths without std (sqrt/sin/cos on the render-only paths).
+libm = "0.2.16"

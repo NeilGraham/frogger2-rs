@@ -5,6 +5,8 @@
 //! `FIXED` fields are `int >> 4`, positions `int >> 16` (scaled ×10 later by
 //! the game), radius `FIXED × 10`, anim speed `int >> 8`.
 
+use crate::prelude::*;
+
 use crate::read::{Reader, Result};
 
 pub const ENTITY_VERSION: u8 = 16;

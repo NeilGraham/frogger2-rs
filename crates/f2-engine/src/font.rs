@@ -5,6 +5,8 @@
 //! `Font.fla`); the top-left pixel is the transparent colour and glyphs are
 //! separated by fully transparent columns, in `ALPHABET` order.
 
+use crate::prelude::*;
+
 use f2_formats::texture::Texture;
 
 /// `alphabet[]` (mdxFont.cpp:66-68), Latin-1 bytes. The source file's final

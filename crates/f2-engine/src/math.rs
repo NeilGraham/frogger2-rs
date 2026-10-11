@@ -4,11 +4,15 @@
 //! a point transforms as `p' = p · M` (`guMtxXFMF`), translation lives in
 //! row 3, and `PushMatrix(a)` computes `a · top`.
 
+#[cfg(not(feature = "std"))]
+use crate::fmath::FloatExt;
+use crate::prelude::*;
+
 pub use f2_formats::objbank::{Mat4, Quat, Vec3};
 
 pub const IDENTITY: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
 
-const PI2: f64 = std::f64::consts::PI * 2.0;
+const PI2: f64 = core::f64::consts::PI * 2.0;
 /// `EPSILON` (mdxMath.h).
 pub const EPSILON: f32 = 0.00001;
 /// `HALFPI` (mdxMath.h).
@@ -21,7 +25,7 @@ struct Tables {
 
 /// Port of `InitMaths` (mdxMath.cpp:53): the lookup tables behind `sinFast`/`acosFast`.
 fn tables() -> &'static Tables {
-    static T: std::sync::OnceLock<Box<Tables>> = std::sync::OnceLock::new();
+    static T: once_cell::race::OnceBox<Tables> = once_cell::race::OnceBox::new();
     T.get_or_init(|| {
         let mut t = Box::new(Tables { sin: [0.0; 4096], acos: [0.0; 4096] });
         for i in 0..4096 {
@@ -195,11 +199,11 @@ mod tests {
     #[test]
     fn slerp_halfway() {
         let a = [0.0, 0.0, 0.0, 1.0];
-        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let h = core::f32::consts::FRAC_1_SQRT_2;
         let b = [0.0, h, 0.0, h];
         let q = quat_slerp(&a, &b, 0.5);
         let ang = 2.0 * q[3].acos();
-        assert!((ang - std::f32::consts::FRAC_PI_4).abs() < 0.01, "{q:?}");
+        assert!((ang - core::f32::consts::FRAC_PI_4).abs() < 0.01, "{q:?}");
     }
 
     #[test]

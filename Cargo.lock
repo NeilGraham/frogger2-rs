@@ -664,6 +664,8 @@ dependencies = [
  "ash",
  "bytemuck",
  "f2-formats",
+ "libm",
+ "once_cell",
  "png 0.18.1",
  "pollster",
  "wgpu",
@@ -703,6 +705,8 @@ dependencies = [
  "f2-formats",
  "f2-math",
  "f2-trace",
+ "libm",
+ "once_cell",
  "serde",
 ]
 

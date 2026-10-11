@@ -6,6 +6,8 @@
 //! [`f2_formats::lang::StringTable`]). `gameTextInit` walks `numStrings` rows, skipping the id
 //! and comment columns, and keeps the column of the current language.
 
+use crate::prelude::*;
+
 use f2_formats::lang::{Language, StringTable};
 
 use crate::assets::DataSource;
@@ -203,18 +205,18 @@ pub fn c_sprintf(fmt: &str, args: &[FmtArg]) -> String {
         let pad = width.saturating_sub(s.chars().count());
         if left {
             out.push_str(&s);
-            out.extend(std::iter::repeat_n(' ', pad));
+            out.extend(core::iter::repeat_n(' ', pad));
         } else if zero && conv != 's' {
             if let Some(rest) = s.strip_prefix('-') {
                 out.push('-');
-                out.extend(std::iter::repeat_n('0', pad));
+                out.extend(core::iter::repeat_n('0', pad));
                 out.push_str(rest);
             } else {
-                out.extend(std::iter::repeat_n('0', pad));
+                out.extend(core::iter::repeat_n('0', pad));
                 out.push_str(&s);
             }
         } else {
-            out.extend(std::iter::repeat_n(' ', pad));
+            out.extend(core::iter::repeat_n(' ', pad));
             out.push_str(&s);
         }
     }

@@ -3,6 +3,8 @@
 //! [`f2_formats::misc::SaveGame`]; persisting the block is an [`Effect::SaveGame`], loading
 //! takes the bytes of `SaveData\savegame.dat` from the host.
 
+use crate::prelude::*;
+
 use f2_formats::misc::{SaveGame, SAVE_LEVELS, SAVE_SIZE};
 use serde::{Deserialize, Serialize};
 

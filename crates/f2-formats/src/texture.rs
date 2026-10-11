@@ -11,6 +11,8 @@
 //! ```
 //! Backdrops are a single header + pixels with no animation table.
 
+use crate::prelude::*;
+
 use crate::read::{Reader, Result};
 
 pub const TEX_TRANSVAL: u16 = 0x7c1f;

@@ -4,6 +4,8 @@
 //!
 //! Dropped: `LoadGame`/`SaveGame` (savegame wave), texture/object decoding (renderer).
 
+use crate::prelude::*;
+
 use f2_formats::objbank::ObjectBank;
 
 use crate::actor2::{ACTOR_ADDITIVE, ACTOR_DRAW_ALWAYS, ACTOR_LEAVES, ACTOR_SLIDYTEX, ACTOR_SLUDGE, ACTOR_WATER};

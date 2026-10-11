@@ -51,7 +51,8 @@ jobs:
       - run: cargo test --workspace
 
   # Cross-target `cargo check` from Linux: catches macOS-only compile errors without a Mac
-  # runner, and keeps the portable core (f2-math) building as no_std for future consoles.
+  # runner, and keeps the portable core (f2-math, f2-formats, f2-game, f2-engine's render core)
+  # building as no_std + alloc for consoles (docs/PLATFORMS.md §5).
   # macOS: --no-default-features drops cpal's CoreAudio backend, whose bindgen build script
   # needs the macOS SDK headers (the macos-14 test job builds it for real); frogger/desktop keeps
   # the windowed binary (its default feature) in the check.
@@ -66,7 +67,22 @@ jobs:
           targets: aarch64-apple-darwin, x86_64-apple-darwin, thumbv7em-none-eabihf
       - run: cargo check --workspace --all-targets --no-default-features --features frogger/desktop --target aarch64-apple-darwin
       - run: cargo check --workspace --all-targets --no-default-features --features frogger/desktop --target x86_64-apple-darwin
-      - run: cargo check -p f2-math --no-default-features --target thumbv7em-none-eabihf
+      - run: cargo check -p f2-math -p f2-formats -p f2-game -p f2-engine --no-default-features --target thumbv7em-none-eabihf
+      - run: cargo check -p f2-formats --no-default-features --features serde --target thumbv7em-none-eabihf
+
+  # The no_std core on a big-endian MIPS target (the N64 port, docs/N64-PLAN.md): nightly
+  # -Zbuild-std of core + alloc only. mips-unknown-linux-gnu is a stand-in with the N64's
+  # endianness and pointer width; the crates are no_std, so its OS does not matter.
+  nostd-mips:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - run: cargo +nightly check -Zbuild-std=core,alloc --target mips-unknown-linux-gnu -p f2-math -p f2-formats -p f2-game -p f2-engine --no-default-features
 
   # Manual dispatch only: release archives via tools/package (never any game data).
   release:

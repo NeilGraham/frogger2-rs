@@ -7,6 +7,8 @@
 //! File: `u8 version (=3)`, `i32 outer block size`, block.
 //! Block: `i16 count`, `count` commands.
 
+use crate::prelude::*;
+
 use crate::read::{cstr, Reader, Result};
 
 pub const FEV_VERSION: u8 = 3;

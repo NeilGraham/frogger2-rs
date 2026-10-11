@@ -6,6 +6,8 @@
 //! every tick. Effects never feed back into simulation state, which keeps
 //! `f2-game` deterministic and headless.
 
+use crate::prelude::*;
+
 use f2_math::SVector;
 use serde::{Deserialize, Serialize};
 

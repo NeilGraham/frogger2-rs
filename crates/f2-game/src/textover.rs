@@ -17,6 +17,8 @@
 //! `TEXTOVERLAY_SHADOW` draws a black copy offset by 6 (`font`) / 4 (`fontSmall`) pixels
 //! at alpha `a*7/10` first.
 
+use crate::prelude::*;
+
 use f2_math::Fixed;
 use serde::{Deserialize, Serialize};
 

@@ -7,9 +7,14 @@ license = "MIT OR Apache-2.0"
 publish.workspace = true
 
 [features]
-default = ["gpu"]
+default = ["std", "gpu"]
+# Off: `#![no_std]` + `alloc` render core for OS-less targets (N64): `scene` (CPU transform ->
+# TL triangle lists), `anim`, `textures`, `font`, `math`, the draw-list builder
+# (`Renderer::build`, `DrawCmd`) and the CPU rasteriser (`soft`, single-threaded). `std`
+# adds `load` (file helpers), `RgbaImage::write_png` and threaded `soft` bands.
+std = ["f2-formats/std", "dep:png"]
 # wgpu back end. Without it the renderer only draws on the CPU (`Renderer::new_soft`).
-gpu = ["dep:wgpu", "dep:pollster"]
+gpu = ["std", "dep:wgpu", "dep:pollster"]
 # wgpu on a Vulkan driver reached through a raw `vkGetInstanceProcAddr` (no loader), presenting
 # through its own `VkSwapchainKHR` (`VK_KHR_display` on the PS5). Host-testable: see `vkraw`.
 ps5-vulkan = ["gpu", "wgpu/vulkan", "dep:ash"]
@@ -17,12 +22,16 @@ ps5-vulkan = ["gpu", "wgpu/vulkan", "dep:ash"]
 # (`GpuContext::new_ps5`). Compiles anywhere; links only against the driver archive.
 ps5-static-driver = ["ps5-vulkan"]
 # OpenGL ES 2 back end (`gles`): no dependencies, GL entry points supplied by the host.
-gles2 = []
+gles2 = ["std"]
 
 [dependencies]
-f2-formats = { path = "../f2-formats" }
+f2-formats = { path = "../f2-formats", default-features = false }
 wgpu = { version = "=30.0.1", optional = true }
 bytemuck = { version = "=1.25.2", features = ["derive"] }
 pollster = { version = "=1.0.1", optional = true }
 ash = { version = "=0.38.0", optional = true }
-png = "=0.18.1"
+png = { version = "=0.18.1", optional = true }
+# `math.rs` sin/acos table cache without std's `OnceLock`.
+once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
+# Float methods without std (`fmath`); with std the inherent methods are used unchanged.
+libm = "0.2.16"

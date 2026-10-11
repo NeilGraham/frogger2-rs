@@ -12,6 +12,8 @@
 //! ARGB4444 pixels (`None` until the first update: show the bank texture);
 //! [`ProcTexture::surface_rgba8`] converts them.
 
+use crate::prelude::*;
+
 use f2_formats::texture::TexBank;
 use serde::{Deserialize, Serialize};
 
@@ -70,7 +72,7 @@ impl ProcTexture {
     }
 
     fn swap(&mut self) {
-        std::mem::swap(&mut self.buf1, &mut self.buf2);
+        core::mem::swap(&mut self.buf1, &mut self.buf2);
     }
 }
 
@@ -229,7 +231,7 @@ impl Game {
 
     fn process_pt(&mut self, i: usize, u: PtUpdate) {
         let gs = self.game_speed;
-        let mut pt = std::mem::replace(
+        let mut pt = core::mem::replace(
             &mut self.ptexture.list[i],
             ProcTexture {
                 name: String::new(),

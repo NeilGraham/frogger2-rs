@@ -4,6 +4,8 @@
 //! The script-specific triggers (`ANDtrigger`, `OnFlagSet`, `FrogOnPath`, ...) and
 //! `InterpretEvent` are defined in `script.c` and ported in [`crate::script`].
 
+use crate::prelude::*;
+
 use f2_math::{distance_between_points_sv, scale_vector_ff, FVector};
 
 use crate::actor2::orientate_ss;

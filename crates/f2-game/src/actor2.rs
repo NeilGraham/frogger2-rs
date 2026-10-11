@@ -11,6 +11,8 @@
 //! Dropped: PSX drawing (`DrawActorList`, `GetHeadMatrix`, FMA/PSI paths) and the
 //! commented-out N64 helpers.
 
+use crate::prelude::*;
+
 use f2_math::{
     arccos, fdiv2, fixed_get_quaternion_from_rotation, fixed_quaternion_multiply, fixed_rotate_vector_by_rotation, fmul, fsqrt_f,
     get_quaternion_from_xz_rotation, new_set_vector_fs, rcos, rsin, FVector, Fixed, IQuaternion, SVector,
@@ -114,14 +116,14 @@ impl Actors {
     }
 }
 
-impl std::ops::Index<ActorId> for Actors {
+impl core::ops::Index<ActorId> for Actors {
     type Output = Actor2;
     fn index(&self, id: ActorId) -> &Actor2 {
         self.get(id).expect("freed actor")
     }
 }
 
-impl std::ops::IndexMut<ActorId> for Actors {
+impl core::ops::IndexMut<ActorId> for Actors {
     fn index_mut(&mut self, id: ActorId) -> &mut Actor2 {
         self.get_mut(id).expect("freed actor")
     }

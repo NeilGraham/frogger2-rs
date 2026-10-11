@@ -6,6 +6,8 @@
 //! DeathX)`) go through [`Game::make_timeout_event`]; [`Game::run_death_anim`] is the
 //! `DeathAnim` event's target.
 
+use crate::prelude::*;
+
 use f2_math::{add_to_vector_fs, new_set_vector_fs, scale_vector, set_vector_sf, FVector, SVector};
 
 use crate::effects::Effect;

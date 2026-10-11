@@ -2,6 +2,8 @@
 //! `TransformObject` (mdxObject.cpp:371) and the keyframe search
 //! `FindToFromVKeys`/`FindToFromQKeys` (mdxObject.cpp:229/305).
 
+use crate::prelude::*;
+
 use crate::math::*;
 use f2_formats::objbank::{Model, Object, QKey, VKey};
 

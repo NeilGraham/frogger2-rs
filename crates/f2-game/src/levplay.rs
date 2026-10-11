@@ -5,6 +5,8 @@
 //! `PC/islpad.h`) to [`Game::tick`], which calls [`Game::process_user_input`] before
 //! `GameLoop`, exactly where `LoopFunc` (PC/Main.cpp) calls `ProcessUserInput`.
 
+use crate::prelude::*;
+
 use f2_formats::misc::{parse_key_file, KeyRecord};
 use serde::{Deserialize, Serialize};
 

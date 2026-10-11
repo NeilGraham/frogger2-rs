@@ -18,7 +18,7 @@ pub fn read_block(r: &mut Reader, depth: u32) -> Result<Vec<Command>> {
 }
 
 struct Writer<'a> {
-    raw: std::slice::Iter<'a, i32>,
+    raw: core::slice::Iter<'a, i32>,
     out: Vec<u8>,
 }
 
@@ -138,9 +138,9 @@ impl Writer<'_> {
     }
     /// Writes `i32 size` + the block (size excludes itself, includes the count word).
     fn sized(&mut self, cmds: &[Command]) {
-        let outer = std::mem::take(&mut self.out);
+        let outer = core::mem::take(&mut self.out);
         self.block(cmds);
-        let inner = std::mem::replace(&mut self.out, outer);
+        let inner = core::mem::replace(&mut self.out, outer);
         self.i32(inner.len() as i32);
         self.out.extend_from_slice(&inner);
     }

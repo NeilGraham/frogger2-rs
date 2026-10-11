@@ -22,6 +22,8 @@
 //! via [`Game::fx_particles`], ring shape [`SpecFxState::ring_vtx`]); all other effects
 //! are drawn through their sprites in the sprite list.
 
+use crate::prelude::*;
+
 use f2_math::{
     add_to_vector_ff, add_to_vector_fs, add_to_vector_sf, add_to_vector_ss, add_vector_sfs, add_vector_ssf, add_vector_sss, arccos, cross_product_fff,
     distance_between_points_sf, distance_between_points_ss, dot_product_ff, fdiv, fixed_get_quaternion_from_rotation, fmul, iquat_slerp, magnitude_f,
@@ -446,7 +448,7 @@ impl SpecFxState {
     /// Live effects in list order (`sfxList.head.next` → ...).
     pub fn iter_list(&self) -> impl Iterator<Item = (SpecFxId, &SpecFx)> + '_ {
         let mut c = if self.array.is_empty() { HEAD } else { self.next[HEAD as usize] };
-        std::iter::from_fn(move || {
+        core::iter::from_fn(move || {
             if self.array.is_empty() || c == HEAD || c == NIL {
                 return None;
             }
@@ -1246,16 +1248,19 @@ impl Game {
         let q1 = normal;
         let up = [0.0f32, 1.0, 0.0];
         let mut cross = [q1[1] * up[2] - q1[2] * up[1], q1[2] * up[0] - q1[0] * up[2], q1[0] * up[1] - q1[1] * up[0]];
-        let m = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        let m = libm::sqrtf(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]);
         if m != 0.0 {
             cross = [cross[0] / m, cross[1] / m, cross[2] / m];
         }
         let tt = q1[0] * up[0] + q1[1] * up[1] + q1[2] * up[2];
-        let w = -((tt as f64).acos() as f32);
-        // GetQuaternionFromRotation (mdxMath.cpp:223)
+        let w = -(f2_math::detfloat::acos(tt as f64) as f32);
+        // GetQuaternionFromRotation (mdxMath.cpp:223). `sinf`/`cosf` there are MSVC 6's
+        // inline `(float)sin((double)x)` (the retail exe has no sinf/cosf, only x87
+        // fsin/fcos), so evaluate in f64 and round once, host-independently (detfloat).
+        // The result reaches game state (twinkle trail origins, `Random`) below.
         let half = w / 2.0;
-        let sh = half.sin();
-        let q3 = [sh * cross[0], sh * cross[1], sh * cross[2], half.cos()];
+        let sh = f2_math::detfloat::sin(half as f64) as f32;
+        let q3 = [sh * cross[0], sh * cross[1], sh * cross[2], f2_math::detfloat::cos(half as f64) as f32];
         let r = quaternion_to_matrix(&q3);
         let s2 = mtx_cat(&r, &s1);
 

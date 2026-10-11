@@ -6,6 +6,8 @@
 //! triangles are pushed into *frames* (`MA_FRAME_*`) that are drawn in
 //! `DrawAllFrames` order. The GPU only rasterises pre-transformed vertices.
 
+use crate::prelude::*;
+
 use crate::anim::{for_each_object, xform_actor, Actor};
 use crate::math::*;
 use crate::textures::{TexHandle, TextureRegistry};

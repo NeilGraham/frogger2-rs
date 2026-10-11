@@ -10,6 +10,8 @@
 //! Struct layouts (MSVC x86, 4-byte pointers) from `MDX Library/mdxObject.h`;
 //! loader `LoadObjBank` / `RestoreObjectPointers` in `mdxObject.cpp`.
 
+use crate::prelude::*;
+
 use crate::read::{cstr, Error, Result};
 
 #[derive(Clone, Copy, Debug)]
@@ -26,7 +28,7 @@ pub struct PeImage<'a> {
     data: &'a [u8],
     image: Vec<u8>,
     /// Addresses (VA) of every HIGHLOW base relocation: the fields that really hold pointers.
-    relocs: std::collections::HashSet<u32>,
+    relocs: alloc::collections::BTreeSet<u32>,
     pub image_base: u32,
     sections: Vec<Section>,
     exports: Vec<(String, u32)>,
@@ -80,7 +82,7 @@ impl<'a> PeImage<'a> {
             let dst = image.get_mut(s.va as usize..s.va as usize + n).ok_or_else(|| perr("section beyond SizeOfImage"))?;
             dst.copy_from_slice(src);
         }
-        let mut relocs = std::collections::HashSet::new();
+        let mut relocs = alloc::collections::BTreeSet::new();
         let (rel_rva, rel_size) = (le32(data, opt + 136).unwrap_or(0) as usize, le32(data, opt + 140).unwrap_or(0) as usize);
         if rel_rva != 0 {
             let blk_all = image.get(rel_rva..rel_rva + rel_size).ok_or_else(|| perr("reloc table outside image"))?;

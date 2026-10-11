@@ -5,6 +5,8 @@
 //! is pushed at the head, so an effect's `n` particles form a contiguous run starting at
 //! the returned particle. Deallocation zeroes the particle (`memset`).
 
+use crate::prelude::*;
+
 use f2_math::{
     add_to_vector_sf, dot_product_ff, fmul, scale_vector, scale_vector_ff, set_vector_ff, set_vector_fs, set_vector_ss, sub_from_vector_ff, FVector, SVector,
 };

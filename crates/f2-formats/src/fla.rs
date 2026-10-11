@@ -5,6 +5,8 @@
 //! `c = byte` (0 terminates), `offset = 4096 - ((c & 0xF0) * 16 + byte)`,
 //! `length = (c & 0x0F) + 2`, read from a 4096-byte history ring.
 
+use crate::prelude::*;
+
 use crate::read::{Error, Result};
 
 pub const MAGIC: &[u8; 4] = b"FLA2";

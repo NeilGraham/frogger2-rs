@@ -5,6 +5,8 @@
 //! the real character selection is `options.c` (`OP_SP_CHARSEL`, `MPChar*`). It is ported
 //! for completeness and runs only when the host starts it explicitly.
 
+use crate::prelude::*;
+
 use f2_math::{FVector, SVector};
 use serde::{Deserialize, Serialize};
 

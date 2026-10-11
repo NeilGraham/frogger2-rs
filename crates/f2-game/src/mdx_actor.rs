@@ -5,6 +5,8 @@
 //!
 //! Animation time is `float` in the original (`MDX_ACTOR_ANIMATION`), so it is `f32` here.
 
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 use crate::assets::{MdxAnimation, ModelInfo};

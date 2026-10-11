@@ -1,5 +1,7 @@
 //! Port of `Common/story.c` / `story.h`: story-mode level order and the FMV list.
 
+use crate::prelude::*;
+
 use crate::define::mode::FRONTEND_MODE;
 use crate::define::{SINGLEPLAYER, STORY_MODE};
 use crate::frogger::{FROG_BABYFROG, FROG_FROGGER, FROG_LILLIE};

@@ -10,6 +10,8 @@
 //! actor once per tick. TODO(port): revisit once the camera port can provide the
 //! on-screen test deterministically.
 
+use crate::prelude::*;
+
 use crate::ids::ActorId;
 use crate::mdx_actor::{self, init_anims, AnimEvent};
 use crate::Game;
