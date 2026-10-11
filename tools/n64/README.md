@@ -1,13 +1,13 @@
-# N64 build tools (phases 1B, 2G)
+# N64 build tools (phases 1B, 2G, 2R, 3I)
 
 Builds the Nintendo 64 ROM of the port (`crates/frogger-n64`, a Rust `no_std` + `alloc`
 static library linked into a small libdragon C host) and runs it in ares. Plan and
-budgets: `docs/N64-PLAN.md`; measured numbers: `research/n64-performance.md` (§2G for the
-playable build).
+budgets: `docs/N64-PLAN.md`; measured numbers: `research/n64-performance.md` (§3I for the
+game on the RSP renderer from the 64 MB pack).
 
 | File | Purpose |
 |---|---|
-| `build.sh` | full build → `target/n64/frogger2.z64` (game data pre-pass + ROM) |
+| `build.sh` | full build → `target/n64/frogger2.z64` (asset pack + ROM) |
 | `mips-nintendo64-none.json` | rustc target spec: VR4300 (MIPS III), big-endian, **n32** |
 | `cargo-config.toml` | `-Zbuild-std=core,alloc`, JSON target specs (passed with `--config`) |
 | `n32-to-o64.py` | relabels the Rust objects as o64 so GNU ld links them with libdragon |
@@ -16,7 +16,8 @@ playable build).
 | `run-ares.sh`, `ares-shot.ps1`, `ares-settings.py` | ares runner: screenshots, key presses, debugf log |
 | `stage-f2z-probe.py` | stages pack files + their mkasset re-compressions into the DFS root for the F2Z decode probe (`--bringup` builds; game-derived: `target/` only) |
 | `prof.py` | maps the sampling profiler's `PROF` log lines to functions (`addr2line`) |
-| `../f2-n64prep` | host pre-pass: game files → DFS layout (postcard object banks, split sound banks) |
+| `../f2-n64pack` | the asset pack (phase 1C/3I): levels F2Z, object banks + F2NM meshes, NTX1 textures, VADPCM sfx + index, ULC music, H.264 FMV; budget table |
+| `../f2-n64prep` | phase-2G pre-pass (loose DFS files; `F2N64_DATA=prep`) |
 | `export/` | `n64r-export` (own workspace): level landscape + actors -> F2NM test scene in `target/n64/filesystem/scene*.f2nm/.f2ns`, plus the PC reference PNG (f2-engine CPU renderer, same camera) |
 | `compare.sh` | side-by-side + PSNR of a PC reference and an ares capture |
 
@@ -46,25 +47,35 @@ Use your own `N64TEST` directory and ROM name when other agents run ares at the 
 
 ## Build and run
 ```sh
-F2_GAME_DIR=/path/to/game-data/usa/game tools/n64/build.sh   # the game (needs your PC data)
+F2_GAME_DIR=/path/to/game-data/usa/game tools/n64/build.sh   # the game: pack + ROM (64,323,584 bytes with the USA data)
 F2N64_BOOT="level 0 0" tools/n64/build.sh   # boot straight into Garden 1 (arcade)
 F2N64_KEEP_DFS=1 tools/n64/build.sh         # code-only rebuild, reuse target/n64/filesystem
+tools/n64/build.sh --small                  # pack without music and FMV (20.5 MB): quick iteration
 tools/n64/build.sh --bringup                # phase-1B demo + probes instead of the game
+tools/n64/build.sh --r3d-test               # phase-2R renderer test app (see below)
 tools/n64/run-ares.sh                       # boots target/n64/frogger2.z64, 1 screenshot after 8 s
 tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 28 -shots 8 -gap 5 -hold 900 -keys "Right;;Up;;X"
 cargo +nightly test --manifest-path crates/frogger-n64/Cargo.toml   # host: portable modules
 # host render of the N64 drawing path (320x240, CPU rasteriser; --n64 = texel round trip):
 cargo +nightly run --release --manifest-path crates/frogger-n64/Cargo.toml --example host_shot -- GAME_DIR out.png garden|book [TICKS] [--n64] [--cmds]
 ```
-Status / next steps: `research/n64-performance.md` §2G (end).
+Status / next steps: `research/n64-performance.md` §3I (end).
 `build.sh` steps: cargo (`--target tools/n64/mips-nintendo64-none.json`, target dir
 `target/n64/cargo`, features from `F2N64_FEATURES`) → `n32-to-o64.py` + `ranlib` → DFS root
 `target/n64/filesystem` → `make -f tools/n64/Makefile` (n64sym, n64elfcompress, n64tool
 `--toc`, 16 KiB padding, ed64romconfig header) → size check (fails above 64 MiB; warns above
 0x3FF0000 bytes, where ares disables ISViewer logging).
 
-### Game data (phase 2G; derived data, never committed — it lives in `target/n64/`)
-`tools/f2-n64prep <game dir> target/n64/filesystem target/n64/wav` lays out the DFS:
+### Game data (derived data, never committed — it lives in `target/n64/`)
+Default (phase 3I): `build.sh` runs `tools/f2-n64pack --rendition $F2_GAME_DIR/.. --out
+target/n64/pack --cache target/n64/cache` (`--only levels,models,textures,sfx` and
+`target/n64/pack-small` with `--small`) and copies the pack to `target/n64/filesystem`. The
+media encodes are cached (first run: tens of minutes for the FMV/music searches). The ROM reads
+it through `crates/frogger-n64/src/data.rs` (`PackStore`: magic dispatch `F2Z1` / `DCA` / raw;
+layout table in the module docs). The full ROM (61.34 MiB) stays under ares' 0x3FF0000-byte
+ISViewer limit, so `debugf` works on it too.
+
+Phase 2G layout (`F2N64_DATA=prep`, crate feature `prep-data`): `tools/f2-n64prep <game dir> target/n64/filesystem target/n64/wav` lays out the DFS:
 `maps/ collision/ scenics/ demos/ textures/` copied (lowercase); `objects/<x>.dll` →
 `objects/<x>.dll.pcd` (the parsed `ObjectBank`, postcard: the N64 never parses PE files);
 `sfx/<x>.wus` → `sfx/<x>.wus.meta` (the bank without PCM, postcard) + one WAV per sample,
@@ -73,19 +84,26 @@ which `audioconv64 --wav-compress vadpcm,huffman=false` turns into
 `F2N64_MUSIC` tracks (default `02 09 10 12`) from `F2_MUSIC_DIR` (default
 `$F2_GAME_DIR/../music`) → `music/trackNN.wav64` (22 kHz VADPCM). `mkasset -c 1` (LZ4)
 compresses `objects/ collision/ maps/ scenics/` (`asset_load` decompresses transparently).
-USA data: 36 MiB ROM. The compressed pack of phase 1C replaces this layout behind
-`crates/frogger-n64/src/data.rs::AssetStore`.
+USA data: 36 MiB ROM.
 
 | env | effect |
 |---|---|
-| `F2N64_BOOT` | `frontend` (default; training marked done like an existing save, since there is no save medium yet), `frontend-fresh`, `level W L` |
-| `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` (sample inside `Game::tick` only), `game-log` (the simulation's `Effect::Log`) |
-| `F2N64_KEEP_DFS=1` | skip the data pre-pass |
+| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L` |
+| `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` / `profile-draw` (sample inside `Game::tick` / `App::draw` only), `game-log` (the simulation's `Effect::Log`), `render-cpu` (phase-2G CPU renderer), `prep-data` (set by `F2N64_DATA=prep`) |
+| `F2N64_DATA` | `pack` (default) or `prep` (phase-2G loose files) |
+| `F2N64_KEEP_DFS=1` | skip the data step (reuse `target/n64/filesystem`) |
+| `F2N64_DUMP_FRAME=N` | log frame N's CPU draw commands and r3d draws |
+| `F2N64_LOG_MODELS=1` | log each model the first time r3d draws it |
+| `F2N64_ONLY_MODEL` / `F2N64_SKIP_MODEL` | comma-separated hex model ids: draw only / never these (bisecting render bugs) |
 
 Log lines (debugf → `C:\f2-n64test\run.txt`): `perf [W-L] ...` every 5 s (fps, sim ticks/s,
-dropped ticks, per-frame sim/draw/RDP time, `Game::tick` µs, triangles, audio voices, music),
+dropped ticks, per-frame sim and draw time split into draw loop / textures / CPU batches /
+framebuffer wait, RSP and RDP busy %, `Game::tick` µs, audio poll µs, CPU triangles, r3d
+draws / triangles queued and sent / batches / texture loads, audio voices, music),
 `heap [W-L] ...` (Rust live/peak, libdragon heap used/total, N64 texture bytes; level peak on
-every level change), `game: ...` on mode or pad changes, `app: level ... loaded in N ms`.
+every level change), `heap step` (per-step memory of a level load), `game: ...` on mode or
+pad changes, `app: level ... loaded in N ms`, `app: video ...`, `app: save game ...`,
+`ALLOC FAILED` (heap state when an allocation fails).
 Profiling: build with `F2N64_FEATURES=profile` (or `profile-sim`), run, then
 `python3 -I tools/n64/prof.py /mnt/c/f2-n64test/run.txt target/n64/build/frogger2.elf`.
 
@@ -101,7 +119,9 @@ arrows = D-pad, `X` = A, `Z` = B, `Return` = Start, `PageUp`/`PageDown` = L/R, `
 (`<name>.png`, `<name>_1.png`, …) and holds the keys of step *i* (comma separated
 `System.Windows.Forms.Keys` names, `;` between steps, empty step = no key) for `-hold` ms
 (default 400; the game runs at ~4 fps in ares, use 900) before capture *i*
-(`<name>_<i>held.png` is taken while they are held). Pad mapping in the game
+(`<name>_<i>held.png` is taken while they are held). At the end ares is closed through its
+window first (forced after 8 s), so it writes the cartridge save `<rom>.ram` next to the ROM.
+Pad mapping in the game
 (`src/input.rs`): A = Cross (hop), B = Circle (tongue), Z / C-Left = Square (croak),
 C-Up = Triangle, C-Down = Select, L/R = L1/R1, Start, D-pad and stick = directions; e.g.
 frontend → Garden 1: `-keys "Right;;Up;;X"` (hop to the choice pad, up to the story book, A).
@@ -147,13 +167,17 @@ Validation: the ROM logs the f2-math self-test, the scene.rs-style f32 transform
 fixed-point "tick" checksum; they are bit-identical to the host (`cargo test` asserts the
 same constants), and pad / DFS / audio / RDP calls round-trip through the bridge.
 
-## Crate layout (`crates/frogger-n64`, phase 2G)
+## Crate layout (`crates/frogger-n64`, phase 3I)
 | module | role |
 |---|---|
-| `app.rs` | front end: fixed 60 Hz `f2-game` ticks paced by C0 COUNT (catch-up ≤ 6 ticks/frame, the rest dropped and counted), level loads, effects → audio, perf/heap logs |
-| `data.rs` | `N64Data<S: AssetStore>`: the game's `DataSource` over the pre-pass layout; `DfsStore` = loose DFS files. **Phase 1C hook**: implement `AssetStore` (logical lowercase paths → bytes) over the pack |
-| `render_cpu.rs` | **Phase 2R hook**: `RenderCpu::{reset, convert_image, upload, submit}`; today `Renderer::build` → `n64_draw_tris` (3D, TMEM-sized textures) / `n64_draw_rects` (screen-aligned 2D quads via `rdpq_tex_blit`, full-size textures, >1024 px wide images split in C) |
-| `texconv.rs` | RGBA8 → RGBA16/RGBA32 + TMEM-fitting downscale |
+| `app.rs` | front end: fixed 60 Hz `f2-game` ticks paced by C0 COUNT (catch-up ≤ 6 ticks/frame, the rest dropped and counted), level loads, effects → audio / FMV / saves, perf/heap logs |
+| `data.rs` | `N64Data<S: AssetStore>`: the game's `DataSource` over the pack (`PackStore`: F2Z / DCA / raw by magic; F2SX sound index; `.prc` procedural sources) or the phase-2G layout |
+| `render_r3d.rs` | the renderer: recorded `MeshDraw`s → r3d (F2NM meshes on the RSP), the CPU batches between r3d's lists, texture-map sync |
+| `r3d.rs`, `csrc/r3d.c`, `csrc/rsp_f2*.S` | the RSP renderer (phase 2R; plus texture aliases, additive variants, level reset) |
+| `render_cpu.rs` | textures (registry image → N64 texture: NTX adoption, RGBA conversion, in-place updates) and the CPU batches (`n64_draw_tris` / `n64_draw_rects`); the whole phase-2G renderer with `render-cpu` |
+| `ntx.rs`, `ntxload.rs` | NTX1 reader; texture banks / backdrops into the registry without RGBA8 copies |
+| `save.rs` | the PC save block in SRAM |
+| `texconv.rs` | RGBA8 → RGBA16/RGBA32 + TMEM-fitting downscale (procedural textures, book pages) |
 | `audio.rs` | `Effect`s → mixer voices (wav64), PC `PlaySample` positional maths; music |
 | `input.rs` | N64 pad → PSX pad bits |
 | `rt.rs`, `ffi.rs`, `csrc/` | runtime glue and the C host (`n64_*`) |

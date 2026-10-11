@@ -102,3 +102,16 @@ recorded once into an rspq block. Per draw the CPU culls batches by sphere, then
 visible blocks, loading a texture (a 144-byte RDP command descriptor processed inside the
 magma overlay) when it changes. See `crates/frogger-n64/src/r3d.rs` and
 `research/n64-performance.md` (phase 2R).
+
+## Object banks (phase 3I, `f2_n64fmt::bank`, feature `objbank`)
+The pack stores one F2NM file per object bank (`objects/<bank>.dll.f2nm`, meshes only:
+textures come from the NTX1 banks and are resolved by CRC). Mesh ids are
+`model_index << 16 | object` (`object` = pre-order index, `0xFFFF` = a skinned model's root
+mesh), so the front end maps a recorded draw (`f2_engine::MeshDraw { model, object }`) to its
+mesh without names. Faces without a texture CRC, with out-of-range indices or (skins) with a
+vertex no bone moves are dropped like `PCRenderObject` does; `wrap`/`ordered` follow the frame
+list of the object's flags (the landscape `world.obe` is clamped and unordered). Meshes the game
+always draws additively (object flag, or models named `ada*`, `wat_*`, `xxa_*`) store their
+corner colours split as `rgb / max(rgb)`, `a * max(rgb)` (`additive_corner`): the renderer
+draws additive lists with the alpha blender and each texture's additive variant (same split),
+which reproduces the D3D `src * a` term exactly.

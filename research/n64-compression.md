@@ -325,3 +325,18 @@ Next: (1) a per-file regression to recalibrate `CycleModel::tok_*` from the prob
 (2) optional MIPS-assembly token decoder / DMA-overlapped decode to push F2Z-fast past aPLib;
 (3) 2D literal context for textures; (4) no_std port of `models::decode` once the phase-2R
 mesh format lands; (5) single-blob sfx file.
+
+## 9. Phase 3I changes (the runtime uses the pack)
+- **models**: `rmodels.rs` replaces F2MB in the default pack: `objects/<bank>.dll.pcd` (the
+  `ObjectBank`, postcard, mesh geometry reduced to the vertices — all the simulation reads) +
+  `objects/<bank>.dll.f2nm` (F2NM render meshes, `docs/n64-model-format.md`), both aPLib:
+  9.4 MB → 2.98 MB. F2MB stays for the codec bench.
+- **textures**: NTX1 unchanged (loaded zero-copy by `crates/frogger-n64/src/ntxload.rs`); the
+  pack adds the three font BMPs and `textures/<bank>.prc` (postcard `TexBank` of the
+  procedural sources the simulation reads).
+- **sound effects**: all VADPCM from the start and without the Huffman stage (`vadpcm,huffman=false`:
+  RSP-only decode; libdragon's Opus wav64 keeps one decoder state per file and cannot serve
+  several voices of the same sample).
+- **music**: ULC stereo ABR, the highest of 128/112/96/… kbps that fits (128: 24.3 MB). Opus
+  99 kbps measured ~14 ms of VR4300 time per 60 Hz tick for one track in ares; ULC ~2 ms.
+- Full ROM: 64,323,584 bytes (`research/n64-performance.md` §3I).

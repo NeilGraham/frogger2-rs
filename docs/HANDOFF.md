@@ -16,6 +16,7 @@ agent was told to commit WIP and keep a "Status / next steps" section in its doc
 | Branch suffix | Task | Status at handoff | Next |
 |---|---|---|---|
 | `adc96df12c4758e62` | N64 1C: asset packer `tools/f2-n64pack`, codec `crates/f2-n64z` (F2Z), `research/n64-compression.md` | **done, merged** (`6d4b562`): whole game packs to 54.21 MiB (aPLib models/textures, F2Z levels, VADPCM sfx, Opus music 99 kbps, H.264 FMV 320x240) | N64 loader must dispatch on magic (`F2Z1` / `DCA` / raw), no_std model-format reader or conversion to 2R mesh format, FMV via `fmv_play` |
+| `adf53493d6484db51` | N64 3I: 2R merged; the game on r3d from the 1C pack (F2NM meshes via the mesh sink, NTX1 textures, F2Z levels, F2SX sfx, ULC music, FMV, SRAM saves) | **done, NOT merged** (see `research/n64-performance.md` §3I): ROM 64,323,584 B; all worlds boot in ares at 3.6–9.7 fps (sim-bound), loads 0.5–0.8 s | merge into `feature/n64` (2R comes with it); then: rspq ring size / frame block (CPU waits on the RSP), `xform_actor` caching, texture arena against fragmentation, hardware test |
 | `a7fca4ab703e18cb9` | N64 2R: RSP renderer on libdragon magma + custom MDX vertex shader (`csrc/rsp_f2mdx.S`), F2NM mesh format (`crates/f2-n64fmt`, `docs/n64-model-format.md`), API `frogger_n64::r3d` | **done, NOT merged** (head `a7cceb6`, based on `bb36afb`): ~4100 tris/frame at 60 fps in ares; Garden 1 game camera 60 fps | merge into `feature/n64` (expect conflicts: its default ROM runs the renderer test app, 2G's runs the game — keep the game as default, renderer test behind a feature); then wire `r3d` into the 2G front end in place of `render_cpu.rs`, and have `tools/f2-n64pack` emit F2NM meshes |
 | `acca0b3ce23c50ba2` | N64 2G: playable game loop + water/story-book fixes | **done, merged** (`efe8ea4`) | arcade-machine screen copy not drawn (needs retained RGBA like the book); FMV, saves |
 | `a90c2347f335f8b21` | N64 3S: f2-game speed on the VR4300 (sim = 10–14 ms/tick, need ≤ ~5) with bit-identical parity | in progress | exact rsin/rcos tables, no per-tick list copies, cached per-level data; parity: 3 demo traces + `f2-parity check --corpus all` identical |
@@ -44,7 +45,8 @@ agent was told to commit WIP and keep a "Status / next steps" section in its doc
 - Playable in ares (frontend → Garden 1, sfx, music) at 3.5–4 fps; sim 35–45 % real time.
 - Faithful CPU render path ≈ 6100 cycles/tri (≈256 tris/frame at 60); game needs 450–1500 → RSP renderer (2R).
 - RAM: peak 4.2 MiB of 6.1 MiB free heap. Level loads 5–7 s.
-- Not done: FMV, saves, 64 MB pack integration (1C), all-levels pass, perf to 30/60 fps.
+- Not done (as of 2G): FMV, saves, 64 MB pack integration (1C), all-levels pass, perf to 30/60 fps.
+  Phase 3I (branch `worktree-agent-adf53493d6484db51`) did the first four; perf is sim-bound.
 
 ## Tool locations outside the repo
 `~/opt/openorbis` (PS4 toolchain), `~/opt/libssl11` (PkgTool's OpenSSL 1.1), `~/opt/ps5-payload-sdk`

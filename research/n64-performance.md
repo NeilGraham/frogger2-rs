@@ -475,3 +475,128 @@ rt::present();
 - Hardware check of RDP fill rate.
 - Measuring RSP time needs flat mode: replaying magma blocks nested inside an
   rdpq-recorded block corrupted the RDP buffers in this libdragon preview (probe kind 6).
+
+## 3I: the game on the RSP renderer from the 64 MB pack (2026-10-11)
+
+Branch `worktree-agent-adf53493d6484db51` (from `feature/n64` + 2R merged). The default ROM is
+the game drawn by r3d, with every asset from the 1C pack; `render-cpu` (phase-2G renderer),
+`prep-data` (phase-2G loose files), `r3d-test` (2R test app) and `bringup` (1B probes) are
+crate features.
+
+### What changed
+- **Rendering** (`src/render_r3d.rs`): `f2-engine`'s `Renderer` has an optional *mesh sink*;
+  with it `draw_actor` / `draw_landscape` record `MeshDraw`s (model, pre-order object,
+  `xform_actor` matrices, `object_frame` list, alpha/gouraud/overrideTex/noClip/fog) instead
+  of transforming vertices, so `f2-draw`'s draw loop is unchanged. r3d draws them from F2NM
+  meshes (`f2_n64fmt::bank`: one file per object bank, ids `model << 16 | object`);
+  everything else the engine builds on the CPU (backdrops, shadows, sprites, effects,
+  overlays, text) is drawn by `render_cpu.rs` between r3d's lists
+  (`Renderer::build_segments`), in `DrawAllFrames` order; CPU triangles share r3d's linear
+  depth (`ViewParams::tl_z`). The sky (`noClip`) is a depth-less first list: its depth
+  beyond the far plane saturates into the coarse far end of the RDP z-buffer. Models showing
+  the story book's render-to-texture pages (256x256) stay on the CPU path (TMEM tiles).
+- **Textures**: NTX1 banks (1C) are loaded zero-copy (`src/ntxload.rs`, `src/ntx.rs`):
+  each registry entry gets a pixel-less placeholder image and a C texture pointing into the
+  file (CI4/CI8 + TLUT, IA, I, RGBA16/32, per-tile palettes for backdrops; `ai_` masks and
+  opaque I images become IA, procedural textures show the PC's initial `ai_`-style upload);
+  r3d aliases them (images larger than one TMEM load get a downscaled RGBA32 copy).
+  Animated textures follow the registry's `current`; procedural textures are updated in
+  place (aliases and load descriptors stay valid).
+- **Additive**: r3d's additive lists use each texture's additive variant (colour / max,
+  alpha * max: the alpha blender then adds the exact D3D `src * a` term without the RDP's
+  wrap-around); vertex colours of additive meshes are split the same way at pack time
+  (`additive_corner`, incl. the models the game makes additive by name: `ada*`, `wat_*`,
+  `xxa_*`) and on the CPU path. Found on Space 1, where the glass (`ada_glss`) was opaque.
+- **Data** (`src/data.rs`): `PackStore` dispatches on the magic (`F2Z1` → F2Z with the
+  resident dictionaries, `DCA` → `asset_load`, raw); object banks as postcard with
+  vertex-only geometry (all the simulation reads) + F2NM render meshes; `sfx/index.bin`
+  (F2SX) for the simulation's sound banks and the voices (one open per deduplicated file);
+  `textures/<bank>.prc` = the procedural-texture sources `pt_texture_load` needs.
+- **Audio**: sound effects all VADPCM without the Huffman stage (RSP-only decode; Opus
+  wav64 cannot be shared by voices). **Music is ULC stereo ABR 128 kbps** (Opus 99 kbps cost
+  ~14 ms of CPU per 60 Hz tick in ares, a third of the frame; ULC ~2 ms at the same bitrate).
+- **FMV**: `Effect::PlayVideo` → `fmv_play("rom:/video/<name>.h264")` over the game's
+  display (no display re-init), skippable with A/B/Start; logos and story FMVs play.
+- **Saves**: the 2112-byte PC block in 256 Kbit SRAM (`src/save.rs`: header + FNV-1a), read
+  at boot, written on `Effect::SaveGame`; flashcarts (EverDrive, SummerCart64) and ares
+  support SRAM (ares writes `<rom>.ram` on a clean exit; the harness now closes ares
+  gracefully). The "training done" boot hack is gone (`F2N64_BOOT=frontend-trained` for tests).
+- **RDRAM** (heap 5.6 MiB after the 2.5 MiB of code/BSS): BSS -290 KiB (one inline surface per
+  texture slot), mixer limits (48 kHz music, 44.1 kHz sfx) and 300 ms latency, the book page
+  composed in a frontend-only canvas straight into a half-size texture, game fonts kept
+  across levels (reloading `bigfont.bmp` needed a 427 KiB RGBA8 block), NTX banks loaded
+  first (largest blocks) — level loads failed on a fragmented heap before.
+
+### ROM and budget
+`F2_GAME_DIR=… tools/n64/build.sh` → `target/n64/frogger2.z64` = **64,323,584 bytes
+(61.34 MiB)**, 2,785,280 bytes under the 64 MiB cartridge and 2,719,744 under ares' ISViewer
+limit (0x3FF0000), so `debugf` logging works on the full ROM; `--small` (no music/FMV, 20.5 MB)
+remains as the quick-iteration ROM. Pack (`f2-n64pack`, DFS 62,136,336 B):
+
+| class | files | packed | MiB |
+|---|---:|---:|---:|
+| models (postcard vertex-only banks + F2NM meshes, aPLib) | 142 | 2,976,279 | 2.84 |
+| textures + fonts + backdrops + procedural sources (NTX1, aPLib) | 87 | 2,798,430 | 2.67 |
+| levels (F2Z + 64 KiB dictionary) | 245 | 386,176 | 0.37 |
+| sound effects (VADPCM, no Huffman) | 418 | 12,307,394 | 11.74 |
+| music (ULC stereo ABR 128 kbps) | 11 | 24,299,658 | 23.17 |
+| FMV (H.264 320x240 + Opus 48/96 kbps) | 28 | 19,310,600 | 18.42 |
+| code (compressed ELF: text 2.03 MB, data 0.12 MB, BSS 0.40 MB) | | ~2,187,000 | 2.09 |
+
+### Per scene (ares v148, 5 s `perf` windows, median after the first)
+Evidence (derived from game data; not in the repo): `C:\f2-n64test-3i\evidence\`:
+`f2-boot*.png` + `f2-boot-run.txt` (logo FMVs, intro FMV, frontend), `f2-fe*.png` +
+`f2-fe-run.txt` (FMVs skipped with A, frontend, story book, A → training level 8-3),
+`f2-lv{W}-0*.png` + `lv{W}-0-run.txt` (each world's first level, booted with
+`F2N64_BOOT="level W 0"`), `side-lv{W}-0.png` (PC `frogger --headless --profile authentic
+--size 320x240 --frames 600` at 2x | N64 capture; `pc/pc-lv{W}-0.png`), `f2-savetest-boot{1,2}-run.txt`
+(SRAM save written, then loaded on the next boot).
+
+| scene | fps | sim ticks/s | `Game::tick` | audio poll / tick | sim / frame | draw / frame (of which draw loop) | RSP busy | RDP busy | r3d draws | tris queued / sent | batches | tex loads | load | heap used |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| frontend (8-0) | 7.8 | 46 | 9.8 ms | 1.8 ms | 71 ms | 51 ms (20) | 20 % | 14 % | 151 | 4859 / 2023 | 124 | 91 | 0.8 s | 5012 KiB |
+| Garden 1 (0-0) | 6.6 | 39 | 12.9 ms | 1.8 ms | 90 ms | 54 ms (27) | 19 % | 10 % | 205 | 9228 / 2122 | 136 | 98 | 0.7 s | 4171 KiB |
+| Ancients 1 (1-0) | 7.0 | 42 | 10.4 ms | 1.9 ms | 77 ms | 60 ms (33) | 18 % | 10 % | 248 | 9846 / 1586 | 93 | 80 | 0.8 s | 4527 KiB |
+| Space 1 (2-0) | 3.6 | 21 | 25.1 ms | 4.5 ms | 180 ms | 85 ms (43) | 19 % | 10 % | 243 | 9522 / 3089 | 159 | 85 | 0.7 s | 4231 KiB |
+| City (3-0) | 27.3 | 60 | 5.0 ms | 0.8 ms | 14 ms | 19 ms (7) | 29 % | 24 % | 27 | 2600 / 862 | 43 | 28 | 0.7 s | 3822 KiB |
+| Subterranean 1 (4-0) | 4.6 | 28 | 15.1 ms | 3.5 ms | 118 ms | 78 ms (45) | 24 % | 12 % | 328 | 10525 / 1901 | 100 | 68 | 0.7 s | 4422 KiB |
+| Lab 1 (5-0) | 4.1 | 24 | 16.7 ms | 4.8 ms | 133 ms | 87 ms (43) | 23 % | 12 % | 271 | 9326 / 2148 | 151 | 127 | 0.7 s | 4443 KiB |
+| Halloween 1 (6-0) | 4.9 | 29 | 16.7 ms | 3.0 ms | 122 ms | 74 ms (37) | 20 % | 10 % | 293 | 9227 / 2962 | 202 | 155 | 0.8 s | 4368 KiB |
+| Retro 1 (7-0) | 9.7 | 58 | 10.1 ms | 1.1 ms | 69 ms | 30 ms (15) | 16 % | 7 % | 112 | 2433 / 843 | 42 | 23 | 0.5 s | 3444 KiB |
+
+Heap total 5642 KiB. "draw" = `App::draw` on the CPU: the `f2-draw` loop (matrices via
+`xform_actor`, sprites, effects, HUD), texture uploads, CPU-batch build and submission, r3d's
+queue and flush, and the time the CPU waits for room in the RSP command queue. RSP/RDP busy =
+share of wall time the RSP is not halted / the RDP pipeline busy (2 kHz sampling of SP/DP
+status; includes the audio mixer's RSP work). Phase 2G for comparison (CPU renderer, Garden 1):
+4.2 fps, draw 145 ms, level loads 4.9–6.8 s.
+
+**The frame is simulation-bound**: at most 6 ticks run per frame and each costs 10–25 ms
+(`Game::tick`) + 1–5 ms of audio polling; the rest of real time is dropped. With phase 3S's
+work-in-progress simulation (`worktree-agent-a90c2347f335f8b21` at `b3f1209`, f2-game/f2-math
+only, measured in this ROM and not kept): Garden 1 `Game::tick` 13.1 → 9.7 ms, 6.5 → 7.7 fps.
+The draw side costs 20–90 ms per frame today: per frame ~15–45 ms of `xform_actor` and the PC
+draw loop for the recorded meshes, ~5–13 ms of CPU batches, and ~10–20 ms of r3d queueing,
+part of it waiting for the RSP: libdragon's low-priority rspq ring is 2 x 2 KiB
+(`RSPQ_DRAM_LOWPRI_BUFFER_SIZE` 0x200 words), so the CPU blocks in `rspq_next_buffer` once it
+is ~4 KiB of commands ahead of the RSP instead of overlapping the next frame's simulation.
+
+### Visual comparison (PC authentic 320x240 vs N64, 2x upscale PSNR)
+Garden 1 17.5, Ancients 19.6, Space 17.9, City 20.5, Subterranean 18.3, Lab 16.1, Halloween
+21.4, Retro 14.4 dB (moving actors and the clock differ between the captures: PC at tick 600,
+N64 ~12 s of game time; the VI filter and 16-bit dither as in 2R). Geometry, textures, HUD,
+text, shadows, sprites and effects match; the water and other additive surfaces are slightly
+paler (the background is attenuated by the effect's brightness); the story book's pages are
+softer (half-size render target, see RDRAM above).
+
+### Status / next steps (resume from this branch)
+- Runs: boot logos + intro FMV → frontend → story book → training (new player) / Garden 1
+  and every world's first level; saves persist in SRAM; music, sfx, FMV audio.
+- Speed: (1) the simulation (phase 3S); (2) the CPU's wait on the 4 KiB rspq ring: a larger
+  `RSPQ_DRAM_LOWPRI_BUFFER_SIZE` (libdragon rebuild) or recording the frame's r3d commands into
+  one block; (3) `xform_actor` per actor per frame (cache matrices of actors whose pose did not
+  change); (4) procedural textures re-make their additive variant every update (~1 ms each).
+- RDRAM: ~600 KiB free in the frontend; long sessions fragment the heap (big NTX banks): an
+  arena for level texture files would make loads deterministic.
+- Not done: multiplayer, arcade-machine screen copy, subtractive blend (approximated),
+  real-hardware check (RDP fill rate, PI speed, SRAM on a flashcart).

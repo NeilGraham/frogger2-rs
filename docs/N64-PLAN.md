@@ -139,6 +139,15 @@ with the PC data structures (simulation + parsed object banks + 16-bit textures)
      and 35–40 % of real time. Numbers and profile: `research/n64-performance.md` §2G.
 3. **Completeness + performance**: all levels, frontend/menus, multiplayer split-screen,
    FMV; profile and move hot paths to RSP; tune budgets to fill 64 MB.
+   - **3I status (2026-10-11)**: the game on the RSP renderer from the 64 MB pack. The
+     default ROM (`F2_GAME_DIR=… tools/n64/build.sh`, 64,323,584 bytes) boots the logo and
+     intro FMVs (`fmv_play`), the frontend, the story book and every world's levels; meshes
+     go through r3d (F2NM per object bank, recorded by `f2-engine`'s mesh sink), sprites/HUD/
+     effects through the CPU path between r3d's lists; data from `tools/f2-n64pack` (F2Z
+     levels, aPLib banks/meshes/NTX1 textures, VADPCM sfx with the F2SX index, ULC music,
+     H.264 FMV); saves in 256 Kbit SRAM. 3.6–9.7 fps in the levels (City 27), level loads
+     0.5–0.8 s; simulation-bound (`Game::tick` 10–25 ms). Details, budget, evidence and next
+     steps: `research/n64-performance.md` §3I.
 4. **Polish**: 60 fps where possible, flashcart testing notes, docs.
 
 ## 5. Rules
