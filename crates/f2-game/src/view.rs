@@ -424,17 +424,22 @@ pub struct XNode {
     pub xlu: u8,
     /// `MDX_OBJECTSPRITE` placement: `x, y, z, sx, sy` per object sprite.
     pub sprites: Vec<[i16; 5]>,
+    /// Phase 3S: this object or a descendant has sprites (`sprite_count() > 0`).
+    pub has_sprites: bool,
 }
 
 impl XNode {
     pub fn from_object(o: &Object) -> XNode {
-        XNode {
+        let mut x = XNode {
             name: o.name.clone(),
             keys: RootObject::from_object(o),
             children: o.children.iter().map(XNode::from_object).collect(),
             xlu: o.xlu,
             sprites: o.sprites.iter().map(|s| [s.pos[0], s.pos[1], s.pos[2], s.size[0], s.size[1]]).collect(),
-        }
+            has_sprites: false,
+        };
+        x.has_sprites = x.sprite_count() > 0;
+        x
     }
 
     fn sprite_count(&self) -> usize {
@@ -458,18 +463,25 @@ fn transform_object_sprites(
     f: &mut dyn FnMut(usize, Vec3, f32, f32, u8),
 ) {
     for me in chain {
+        // Phase 3S: an object without sprites in its subtree calls `f` for nothing and its
+        // matrices only feed that subtree: skipped (sprite indices count sprites only).
+        if !me.has_sprites {
+            continue;
+        }
         let mut last = [0i16; 3];
         let (rotmat, scale) = object_local_k(&me.keys, animated, time, &mut last, p.scale, parent_scale);
         let m1 = mtx_cat(&rotmat, top);
         let a = p.scale;
-        let obj = mtx_cat(&gu_scale(scale[0] * a[0], scale[1] * a[1], scale[2] * a[2]), &m1);
-        for s in &me.sprites {
-            let sx = 2.0 * (s[3] as f32 * a[0] * scale[0]);
-            let sy = 2.0 * (s[4] as f32 * a[1] * scale[1]);
-            // "TEMPORARY" SPRITE FIX: the sprite's z is negated.
-            let t = mtx_xfm(&obj, [s[0] as f32, s[1] as f32, -(s[2] as f32)]);
-            f(*next, [t[0] * 10.0, t[1] * 10.0, t[2] * 10.0], sx, sy, me.xlu);
-            *next += 1;
+        if !me.sprites.is_empty() {
+            let obj = mtx_cat(&gu_scale(scale[0] * a[0], scale[1] * a[1], scale[2] * a[2]), &m1);
+            for s in &me.sprites {
+                let sx = 2.0 * (s[3] as f32 * a[0] * scale[0]);
+                let sy = 2.0 * (s[4] as f32 * a[1] * scale[1]);
+                // "TEMPORARY" SPRITE FIX: the sprite's z is negated.
+                let t = mtx_xfm(&obj, [s[0] as f32, s[1] as f32, -(s[2] as f32)]);
+                f(*next, [t[0] * 10.0, t[1] * 10.0, t[2] * 10.0], sx, sy, me.xlu);
+                *next += 1;
+            }
         }
         if !me.children.is_empty() {
             transform_object_sprites(&me.children, &m1, scale, p, animated, time, next, f);
@@ -797,7 +809,7 @@ impl Game {
         // After `ChangeModel` the controller is the shared bank model (NULL sprite pointers).
         let Some(ptrs) = a2.obj_sprites.as_ref().filter(|(m, _)| *m == mid).map(|(_, p)| p) else { return };
         let Some(model) = self.models.get(mid) else { return };
-        if model.xform_tree.iter().map(XNode::sprite_count).sum::<usize>() == 0 {
+        if !model.xform_tree.iter().any(|x| x.has_sprites) {
             return;
         }
         let animated = a.animation.is_some();
