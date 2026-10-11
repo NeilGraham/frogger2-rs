@@ -27,6 +27,9 @@ typedef struct {
     surface_t full[MAX_CHUNKS], small;
     int nfull, width;
     bool used, small_is_full;
+    bool tile3d; /* triangles sample `full` in TMEM tiles instead of `small` (N64_TEX_TILE3D) */
+    surface_t addv; /* additive variant (made on first additive use, see make_add_variant) */
+    bool has_addv;
 } tex_t;
 static tex_t textures[MAX_TEXTURES]; /* handle 0 = none */
 static uint32_t tex_hint = 1;
@@ -186,7 +189,7 @@ void *n64_file_read_impl(const char *path, uint32_t *len) {
 /* ---- textures ---- */
 /* Columns x0 .. x0+w of an image description as a new surface. */
 static surface_t make_surface_cols(const n64_tex_desc_t *d, uint32_t x0, uint32_t w) {
-    tex_format_t fmt = d->fmt == 1 ? FMT_RGBA32 : FMT_RGBA16;
+    tex_format_t fmt = (d->fmt & 0xff) == 1 ? FMT_RGBA32 : FMT_RGBA16;
     surface_t s = surface_alloc(fmt, w, d->height);
     uint32_t row = TEX_FORMAT_PIX2BYTES(fmt, d->width), off = TEX_FORMAT_PIX2BYTES(fmt, x0);
     uint32_t n = TEX_FORMAT_PIX2BYTES(fmt, w);
@@ -221,6 +224,7 @@ uint32_t n64_tex_create2_impl(const n64_tex_desc_t *full, const n64_tex_desc_t *
         }
         t->small_is_full = small == NULL && t->nfull == 1;
         t->small = small ? make_surface(small) : t->full[0];
+        t->tile3d = (full->fmt & N64_TEX_TILE3D) && t->nfull == 1 && small != NULL;
         t->used = true;
         tex_hint = h + 1;
         return h;
@@ -236,6 +240,7 @@ void n64_tex_free_impl(uint32_t h) {
     rspq_wait();
     tex_t *t = &textures[h];
     if (!t->small_is_full && t->small.buffer != t->full[0].buffer) surface_free(&t->small);
+    if (t->has_addv) surface_free(&t->addv);
     free_full(t);
     memset(t, 0, sizeof *t);
     if (h < tex_hint) tex_hint = h;
@@ -254,6 +259,66 @@ void n64_begin_frame_impl(uint32_t rgba) {
     cur_tex_loaded = 0;
 }
 
+/* ---- additive blending without wrap-around ----
+ * The RDP blender computes P*A + M*B; the D3D additive mode (SRCALPHA, ONE) maps to
+ * IN*IN_ALPHA + MEM*1, whose sum WRAPS past 1.0 instead of saturating (libdragon:
+ * "additive blending is broken on RDP"): bright water caustics over the dark river turned
+ * into red/green splotches. There is no saturating additive factor, so additive batches are
+ * drawn with the alpha blender (IN*a + MEM*(1-a), which cannot overflow) from a variant of
+ * the texture whose colour is normalised to its brightest channel and whose alpha carries
+ * that brightness: c' = rgb / max(rgb), a' = a * max(rgb). Then IN*a' equals the additive
+ * term rgb*a exactly; the only difference to D3D is that the background is attenuated by
+ * (1 - a') where the effect is bright. Variants are RGBA32 (8-bit alpha), at most 1024
+ * texels (box-halved if needed), made once per texture on its first additive use. */
+static void make_add_variant(tex_t *t) {
+    const surface_t *s = &t->small;
+    int w = s->width, h = s->height;
+    bool rgba32 = surface_get_format(s) == FMT_RGBA32;
+    int sx = 1, sy = 1;
+    while ((w / sx) * (h / sy) > 1024) {
+        if (w / sx >= h / sy) sx *= 2; else sy *= 2;
+    }
+    int nw = w / sx > 0 ? w / sx : 1, nh = h / sy > 0 ? h / sy : 1;
+    t->addv = surface_alloc(FMT_RGBA32, nw, nh);
+    for (int y = 0; y < nh; y++) {
+        uint8_t *dst = (uint8_t *)t->addv.buffer + y * t->addv.stride;
+        for (int x = 0; x < nw; x++) {
+            uint32_t acc[4] = {0, 0, 0, 0}, n = 0;
+            for (int yy = y * sy; yy < (y + 1) * sy && yy < h; yy++)
+                for (int xx = x * sx; xx < (x + 1) * sx && xx < w; xx++) {
+                    const uint8_t *row = (const uint8_t *)s->buffer + yy * s->stride;
+                    uint32_t r, g, b, a;
+                    if (rgba32) {
+                        r = row[xx * 4]; g = row[xx * 4 + 1]; b = row[xx * 4 + 2]; a = row[xx * 4 + 3];
+                    } else {
+                        uint16_t v = (row[xx * 2] << 8) | row[xx * 2 + 1];
+                        r = ((v >> 11) & 31) * 255 / 31; g = ((v >> 6) & 31) * 255 / 31; b = ((v >> 1) & 31) * 255 / 31;
+                        a = (v & 1) ? 255 : 0;
+                    }
+                    /* premultiplied accumulation: what the additive mode adds is rgb*a */
+                    acc[0] += r * a; acc[1] += g * a; acc[2] += b * a; n++;
+                }
+            uint32_t r = acc[0] / (255 * n), g = acc[1] / (255 * n), b = acc[2] / (255 * n);
+            uint32_t m = r > g ? (r > b ? r : b) : (g > b ? g : b);
+            dst[x * 4 + 0] = m ? r * 255 / m : 0;
+            dst[x * 4 + 1] = m ? g * 255 / m : 0;
+            dst[x * 4 + 2] = m ? b * 255 / m : 0;
+            dst[x * 4 + 3] = m;
+        }
+    }
+    t->has_addv = true;
+}
+
+/* The surface triangles of this state sample (TMEM-sized). */
+static const surface_t *tri_surface(const n64_state_t *st) {
+    tex_t *t = &textures[st->tex];
+    if (st->blend == N64_BLEND_ADD) {
+        if (!t->has_addv) make_add_variant(t);
+        return &t->addv;
+    }
+    return &t->small;
+}
+
 static void apply_state(const n64_state_t *st, int kind) {
     bool tex = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used;
     if (cur_kind != kind || st->flags != cur_state.flags || st->blend != cur_state.blend ||
@@ -269,7 +334,8 @@ static void apply_state(const n64_state_t *st, int kind) {
         rdpq_mode_alphacompare((int)st->alpha_ref);
         switch (st->blend) {
         case N64_BLEND_SEMI: rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY); break;
-        case N64_BLEND_ADD: rdpq_mode_blender(RDPQ_BLENDER_ADDITIVE); break;
+        /* Never RDPQ_BLENDER_ADDITIVE (wraps): see make_add_variant. */
+        case N64_BLEND_ADD: rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY); break;
         /* TODO(phase 2): D3D ZERO/INVSRCCOLOR has no exact RDP blender equivalent (the
          * blender only has alpha factors); approximated as multiply for now. */
         case N64_BLEND_SUB: rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY); break;
@@ -280,12 +346,84 @@ static void apply_state(const n64_state_t *st, int kind) {
     if (kind == 0 && tex && (st->tex != cur_tex_loaded || ((st->flags ^ cur_state.flags) & N64_WRAP))) {
         rdpq_texparms_t parms = {0};
         if (st->flags & N64_WRAP) parms.s.repeats = parms.t.repeats = REPEAT_INFINITE;
-        rdpq_tex_upload(TILE0, &textures[st->tex].small, &parms);
+        rdpq_tex_upload(TILE0, tri_surface(st), &parms);
         cur_tex_loaded = st->tex;
     }
     if (kind == 1) cur_tex_loaded = 0; /* blits reload TMEM */
     cur_state = *st;
     cur_kind = kind;
+}
+
+/* ---- large textures on triangles: TMEM tiles ----
+ * A triangle whose texture does not fit TMEM is clipped (in texel space) against a grid of
+ * TILE_W x TILE_H texel tiles; each piece is drawn after uploading its tile (+1 texel border
+ * for bilinear) with rdpq_tex_upload_sub, which keeps the full texture's coordinates.
+ * Attributes are interpolated linearly (the triangles are affine). Used for textures
+ * flagged N64_TEX_TILE3D (render-to-texture pages, fonts, screens), not for wrapping ones. */
+#define TILE_W 32
+#define TILE_H 32
+#define CLIP_MAX 12
+
+static int clip_axis(n64_vertex_t *in, int n, n64_vertex_t *out, int axis, float lim, bool keep_greater) {
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        n64_vertex_t *a = &in[i], *b = &in[(i + 1) % n];
+        float va = axis ? a->t : a->s, vb = axis ? b->t : b->s;
+        bool ia = keep_greater ? va >= lim : va <= lim, ib = keep_greater ? vb >= lim : vb <= lim;
+        if (ia && m < CLIP_MAX) out[m++] = *a;
+        if (ia != ib && m < CLIP_MAX) {
+            float k = (lim - va) / (vb - va);
+            const float *fa = (const float *)a, *fb = (const float *)b;
+            float *fo = (float *)&out[m++];
+            for (int j = 0; j < 10; j++) fo[j] = fa[j] + (fb[j] - fa[j]) * k;
+        }
+    }
+    return m;
+}
+
+static void draw_tri_tiled(const rdpq_trifmt_t *f, const tex_t *tx, const n64_vertex_t *v, uint32_t flags) {
+    const surface_t *s = &tx->full[0];
+    float w = s->width, h = s->height;
+    n64_vertex_t t[3];
+    float smin = 1e9f, smax = -1e9f, tmin = 1e9f, tmax = -1e9f;
+    for (int j = 0; j < 3; j++) {
+        t[j] = v[j];
+        t[j].s *= w;
+        t[j].t *= h;
+        if (t[j].s < smin) smin = t[j].s;
+        if (t[j].s > smax) smax = t[j].s;
+        if (t[j].t < tmin) tmin = t[j].t;
+        if (t[j].t > tmax) tmax = t[j].t;
+    }
+    int x0 = (int)smin, x1 = (int)smax + 1, y0 = (int)tmin, y1 = (int)tmax + 1;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)w) x1 = w;
+    if (y1 > (int)h) y1 = h;
+    rdpq_texparms_t parms = {0};
+    for (int ty = y0 / TILE_H * TILE_H; ty < y1; ty += TILE_H) {
+        for (int tx0 = x0 / TILE_W * TILE_W; tx0 < x1; tx0 += TILE_W) {
+            n64_vertex_t a[CLIP_MAX], b[CLIP_MAX];
+            int n = 3;
+            memcpy(a, t, sizeof t);
+            /* Outer tiles keep what lies beyond the texture (clamped addressing). */
+            if (tx0 > 0) n = clip_axis(a, n, b, 0, tx0, true); else memcpy(b, a, sizeof(n64_vertex_t) * n);
+            if (n < 3) continue;
+            if (tx0 + TILE_W < (int)w) n = clip_axis(b, n, a, 0, tx0 + TILE_W, false); else memcpy(a, b, sizeof(n64_vertex_t) * n);
+            if (n < 3) continue;
+            if (ty > 0) n = clip_axis(a, n, b, 1, ty, true); else memcpy(b, a, sizeof(n64_vertex_t) * n);
+            if (n < 3) continue;
+            if (ty + TILE_H < (int)h) n = clip_axis(b, n, a, 1, ty + TILE_H, false); else memcpy(a, b, sizeof(n64_vertex_t) * n);
+            if (n < 3) continue;
+            int ux1 = tx0 + TILE_W + 1, uy1 = ty + TILE_H + 1;
+            if (ux1 > (int)w) ux1 = w;
+            if (uy1 > (int)h) uy1 = h;
+            rdpq_tex_upload_sub(TILE0, s, &parms, tx0, ty, ux1, uy1);
+            for (int k = 1; k + 1 < n; k++)
+                rdpq_triangle(f, (const float *)&a[0], (const float *)&a[k], (const float *)&a[k + 1]);
+        }
+    }
+    cur_tex_loaded = 0;
 }
 
 void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
@@ -300,9 +438,13 @@ void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t
         .pos_offset = 0, .z_offset = (i & 2) ? 2 : -1, .shade_offset = 3,
         .tex_offset = (i & 1) ? 7 : -1, .tex_tile = TILE0,
     };
+    if (tex && (st->flags & N64_UVNORM) && textures[st->tex].tile3d && !(st->flags & N64_WRAP) && st->blend != N64_BLEND_ADD) {
+        for (uint32_t k = 0; k < ntris; k++, v += 3) draw_tri_tiled(f, &textures[st->tex], v, st->flags);
+        return;
+    }
     if (tex && (st->flags & N64_UVNORM)) {
         /* Normalised UVs: scale to the TMEM-sized surface. */
-        const surface_t *s = &textures[st->tex].small;
+        const surface_t *s = tri_surface(st);
         float sw = s->width, sh = s->height;
         n64_vertex_t t[3];
         for (uint32_t k = 0; k < ntris; k++, v += 3) {

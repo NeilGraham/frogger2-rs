@@ -23,6 +23,7 @@ pub(crate) mod prelude {
     pub use alloc::{format, vec};
 }
 
+pub mod book;
 pub mod fx;
 pub mod overlay;
 pub mod render;

@@ -25,6 +25,9 @@ pub const WRAP: u32 = 1 << 3;
 pub const PERSP: u32 = 1 << 4;
 /// Triangles: `s`, `t` are normalised 0..1 (the host scales them to the TMEM-sized surface).
 pub const UVNORM: u32 = 1 << 5;
+/// `TexDesc::fmt` flag on a full image that does not fit TMEM: triangles sample it in TMEM
+/// tiles (`N64_TEX_TILE3D`).
+pub const TEX_TILE3D: u32 = 0x100;
 
 pub const BLEND_NONE: u32 = 0;
 pub const BLEND_SEMI: u32 = 1;

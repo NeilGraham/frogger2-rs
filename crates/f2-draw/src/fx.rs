@@ -22,7 +22,9 @@ use f2_game::sprite::{Sprite, SPRITE_ADDITIVE, SPRITE_FLAGS_ROTATE};
 use f2_game::Game;
 use f2_math::{FVector, SVector};
 
+// Newer `core` has some of these methods inherently (then the trait goes unused).
 #[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
 use crate::fmath::FloatExt;
 use crate::prelude::*;
 

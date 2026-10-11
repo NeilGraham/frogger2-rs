@@ -2,7 +2,9 @@
 //! (interpolated between the last two ticks), then the effects (`fx`) and 2D layers
 //! (`overlay`); the game camera and the debug tile overlay.
 
+// Newer `core` has some of these methods inherently (then the trait goes unused).
 #[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
 use crate::fmath::FloatExt;
 use crate::fx;
 use crate::overlay::{self, GameFonts, TileScroll};

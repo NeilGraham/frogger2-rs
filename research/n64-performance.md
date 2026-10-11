@@ -216,3 +216,31 @@ not kept twice (`Renderer::add_font` moves the pixels); the 640x480 backdrop con
 16-row strips; the previous level's renderer side freed *before* the simulation's
 `InitLevel` loads the next one (the data source's `before_access` hook) — the PC order
 (load, then drop the old scene) runs out of RDRAM on the frontend → Garden 1 transition.
+
+### 2G follow-up: visual fixes (2026-10-11) and status
+
+Evidence: `C:\f2-n64test\evidence-2g\fixes\` (`*-before-n64.png`, `*-after-n64.png`, PC references
+`*-pc-reference-320x240.png` from `frogger --headless --profile authentic --size 320x240`).
+- **Water red/green splotches — fixed.** The garden/frontend water is a white caustics texture
+  (`00wate04.bmp`) drawn *Additive* over the dark river bed. The RDP's additive blender
+  (`IN*IN_ALPHA + MEM*1`) wraps past 1.0 instead of saturating. Additive batches now use the alpha
+  blender with a per-texture variant (`csrc/main.c` `make_add_variant`: colour normalised to its
+  brightest channel, alpha = alpha × brightness, RGBA32 ≤ 1024 texels, made on first additive use).
+  `IN*a'` equals the D3D additive term exactly; the background is only attenuated by `1 - a'` where
+  the effect is bright. The texel conversion was ruled out with `examples/host_shot.rs --n64`
+  (RGBA16/RGBA32 round trip through the CPU rasteriser looks like the PC).
+- **Story book showed no picture/text — fixed.** The page is a render-to-texture
+  (`grabToTexture`, PC `DrawPageB`) the desktop composes on the CPU; the N64 front end never did it.
+  `book.rs` moved to `f2-draw` (shared); the N64 keeps the RGBA8 pixels of `page32.bmp` and
+  `chapterN.bmp` (everything else drops them after conversion), keeps a glyph subset of
+  `monofont.bmp` built at boot (only the chapter strings' characters), and draws large textures on
+  triangles in 32x32 TMEM tiles (`draw_tri_tiled`, textures flagged `N64_TEX_TILE3D`: images added
+  after a bank load that do not fit TMEM) so the 256x256 page is shown at full resolution.
+
+**Status / next steps** (resume from this branch): playable title → frontend → Garden 1 with pad,
+sfx, music; slideshow (3.5–4 fps, sim 35–45 % of real time) until 2R's RSP renderer and a
+simulation speed-up (§2G profile, `Game::tick` 10–14 ms) land. Left: arcade-machine screen copy
+(`sync_arcade_screen` / `book::copy_texture`, needs source pixels or a handle alias in
+`render_cpu.rs`), subtractive blend approximated as multiply, 1-bit alpha on large textures
+(CI4/CI8 via the 1C pack), FMV, saves, load times (object banks decoded twice).
+`examples/host_shot.rs` renders the N64 drawing path on the host for comparisons.
