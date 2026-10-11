@@ -2060,7 +2060,11 @@ impl Game {
                 if c[2] != 0 {
                     self.actor2.actors[actor].effects |= EF_TINTBLUE;
                 }
-                self.babyfrog.baby_icon_rgb[i] = [c[0], c[1], c[2]];
+                if let Some(o) = self.overlays.get_mut(self.babyfrog.baby_icons[i]) {
+                    o.r = c[0];
+                    o.g = c[1];
+                    o.b = c[2];
+                }
                 // PC `!rHardware` halving dropped (hardware renderer modelled).
             }
         }

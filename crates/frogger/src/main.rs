@@ -1295,4 +1295,146 @@ mod tests {
         app.draw(1440, 1080);
         assert!(!app.r.view.widened());
     }
+
+    /// The Garden bee's wings (`00bwing.bmp`, a two-frame animated texture with frame time
+    /// -1) flutter by stepping once per `UpdateAnimatingTextures`, which the retail game runs
+    /// once per frame. The windowed host draws at the display rate, so the step must follow
+    /// game ticks: extra draws between ticks keep the frame, each tick advances it once.
+    #[test]
+    fn bee_wing_texture_steps_per_tick_not_per_draw() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let mut app = level_app(&ctx, &root, (0, 0), 120, Profile::Authentic);
+        let crc = f2_formats::crc("00bwing.bmp");
+        let anim = app.r.textures.entry(crc).is_some_and(|e| e.frames.len() == 2 && e.frames.iter().all(|f| f.1 == -1));
+        assert!(anim, "00bwing.bmp is not a 2-frame -1 animation");
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            app.draw(640, 480);
+            let shown = app.r.textures.current(crc);
+            // High-refresh display: three more draws before the next tick.
+            for _ in 0..3 {
+                app.draw(640, 480);
+                assert_eq!(app.r.textures.current(crc), shown, "wing frame changed between ticks");
+            }
+            seen.push(shown);
+            app.tick(&[]);
+        }
+        for w in seen.windows(2) {
+            assert_ne!(w[0], w[1], "wing frame did not advance on a tick: {seen:?}");
+        }
+    }
+
+    /// The baby-frog HUD (`babyIcons`, `babyFlash`, babyfrog.c:108): each rescued baby
+    /// shows as a full-alpha `00BABYIC` icon on its lily pad, and a rescue starts an
+    /// additive copy that expands and fades out over 70 frames. They are sprite overlays,
+    /// so the renderer draws them with the HUD.
+    #[test]
+    fn rescued_baby_icons_and_flash_are_drawn() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let mut app = level_app(&ctx, &root, (0, 0), 60, Profile::Authentic);
+        let baby = app.game.babyfrog.baby_list[0].baby.expect("Garden 1 has babies");
+        assert_eq!(app.game.pickup_baby_frog(Some(baby), None), 1);
+        for _ in 0..10 {
+            app.tick(&[]);
+        }
+        let g = &app.game;
+        let icons: Vec<_> = (0..g.map.num_babies as usize).filter_map(|i| g.overlays.get(g.babyfrog.baby_icons[i]).copied()).collect();
+        assert_eq!(icons.len(), g.map.num_babies as usize, "one icon overlay per baby");
+        assert!(icons.iter().all(|o| o.used != 0 && o.draw != 0 && o.num == 1));
+        assert_eq!(icons.iter().filter(|o| o.a == 255).count(), 1, "the rescued baby's icon is opaque");
+        let flash = *g.overlays.get(g.babyfrog.baby_flash).expect("flash overlay");
+        assert!(flash.draw != 0 && flash.a > 0 && flash.a < 255, "flash fading: a = {}", flash.a);
+        let (w, h) = (640, 480);
+        app.draw(w, h);
+        let with = app.r.render_to_image(app.clear_color()).expect("render");
+        for i in 0..NUM {
+            let id = app.game.babyfrog.baby_icons.get(i).copied().flatten();
+            app.game.overlays.disable(id);
+        }
+        app.game.overlays.disable(app.game.babyfrog.baby_flash);
+        app.draw(w, h);
+        let without = app.r.render_to_image(app.clear_color()).expect("render");
+        let mut diff = 0;
+        for y in 0..80 {
+            for x in 0..320 {
+                if with.pixel(x, y) != without.pixel(x, y) {
+                    diff += 1;
+                }
+            }
+        }
+        assert!(diff > 300, "baby icons / flash not drawn in the HUD: {diff} px differ");
+    }
+    const NUM: usize = f2_game::babyfrog::NUM_BABIES;
+
+    /// `CopyActorList`'s texture sliding: the Subterranean ant column (`spl_antsa`, one
+    /// `ACTOR_SLIDYTEX` actor) scrolls its texture v by `slideSpeeds[1]·gameSpeed>>12` = 16
+    /// per game frame (wrapping +8192 below 4096), so the ants walk along the strip.
+    #[test]
+    fn sliding_scenery_textures_move_per_tick() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let mut app = level_app(&ctx, &root, (4, 1), 30, Profile::Authentic);
+        let v = |app: &App| -> Vec<i16> {
+            let s = app.scene.as_ref().unwrap();
+            let &(b, m) = s.models.get(&f2_formats::crc("spl_antsa.obe")).expect("ant column model");
+            s.banks[b].models[m].root.mesh.as_ref().unwrap().face_uv.iter().map(|t| t[1]).collect()
+        };
+        let before = v(&app);
+        app.tick(&[]);
+        let after = v(&app);
+        assert!(before.iter().zip(&after).all(|(&a, &b)| b == a - 16 || b == a - 16 + 8192), "{before:?} -> {after:?}");
+        assert!(after.iter().all(|&x| x >= 4096));
+        // Drawing does not slide (once per game frame, not per displayed frame).
+        app.draw(640, 480);
+        app.draw(640, 480);
+        assert_eq!(v(&app), after);
+    }
+
+    /// Standing water (`wat_pond`: `OBJECT_FLAGS_WAVE | MODGE | ADDITIVE`, banks.cpp:560)
+    /// wobbles its texture and waves its surface with `timeInfo.frameCount`
+    /// (`PCCalcModgeValues`): the same game state drawn 10 frames later differs over the pond.
+    #[test]
+    fn standing_water_animates() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let mut app = level_app(&ctx, &root, (0, 0), 200, Profile::Authentic);
+        app.game.overlays.draw_overlays = false;
+        app.game.textover.num_entries = 0;
+        assert!(app.game.timing.active);
+        let (w, h) = (640, 480);
+        app.draw(w, h);
+        let a = app.r.render_to_image(app.clear_color()).expect("render");
+        app.game.timing.time_info.frame_count += 10;
+        app.draw(w, h);
+        let b = app.r.render_to_image(app.clear_color()).expect("render");
+        // The pond fills the bottom of the start view; nothing else depends on frameCount.
+        let (mut pond, mut rest) = (0, 0);
+        for y in 0..h {
+            for x in 0..w {
+                if a.pixel(x, y) != b.pixel(x, y) {
+                    if y >= 380 {
+                        pond += 1;
+                    } else {
+                        rest += 1;
+                    }
+                }
+            }
+        }
+        assert!(pond > 2000, "the pond did not change: {pond} px");
+        assert!(rest < pond / 4, "changes outside the pond: {rest} px");
+    }
 }

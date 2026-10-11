@@ -30,11 +30,23 @@ oracle, so the gaps below are mostly outside the single-player trace. Line numbe
 | `f2-game/src/babyfrog.rs:45`, `collect.rs:37,120` | Cosmetic: move `FXTYPE_*` and overlay types to `specfx.rs`/HUD. |
 | `f2-game/src/tongue.rs:812` | Logs `CheckForAttachedNMEs: endless loop in the original` (BUG(original) path; keep). |
 | `f2fix/src/win/shims.rs:441` | Oracle shim stubs MCI (CD audio) intentionally; test tool only. |
+| `f2-engine/src/scene.rs` (`draw_actor`) | `OBJECT_FLAGS_SHEEN` objects are drawn like `PCRenderModgyObject` without the `PCPrepareModgySheenObject`/`PCRenderModgySheenObject` sheen layer; `OBJECT_FLAGS_MODGE`/`WAVE` on skinned meshes and the console mesh-sink path (N64) are not modged/waved. |
 
 ## Known intentional replacements (not gaps)
 
 DirectX/Win32/MCI/DirectPlay layers (`PC/*.cpp`, MDX Library, `net/`), registry/CD checks, PSX-only
 files (`flatpack.c`, `newpsx.c`, `sndview.c`), `ControlCamera` and `SetCamFF` (debug/PSX).
+
+## Closed (2026-10-11, desktop render gaps)
+
+`CopyActorList`'s texture sliding (`SlideObjectTextures`, `slideSpeeds` {0,16,32,64} from the
+retail exe; flowing water/sludge/lava, `spl_`/`spm_`/`spf_` scenery such as the Subterranean ant
+columns) and `ACTOR_WRAPTC` (f2-draw `slide_object_textures`, once per game frame);
+`PCCalcModgeValues`/`PCPrepareModgyObject`/`PCRenderModgyObject(2)` (standing water, sludge and
+lava wobble/wave, f2-engine `scene.rs`); `UpdateAnimatingTextures` once per game frame instead of
+per displayed frame (`DrawCtx::tex_anim_steps`; the Garden bee's -1-time wing flutter);
+`babyIcons`/`babyFlash` as real sprite overlays (babyfrog.rs; the rescued babies on the HUD lily
+pads and the expanding rescue flash were never drawn).
 
 ## Closed (2026-10-09, gameplay gap-filling)
 

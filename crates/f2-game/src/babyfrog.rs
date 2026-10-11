@@ -14,7 +14,7 @@ use crate::anim::SAMPLE_VOLUME;
 use crate::define::SINGLEPLAYER;
 use crate::effects::Effect;
 use crate::frogger::IN_VEC;
-use crate::ids::{ActorId, EnemyId, TileId};
+use crate::ids::{ActorId, EnemyId, OverlayId, TileId};
 use crate::layout::worldid;
 use crate::map::SCALE;
 use crate::Game;
@@ -57,20 +57,6 @@ pub struct Baby {
     pub enemy: Option<EnemyId>,
 }
 
-/// The fields of a `SPRITEOVERLAY` (`types2d.h`) that babyfrog.c drives.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BabyOverlay {
-    pub x_pos: i16,
-    pub y_pos: i16,
-    pub width: i16,
-    pub height: i16,
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: u8,
-    pub draw: u8,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BabyFrogState {
     /// `babyList[NUM_BABIES]`.
@@ -79,14 +65,11 @@ pub struct BabyFrogState {
     pub last_baby_saved: i32,
     /// `babiesSaved`.
     pub babies_saved: u32,
-    /// `babyIcons[i]->r/g/b` (enemies set these too).
-    pub baby_icon_rgb: [[u8; 3]; NUM_BABIES],
-    /// `babyIcons[i]->a`.
-    pub baby_icon_a: [u8; NUM_BABIES],
-    /// `babyIcons[i]` geometry (`xPos, yPos, width, height`); `None` = `NULL`.
-    pub baby_icons: [Option<BabyOverlay>; NUM_BABIES],
-    /// `babyFlash` (`None` = `NULL`).
-    pub baby_flash: Option<BabyOverlay>,
+    /// `babyIcons[i]`: the HUD sprite overlays of the babies (`00BABYIC`, drawn in
+    /// `PrintSpriteOverlays(1)` over the lily pads); `None` = `NULL`.
+    pub baby_icons: [Option<OverlayId>; NUM_BABIES],
+    /// `babyFlash`: the additive overlay that expands and fades out on a rescue.
+    pub baby_flash: Option<OverlayId>,
     /// `babyFlashFrame`.
     pub baby_flash_frame: i32,
 }
@@ -149,38 +132,26 @@ impl Game {
 
         b.baby_flash = None;
         if create_overlays {
-            // CreateAndAddSpriteOverlay((230+(i*200)), 210+BORDER, "00BABYIC", ...,0, SPRITE_ADDITIVE)
-            // with i == numBabies after the loop above.
-            let i = self.map.num_babies;
-            b.baby_flash = Some(BabyOverlay {
-                x_pos: (230 + i.wrapping_mul(200)) as i16,
-                y_pos: 210,
-                width: ((4096 * 24) / 640) as i16,
-                height: ((4096 * 24) / 480) as i16,
-                r: 255,
-                g: 255,
-                b: 255,
-                a: 0,
-                draw: 1,
-            });
+            const W: i16 = ((4096 * 24) / 640) as i16;
+            const H: i16 = ((4096 * 24) / 480) as i16;
+            // CreateAndAddSpriteOverlay((230+(i*200)), 210+BORDER, "00BABYIC", ..., 0, SPRITE_ADDITIVE)
+            // with i == numBabies after the loop above (BORDER is 0 on PC).
+            let x = 230i32.wrapping_add(self.map.num_babies.wrapping_mul(200)) as i16;
+            self.babyfrog.baby_flash = self.overlays.create_and_add_sprite_overlay(x, 210, Some("00BABYIC"), W, H, 0, crate::sprite::SPRITE_ADDITIVE);
             for i in 0..n {
-                b.baby_icons[i] = Some(BabyOverlay {
-                    x_pos: (230 + i * 200) as i16,
-                    y_pos: 210,
-                    width: ((4096 * 24) / 640) as i16,
-                    height: ((4096 * 24) / 480) as i16,
-                    r: 255,
-                    g: 255,
-                    b: 255,
-                    a: 60,
-                    draw: 1,
-                });
-                b.baby_icon_a[i] = 60;
-                let c = b.baby_list[i].fx_colour;
-                b.baby_icon_rgb[i] = [c[0], c[1], c[2]];
+                // rHardware: alpha 60, no colour halving.
+                let id = self.overlays.create_and_add_sprite_overlay((230 + i * 200) as i16, 210, Some("00BABYIC"), W, H, 60, 0);
+                let c = self.babyfrog.baby_list[i].fx_colour;
+                if let Some(o) = self.overlays.get_mut(id) {
+                    o.num = 1;
+                    o.r = c[0];
+                    o.g = c[1];
+                    o.b = c[2];
+                }
+                self.babyfrog.baby_icons[i] = id;
             }
         }
-        b.baby_flash_frame = -1;
+        self.babyfrog.baby_flash_frame = -1;
     }
 
     /// Port of `ResetBabies` (Common/babyfrog.c:147).
@@ -218,12 +189,11 @@ impl Game {
         self.babyfrog.baby_flash_frame = self.act_frame_count as i32;
         // BUG(original): babyIcons[n] with an out-of-range n (bad offset2) reads past the
         // array; the port skips the overlay updates then.
-        let icon = self.babyfrog.baby_icons.get(nu).copied().flatten();
-        if let (Some(flash), Some(icon)) = (self.babyfrog.baby_flash.as_mut(), icon) {
-            let rgb = self.babyfrog.baby_icon_rgb[nu];
-            flash.r = rgb[0];
-            flash.g = rgb[1];
-            flash.b = rgb[2];
+        let icon = self.babyfrog.baby_icons.get(nu).copied().flatten().and_then(|id| self.overlays.get(Some(id))).copied();
+        if let (Some(flash), Some(icon)) = (self.overlays.get_mut(self.babyfrog.baby_flash), icon) {
+            flash.r = icon.r;
+            flash.g = icon.g;
+            flash.b = icon.b;
             flash.x_pos = icon.x_pos;
             flash.y_pos = icon.y_pos;
             flash.width = icon.width;
@@ -235,11 +205,8 @@ impl Game {
 
         self.babyfrog.last_baby_saved = i as i32;
 
-        if nu < NUM_BABIES {
-            self.babyfrog.baby_icon_a[nu] = 255;
-            if let Some(ic) = self.babyfrog.baby_icons[nu].as_mut() {
-                ic.a = 255;
-            }
+        if let Some(ic) = self.overlays.get_mut(self.babyfrog.baby_icons.get(nu).copied().flatten()) {
+            ic.a = 255;
         }
         if let Some(o) = self.hud.arcade_hud.babies_back.get(nu).copied().flatten().and_then(|bb| self.overlays.get_mut(Some(bb))) {
             o.r = 255;
@@ -308,7 +275,7 @@ impl Game {
     pub fn update_babies(&mut self) {
         let flash_fr = (self.act_frame_count as i32).wrapping_sub(self.babyfrog.baby_flash_frame);
         let bff = self.babyfrog.baby_flash_frame;
-        if let Some(f) = self.babyfrog.baby_flash.as_mut() {
+        if let Some(f) = self.overlays.get_mut(self.babyfrog.baby_flash) {
             if flash_fr < 70 && bff > 0 {
                 f.draw = 1;
                 f.a = (0xff - (flash_fr.wrapping_mul(0xff) / 70)) as u8;
@@ -490,6 +457,7 @@ mod tests {
         let mut g = Game::new();
         g.game_state.multi = SINGLEPLAYER;
         g.map.num_babies = 2;
+        g.overlays.init_sprite_overlay_linked_list();
         g.init_baby_list(true);
         let a = g.actor2.actors.slots.len();
         g.actor2.actors.slots.push(Some(Default::default()));
@@ -509,7 +477,10 @@ mod tests {
         assert_eq!(b.baby_list[0].is_saved, 1);
         assert_eq!(b.baby_list[0].collect, 40);
         assert_eq!((b.babies_saved, b.last_baby_saved, b.baby_flash_frame), (1, 0, 100));
-        assert_eq!(b.baby_icon_a[0], 255);
+        assert_eq!(g.overlays.get(b.baby_icons[0]).map(|o| (o.a, o.num)), Some((255, 1)));
+        // The rescue flash: additive, at the icon, in the icon's colour.
+        let flash = *g.overlays.get(b.baby_flash).unwrap();
+        assert_eq!((flash.x_pos, flash.y_pos, [flash.r, flash.g, flash.b]), (230, 210, [60, 255, 60]));
         assert_eq!(g.map.g_t_start[0], Some(TileId(7)));
         assert_eq!(g.cam.start_frog_facing, 2);
         // Second pickup / unknown baby: FALSE.

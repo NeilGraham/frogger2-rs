@@ -526,9 +526,7 @@ impl Game {
         self.disable_hud();
 
         for i in 0..(self.map.num_babies.max(0) as usize).min(self.babyfrog.baby_icons.len()) {
-            if let Some(b) = self.babyfrog.baby_icons[i].as_mut() {
-                b.draw = 0;
-            }
+            self.overlays.disable(self.babyfrog.baby_icons[i]);
         }
     }
 
@@ -805,9 +803,7 @@ impl Game {
                         self.game_state.mode = TRAINING_MODE;
                         for i in 0..(self.map.num_babies.max(0) as usize).min(6) {
                             sx!(self, self.hud.arcade_hud.babies_back[i], |o| o.draw = 1);
-                            if let Some(b) = self.babyfrog.baby_icons.get_mut(i).and_then(|b| b.as_mut()) {
-                                b.draw = 1;
-                            }
+                            self.overlays.enable(self.babyfrog.baby_icons.get(i).copied().flatten());
                         }
                     } else {
                         self.game_state.mode = INGAME_MODE;

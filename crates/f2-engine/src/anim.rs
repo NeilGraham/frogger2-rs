@@ -40,6 +40,12 @@ pub struct Actor {
     /// `SetObjectGouraudValues(r, g, b)` (0.0..=1.0): replaces the vertex colours' RGB
     /// (the original writes the mesh's `gouraudColors`).
     pub gouraud: Option<[f32; 3]>,
+    /// `ACTOR_WRAPTC` (`wrapCoords`, mdxActor.cpp:195): the objects go to the wrapping frame
+    /// (`MA_FRAME_WRAP`), whose texture coordinates repeat (sliding textures).
+    pub wrap_tc: bool,
+    /// `timeInfo.frameCount` for `PCCalcModgeValues` (the water/sludge wobble and wave of
+    /// `OBJECT_FLAGS_MODGE` / `OBJECT_FLAGS_WAVE` objects).
+    pub modge_frame: u32,
     /// The last [`xform_actor`] result and its inputs ([`xform_actor_cached`]: mesh-sink
     /// back ends skip the hierarchy walk while the pose does not change).
     pub pose: PoseCache,
@@ -90,6 +96,8 @@ impl Default for Actor {
             last_keys: Vec::new(),
             override_tex: None,
             gouraud: None,
+            wrap_tc: false,
+            modge_frame: 0,
             pose: PoseCache::default(),
         }
     }

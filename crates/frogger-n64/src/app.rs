@@ -784,6 +784,8 @@ impl App {
             authentic: true,
             backdrop,
             tile_scroll: self.tile_scroll,
+            // Once per draw, as before.
+            tex_anim_steps: 1,
         };
         let mut g = lv();
         let l = g.as_mut().unwrap();
