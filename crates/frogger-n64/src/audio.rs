@@ -19,7 +19,7 @@ const DSBFREQUENCY_MIN: u32 = 100;
 const DSBFREQUENCY_MAX: u32 = 100_000;
 const PITCH_STEP: u32 = DSBFREQUENCY_MAX / 256;
 /// The mixer channels' frequency limit (csrc/main.c `mixer_ch_set_limits`).
-pub const MAX_FREQ: u32 = 128_000;
+pub const MAX_FREQ: u32 = 44_100;
 
 /// `bytetoDB` (pcaudio.c:91), see `f2_audio::tables::BYTE_TO_DB` (incl. the BUG(original)
 /// `100` at 238).

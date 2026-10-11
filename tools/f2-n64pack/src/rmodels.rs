@@ -111,7 +111,30 @@ pub fn fonts(ctx: &Ctx) -> Result<(Vec<RawAsset>, Vec<String>)> {
             segments: Vec::new(),
         });
     }
-    Ok((out, vec!["fonts: bigfont/smallfont/monofont BMPs for the runtime's glyph scan".to_string()]))
+    // The procedural-texture sources of each texture bank (`pt_texture_load` reads only the
+    // `prc*` textures of the banks a level loads): a few KiB instead of the whole NTX bank.
+    let dir = ctx.game().join("textures");
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("fla")))
+        .collect();
+    names.sort();
+    let mut nprc = 0;
+    for p in names {
+        let raw = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let Ok(data) = f2_formats::fla::maybe_decompress(raw) else { continue };
+        let Ok(bank) = f2_formats::texture::TexBank::parse(&data) else { continue };
+        let textures: Vec<_> = bank.textures.into_iter().filter(|t| t.name.as_bytes().starts_with(b"prc")).collect();
+        if textures.is_empty() {
+            continue;
+        }
+        nprc += textures.len();
+        let data = postcard::to_allocvec(&f2_formats::texture::TexBank { textures, anims: Vec::new() }).map_err(|e| e.to_string())?;
+        let stem = p.file_stem().unwrap().to_string_lossy().to_lowercase();
+        out.push(RawAsset { path: format!("textures/{stem}.prc"), class: Class::Textures, source_bytes: 0, data, notes: Vec::new(), segments: Vec::new() });
+    }
+    Ok((out, vec![format!("fonts: bigfont/smallfont/monofont BMPs for the runtime's glyph scan; {nprc} procedural-texture sources in textures/<bank>.prc")]))
 }
 
 #[cfg(test)]

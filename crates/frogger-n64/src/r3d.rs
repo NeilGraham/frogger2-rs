@@ -569,6 +569,10 @@ impl R3d {
 
     /// Points a CRC at a texture, or unmaps it (`None`: its groups are not drawn).
     pub fn map_texture(&mut self, crc: u32, tex: Option<TexId>) {
+        // Called for every registry entry every frame: look before writing.
+        if self.tex_by_crc.get(&crc).copied() == tex.map(|t| t.0) {
+            return;
+        }
         let changed = match tex {
             Some(t) => self.tex_by_crc.insert(crc, t.0) != Some(t.0),
             None => self.tex_by_crc.remove(&crc).is_some(),

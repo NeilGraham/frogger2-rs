@@ -25,7 +25,8 @@ static surface_t *last_fb;
 #define CHUNK_STEP 960
 #define MAX_CHUNKS 8
 typedef struct {
-    surface_t full[MAX_CHUNKS], small;
+    surface_t *full;    /* &full1, or a malloc'd array of MAX_CHUNKS column chunks */
+    surface_t full1, small;
     int nfull, width;
     bool used, small_is_full;
     bool tile3d; /* triangles sample `full` in TMEM tiles instead of `small` (N64_TEX_TILE3D) */
@@ -192,8 +193,8 @@ uint32_t n64_fmv_play_impl(const char *path) {
     };
     fmv_play(path, &p);
     display_set_fps_limit(0);
-    mixer_ch_set_limits(FMV_CH, 16, 128000, 0);
-    mixer_ch_set_limits(FMV_CH + 1, 16, 128000, 0);
+    mixer_ch_set_limits(FMV_CH, 16, 48000, 0);
+    mixer_ch_set_limits(FMV_CH + 1, 16, 48000, 0);
     cur_kind = -1;
     cur_tex_loaded = 0;
     cur_tlut_mode = -1;
@@ -271,7 +272,14 @@ static surface_t make_surface(const n64_tex_desc_t *d) { return make_surface_col
 static void free_full(tex_t *t) {
     if (!t->external)
         for (int k = 0; k < t->nfull; k++) surface_free(&t->full[k]);
+    if (t->full && t->full != &t->full1) free(t->full);
+    t->full = NULL;
     t->nfull = 0;
+}
+
+/* Storage for a texture's full surface(s): inline for one, an array for column chunks. */
+static void alloc_full(tex_t *t, bool chunks) {
+    t->full = chunks ? calloc(MAX_CHUNKS, sizeof(surface_t)) : &t->full1;
 }
 
 uint32_t n64_tex_create2_impl(const n64_tex_desc_t *full, const n64_tex_desc_t *small) {
@@ -280,6 +288,7 @@ uint32_t n64_tex_create2_impl(const n64_tex_desc_t *full, const n64_tex_desc_t *
         if (textures[h].used) continue;
         tex_t *t = &textures[h];
         t->width = full->width;
+        alloc_full(t, full->width > CHUNK_W);
         if (full->width <= CHUNK_W) {
             t->full[0] = make_surface(full);
             t->nfull = 1;
@@ -321,6 +330,7 @@ uint32_t n64_tex_create_ntx_impl(const n64_ntx_desc_t *d) {
         tex_t *t = &textures[h];
         memset(t, 0, sizeof *t);
         t->width = d->width;
+        alloc_full(t, d->width > CHUNK_W);
         data_cache_hit_writeback(d->texels, d->stride * d->height);
         if (d->width <= CHUNK_W) {
             t->full[0] = surface_make((void *)d->texels, fmt, d->width, d->height, d->stride);
@@ -931,7 +941,7 @@ int main(void) {
     asset_init_compression(3);
     /* Generous headroom: the game may render well below 60 fps; Rust also polls the mixer
      * between simulation ticks and during loads (n64_audio_poll). */
-    audio_init(32000, AUDIO_INIT_LATENCY_MS(500));
+    audio_init(32000, AUDIO_INIT_LATENCY_MS(300));
     mixer_init(MIXER_CHANNELS);
     wav64_init_compression(2); /* ULC (music) */
     wav64_init_compression(3); /* Opus (FMV audio); VADPCM needs no init */
@@ -941,7 +951,8 @@ int main(void) {
     debugf("save: SRAM %s\n", sram_ok ? "found" : "not found (progress is not saved)");
     /* The game's pitch control (SetFrequency) goes up to 100 kHz; Opus is 48 kHz. Allow
      * up to 4x the 32 kHz output (higher pitches are clamped by the Rust side). */
-    for (int ch = 0; ch < MIXER_CHANNELS; ch++) mixer_ch_set_limits(ch, 16, 128000, 0);
+    /* Music / FMV audio (channels 0-1): up to 48 kHz; sound effects (22 kHz sources): 2x. */
+    for (int ch = 0; ch < MIXER_CHANNELS; ch++) mixer_ch_set_limits(ch, 16, ch < SFX_CH0 ? 48000 : 44100, 0);
 
     f2n64_call(f2n64_init);
     for (;;) {

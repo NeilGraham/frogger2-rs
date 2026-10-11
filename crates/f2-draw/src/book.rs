@@ -204,6 +204,14 @@ fn tex_image<'a>(r: &'a Renderer, name: &str) -> Option<&'a Image> {
 /// is plain `page32.bmp`.
 pub fn draw_page_b(r: &Renderer, game: &Game, font: Option<&Font>, scale: u32) -> Canvas {
     let mut c = Canvas::scaled(PAGE_SIZE, PAGE_SIZE, scale);
+    draw_page_b_into(r, game, font, &mut c);
+    c
+}
+
+/// [`draw_page_b`] into an existing canvas (cleared first; its size and scale are kept),
+/// for hosts that keep one page buffer instead of allocating 256 KiB per grab (the N64).
+pub fn draw_page_b_into(r: &Renderer, game: &Game, font: Option<&Font>, c: &mut Canvas) {
+    c.rgba.fill(0);
     let white = [1.0; 4];
     if let Some(img) = tex_image(r, "page32.bmp") {
         c.draw_textured_rect((0, 0, 0xff, 0xff), white, img);
@@ -221,7 +229,11 @@ pub fn draw_page_b(r: &Renderer, game: &Game, font: Option<&Font>, scale: u32) -
         c.draw_textured_rect((60, 70, 0xff - 60, 0xff - 100), white, img);
     }
     c.extend_edges(0xff);
-    c
+}
+
+/// An empty page canvas (`PAGE_SIZE` square at `scale`), for [`draw_page_b_into`].
+pub fn page_canvas(scale: u32) -> Canvas {
+    Canvas::scaled(PAGE_SIZE, PAGE_SIZE, scale)
 }
 
 /// `GrabSurfaceToTexture(0, 0, tex, surface)`: the canvas (the 256×256 grabbed area,

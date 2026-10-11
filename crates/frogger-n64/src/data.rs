@@ -11,7 +11,8 @@
 //! | `MAPS\ENTITY-1-0.DAT`, collision, scenics, demos, `language.fla` | same path, lowercase | F2Z |
 //! | `objects\<x>.dll` (`object_bank`) | `objects/<x>.dll.pcd` | postcard [`ObjectBank`] (vertex-only geometry) |
 //! | (renderer) | `objects/<x>.dll.f2nm` | F2NM render meshes |
-//! | `textures\<x>.fla` (`texture_bank`, the procedural sources) | `textures/<x>.ntx` (+ shared pools) | NTX1 |
+//! | `textures\<x>.fla` (`texture_bank`: the simulation only needs the procedural sources) | `textures/<x>.prc` | postcard `TexBank` of the `prc*` textures |
+//! | (renderer) `textures\<x>.fla` | `textures/<x>.ntx` (+ shared pools) | NTX1 |
 //! | `sfx\<x>.wus` (`sound_bank`) | `sfx/index.bin` | F2SX: uid → `sfx/NNNN.wav64` |
 //! | backdrop `textures\<x>.fla` | `textures/backdrop/<x>.ntx` | NTX1, 320x240 |
 //!
@@ -276,6 +277,11 @@ impl<S: AssetStore> DataSource for N64Data<S> {
         if self.pack {
             if let Some(f) = self.before_access {
                 f();
+            }
+            // `textures/<bank>.prc` (the `prc*` sources, postcard); older packs: from the NTX bank.
+            let prc = ntx_bank_path(path).replace(".ntx", ".prc");
+            if let Some(b) = self.store.load(&prc) {
+                return Some(postcard::from_bytes(&b).map_err(|e| format!("{prc}: {e}")));
             }
             return ntx_proc_bank(&self.store, &ntx_bank_path(path)).map(Ok);
         }

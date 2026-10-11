@@ -22,6 +22,17 @@ unsafe impl GlobalAlloc for LibdragonHeap {
             if live > PEAK.load(Relaxed) {
                 PEAK.store(live, Relaxed);
             }
+        } else {
+            // Out of memory (or too fragmented): say how much was in use (no allocation here).
+            let h = heap_stats();
+            crate::log!(
+                "ALLOC FAILED: {} bytes (align {}); rust live {} KiB; libdragon used {} / {} KiB",
+                l.size(),
+                l.align(),
+                LIVE.load(Relaxed) / 1024,
+                h.used / 1024,
+                h.total / 1024
+            );
         }
         p
     }
@@ -237,7 +248,17 @@ pub fn audio_poll() {
     unsafe { ffi::n64_audio_poll() }
 }
 
+/// C0 ticks the last [`begin_frame`] waited for a free framebuffer (the RSP/RDP and VI
+/// still busy with earlier frames).
+pub static FB_WAIT: AtomicU32 = AtomicU32::new(0);
+
 pub fn begin_frame(clear_rgba: u32) {
+    let t0 = ticks();
+    begin_frame_inner(clear_rgba);
+    FB_WAIT.store(ticks().wrapping_sub(t0), Relaxed);
+}
+
+fn begin_frame_inner(clear_rgba: u32) {
     unsafe { ffi::n64_begin_frame(clear_rgba) }
 }
 

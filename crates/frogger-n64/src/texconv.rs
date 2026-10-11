@@ -83,6 +83,12 @@ fn halve(w: u32, h: u32, rgba: &[u8], halve_w: bool, halve_h: bool) -> (u32, u32
     (nw, nh, out)
 }
 
+/// An RGBA8 image at half size in both directions (alpha-weighted box filter).
+pub fn halve_rgba8(w: u32, h: u32, rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+    let (nw, nh, px) = halve(w, h, rgba, w > 1, h > 1);
+    (nw, nh, px)
+}
+
 /// Full and (if the full one does not fit TMEM) small RDP versions of an RGBA8 image.
 pub fn convert(w: u32, h: u32, rgba: &[u8]) -> (N64Tex, Option<N64Tex>) {
     assert_eq!(rgba.len(), (w * h * 4) as usize);

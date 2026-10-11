@@ -94,6 +94,12 @@ struct Window {
     tris: u32,
     rects: u32,
     max_frame: u32,
+    /// `f2_draw::render::draw_loop` (the PC draw loop: matrices, sprites, effects, HUD).
+    draw_loop: u32,
+    /// Texture uploads / registry sync.
+    upload: u32,
+    /// Waiting for a free framebuffer (RSP/RDP or VI still busy).
+    fb_wait: u32,
     /// r3d: mesh draws, triangles queued / sent to the RSP after culling.
     draws: u32,
     rsp_tris: u32,
@@ -169,6 +175,8 @@ pub struct App {
     /// The story book's `fontWhite` (`monofont.bmp`) cut down to the glyphs the chapter
     /// pages use (the whole strip is ~635 KiB as RGBA8; this is a few tens of KiB).
     book_font: Option<Font>,
+    /// The story book's page canvas (`grab_textures`).
+    page_canvas: Option<f2_draw::book::Canvas>,
     last_mode: i32,
     last_pad: u16,
 }
@@ -213,6 +221,7 @@ impl App {
             level_peak: (0, 0),
             loaded: false,
             book_font: None,
+            page_canvas: None,
             last_mode: -1,
             last_pad: 0,
         };
@@ -247,7 +256,7 @@ impl App {
         #[cfg(feature = "profile")]
         unsafe {
             crate::ffi::n64_prof(0);
-            if cfg!(feature = "profile-sim") {
+            if cfg!(any(feature = "profile-sim", feature = "profile-draw")) {
                 crate::ffi::n64_prof(2);
             }
         };
@@ -292,6 +301,13 @@ impl App {
         l.keep_images = self.r.textures.images.len() as u32;
     }
 
+    /// One line of the level-load memory breakdown (`heap step`).
+    fn heap_step(&self, what: &str) {
+        let (live, _) = rt::rust_heap();
+        let h = rt::heap_stats();
+        log!("heap step [{}] after {what}: rust live {} KiB, libdragon used {} KiB", self.level_name, live / 1024, h.used / 1024);
+    }
+
     fn heap_log(&mut self, what: &str) {
         let (live, peak) = rt::rust_heap();
         let h = rt::heap_stats();
@@ -331,6 +347,13 @@ impl App {
         }
         self.rebuild_renderer();
         self.audio.free_samples();
+        // The story book's page canvas (256 KiB) exists only in the frontend, allocated
+        // first while the heap is emptiest (later a block that size can fail to fit).
+        if world == f2_game::layout::worldid::FRONTEND {
+            self.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
+        } else {
+            self.page_canvas = None;
+        }
         rt::reset_peak();
         let mut banks = Vec::new();
         for f in &assets.object_banks {
@@ -342,7 +365,9 @@ impl App {
             rt::audio_poll();
         }
         #[cfg(not(feature = "render-cpu"))]
+        self.heap_step("object banks");
         let banks = self.load_meshes(&assets.object_banks, banks);
+        self.heap_step("r3d meshes");
         let scene = LevelScene::new(world, level, banks, assets.texture_banks.clone(), &self.game);
         lv().as_mut().unwrap().scene = Some(scene);
         for f in &assets.texture_banks {
@@ -368,7 +393,9 @@ impl App {
         }
         // The textures hold on to the files they use.
         self.ntx_cache.clear();
+        self.heap_step("textures");
         self.load_sfx(world, level);
+        self.heap_step("sound effects");
         self.prev = render::snapshot(&self.game);
         self.prev_cam = None;
         self.update_game_view();
@@ -522,14 +549,30 @@ impl App {
 
     /// The PC renderer's texture grab after a frame (drawloop.cpp:376): the story book page
     /// composed on the CPU (`f2_draw::book`) into `page256a/b.bmp`.
+    ///
+    /// `f2_draw::book::process_grab` without the registry's RGBA8 copy of the page (256 KiB
+    /// per grab, RDRAM is tight): the composed page goes straight into the N64 texture.
     fn grab_textures(&mut self) {
-        if f2_draw::book::grab_target(&self.game).is_none() {
+        let Some(target) = f2_draw::book::grab_target(&self.game) else { return };
+        // The frontend's page buffer (allocated by load_scene).
+        let c = self.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
+        f2_draw::book::draw_page_b_into(&self.r, &self.game, self.book_font.as_ref(), c);
+        self.game.options.grab_to_texture = if self.game.options.grab_to_texture == 1 { 0 } else { 2 };
+        let Some(h) = self.r.textures.entry(f2_formats::crc(target)).map(|e| e.image) else {
+            log!("app: book page texture {target} not loaded");
             return;
+        };
+        // Half size (128x128 RGBA16, 32 KiB instead of 128 per page): the full-size pages
+        // do not fit the frontend's RDRAM next to everything else (measured: out of memory
+        // on the second page). The page shows ~110 pixels tall at 320x240.
+        let (w, h2, half) = crate::texconv::halve_rgba8(c.w, c.h, &c.rgba);
+        if let Some(img) = self.r.textures.images.get_mut(h.0 as usize) {
+            img.width = w;
+            img.height = h2;
+            img.rgba = Vec::new();
         }
-        if let Some((_, target, ok)) = f2_draw::book::process_grab(&mut self.r, &mut self.game, self.book_font.as_ref(), 1) {
-            if !ok {
-                log!("app: book page texture {target} not loaded");
-            }
+        if let Some(l) = lv().as_mut() {
+            l.gfx.grab_rgba(h.0, w, h2, &half);
         }
     }
 
@@ -653,6 +696,18 @@ impl App {
     }
 
     fn draw(&mut self) {
+        #[cfg(feature = "profile-draw")]
+        unsafe {
+            crate::ffi::n64_prof(3)
+        };
+        self.draw_inner();
+        #[cfg(feature = "profile-draw")]
+        unsafe {
+            crate::ffi::n64_prof(2)
+        };
+    }
+
+    fn draw_inner(&mut self) {
         self.r.begin_frame(WIDTH, HEIGHT);
         let alpha = (self.acc as f32 / TICK as f32).clamp(0.0, 1.0);
         let backdrop = self.backdrop_image();
@@ -674,9 +729,11 @@ impl App {
             ctx.cam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);
             ctx.far_clip = render::far_clip(&self.game, scene);
         }
+        let t_loop = ticks();
         if l.scene.is_some() || backdrop.is_some() {
             render::draw_loop(&mut self.r, l.scene.as_mut(), &self.game, &ctx);
         }
+        self.win.draw_loop += ticks().wrapping_sub(t_loop);
         if l.scene.is_some() {
             let s = ctx.cam.source;
             self.audio.listener = crate::audio::Listener { cam_source: s.map(|x| (x * 10.0 * 4096.0) as i32), view: self.r.view.v_matrix };
@@ -685,14 +742,16 @@ impl App {
             Some(s) => s.clear,
             None => [0.0, 0.0, 0.0, 1.0],
         };
+        let t_up = ticks();
         l.gfx.upload(&mut self.r.textures);
+        #[cfg(not(feature = "render-cpu"))]
+        l.r3d.sync_textures(&self.r.textures, &l.gfx);
+        self.win.upload += ticks().wrapping_sub(t_up);
         #[cfg(feature = "render-cpu")]
         l.gfx.submit(&mut self.r, clear);
         #[cfg(not(feature = "render-cpu"))]
-        {
-            l.r3d.sync_textures(&self.r.textures, &l.gfx);
-            l.r3d.draw(&mut self.r, &mut l.gfx, clear);
-        }
+        l.r3d.draw(&mut self.r, &mut l.gfx, clear);
+        self.win.fb_wait += rt::FB_WAIT.load(core::sync::atomic::Ordering::Relaxed);
     }
 
     // ------------------------------------------------------------ frame
@@ -754,7 +813,7 @@ impl App {
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (build {} ms, rdp submit {} ms), worst frame {} ms; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms), worst frame {} ms; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -767,8 +826,11 @@ impl App {
             self.dropped_ticks,
             ms(w.sim / f),
             ms(w.draw / f),
+            ms(w.draw_loop / f),
+            ms(w.upload / f),
             ms(w.build / f),
             ms(w.submit / f),
+            ms(w.fb_wait / f),
             ms(w.max_frame),
             ticks_to_us(w.game_tick / w.ticks.max(1)),
             ticks_to_us(w.poll / w.ticks.max(1)),

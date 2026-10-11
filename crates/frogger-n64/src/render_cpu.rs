@@ -203,6 +203,22 @@ impl RenderCpu {
         }
     }
 
+    /// Registry image `idx` shows `rgba` (a render-to-texture result: the story book page),
+    /// converted straight from the caller's pixels (the registry keeps none).
+    pub fn grab_rgba(&mut self, idx: u32, w: u32, h: u32, rgba: &[u8]) {
+        let i = idx as usize;
+        let (mut full, small) = texconv::convert(w, h, rgba);
+        if small.is_some() {
+            full.fmt |= ffi::TEX_TILE3D;
+        }
+        self.release(i);
+        let sd = small.as_ref().map(desc);
+        self.tex[i] = rt::tex_create2(&desc(&full), sd.as_ref());
+        self.gen[i] = self.gen[i].wrapping_add(1);
+        self.bytes[i] = (full.data.len() + small.as_ref().map_or(0, |s| s.data.len())) as u32;
+        self.tex_bytes += self.bytes[i];
+    }
+
     /// Registry image `idx` shows an NTX1 image of the pack (`desc` points into `owner`).
     pub fn adopt_ntx(&mut self, idx: u32, owner: alloc::sync::Arc<Vec<u8>>, desc: &ffi::NtxDesc) -> bool {
         let i = idx as usize;

@@ -52,6 +52,8 @@ game-log = []
 profile = []
 # With `profile`: sample only inside `Game::tick` (the simulation).
 profile-sim = ["profile"]
+# With `profile`: sample only inside `App::draw` (draw loop + rendering).
+profile-draw = ["profile"]
 
 [lints.rust]
 # `target_vendor = "nintendo64"` comes from tools/n64/mips-nintendo64-none.json.
