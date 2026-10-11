@@ -252,7 +252,12 @@ impl<S: AssetStore> N64Data<S> {
         let stem = norm_path(path);
         let stem = stem.trim_end_matches(".wus").to_string();
         let bank = self.sound_meta(path)?.ok()?;
-        Some(bank.samples.iter().map(|s| SfxRef { uid: s.uid, path: format!("rom:/{stem}/{:08x}.wav64", s.uid), looped: s.looped, rate: s.sample_rate }).collect())
+        Some(
+            bank.samples
+                .iter()
+                .map(|s| SfxRef { uid: s.uid, path: format!("rom:/{stem}/{:08x}.wav64", s.uid), looped: s.looped, rate: s.sample_rate })
+                .collect(),
+        )
     }
 }
 

@@ -96,10 +96,18 @@ pub enum List {
     Late,
     LateAdditive,
     Overlay,
+    /// The sky (`DrawBackground`, `noClip`) before everything else, without depth: on the PC
+    /// it is the farthest geometry anyway, but its depth beyond the far plane saturates into
+    /// the coarse far end of the RDP z-buffer, where it ties with (and hides) distant level
+    /// geometry drawn after it.
+    Background,
 }
 
-pub const NUM_LISTS: usize = 7;
-pub const LIST_ORDER: [List; NUM_LISTS] = [List::Normal, List::Wrap, List::Xlu, List::Additive, List::Late, List::LateAdditive, List::Overlay];
+pub const NUM_LISTS: usize = 8;
+pub const LIST_ORDER: [List; NUM_LISTS] =
+    [List::Background, List::Normal, List::Wrap, List::Xlu, List::Additive, List::Late, List::LateAdditive, List::Overlay];
+/// The PC frame lists (`DrawAllFrames` order; index = scene-file list number).
+pub const FRAME_LISTS: [List; 7] = [List::Normal, List::Wrap, List::Xlu, List::Additive, List::Late, List::LateAdditive, List::Overlay];
 
 impl List {
     /// Render state of the list (renderer.rs `build()` passes): blend, depth, wrap, alpha
@@ -113,6 +121,7 @@ impl List {
             List::Late => (ffi::BLEND_SEMI, ffi::ZTEST, false, 1),
             List::LateAdditive => (ffi::BLEND_ADD, ffi::ZTEST, false, 1),
             List::Overlay => (ffi::BLEND_SEMI, 0, false, 1),
+            List::Background => (ffi::BLEND_SEMI, 0, false, 101),
         };
         R3dList {
             blend,
@@ -810,7 +819,7 @@ pub fn emulate_vertex(u: &R3dDrawUniform, fr: &R3dFrame, guard: i32, pos: [i16; 
     }
     let q = (w >> 16).max(1);
     let s16 = |v: i64| v.clamp(-32768, 32767) as i32;
-    let scr = |c: i64, o: i16| s16(o as i64 + ((c / (2 * q)) * fr.vs[0] as i64 >> 16));
+    let scr = |c: i64, o: i16| s16(o as i64 + (((c / (2 * q)) * fr.vs[0] as i64) >> 16));
     let sx = scr(x, fr.vo[0]);
     let sy = scr(y, fr.vo[1]);
     let k = ((fr.vs[2] as i64) << 16) | (fr.vlo[2] as u16 as i64);
@@ -916,7 +925,7 @@ mod tests {
     fn colour_uniforms() {
         let u = draw_uniform(&IDENTITY, &DrawParams::default());
         // Shader: out = (in<<7) * mul / 32768 + add, then >> 7.
-        let shade = |c: u8, mul: i16, add: i16| ((((c as i32) << 7) * mul as i32 * 2 >> 16) + add as i32).clamp(0, 32767) >> 7;
+        let shade = |c: u8, mul: i16, add: i16| (((((c as i32) << 7) * mul as i32 * 2) >> 16) + add as i32).clamp(0, 32767) >> 7;
         for c in [0u8, 1, 100, 254, 255] {
             assert_eq!(shade(c, u.cmul[0], u.cadd[0]), c as i32);
         }

@@ -11,7 +11,7 @@ publish = false
 [workspace]
 
 [dependencies]
-f2-engine = { path = "../../../crates/f2-engine", default-features = false }
+f2-engine = { path = "../../../crates/f2-engine", default-features = false, features = ["std"] }
 f2-formats = { path = "../../../crates/f2-formats" }
 f2-n64fmt = { path = "../../../crates/f2-n64fmt" }
 png = "=0.18.1"

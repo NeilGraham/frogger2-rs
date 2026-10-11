@@ -156,12 +156,12 @@ pub use mixer::Audio;
 #[cfg(target_vendor = "nintendo64")]
 mod mixer {
     use super::*;
+    use crate::data::SfxRef;
     use crate::rt;
     use alloc::collections::BTreeMap;
     use alloc::format;
     use alloc::string::String;
     use alloc::vec::Vec;
-    use crate::data::SfxRef;
 
     #[derive(Clone, Copy)]
     struct Sfx {

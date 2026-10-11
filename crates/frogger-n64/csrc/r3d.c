@@ -37,6 +37,8 @@ typedef struct {
     /* Load descriptors for the shader's texture command (F2_LoadTex in rsp_f2mdx.S), per
      * variant (wrap | bilinear << 1), built on first use. */
     struct r3d_texdesc_s *desc[4];
+    uint16_t src;       /* main.c texture this aliases (0 = F2NM file texture) */
+    uint16_t addv;      /* r3d texture of its additive variant (0 = not made yet) */
 } r3d_tex_t;
 
 /* F2_LoadTex descriptor (F2_TEXDESC_SIZE = 144 bytes, 16-aligned). */
@@ -133,28 +135,61 @@ uint32_t n64_r3d_tex_create_impl(const n64_r3d_tex_desc_t *d) {
 
 /* An r3d texture sampling the TMEM-sized surface of main.c texture `tex` (RGBA16/RGBA32,
  * power-of-two sizes for wrapping); 0 if it cannot be used. */
-const surface_t *n64_tex_surface(uint32_t h);
+const surface_t *n64_tex_tmem_surface(uint32_t h);
 const uint16_t *n64_tex_tlut(uint32_t h, uint32_t *count);
 uint32_t n64_r3d_tex_alias_impl(uint32_t tex) {
-    const surface_t *s = n64_tex_surface(tex);
+    const surface_t *s = n64_tex_tmem_surface(tex);
     if (!s || num_texs >= MAX_R3D_TEX) return 0;
     tex_format_t f = surface_get_format(s);
-    if ((s->width & (s->width - 1)) || (s->height & (s->height - 1))) return 0;
-    if (s->stride != TEX_FORMAT_PIX2BYTES(f, s->width) || s->stride < 8) return 0;
-    /* LOAD_BLOCK: the whole texture in one load (CI/RGBA32: 2 KB of texels). */
-    uint32_t limit = (f == FMT_CI4 || f == FMT_CI8 || f == FMT_RGBA32) ? 2048 : 4096;
-    if (s->stride * s->height > limit) return 0;
+    uint32_t limit = (f == FMT_CI4 || f == FMT_CI8) ? 2048 : 4096; /* RGBA32: 2 x 2 KB halves */
     uint32_t tlut_count = 0;
     const uint16_t *tlut = n64_tex_tlut(tex, &tlut_count);
-    if ((f == FMT_CI4 || f == FMT_CI8) && !tlut) return 0;
+    const char *why = NULL;
+    if ((s->width & (s->width - 1)) || (s->height & (s->height - 1))) why = "not a power of two";
+    else if (s->stride != TEX_FORMAT_PIX2BYTES(f, s->width) || s->stride < 8) why = "row stride";
+    /* LOAD_BLOCK: the whole texture in one load (CI/RGBA32: 2 KB of texels). */
+    else if (s->stride * s->height > limit) why = "larger than TMEM";
+    else if ((f == FMT_CI4 || f == FMT_CI8) && !tlut) why = "no palette";
+    if (why) {
+        debugf("r3d: texture %lu (%dx%d %s, stride %d) not usable: %s\n", tex, s->width, s->height, tex_format_name(f), s->stride, why);
+        return 0;
+    }
     r3d_tex_t *t = &texs[num_texs];
     memset(t, 0, sizeof *t);
     t->surf = *s;
     t->width = s->width;
+    t->src = tex;
     if (f == FMT_CI4 || f == FMT_CI8) {
         t->tlut = (uint16_t *)tlut;
         t->tlut_count = f == FMT_CI4 ? 16 : (tlut_count > 256 ? 256 : tlut_count);
     }
+    return num_texs++;
+}
+
+/* The additive variant of r3d texture h (main.c make_add_variant: colour normalised to its
+ * brightest channel, alpha = alpha x brightness, so the alpha blender adds exactly the D3D
+ * additive term without the RDP's wrap-around), made on first use; h itself if impossible. */
+const surface_t *n64_tex_add_surface(uint32_t h);
+static uint32_t additive_tex(uint32_t h) {
+    r3d_tex_t *t = &texs[h];
+    if (t->addv) return t->addv;
+    const surface_t *s = t->src ? n64_tex_add_surface(t->src) : NULL;
+    if (!s || num_texs >= MAX_R3D_TEX) {
+        debugf("r3d: no additive variant for texture %lu (src %u)\n", h, t->src);
+        return h;
+    }
+    r3d_tex_t *a = &texs[num_texs];
+    memset(a, 0, sizeof *a);
+    a->surf = *s;
+    a->width = s->width;
+    t->addv = num_texs;
+    uint32_t acc[4] = {0, 0, 0, 0};
+    for (int y = 0; y < s->height; y++)
+        for (int x = 0; x < s->width; x++)
+            for (int k = 0; k < 4; k++) acc[k] += ((uint8_t *)s->buffer)[y * s->stride + x * 4 + k];
+    uint32_t n = s->width * s->height;
+    debugf("r3d: additive variant of texture %lu (src %u, %dx%d %s) -> %lu (%dx%d), mean rgba %lu %lu %lu %lu\n", h, t->src, t->surf.width,
+           t->surf.height, tex_format_name(surface_get_format(&t->surf)), num_texs, s->width, s->height, acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n);
     return num_texs++;
 }
 
@@ -220,8 +255,9 @@ static void apply_list(const n64_r3d_list_t *st) {
     switch (st->blend) {
     case N64_BLEND_ADD:
         /* xluAddRS (SRCALPHA, ONE) has no non-overflowing RDP equivalent (the blender
-         * wraps instead of clamping): approximated as src*a + dst*(1-a) unless the true
-         * (wrapping) additive formula is requested. */
+         * wraps instead of clamping): src*a + dst*(1-a) with each texture's additive
+         * variant (additive_tex: the src*a term is exact, the background is attenuated
+         * only where the effect is bright), unless the true (wrapping) formula is asked. */
         rdpq_mode_blender(st->flags & N64_TRUE_ADDITIVE ? RDPQ_BLENDER_ADDITIVE : RDPQ_BLENDER_MULTIPLY);
         break;
     case N64_BLEND_SUB:
@@ -367,6 +403,7 @@ void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draw
         for (uint32_t k = 0; k < d->n_groups; k++) {
             uint32_t gh = d->groups[k], th = d->texs[k];
             if (!gh || gh >= num_groups || !th || th >= num_texs) continue;
+            if (st->blend == N64_BLEND_ADD && !(st->flags & N64_TRUE_ADDITIVE)) th = additive_tex(th);
             if (th != cur_tex) upload_tex(th, st->flags);
             const r3d_group_t *g = &groups[gh];
             if (g->block && !r3d_flat) rspq_block_run(g->block);

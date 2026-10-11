@@ -38,8 +38,11 @@ typedef struct {
     bool per_tile;      /* one 256-entry palette per tile_w x tile_h tile (backdrops) */
     int tile_w, tile_h;
     bool own_small;     /* `small` is a downscaled copy (made on demand, see make_small_variant) */
+    surface_t tmem;     /* r3d: downscaled copy of a texture larger than one TMEM load */
+    bool has_tmem;
 } tex_t;
 static int cur_tlut_mode = -1; /* TLUT mode currently set in the SOM (-1 = unknown) */
+static void make_add_variant(tex_t *t);
 static tex_t textures[MAX_TEXTURES]; /* handle 0 = none */
 static uint32_t tex_hint = 1;
 static bool attached;
@@ -368,10 +371,7 @@ uint32_t n64_tex_update_impl(uint32_t h, const n64_tex_desc_t *d) {
         memcpy((uint8_t *)s->buffer + y * s->stride, (const uint8_t *)d->pixels + y * row, row);
     /* surface_alloc buffers are uncached; others need a writeback for the RDP. */
     if (!((uint32_t)s->buffer & 0x20000000)) data_cache_hit_writeback(s->buffer, s->stride * s->height);
-    if (t->has_addv) {
-        surface_free(&t->addv);
-        t->has_addv = false;
-    }
+    if (t->has_addv) make_add_variant(t);
     if (cur_tex_loaded == h) cur_tex_loaded = 0;
     return 1;
 }
@@ -403,6 +403,7 @@ void n64_tex_free_impl(uint32_t h) {
     tex_t *t = &textures[h];
     if ((t->own_small || !t->small_is_full) && t->small.buffer != t->full[0].buffer) surface_free(&t->small);
     if (t->has_addv) surface_free(&t->addv);
+    if (t->has_tmem) surface_free(&t->tmem);
     free_full(t);
     memset(t, 0, sizeof *t);
     if (h < tex_hint) tex_hint = h;
@@ -461,8 +462,37 @@ static void tex_fetch(const tex_t *t, const surface_t *s, int x, int y, uint32_t
 
 /* A box-downscaled RGBA32/RGBA16 copy of a texture that does not fit TMEM, for the triangle
  * cases the tile path does not cover (wrapping). */
+static surface_t downscale_rgba32(tex_t *t, const surface_t *s);
+
 static void make_small_variant(tex_t *t) {
-    const surface_t *s = &t->full[0];
+    t->small = downscale_rgba32(t, &t->full[0]);
+    t->own_small = true;
+    t->small_is_full = false;
+}
+
+/* Whether surface s loads into TMEM with one LOAD_BLOCK (r3d's texture loads). */
+static bool fits_tmem_block(const surface_t *s) {
+    tex_format_t f = surface_get_format(s);
+    uint32_t limit = (f == FMT_CI4 || f == FMT_CI8) ? 2048 : 4096;
+    return !(s->width & (s->width - 1)) && !(s->height & (s->height - 1)) && s->stride == TEX_FORMAT_PIX2BYTES(f, s->width) &&
+           s->stride >= 8 && s->stride * s->height <= limit;
+}
+
+/* The surface r3d samples for texture h: `small` when it fits one TMEM load, else a
+ * downscaled RGBA32 copy (made once). NULL if none. */
+const surface_t *n64_tex_tmem_surface(uint32_t h) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return NULL;
+    tex_t *t = &textures[h];
+    if (fits_tmem_block(&t->small)) return &t->small;
+    if (!t->has_tmem) {
+        t->tmem = downscale_rgba32(t, &t->small);
+        t->has_tmem = true;
+    }
+    return &t->tmem;
+}
+
+/* A box-downscaled RGBA32 copy of surface s of texture t, at most 1024 texels. */
+static surface_t downscale_rgba32(tex_t *t, const surface_t *s) {
     int w = s->width, h = s->height, sx = 1, sy = 1;
     while ((w / sx) * (h / sy) > 1024) {
         if (w / sx >= h / sy) sx *= 2; else sy *= 2;
@@ -481,9 +511,7 @@ static void make_small_variant(tex_t *t) {
             uint8_t *o = (uint8_t *)d.buffer + y * d.stride + x * 4;
             for (int k = 0; k < 4; k++) o[k] = n ? acc[k] / n : 0;
         }
-    t->small = d;
-    t->own_small = true;
-    t->small_is_full = false;
+    return d;
 }
 
 static void make_add_variant(tex_t *t) {
@@ -494,7 +522,11 @@ static void make_add_variant(tex_t *t) {
         if (w / sx >= h / sy) sx *= 2; else sy *= 2;
     }
     int nw = w / sx > 0 ? w / sx : 1, nh = h / sy > 0 ? h / sy : 1;
-    t->addv = surface_alloc(FMT_RGBA32, nw, nh);
+    /* Refilled in place when the texture changes (procedural textures): r3d aliases it. */
+    if (!t->has_addv || t->addv.width != nw || t->addv.height != nh) {
+        if (t->has_addv) surface_free(&t->addv);
+        t->addv = surface_alloc(FMT_RGBA32, nw, nh);
+    }
     for (int y = 0; y < nh; y++) {
         uint8_t *dst = (uint8_t *)t->addv.buffer + y * t->addv.stride;
         for (int x = 0; x < nw; x++) {
@@ -527,6 +559,14 @@ static const surface_t *tri_surface(const n64_state_t *st) {
     }
     if (t->small_is_full && t->tile3d && !t->own_small) make_small_variant(t);
     return &t->small;
+}
+
+/* The additive variant surface of texture h (made on first use; see make_add_variant). */
+const surface_t *n64_tex_add_surface(uint32_t h) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return NULL;
+    tex_t *t = &textures[h];
+    if (!t->has_addv) make_add_variant(t);
+    return &t->addv;
 }
 
 /* Palette mode + TLUT for sampling surface s of texture t (tile `tile` of per-tile ones). */

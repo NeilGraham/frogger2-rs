@@ -77,4 +77,6 @@ for ($i = 1; $i -lt $shots; $i++) {
   Start-Sleep -Seconds $gap
   Grab ($out.Replace('.png', "_$i.png"))
 }
-Stop-Process -Id $p.Id -Force
+# Close the window first so ares writes the cartridge save (<rom>.ram) on exit.
+$p.CloseMainWindow() | Out-Null
+if (-not $p.WaitForExit(8000)) { Stop-Process -Id $p.Id -Force }

@@ -140,7 +140,8 @@ impl<'a> Ntx<'a> {
         let n = |i: usize| be16(b, 8 + 2 * i).map(|v| v as usize);
         let (n_img, n_ent, _n_sorted, n_anim, n_dep, n_gly) = (n(0)?, n(1)?, n(2)?, n(3)?, n(4)?, n(5)?);
         let o = |i: usize| be32(b, 20 + 4 * i).map(|v| v as usize);
-        let (off_img, off_ent, off_anim, off_dep, off_gly, off_tlut, n_tlut, off_px, n_px, size) = (o(0)?, o(1)?, o(3)?, o(4)?, o(5)?, o(6)?, o(7)?, o(8)?, o(9)?, o(10)?);
+        let (off_img, off_ent, off_anim, off_dep, off_gly, off_tlut, n_tlut, off_px, n_px, size) =
+            (o(0)?, o(1)?, o(3)?, o(4)?, o(5)?, o(6)?, o(7)?, o(8)?, o(9)?, o(10)?);
         if size > b.len() || off_px + n_px > b.len() || off_tlut + 2 * n_tlut > b.len() || off_gly + n_gly * GLYPH_TABLE_SIZE > b.len() {
             return Err("ntx: section out of range");
         }
@@ -304,7 +305,7 @@ impl<'a> Ntx<'a> {
 pub fn texel(f: u8, data: &[u8], stride: usize, x: usize, y: usize) -> u32 {
     let row = &data[y * stride..];
     match fmt::bits(f) {
-        4 => u32::from((row[x / 2] >> if x % 2 == 0 { 4 } else { 0 }) & 15),
+        4 => u32::from((row[x / 2] >> if x.is_multiple_of(2) { 4 } else { 0 }) & 15),
         8 => u32::from(row[x]),
         16 => u32::from(u16::from_be_bytes([row[x * 2], row[x * 2 + 1]])),
         _ => u32::from_be_bytes([row[x * 4], row[x * 4 + 1], row[x * 4 + 2], row[x * 4 + 3]]),
@@ -353,6 +354,25 @@ pub fn decode_texel(f: u8, code: u32, white: bool, pal: impl Fn(u32) -> u16) -> 
     }
 }
 
+/// A procedural texture's initial look (`SOURCE_555`: the stored RGBA16 texels are the raw
+/// PC pixels the simulation builds its palette from; the PC uploads them like `ai_`: white,
+/// alpha = `(blue5 >> 1) * 17`), as IA8 (`I = 15`, `A = blue5 >> 1`): exact.
+pub fn source_555_ia8(d: &ImageDesc, texels: &[u8]) -> Option<(u8, u16, Vec<u8>)> {
+    if d.flags & flag::SOURCE_555 == 0 || d.fmt != fmt::RGBA16 {
+        return None;
+    }
+    let (w, h) = (d.width as usize, d.height as usize);
+    let stride = w.div_ceil(8) * 8;
+    let mut out = alloc::vec![0u8; stride * h];
+    for y in 0..h {
+        for x in 0..w {
+            let src = (texel(fmt::RGBA16, texels, d.stride as usize, x, y) >> 1) as u8;
+            out[y * stride + x] = 0xF0 | ((src & 0x1f) >> 1);
+        }
+    }
+    Some((fmt::IA8, stride as u16, out))
+}
+
 /// I-format images the RDP's TEX × SHADE combiner would show wrong (alpha masks need white
 /// colour, opaque I needs alpha 1; the RDP sets I alpha = intensity): an IA16 / IA8 copy
 /// with the PC's colours, or `None` when the image is fine as stored. Returns
@@ -392,6 +412,33 @@ pub fn ia_fixup(d: &ImageDesc, texels: &[u8]) -> Option<(u8, u16, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn procedural_initial_upload() {
+        let d = ImageDesc {
+            fmt: fmt::RGBA16,
+            kind: kind::PROCEDURAL,
+            flags: flag::SOURCE_555,
+            width: 2,
+            height: 1,
+            orig_width: 2,
+            orig_height: 1,
+            stride: 8,
+            tile_w: 2,
+            tile_h: 1,
+            tlut_first: 0,
+            tlut_count: 0,
+            aux: NONE,
+            pixel_offset: 0,
+            pixel_size: 8,
+        };
+        // PC pixels 0x001f (blue 31) and 0x7c00 (red, blue 0), stored as src << 1 | 1.
+        let t = [0x00, 0x3f, 0xf8, 0x01, 0, 0, 0, 0];
+        let (f, _, out) = source_555_ia8(&d, &t).unwrap();
+        assert_eq!(f, fmt::IA8);
+        assert_eq!(&out[..2], &[0xFF, 0xF0]);
+        assert_eq!(decode_texel(fmt::IA8, 0xFF, false, |_| 0), [255, 255, 255, 255]);
+    }
 
     #[test]
     fn ia_fixup_alpha_mask() {

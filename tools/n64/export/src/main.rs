@@ -226,7 +226,9 @@ fn main() {
     // F2NM: one mesh per world object (drawn with its key-0 matrix, like draw_landscape).
     let mats = xform_actor(world, &mut Actor { animated: false, ..Default::default() });
     let mut fb = FileBuilder::new();
-    let mut draws: Vec<(u32, u32, Vec<[[f32; 4]; 4]>)> = Vec::new();
+    // (mesh index, frame list, model matrices)
+    type Draw = (u32, u32, Vec<[[f32; 4]; 4]>);
+    let mut draws: Vec<Draw> = Vec::new();
     let mut tex_crcs: BTreeMap<u32, ()> = BTreeMap::new();
     let mut total_faces = 0;
     for_each_object(world, |i, o| {

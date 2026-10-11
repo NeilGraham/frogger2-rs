@@ -55,12 +55,26 @@ pub fn for_each_object<'a>(model: &'a Model, mut f: impl FnMut(usize, &'a Object
 const OBJECT_FLAGS_XLU: i16 = 1 << 1;
 const OBJECT_FLAGS_MODGE: i16 = 1 << 5;
 const OBJECT_FLAGS_ADDITIVE: i16 = 1 << 6;
+const OBJECT_FLAGS_GLOW: i16 = 1 << 14;
 
 /// `(wrap, ordered)` of an object drawn with `flags` (`object_frame`: MODGE → Wrap,
 /// XLU → Xlu, ADDITIVE → Additive lists all wrap; the translucent ones keep face order).
 fn addressing(flags: i16) -> (bool, bool) {
     let xlu = flags & (OBJECT_FLAGS_XLU | OBJECT_FLAGS_ADDITIVE) != 0;
     (xlu || flags & OBJECT_FLAGS_MODGE != 0, xlu)
+}
+
+/// Corner colour of a face drawn additively on the N64: the renderer blends `src * a` with
+/// the alpha blender from the texture's additive variant (colour / max, alpha * max), so the
+/// vertex colour is split the same way (`rgb / max`, `a * max`) and the product equals the
+/// PC's `tex * diffuse * alpha` additive term.
+pub fn additive_corner(c: [u8; 4]) -> [u8; 4] {
+    let m = c[0].max(c[1]).max(c[2]) as u32;
+    if m == 0 {
+        return [0, 0, 0, 0];
+    }
+    let n = |v: u8| ((v as u32 * 255 + m / 2) / m) as u8;
+    [n(c[0]), n(c[1]), n(c[2]), ((c[3] as u32 * m + 127) / 255) as u8]
 }
 
 fn faces_of(mesh: &Mesh, bone_of: Option<&[u8]>) -> Vec<FaceIn> {
@@ -88,6 +102,13 @@ fn faces_of(mesh: &Mesh, bone_of: Option<&[u8]>) -> Vec<FaceIn> {
         });
     }
     out
+}
+
+/// Models whose actors the game draws additively whatever their object flags:
+/// `ada*` (`CreateAndAddActor`, actor2.rs), `wat_*` water and `xxa_*` scenics (pc_banks.rs).
+pub fn additive_by_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.starts_with("ada") || n.starts_with("wat_") || n.starts_with("xxa_")
 }
 
 /// Statistics of [`encode_bank`].
@@ -120,7 +141,8 @@ pub fn encode_bank(bank: &ObjectBank) -> (Vec<u8>, BankStats) {
             if faces.is_empty() {
                 continue;
             }
-            let em = encode_mesh(&MeshIn { id: mesh_id(mi, SKIN), positions: &mesh.vertices, faces: &faces, bone_of: Some(&bone_of), ordered: false, wrap: false });
+            let em =
+                encode_mesh(&MeshIn { id: mesh_id(mi, SKIN), positions: &mesh.vertices, faces: &faces, bone_of: Some(&bone_of), ordered: false, wrap: false });
             st.skinned += 1;
             st.tris += em.n_tris;
             st.vertices += em.vertices.len();
@@ -133,6 +155,14 @@ pub fn encode_bank(bank: &ObjectBank) -> (Vec<u8>, BankStats) {
                     return;
                 }
                 let (wrap, ordered) = if landscape { (false, false) } else { addressing(o.flags) };
+                // Additive objects: flagged in the bank, or whole models the game makes
+                // additive by name when it creates their actors.
+                let mut faces = faces;
+                if !landscape && o.flags & OBJECT_FLAGS_GLOW == 0 && (o.flags & OBJECT_FLAGS_ADDITIVE != 0 || additive_by_name(model.name())) {
+                    for f in &mut faces {
+                        f.rgba = f.rgba.map(additive_corner);
+                    }
+                }
                 let em = encode_mesh(&MeshIn { id: mesh_id(mi, i as u16), positions: &mesh.vertices, faces: &faces, bone_of: None, ordered, wrap });
                 st.tris += em.n_tris;
                 st.vertices += em.vertices.len();
@@ -157,7 +187,15 @@ pub fn strip_geometry(bank: &mut ObjectBank) {
 pub fn strip_model(m: &mut Model) {
     fn strip(o: &mut Object) {
         if let Some(m) = o.mesh.as_mut() {
-            *m = Mesh { vertices: Vec::new(), faces: Vec::new(), face_uv: Vec::new(), normals: Vec::new(), colors: Vec::new(), face_flags: Vec::new(), textures: Vec::new() };
+            *m = Mesh {
+                vertices: Vec::new(),
+                faces: Vec::new(),
+                face_uv: Vec::new(),
+                normals: Vec::new(),
+                colors: Vec::new(),
+                face_flags: Vec::new(),
+                textures: Vec::new(),
+            };
         }
         o.effected_verts = Vec::new();
         for c in &mut o.children {
@@ -190,6 +228,15 @@ mod tests {
     fn ids_round_trip() {
         assert_eq!(split_id(mesh_id(3, 7)), (3, 7));
         assert_eq!(split_id(mesh_id(70, SKIN)), (70, SKIN));
+    }
+
+    #[test]
+    fn additive_corner_split() {
+        assert_eq!(additive_corner([255, 128, 0, 200]), [255, 128, 0, 200]);
+        // Dark olive at full alpha: bright colour, alpha = brightness.
+        let c = additive_corner([64, 60, 30, 255]);
+        assert_eq!(c, [255, 239, 120, 64]);
+        assert_eq!(additive_corner([0, 0, 0, 255]), [0; 4]);
     }
 
     #[test]

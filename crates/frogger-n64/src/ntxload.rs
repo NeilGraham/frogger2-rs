@@ -64,9 +64,10 @@ fn tex_type(kind: u8) -> TexType {
 /// The N64 texture of image `i` of `f` (whose bytes are `owner`) for registry image `h`.
 fn adopt(gfx: &mut RenderCpu, h: TexHandle, owner: &Arc<Vec<u8>>, f: &Ntx, i: usize) -> bool {
     let d = f.images[i];
-    let flags = if d.flags & ntx::flag::SINGLE_TILE != 0 { ffi::NTX_SINGLE } else { 0 } | if d.flags & ntx::flag::TLUT_PER_TILE != 0 { ffi::NTX_PER_TILE } else { 0 };
+    let flags =
+        if d.flags & ntx::flag::SINGLE_TILE != 0 { ffi::NTX_SINGLE } else { 0 } | if d.flags & ntx::flag::TLUT_PER_TILE != 0 { ffi::NTX_PER_TILE } else { 0 };
     let tlut = f.tlut_bytes(i);
-    if let Some((fmt, stride, texels)) = ntx::ia_fixup(&d, f.texels(i)) {
+    if let Some((fmt, stride, texels)) = ntx::source_555_ia8(&d, f.texels(i)).or_else(|| ntx::ia_fixup(&d, f.texels(i))) {
         let owned = Arc::new(texels);
         let desc = NtxDesc {
             fmt: fmt as u32,

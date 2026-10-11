@@ -19,8 +19,8 @@ pub mod ffi;
 pub mod input;
 pub mod kernels;
 pub mod ntx;
-pub mod save;
 pub mod r3d;
+pub mod save;
 pub mod texconv;
 
 #[cfg(target_vendor = "nintendo64")]

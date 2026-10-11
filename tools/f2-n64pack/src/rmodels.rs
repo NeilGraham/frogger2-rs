@@ -102,7 +102,14 @@ pub fn fonts(ctx: &Ctx) -> Result<(Vec<RawAsset>, Vec<String>)> {
     for n in ["bigfont.bmp", "smallfont.bmp", "monofont.bmp"] {
         let p = ctx.game().join("textures/font").join(n);
         let data = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-        out.push(RawAsset { path: format!("textures/font/{n}"), class: Class::Textures, source_bytes: data.len() as u64, data, notes: Vec::new(), segments: Vec::new() });
+        out.push(RawAsset {
+            path: format!("textures/font/{n}"),
+            class: Class::Textures,
+            source_bytes: data.len() as u64,
+            data,
+            notes: Vec::new(),
+            segments: Vec::new(),
+        });
     }
     Ok((out, vec!["fonts: bigfont/smallfont/monofont BMPs for the runtime's glyph scan".to_string()]))
 }

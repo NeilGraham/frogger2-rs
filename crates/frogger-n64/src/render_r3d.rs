@@ -45,6 +45,11 @@ pub struct R3dLevel {
     img: Vec<(u32, Option<TexId>)>,
     pub stats: R3dFrameStats,
     bones: Vec<[[f32; 4]; 4]>,
+    /// Recorded draws without an F2NM mesh (logged once each).
+    missing: alloc::collections::BTreeSet<(u32, u16)>,
+    frame_no: u32,
+    dump_next: bool,
+    seen: alloc::collections::BTreeSet<u32>,
 }
 
 // SAFETY: the N64 runs one thread; the raw pointers inside R3d point into buffers it owns
@@ -79,7 +84,18 @@ impl R3dLevel {
     pub fn new() -> R3dLevel {
         let r = R3d::new();
         let base = r.mark();
-        R3dLevel { r, base, meshes: BTreeMap::new(), img: Vec::new(), stats: R3dFrameStats::default(), bones: Vec::new() }
+        R3dLevel {
+            r,
+            base,
+            meshes: BTreeMap::new(),
+            img: Vec::new(),
+            stats: R3dFrameStats::default(),
+            bones: Vec::new(),
+            missing: Default::default(),
+            frame_no: 0,
+            dump_next: false,
+            seen: Default::default(),
+        }
     }
 
     /// Frees the level's meshes and texture aliases.
@@ -87,6 +103,7 @@ impl R3dLevel {
         self.r.reset_to(self.base);
         self.meshes.clear();
         self.img.clear();
+        self.missing.clear();
     }
 
     pub fn num_meshes(&self) -> usize {
@@ -95,7 +112,13 @@ impl R3dLevel {
 
     /// Registers bank `bank`'s F2NM meshes. `models` is the level's model index (first bank
     /// wins, like `FindObject`): meshes of models shadowed by an earlier bank are skipped.
-    pub fn add_bank(&mut self, bank: usize, f2nm: Vec<u8>, banks: &[ObjectBank], models: &BTreeMap<u32, (usize, usize)>) -> Result<usize, crate::r3d::LoadError> {
+    pub fn add_bank(
+        &mut self,
+        bank: usize,
+        f2nm: Vec<u8>,
+        banks: &[ObjectBank],
+        models: &BTreeMap<u32, (usize, usize)>,
+    ) -> Result<usize, crate::r3d::LoadError> {
         let ids = self.r.load_file(f2nm)?;
         let mut n = 0;
         for id in ids {
@@ -137,6 +160,13 @@ impl R3dLevel {
     /// Draws the frame: CPU segments and the recorded meshes, then presents.
     pub fn draw(&mut self, r: &mut Renderer, cpu: &mut RenderCpu, clear: [f64; 4]) {
         cpu.build(r, clear);
+        if let Some(n) = option_env!("F2N64_DUMP_FRAME").and_then(|s| s.parse::<u32>().ok()) {
+            self.frame_no += 1;
+            if self.frame_no == n {
+                cpu.dump(&r.textures);
+                self.dump_next = true;
+            }
+        }
         let t0 = rt::ticks();
         let c = clear.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u32);
         rt::begin_frame((c[0] << 24) | (c[1] << 16) | (c[2] << 8) | 0xff);
@@ -162,7 +192,11 @@ impl R3dLevel {
         } else {
             self.r.begin_frame(&view);
             self.queue(&sink, cpu, &mut st);
-            self.r.flush(|l| cpu.draw_segment(segment_of(l)));
+            self.r.flush(|l| {
+                if l != List::Background {
+                    cpu.draw_segment(segment_of(l));
+                }
+            });
             st.queued_tris = self.r.queued_tris;
             st.sent_tris = self.r.sent_tris;
         }
@@ -175,8 +209,26 @@ impl R3dLevel {
 
     fn queue(&mut self, sink: &MeshSink, cpu: &RenderCpu, st: &mut R3dFrameStats) {
         for d in &sink.draws {
-            let Some(list) = list_of(d.frame) else { continue };
-            let Some(&mesh) = self.meshes.get(&(d.model, d.object)) else { continue };
+            let Some(mut list) = list_of(d.frame) else { continue };
+            if d.no_clip && list == List::Normal {
+                list = List::Background;
+            }
+            if let Some(skip) = option_env!("F2N64_SKIP_MODEL") {
+                if skip.split(',').any(|m| alloc::format!("{:08x}", d.model) == m) {
+                    continue;
+                }
+            }
+            if let Some(only) = option_env!("F2N64_ONLY_MODEL") {
+                if !only.split(',').any(|m| alloc::format!("{:08x}", d.model) == m) {
+                    continue;
+                }
+            }
+            let Some(&mesh) = self.meshes.get(&(d.model, d.object)) else {
+                if self.missing.insert((d.model, d.object)) {
+                    crate::log!("r3d: no mesh for model {:08x} object {} (frame {:?})", d.model, d.object, d.frame);
+                }
+                continue;
+            };
             let override_tex = match d.override_tex {
                 Some(h) => match self.tex_for(cpu, h.0) {
                     Some(t) => Some(t),
@@ -194,6 +246,21 @@ impl R3dLevel {
                 self.r.draw(list, mesh, m, &p);
             }
             st.draws += 1;
+            if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {
+                crate::log!("r3d: model {:08x} first drawn ({:?}, {} tris)", d.model, list, self.r.mesh_tris(mesh));
+            }
+            if self.dump_next {
+                crate::log!(
+                    "dump r3d {:?} model {:08x} obj {} alpha {} tris {} no_clip {}",
+                    list,
+                    d.model,
+                    d.object,
+                    d.alpha_mul,
+                    self.r.mesh_tris(mesh),
+                    d.no_clip
+                );
+            }
         }
+        self.dump_next = false;
     }
 }

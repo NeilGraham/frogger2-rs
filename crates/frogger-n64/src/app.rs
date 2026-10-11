@@ -56,10 +56,13 @@ pub const HEIGHT: u32 = 240;
 /// How the ROM starts (build-time `F2N64_BOOT`): `frontend` (default: logos → title →
 /// frontend like the PC executable, progress from the SRAM save: a new player's story book
 /// starts the training level), `frontend-trained` (testing: the training level marked done,
-/// as a save after it would have it) or `level W L` (straight into an arcade level).
+/// as a save after it would have it), `save-test` (frontend, and the save block written to
+/// SRAM right after boot: the next boot must report it loaded) or `level W L` (straight into
+/// an arcade level).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Boot {
     Frontend { trained: bool },
+    SaveTest,
     Level(u32, u32),
 }
 
@@ -70,6 +73,7 @@ impl Boot {
         match (it.next(), it.next().and_then(|w| w.parse().ok()), it.next().and_then(|l| l.parse().ok())) {
             (Some("level"), Some(w), Some(l)) => Boot::Level(w, l),
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
+            (Some("save-test"), _, _) => Boot::SaveTest,
             _ => Boot::Frontend { trained: false },
         }
     }
@@ -228,6 +232,9 @@ impl App {
                     let fe = f2_game::layout::worldid::FRONTEND as usize;
                     app.game.layout.world_visual_data[fe].level_visual_data[f2_game::layout::LEVELID_FRONTEND4 as usize].level_completed = 1;
                 }
+            }
+            Boot::SaveTest => {
+                app.game.save_game();
             }
             Boot::Level(w, l) => {
                 log!("app: booting straight into level {w}-{l}");

@@ -299,7 +299,7 @@ impl R3dTest {
         let dt = now.wrapping_sub(self.last);
         self.last = now;
         self.frame += 1;
-        let mut t0 = ticks();
+        let t0;
         if self.scenes.is_empty() {
             // No exported scene: animate the 1000-triangle benchmark scene.
             rt::begin_frame(0x183050ff);
@@ -381,7 +381,7 @@ fn load_scene(r: &mut R3d, name: &str) -> Option<Scene> {
         }
         let mi = be_u32(&sc, o) as usize;
         let lw = be_u32(&sc, o + 4);
-        let list = LIST_ORDER.get((lw & 0xFF) as usize).copied().unwrap_or(List::Normal);
+        let list = FRAME_LISTS.get((lw & 0xFF) as usize).copied().unwrap_or(List::Normal);
         let nm = be_u32(&sc, o + 8) as usize;
         o += 12;
         let mut mats = Vec::with_capacity(nm);

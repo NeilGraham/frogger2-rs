@@ -301,6 +301,31 @@ impl RenderCpu {
         self.stats = FrameStats { cmds: self.fcmds.len() as u32, build_ticks: ticks().wrapping_sub(t0), ..Default::default() };
     }
 
+    /// Logs the built frame's CPU commands (debug aid: `F2N64_DUMP_FRAME`): segment, state,
+    /// triangle count, registry image and the name of a texture entry showing it.
+    pub fn dump(&self, reg: &TextureRegistry) {
+        for (k, c) in self.fcmds.iter().enumerate() {
+            let seg = self.marks.iter().rposition(|&m| m as usize <= k).unwrap_or(0).min(8);
+            let name = reg.entries.iter().find(|e| e.current == Some(c.tex)).map_or("", |e| e.name.as_str());
+            let img = reg.images.get(c.tex.0 as usize).map_or((0, 0), |i| (i.width, i.height));
+            let tv = &self.fverts[c.first as usize];
+            crate::log!(
+                "dump cpu seg {seg} {:?} {:?} wrap {} scene {} tris {} tex {} {:?} {} n64 {} col {:?} aref {}",
+                c.blend,
+                c.depth,
+                c.wrap,
+                c.scene,
+                c.count / 3,
+                c.tex.0,
+                img,
+                name,
+                self.tex.get(c.tex.0 as usize).copied().unwrap_or(0),
+                tv.color,
+                tv.alpha_ref
+            );
+        }
+    }
+
     /// Draws segment `seg` of the built frame (0 = backdrops, 1..=7 = the 3D passes in
     /// `DrawAllFrames` order, 8 = 2D overlays).
     pub fn draw_segment(&mut self, seg: usize) {
@@ -363,7 +388,14 @@ impl RenderCpu {
     fn tris(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
         self.verts.clear();
         let zk = self.zk;
-        self.verts.extend(tv.iter().map(|v| Vertex { z: (v.sz * zk).clamp(0.0, 1.0), ..vertex(v) }));
+        let add = state.blend == ffi::BLEND_ADD;
+        self.verts.extend(tv.iter().map(|v| {
+            let mut o = Vertex { z: (v.sz * zk).clamp(0.0, 1.0), ..vertex(v) };
+            if add {
+                additive_colour(&mut o);
+            }
+            o
+        }));
         rt::draw_tris(&self.verts, state);
         st.tris += (tv.len() / 3) as u32;
     }
@@ -405,6 +437,21 @@ impl RenderCpu {
         }
         flush_tris(self, st);
         flush_rects(self, st);
+    }
+}
+
+/// Additive batches are drawn with the alpha blender from each texture's additive variant
+/// (main.c `make_add_variant`: colour / max, alpha * max); the vertex colour gets the same
+/// split so the blended term `colour * alpha` equals D3D's `tex * diffuse * alpha` exactly.
+fn additive_colour(v: &mut Vertex) {
+    let m = v.r.max(v.g).max(v.b);
+    if m > 0.0 {
+        v.r /= m;
+        v.g /= m;
+        v.b /= m;
+        v.a *= m;
+    } else {
+        v.a = 0.0;
     }
 }
 
