@@ -329,6 +329,7 @@ dependencies = [
  "f2-platform",
  "frogger",
  "libm",
+ "png 0.18.1",
 ]
 
 [[package]]

@@ -10,6 +10,8 @@ publish.workspace = true
 default = ["gpu"]
 # wgpu back end. Without it the renderer only draws on the CPU (`Renderer::new_soft`).
 gpu = ["dep:wgpu", "dep:pollster"]
+# OpenGL ES 2 back end (`gles`): no dependencies, GL entry points supplied by the host.
+gles2 = []
 
 [dependencies]
 f2-formats = { path = "../f2-formats" }

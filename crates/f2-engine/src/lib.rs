@@ -11,6 +11,8 @@
 
 pub mod anim;
 pub mod font;
+#[cfg(feature = "gles2")]
+pub mod gles;
 pub mod load;
 pub mod math;
 pub mod renderer;

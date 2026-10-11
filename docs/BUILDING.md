@@ -59,7 +59,7 @@ cargo check --workspace --all-targets --no-default-features --target aarch64-app
 
 `tools/ps4/build-pkg.sh [--data game-data/usa] [--icon IMAGE]` builds a PS4 fPKG (also
 installs on a jailbroken PS5). Toolchain setup and details: [tools/ps4/README.md](../tools/ps4/README.md).
-The CPU renderer it uses can be checked on the host:
+Its renderers can be checked on the host (GLES2 back end: `--example gles_shot`, see the PS4 README):
 `cargo run --release --manifest-path crates/frogger-ps4/Cargo.toml --example soft_shot -- game-data/usa out.png`
 (its own workspace, see the root `Cargo.toml`).
 
