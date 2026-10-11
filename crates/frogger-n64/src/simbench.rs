@@ -266,6 +266,37 @@ fn probes(data: Arc<N64Data<DfsStore>>) {
     black_box(xi);
     let int_ops = cyc(ticks().wrapping_sub(t0), 8000);
     log!("simbench probes (cycles/op): mul.s dependent {} independent {} add.s dependent {} int alu {}", mul_dep, mul_ind, add_dep, int_ops);
+    let t0 = ticks();
+    let mut a = black_box(123_456i32);
+    let b = black_box(-7_890i32);
+    for _ in 0..1000 {
+        a = f2_math::fmul(a, b) ^ 0x5555;
+    }
+    black_box(a);
+    let fm64 = cyc(ticks().wrapping_sub(t0), 1000);
+    let t0 = ticks();
+    let mut a = black_box(123_456i32);
+    for _ in 0..1000 {
+        a = f2_math::fixed::fmul_parts(a, b) ^ 0x5555;
+    }
+    black_box(a);
+    let fm4 = cyc(ticks().wrapping_sub(t0), 1000);
+    let t0 = ticks();
+    let mut a = black_box(123_456i32);
+    for _ in 0..1000 {
+        a = f2_math::fdiv(a, b | 1) ^ 0x5555;
+    }
+    black_box(a);
+    let fd = cyc(ticks().wrapping_sub(t0), 1000);
+    let t0 = ticks();
+    let mut v = f2_math::FVector { vx: 1234, vy: -5678, vz: 910 };
+    for _ in 0..1000 {
+        f2_math::make_unit(black_box(&mut v));
+        v.vx ^= 0x55;
+    }
+    black_box(v);
+    let mu = cyc(ticks().wrapping_sub(t0), 1000);
+    log!("simbench probes (cycles): fmul i64 {} fmul 4-part {} fdiv {} make_unit {}", fm64, fm4, fd, mu);
     log!(
         "simbench probes (cycles): actors {} walk {}/actor walk+pos {}/actor copy_actor_list {}/actor distance_ss {} f32 mul-add {} cold line read {} hot word read {}",
         n_act, walk, walk_pos, copy, dist, fp, line, hot
