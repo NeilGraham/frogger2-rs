@@ -31,7 +31,15 @@ typedef struct {
     bool tile3d; /* triangles sample `full` in TMEM tiles instead of `small` (N64_TEX_TILE3D) */
     surface_t addv; /* additive variant (made on first additive use, see make_add_variant) */
     bool has_addv;
+    /* NTX textures (n64_tex_create_ntx): full[0] points into the caller's file buffer. */
+    bool external;
+    uint16_t *tlut;     /* RGBA16 palette (CI formats), NULL = none */
+    int tlut_count;
+    bool per_tile;      /* one 256-entry palette per tile_w x tile_h tile (backdrops) */
+    int tile_w, tile_h;
+    bool own_small;     /* `small` is a downscaled copy (made on demand, see make_small_variant) */
 } tex_t;
+static int cur_tlut_mode = -1; /* TLUT mode currently set in the SOM (-1 = unknown) */
 static tex_t textures[MAX_TEXTURES]; /* handle 0 = none */
 static uint32_t tex_hint = 1;
 static bool attached;
@@ -101,6 +109,12 @@ void n64_sfx_close_impl(uint32_t h) {
     wav64_close(sfx[h]);
     sfx[h] = NULL;
     if (h < sfx_hint) sfx_hint = h;
+}
+
+/* Native playback rate of an opened sample (Hz; Opus wav64 files are stored at 48 kHz). */
+uint32_t n64_sfx_freq_impl(uint32_t h) {
+    if (h == 0 || h >= MAX_SFX || !sfx[h]) return 0;
+    return (uint32_t)sfx[h]->wave.frequency;
 }
 
 uint32_t n64_sfx_channels_impl(void) { return (SFX_CH0 << 8) | (BEEP_CH - SFX_CH0); }
@@ -202,7 +216,8 @@ static surface_t make_surface_cols(const n64_tex_desc_t *d, uint32_t x0, uint32_
 static surface_t make_surface(const n64_tex_desc_t *d) { return make_surface_cols(d, 0, d->width); }
 
 static void free_full(tex_t *t) {
-    for (int k = 0; k < t->nfull; k++) surface_free(&t->full[k]);
+    if (!t->external)
+        for (int k = 0; k < t->nfull; k++) surface_free(&t->full[k]);
     t->nfull = 0;
 }
 
@@ -235,6 +250,58 @@ uint32_t n64_tex_create2_impl(const n64_tex_desc_t *full, const n64_tex_desc_t *
 
 uint32_t n64_tex_create_impl(const n64_tex_desc_t *d) { return n64_tex_create2_impl(d, NULL); }
 
+static tex_format_t ntx_format(uint32_t f) {
+    static const tex_format_t fmts[9] = {FMT_RGBA16, FMT_RGBA32, FMT_CI4, FMT_CI8, FMT_IA4, FMT_IA8, FMT_I4, FMT_I8, FMT_IA16};
+    return f < 9 ? fmts[f] : FMT_NONE;
+}
+
+/* A texture over texels in the caller's buffer (an NTX1 image of the 1C pack): no copy;
+ * the buffer must stay alive until the texture is freed. Images wider than the RDP's 1024
+ * texels are copied into column chunks. Not SINGLE images (2D, larger than TMEM) are drawn
+ * on triangles in TMEM tiles. */
+uint32_t n64_tex_create_ntx_impl(const n64_ntx_desc_t *d) {
+    tex_format_t fmt = ntx_format(d->fmt);
+    if (fmt == FMT_NONE || !d->width || !d->height) return 0;
+    for (uint32_t n = 0; n < MAX_TEXTURES - 1; n++) {
+        uint32_t h = 1 + (tex_hint - 1 + n) % (MAX_TEXTURES - 1);
+        if (textures[h].used) continue;
+        tex_t *t = &textures[h];
+        memset(t, 0, sizeof *t);
+        t->width = d->width;
+        data_cache_hit_writeback(d->texels, d->stride * d->height);
+        if (d->width <= CHUNK_W) {
+            t->full[0] = surface_make((void *)d->texels, fmt, d->width, d->height, d->stride);
+            t->nfull = 1;
+            t->external = true;
+        } else {
+            for (uint32_t x = 0; t->nfull < MAX_CHUNKS && x < d->width; x += CHUNK_STEP) {
+                uint32_t w = d->width - x < CHUNK_W ? d->width - x : CHUNK_W;
+                surface_t c = surface_alloc(fmt, w, d->height);
+                uint32_t off = TEX_FORMAT_PIX2BYTES(fmt, x), nb = TEX_FORMAT_PIX2BYTES(fmt, w);
+                for (uint32_t y = 0; y < d->height; y++)
+                    memcpy((uint8_t *)c.buffer + y * c.stride, (const uint8_t *)d->texels + y * d->stride + off, nb);
+                t->full[t->nfull++] = c;
+                if (x + w >= d->width) break;
+            }
+        }
+        if (d->tlut && d->tlut_count) {
+            t->tlut = (uint16_t *)d->tlut;
+            t->tlut_count = d->tlut_count;
+            data_cache_hit_writeback(d->tlut, d->tlut_count * 2);
+        }
+        t->per_tile = (d->flags & N64_NTX_PER_TILE) != 0;
+        t->tile_w = d->tile_w;
+        t->tile_h = d->tile_h;
+        t->small = t->full[0];
+        t->small_is_full = true;
+        t->tile3d = !(d->flags & N64_NTX_SINGLE) && t->nfull == 1;
+        t->used = true;
+        tex_hint = h + 1;
+        return h;
+    }
+    return 0;
+}
+
 /* Replaces the texels of texture h in place (same size and format, single surface): the
  * procedural textures (water, fire) change every frame. No reallocation, so r3d aliases and
  * their load descriptors stay valid; the RDP may still be reading the previous texels for an
@@ -243,7 +310,7 @@ uint32_t n64_tex_update_impl(uint32_t h, const n64_tex_desc_t *d) {
     if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return 0;
     tex_t *t = &textures[h];
     tex_format_t fmt = (d->fmt & 0xff) == 1 ? FMT_RGBA32 : FMT_RGBA16;
-    if (!t->small_is_full || t->nfull != 1 || t->tile3d) return 0;
+    if (!t->small_is_full || t->nfull != 1 || t->tile3d || t->external || t->own_small) return 0;
     surface_t *s = &t->full[0];
     if (s->width != d->width || s->height != d->height || surface_get_format(s) != fmt) return 0;
     uint32_t row = TEX_FORMAT_PIX2BYTES(fmt, d->width);
@@ -269,6 +336,14 @@ const surface_t *n64_tex_surface(uint32_t h) {
 void n64_state_invalidate(void) {
     cur_kind = -1;
     cur_tex_loaded = 0;
+    cur_tlut_mode = -1;
+}
+
+/* The palette of texture t (NULL if none) for TLUT uploads by r3d. */
+const uint16_t *n64_tex_tlut(uint32_t h, uint32_t *count) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used || !textures[h].tlut) return NULL;
+    *count = textures[h].tlut_count;
+    return textures[h].tlut;
 }
 
 void n64_tex_free_impl(uint32_t h) {
@@ -276,7 +351,7 @@ void n64_tex_free_impl(uint32_t h) {
     /* The RDP may still read the surfaces of queued commands. */
     rspq_wait();
     tex_t *t = &textures[h];
-    if (!t->small_is_full && t->small.buffer != t->full[0].buffer) surface_free(&t->small);
+    if ((t->own_small || !t->small_is_full) && t->small.buffer != t->full[0].buffer) surface_free(&t->small);
     if (t->has_addv) surface_free(&t->addv);
     free_full(t);
     memset(t, 0, sizeof *t);
@@ -295,6 +370,7 @@ void n64_begin_frame_impl(uint32_t rgba) {
     attached = true;
     cur_kind = -1;
     cur_tex_loaded = 0;
+    cur_tlut_mode = -1;
 }
 
 /* ---- additive blending without wrap-around ----
@@ -308,10 +384,61 @@ void n64_begin_frame_impl(uint32_t rgba) {
  * term rgb*a exactly; the only difference to D3D is that the background is attenuated by
  * (1 - a') where the effect is bright. Variants are RGBA32 (8-bit alpha), at most 1024
  * texels (box-halved if needed), made once per texture on its first additive use. */
+/* RGBA8 of texel (x, y) of surface s of texture t (any format). */
+static void tex_fetch(const tex_t *t, const surface_t *s, int x, int y, uint32_t px[4]) {
+    const uint8_t *row = (const uint8_t *)s->buffer + y * s->stride;
+    uint32_t v;
+    switch (surface_get_format(s)) {
+    case FMT_RGBA32: px[0] = row[x * 4]; px[1] = row[x * 4 + 1]; px[2] = row[x * 4 + 2]; px[3] = row[x * 4 + 3]; return;
+    case FMT_CI4: v = (row[x / 2] >> ((x & 1) ? 0 : 4)) & 15; goto pal;
+    case FMT_CI8: v = row[x];
+    pal:
+        v = t->tlut && (int)v < t->tlut_count ? t->tlut[v] : 0;
+        goto rgba16;
+    case FMT_IA4: v = (row[x / 2] >> ((x & 1) ? 0 : 4)) & 15;
+        px[0] = px[1] = px[2] = ((v >> 1) << 5) | ((v >> 1) << 2) | ((v >> 1) >> 1); px[3] = (v & 1) ? 255 : 0; return;
+    case FMT_IA8: v = row[x]; px[0] = px[1] = px[2] = (v >> 4) * 17; px[3] = (v & 15) * 17; return;
+    case FMT_IA16: px[0] = px[1] = px[2] = row[x * 2]; px[3] = row[x * 2 + 1]; return;
+    case FMT_I4: v = (row[x / 2] >> ((x & 1) ? 0 : 4)) & 15; px[0] = px[1] = px[2] = px[3] = v * 17; return;
+    case FMT_I8: px[0] = px[1] = px[2] = px[3] = row[x]; return;
+    default: v = (row[x * 2] << 8) | row[x * 2 + 1];
+    rgba16:
+        px[0] = ((v >> 11) & 31) * 255 / 31; px[1] = ((v >> 6) & 31) * 255 / 31; px[2] = ((v >> 1) & 31) * 255 / 31;
+        px[3] = (v & 1) ? 255 : 0;
+        return;
+    }
+}
+
+/* A box-downscaled RGBA32/RGBA16 copy of a texture that does not fit TMEM, for the triangle
+ * cases the tile path does not cover (wrapping). */
+static void make_small_variant(tex_t *t) {
+    const surface_t *s = &t->full[0];
+    int w = s->width, h = s->height, sx = 1, sy = 1;
+    while ((w / sx) * (h / sy) > 1024) {
+        if (w / sx >= h / sy) sx *= 2; else sy *= 2;
+    }
+    int nw = w / sx > 0 ? w / sx : 1, nh = h / sy > 0 ? h / sy : 1;
+    surface_t d = surface_alloc(FMT_RGBA32, nw, nh);
+    for (int y = 0; y < nh; y++)
+        for (int x = 0; x < nw; x++) {
+            uint32_t acc[4] = {0, 0, 0, 0}, n = 0, px[4];
+            for (int yy = y * sy; yy < (y + 1) * sy && yy < h; yy++)
+                for (int xx = x * sx; xx < (x + 1) * sx && xx < w; xx++) {
+                    tex_fetch(t, s, xx, yy, px);
+                    for (int k = 0; k < 4; k++) acc[k] += px[k];
+                    n++;
+                }
+            uint8_t *o = (uint8_t *)d.buffer + y * d.stride + x * 4;
+            for (int k = 0; k < 4; k++) o[k] = n ? acc[k] / n : 0;
+        }
+    t->small = d;
+    t->own_small = true;
+    t->small_is_full = false;
+}
+
 static void make_add_variant(tex_t *t) {
     const surface_t *s = &t->small;
     int w = s->width, h = s->height;
-    bool rgba32 = surface_get_format(s) == FMT_RGBA32;
     int sx = 1, sy = 1;
     while ((w / sx) * (h / sy) > 1024) {
         if (w / sx >= h / sy) sx *= 2; else sy *= 2;
@@ -324,15 +451,9 @@ static void make_add_variant(tex_t *t) {
             uint32_t acc[4] = {0, 0, 0, 0}, n = 0;
             for (int yy = y * sy; yy < (y + 1) * sy && yy < h; yy++)
                 for (int xx = x * sx; xx < (x + 1) * sx && xx < w; xx++) {
-                    const uint8_t *row = (const uint8_t *)s->buffer + yy * s->stride;
-                    uint32_t r, g, b, a;
-                    if (rgba32) {
-                        r = row[xx * 4]; g = row[xx * 4 + 1]; b = row[xx * 4 + 2]; a = row[xx * 4 + 3];
-                    } else {
-                        uint16_t v = (row[xx * 2] << 8) | row[xx * 2 + 1];
-                        r = ((v >> 11) & 31) * 255 / 31; g = ((v >> 6) & 31) * 255 / 31; b = ((v >> 1) & 31) * 255 / 31;
-                        a = (v & 1) ? 255 : 0;
-                    }
+                    uint32_t px[4];
+                    tex_fetch(t, s, xx, yy, px);
+                    uint32_t r = px[0], g = px[1], b = px[2], a = px[3];
                     /* premultiplied accumulation: what the additive mode adds is rgb*a */
                     acc[0] += r * a; acc[1] += g * a; acc[2] += b * a; n++;
                 }
@@ -354,7 +475,22 @@ static const surface_t *tri_surface(const n64_state_t *st) {
         if (!t->has_addv) make_add_variant(t);
         return &t->addv;
     }
+    if (t->small_is_full && t->tile3d && !t->own_small) make_small_variant(t);
     return &t->small;
+}
+
+/* Palette mode + TLUT for sampling surface s of texture t (tile `tile` of per-tile ones). */
+static void use_tlut(const tex_t *t, const surface_t *s, int tile) {
+    tex_format_t f = surface_get_format(s);
+    int want = (f == FMT_CI4 || f == FMT_CI8) ? 1 : 0;
+    if (want != cur_tlut_mode) {
+        rdpq_mode_tlut(want ? TLUT_RGBA16 : TLUT_NONE);
+        cur_tlut_mode = want;
+    }
+    if (want && t->tlut) {
+        int n = f == FMT_CI4 ? 16 : (t->per_tile ? 256 : t->tlut_count);
+        rdpq_tex_upload_tlut(t->tlut + (t->per_tile ? 256 * tile : 0), 0, n > 256 ? 256 : n);
+    }
 }
 
 static void apply_state(const n64_state_t *st, int kind) {
@@ -380,11 +516,14 @@ static void apply_state(const n64_state_t *st, int kind) {
         default: rdpq_mode_blender(0); break;
         }
         cur_tex_loaded = 0;
+        cur_tlut_mode = 0; /* rdpq_set_mode_standard: no TLUT */
     }
     if (kind == 0 && tex && (st->tex != cur_tex_loaded || ((st->flags ^ cur_state.flags) & N64_WRAP))) {
         rdpq_texparms_t parms = {0};
         if (st->flags & N64_WRAP) parms.s.repeats = parms.t.repeats = REPEAT_INFINITE;
-        rdpq_tex_upload(TILE0, tri_surface(st), &parms);
+        const surface_t *s = tri_surface(st);
+        use_tlut(&textures[st->tex], s, 0);
+        rdpq_tex_upload(TILE0, s, &parms);
         cur_tex_loaded = st->tex;
     }
     if (kind == 1) cur_tex_loaded = 0; /* blits reload TMEM */
@@ -439,6 +578,7 @@ static void draw_tri_tiled(const rdpq_trifmt_t *f, const tex_t *tx, const n64_ve
     if (x1 > (int)w) x1 = w;
     if (y1 > (int)h) y1 = h;
     rdpq_texparms_t parms = {0};
+    use_tlut(tx, s, 0);
     for (int ty = y0 / TILE_H * TILE_H; ty < y1; ty += TILE_H) {
         for (int tx0 = x0 / TILE_W * TILE_W; tx0 < x1; tx0 += TILE_W) {
             n64_vertex_t a[CLIP_MAX], b[CLIP_MAX];
@@ -476,7 +616,7 @@ void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t
         .pos_offset = 0, .z_offset = (i & 2) ? 2 : -1, .shade_offset = 3,
         .tex_offset = (i & 1) ? 7 : -1, .tex_tile = TILE0,
     };
-    if (tex && (st->flags & N64_UVNORM) && textures[st->tex].tile3d && !(st->flags & N64_WRAP) && st->blend != N64_BLEND_ADD) {
+    if (tex && (st->flags & N64_UVNORM) && textures[st->tex].tile3d && !textures[st->tex].own_small && !(st->flags & N64_WRAP) && st->blend != N64_BLEND_ADD) {
         for (uint32_t k = 0; k < ntris; k++, v += 3) draw_tri_tiled(f, &textures[st->tex], v, st->flags);
         return;
     }
@@ -531,6 +671,23 @@ void n64_draw_rects_impl(const n64_rect_t *r, uint32_t n, const n64_state_t *st)
         if (it1 > s->height) it1 = s->height;
         int sw = is1 - is0, sh = it1 - it0;
         if (sw <= 0 || sh <= 0 || r->x1 <= r->x0 || r->y1 <= r->y0) continue;
+        if (tx->per_tile && tx->tile_w > 0 && tx->tile_h > 0 && !fx && !fy) {
+            /* One palette per tile: blit tile by tile (unfiltered, as the backdrops are). */
+            float kx = (r->x1 - r->x0) / sw, ky = (r->y1 - r->y0) / sh;
+            int ntx = (s->width + tx->tile_w - 1) / tx->tile_w;
+            for (int ty = it0 / tx->tile_h * tx->tile_h; ty < it1; ty += tx->tile_h)
+                for (int tx0 = is0 / tx->tile_w * tx->tile_w; tx0 < is1; tx0 += tx->tile_w) {
+                    int a0 = tx0 > is0 ? tx0 : is0, b0 = ty > it0 ? ty : it0;
+                    int a1 = tx0 + tx->tile_w < is1 ? tx0 + tx->tile_w : is1, b1 = ty + tx->tile_h < it1 ? ty + tx->tile_h : it1;
+                    if (a1 <= a0 || b1 <= b0) continue;
+                    use_tlut(tx, s, (ty / tx->tile_h) * ntx + tx0 / tx->tile_w);
+                    rdpq_tex_blit(s, r->x0 + (a0 - is0) * kx, r->y0 + (b0 - it0) * ky, &(rdpq_blitparms_t){
+                        .s0 = a0, .t0 = b0, .width = a1 - a0, .height = b1 - b0, .scale_x = kx, .scale_y = ky,
+                    });
+                }
+            continue;
+        }
+        use_tlut(tx, s, 0);
         rdpq_tex_blit(s, r->x0, r->y0, &(rdpq_blitparms_t){
             .s0 = is0, .t0 = it0, .width = sw, .height = sh, .flip_x = fx, .flip_y = fy,
             .scale_x = (r->x1 - r->x0) / sw, .scale_y = (r->y1 - r->y0) / sh,
@@ -686,6 +843,10 @@ int main(void) {
      * between simulation ticks and during loads (n64_audio_poll). */
     audio_init(32000, AUDIO_INIT_LATENCY_MS(500));
     mixer_init(MIXER_CHANNELS);
+    wav64_init_compression(3); /* Opus (music, FMV audio); VADPCM needs no init */
+    /* The game's pitch control (SetFrequency) goes up to 100 kHz; Opus is 48 kHz. Allow
+     * up to 4x the 32 kHz output (higher pitches are clamped by the Rust side). */
+    for (int ch = 0; ch < MIXER_CHANNELS; ch++) mixer_ch_set_limits(ch, 16, 128000, 0);
 
     f2n64_call(f2n64_init);
     for (;;) {

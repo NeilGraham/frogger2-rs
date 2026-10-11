@@ -13,6 +13,19 @@
 
 use crate::audio::Audio;
 use crate::data::{norm_path, AssetStore, DfsStore, N64Data};
+
+/// The ROM's asset store: the 1C pack (default) or the phase-2G loose layout.
+#[cfg(not(feature = "prep-data"))]
+pub type Store = crate::data::PackStore<DfsStore>;
+#[cfg(feature = "prep-data")]
+pub type Store = DfsStore;
+
+fn new_data() -> N64Data<Store> {
+    #[cfg(not(feature = "prep-data"))]
+    return N64Data::new_pack(crate::data::PackStore::new(DfsStore));
+    #[cfg(feature = "prep-data")]
+    return N64Data::new(DfsStore);
+}
 use crate::input;
 use crate::log;
 use crate::render_cpu::RenderCpu;
@@ -120,7 +133,9 @@ fn lv() -> spin::MutexGuard<'static, Option<Level>> {
 }
 
 pub struct App {
-    data: Arc<N64Data<DfsStore>>,
+    data: Arc<N64Data<Store>>,
+    /// NTX files of the level being loaded (pack layout).
+    ntx_cache: crate::ntxload::NtxCache,
     game: Game,
     r: Renderer,
     audio: Audio,
@@ -152,13 +167,13 @@ pub struct App {
     last_pad: u16,
 }
 
-fn load_font(d: &N64Data<DfsStore>, p: &str) -> Option<Font> {
+fn load_font(d: &N64Data<Store>, p: &str) -> Option<Font> {
     d.store.load(p).and_then(|b| Font::from_bmp(&b))
 }
 
 impl App {
     pub fn new(boot: Boot) -> App {
-        let mut data = N64Data::new(DfsStore);
+        let mut data = new_data();
         data.before_access = Some(unload_level_render);
         let data = Arc::new(data);
         *LEVEL.lock() = Some(Level {
@@ -170,6 +185,7 @@ impl App {
         });
         let mut app = App {
             data,
+            ntx_cache: Default::default(),
             game: Game::new(),
             r: Renderer::new_soft(),
             audio: Audio::new(),
@@ -319,6 +335,15 @@ impl App {
         let scene = LevelScene::new(world, level, banks, assets.texture_banks.clone(), &self.game);
         lv().as_mut().unwrap().scene = Some(scene);
         for f in &assets.texture_banks {
+            if self.data.pack {
+                let p = crate::data::ntx_bank_path(f);
+                let mut g = lv();
+                let gfx = &mut g.as_mut().unwrap().gfx;
+                if let Err(e) = crate::ntxload::load_bank(&self.data.store, &p, &mut self.r.textures, gfx, &mut self.ntx_cache) {
+                    log!("app: {e}");
+                }
+                continue;
+            }
             match self.data.texture_bank(f) {
                 Some(Ok(b)) => {
                     let mut g = lv();
@@ -330,6 +355,8 @@ impl App {
             }
             rt::audio_poll();
         }
+        // The textures hold on to the files they use.
+        self.ntx_cache.clear();
         self.load_sfx(world, level);
         self.prev = render::snapshot(&self.game);
         self.prev_cam = None;
@@ -402,9 +429,8 @@ impl App {
             files.push(format!("sfx/{b}"));
         }
         for path in files {
-            match self.data.sound_meta(&path) {
-                Some(Ok(b)) => self.audio.load_bank(&norm_path(&path), &b),
-                Some(Err(e)) => log!("app: {e}"),
+            match self.data.sfx_refs(&path) {
+                Some(r) => self.audio.load_bank(&r),
                 None => log!("app: {path}: not found"),
             }
         }
@@ -412,8 +438,8 @@ impl App {
         for i in 0..self.game.frogger.num_frogs.clamp(0, 4) as usize {
             let Some(name) = VOICE_BANKS.get(self.game.frogger.player[i].character as usize) else { continue };
             let path = format!("sfx/{name}.wus");
-            if let Some(Ok(b)) = self.data.sound_meta(&path) {
-                self.audio.load_voice_bank(i, &path, &b);
+            if let Some(r) = self.data.sfx_refs(&path) {
+                self.audio.load_voice_bank(i, &r);
             }
         }
     }
@@ -427,9 +453,13 @@ impl App {
 
     // ------------------------------------------------------------ simulation
 
-    fn tick(&mut self, pad: u16) {
-        self.prev = render::snapshot(&self.game);
-        self.prev_cam = Some(render::game_camera(&self.game));
+    /// One simulation tick; `last`: the last one before the next drawn frame (only its
+    /// starting state is needed for interpolation, so only then is it snapshotted).
+    fn tick(&mut self, pad: u16, last: bool) {
+        if last {
+            self.prev = render::snapshot(&self.game);
+            self.prev_cam = Some(render::game_camera(&self.game));
+        }
         if self.game.frontend.text_entry > 0 {
             self.game.psx_name_entry_frame(pad & !self.prev_pad);
         }
@@ -541,6 +571,18 @@ impl App {
             self.backdrop = None;
         }
         let name = name?;
+        if self.data.pack {
+            let p = crate::data::ntx_backdrop_path(&name);
+            let h = lv().as_mut().and_then(|l| match crate::ntxload::load_backdrop(&self.data.store, &p, &mut self.r.textures, &mut l.gfx) {
+                Ok(h) => Some(h),
+                Err(e) => {
+                    log!("app: backdrop {e}");
+                    None
+                }
+            });
+            self.backdrop = Some((name, h));
+            return h;
+        }
         let path = name.replace('\\', "/");
         // Straight from the store: not a level load (no `before_access` hook).
         let img = self
@@ -627,8 +669,8 @@ impl App {
             n = MAX_TICKS_PER_FRAME;
         }
         let pad = input::psx_pad(rt::pad(0));
-        for _ in 0..n {
-            self.tick(pad);
+        for i in 0..n {
+            self.tick(pad, i + 1 == n);
             self.acc -= TICK.min(self.acc);
             let tp = ticks();
             rt::audio_poll();

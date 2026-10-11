@@ -33,12 +33,17 @@ spin = { version = "0.9", default-features = false, features = ["mutex", "spin_m
 # examples/host_shot.rs (host only): directory data source and PNG output.
 f2-game = { path = "../f2-game" }
 f2-engine = { path = "../f2-engine", default-features = false, features = ["std"] }
+f2-n64z = { path = "../f2-n64z", features = ["encoder"] }
 
 [features]
 # The phase-1B bring-up demo and performance probes instead of the game (tools/n64/build.sh --bringup).
 bringup = []
 # The phase-2R RSP renderer test app (r3dtest: cull check, benchmarks, F2NM scenes) instead of the game.
 r3d-test = []
+# A ROM without music and FMV (tools/n64/build.sh --small): their effects are skipped quietly.
+small = []
+# Data from the phase-2G loose DFS layout (tools/f2-n64prep) instead of the 1C pack.
+prep-data = []
 # The phase-2G CPU renderer for everything (fallback) instead of the RSP renderer (render_r3d.rs).
 render-cpu = []
 # Print the simulation's debug log (`Effect::Log`) through debugf.

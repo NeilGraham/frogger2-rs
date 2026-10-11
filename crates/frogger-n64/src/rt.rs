@@ -169,6 +169,11 @@ pub fn sfx_open(path: &str, looped: bool) -> u32 {
     unsafe { ffi::n64_sfx_open(z.as_ptr(), looped as u32) }
 }
 
+/// Native playback rate of an opened sample (Hz), 0 if unknown.
+pub fn sfx_freq(h: u32) -> u32 {
+    unsafe { ffi::n64_sfx_freq(h) }
+}
+
 pub fn sfx_close(h: u32) {
     unsafe { ffi::n64_sfx_close(h) }
 }

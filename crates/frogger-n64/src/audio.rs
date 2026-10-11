@@ -18,6 +18,8 @@ pub const SAMPLE_VOLUME: i32 = 255;
 const DSBFREQUENCY_MIN: u32 = 100;
 const DSBFREQUENCY_MAX: u32 = 100_000;
 const PITCH_STEP: u32 = DSBFREQUENCY_MAX / 256;
+/// The mixer channels' frequency limit (csrc/main.c `mixer_ch_set_limits`).
+pub const MAX_FREQ: u32 = 128_000;
 
 /// `bytetoDB` (pcaudio.c:91), see `f2_audio::tables::BYTE_TO_DB` (incl. the BUG(original)
 /// `100` at 238).
@@ -159,7 +161,7 @@ mod mixer {
     use alloc::format;
     use alloc::string::String;
     use alloc::vec::Vec;
-    use f2_formats::wus::SoundBank;
+    use crate::data::SfxRef;
 
     #[derive(Clone, Copy)]
     struct Sfx {
@@ -182,6 +184,7 @@ mod mixer {
         samples: BTreeMap<u32, Sfx>,
         voice_banks: [BTreeMap<u32, Sfx>; 4],
         open: Vec<u32>,
+        by_path: BTreeMap<String, u32>,
         pub listener: Listener,
         pub sfx_volume: i32,
         pub music_volume: i32,
@@ -210,6 +213,7 @@ mod mixer {
                 samples: BTreeMap::new(),
                 voice_banks: Default::default(),
                 open: Vec::new(),
+                by_path: BTreeMap::new(),
                 listener: Listener::default(),
                 sfx_volume: MAX_SOUND_VOL,
                 music_volume: MAX_SOUND_VOL,
@@ -232,6 +236,7 @@ mod mixer {
             for h in self.open.drain(..) {
                 rt::sfx_close(h);
             }
+            self.by_path.clear();
             self.samples.clear();
             for v in &mut self.voice_banks {
                 v.clear();
@@ -239,34 +244,44 @@ mod mixer {
             self.handles.clear();
         }
 
-        fn open_bank(&mut self, path: &str, bank: &SoundBank) -> BTreeMap<u32, Sfx> {
-            // sfx/garden.wus -> sfx/garden/<uid>.wav64
-            let stem = path.trim_end_matches(".wus");
+        fn open_bank(&mut self, refs: &[SfxRef]) -> BTreeMap<u32, Sfx> {
             let mut out = BTreeMap::new();
-            for s in &bank.samples {
-                let p = format!("rom:/{stem}/{:08x}.wav64", s.uid);
-                let h = rt::sfx_open(&p, s.looped);
-                rt::audio_poll();
-                if h == 0 {
-                    crate::log!("audio: {p} missing");
-                    continue;
-                }
-                self.open.push(h);
-                out.entry(s.uid).or_insert(Sfx { handle: h, rate: s.sample_rate });
+            for s in refs {
+                // A sample shared by several banks (the pack dedupes them) is opened once.
+                let h = match self.by_path.get(&s.path) {
+                    Some(&h) => h,
+                    None => {
+                        let h = rt::sfx_open(&s.path, s.looped);
+                        rt::audio_poll();
+                        if h == 0 {
+                            crate::log!("audio: {} missing", s.path);
+                            continue;
+                        }
+                        self.open.push(h);
+                        self.by_path.insert(s.path.clone(), h);
+                        h
+                    }
+                };
+                // The file's own rate (Opus is stored at 48 kHz whatever the source rate).
+                let rate = match rt::sfx_freq(h) {
+                    0 => s.rate,
+                    f => f,
+                };
+                out.entry(s.uid).or_insert(Sfx { handle: h, rate });
             }
             out
         }
 
-        /// `LoadSfxSet` of a bank (`path` = normalised `sfx/<x>.wus`).
-        pub fn load_bank(&mut self, path: &str, bank: &SoundBank) {
-            let m = self.open_bank(path, bank);
+        /// `LoadSfxSet` of a bank.
+        pub fn load_bank(&mut self, refs: &[SfxRef]) {
+            let m = self.open_bank(refs);
             for (k, v) in m {
                 self.samples.entry(k).or_insert(v);
             }
         }
 
-        pub fn load_voice_bank(&mut self, player: usize, path: &str, bank: &SoundBank) {
-            let m = self.open_bank(path, bank);
+        pub fn load_voice_bank(&mut self, player: usize, refs: &[SfxRef]) {
+            let m = self.open_bank(refs);
             if let Some(v) = self.voice_banks.get_mut(player) {
                 *v = m;
             }
@@ -291,7 +306,7 @@ mod mixer {
                 Some(i) => i,
                 None => self.chans.iter().enumerate().min_by_key(|(_, c)| c.map_or(0, |c| c.id)).map(|(i, _)| i)?,
             };
-            let freq = pitch_to_freq(pitch, s.rate, s.rate);
+            let freq = pitch_to_freq(pitch, s.rate, s.rate).min(MAX_FREQ);
             v.freq = freq as f32;
             let id = self.next_id;
             self.next_id = self.next_id.wrapping_add(1).max(1);
@@ -351,7 +366,7 @@ mod mixer {
             let Some(i) = self.chan_of(id) else { return };
             let c = self.chans[i].unwrap();
             let vol = volume.wrapping_mul(self.sfx_volume) / MAX_SOUND_VOL;
-            let freq = pitch_to_freq(pitch, c.rate, c.freq);
+            let freq = pitch_to_freq(pitch, c.rate, c.freq).min(MAX_FREQ);
             let v = voice(vol, pos, radius, &self.listener, freq).unwrap_or(Voice { lvol: 0.0, rvol: 0.0, freq: freq as f32 });
             self.chans[i] = Some(Chan { freq, ..c });
             rt::ch_set(self.first + i as u32, &v);

@@ -134,17 +134,27 @@ uint32_t n64_r3d_tex_create_impl(const n64_r3d_tex_desc_t *d) {
 /* An r3d texture sampling the TMEM-sized surface of main.c texture `tex` (RGBA16/RGBA32,
  * power-of-two sizes for wrapping); 0 if it cannot be used. */
 const surface_t *n64_tex_surface(uint32_t h);
+const uint16_t *n64_tex_tlut(uint32_t h, uint32_t *count);
 uint32_t n64_r3d_tex_alias_impl(uint32_t tex) {
     const surface_t *s = n64_tex_surface(tex);
     if (!s || num_texs >= MAX_R3D_TEX) return 0;
     tex_format_t f = surface_get_format(s);
-    if (f != FMT_RGBA16 && f != FMT_RGBA32) return 0;
-    if ((s->width & (s->width - 1)) || (s->height & (s->height - 1)) || s->width < 4) return 0;
-    if (s->stride != TEX_FORMAT_PIX2BYTES(f, s->width)) return 0;
+    if ((s->width & (s->width - 1)) || (s->height & (s->height - 1))) return 0;
+    if (s->stride != TEX_FORMAT_PIX2BYTES(f, s->width) || s->stride < 8) return 0;
+    /* LOAD_BLOCK: the whole texture in one load (CI/RGBA32: 2 KB of texels). */
+    uint32_t limit = (f == FMT_CI4 || f == FMT_CI8 || f == FMT_RGBA32) ? 2048 : 4096;
+    if (s->stride * s->height > limit) return 0;
+    uint32_t tlut_count = 0;
+    const uint16_t *tlut = n64_tex_tlut(tex, &tlut_count);
+    if ((f == FMT_CI4 || f == FMT_CI8) && !tlut) return 0;
     r3d_tex_t *t = &texs[num_texs];
     memset(t, 0, sizeof *t);
     t->surf = *s;
     t->width = s->width;
+    if (f == FMT_CI4 || f == FMT_CI8) {
+        t->tlut = (uint16_t *)tlut;
+        t->tlut_count = f == FMT_CI4 ? 16 : (tlut_count > 256 ? 256 : tlut_count);
+    }
     return num_texs++;
 }
 

@@ -53,6 +53,16 @@ typedef struct {
  * which splits textures larger than TMEM. */
 typedef struct { float x0, y0, x1, y1, s0, t0, s1, t1; uint32_t rgba; } n64_rect_t;
 
+/* An NTX1 image (1C pack) as a texture: texels/tlut stay in the caller's buffer. fmt: NTX
+ * format (0 RGBA16, 1 RGBA32, 2 CI4, 3 CI8, 4 IA4, 5 IA8, 6 I4, 7 I8, 8 IA16). */
+enum { N64_NTX_SINGLE = 1 << 0, N64_NTX_PER_TILE = 1 << 1 };
+typedef struct {
+    uint32_t fmt, width, height, stride;
+    const void *texels;
+    const void *tlut;
+    uint32_t tlut_count, flags, tile_w, tile_h;
+} n64_ntx_desc_t;
+
 /* A sound-effect voice: linear left/right volume, playback frequency in Hz (0 = keep). */
 typedef struct { float lvol, rvol, freq; } n64_voice_t;
 
@@ -134,6 +144,7 @@ uint32_t n64_tex_create(const n64_tex_desc_t *desc);
 uint32_t n64_tex_create2(const n64_tex_desc_t *full, const n64_tex_desc_t *small);
 void n64_tex_free(uint32_t handle);
 uint32_t n64_tex_update(uint32_t handle, const n64_tex_desc_t *desc); /* in-place texel update; 0 = not possible */
+uint32_t n64_tex_create_ntx(const n64_ntx_desc_t *desc);         /* texture over an NTX1 image (no copy) */
 void n64_begin_frame(uint32_t clear_rgba);         /* attach next framebuffer + z-buffer, clear both */
 void n64_draw_tris(const n64_vertex_t *verts, uint32_t ntris, const n64_state_t *state);
 void n64_draw_rects(const n64_rect_t *rects, uint32_t n, const n64_state_t *state);
@@ -146,7 +157,8 @@ void n64_heap_stats(n64_heap_t *out);
 /* Sound effects: wav64 files streamed from DFS. handle 0 = missing. */
 uint32_t n64_sfx_open(const char *path, uint32_t looped);
 void n64_sfx_close(uint32_t handle);
-uint32_t n64_sfx_channels(void);                   /* first sfx channel << 8 | count */
+uint32_t n64_sfx_channels(void);
+uint32_t n64_sfx_freq(uint32_t handle);            /* native rate of an opened sample, Hz */                   /* first sfx channel << 8 | count */
 void n64_sfx_play(uint32_t handle, uint32_t ch, const n64_voice_t *v);
 void n64_ch_set(uint32_t ch, const n64_voice_t *v);
 void n64_ch_stop(uint32_t ch);

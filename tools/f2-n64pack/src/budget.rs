@@ -11,7 +11,7 @@ use std::process::Command;
 use serde::Serialize;
 
 use crate::codec::{pack_class, ClassCodec};
-use crate::{audio, levels, models, textures, video, Class, ClassReport, Ctx, PackedFile, RawAsset, Result};
+use crate::{audio, levels, rmodels, textures, video, Class, ClassReport, Ctx, PackedFile, RawAsset, Result};
 
 pub const MIB: f64 = 1_048_576.0;
 
@@ -126,15 +126,18 @@ pub fn build(ctx: &Ctx, cfg: &BudgetConfig) -> Result<bool> {
     }
     if cfg.wants("models") {
         step("models");
-        add(compressed(ctx, cfg, Class::Models, models::convert(ctx)?)?, &mut files);
+        add(compressed(ctx, cfg, Class::Models, rmodels::convert(ctx)?)?, &mut files);
     }
     if cfg.wants("textures") {
         step("textures");
         add(compressed(ctx, cfg, Class::Textures, textures::convert(ctx)?)?, &mut files);
+        add(compressed(ctx, cfg, Class::Textures, rmodels::fonts(ctx)?)?, &mut files);
     }
     if cfg.wants("sfx") {
         step("sound effects");
-        add(audio::pack_sfx(ctx)?, &mut files);
+        // All VADPCM from the start: the N64 front end plays one opened sample on several
+        // voices at once, which libdragon's Opus wav64 (one decoder state per file) cannot do.
+        add(audio::pack_sfx_with(ctx, &audio::SfxOpts { opus_max_ratio: 0.0 })?, &mut files);
     }
     // Space left for music + FMV (DFS overhead estimated as 64 B per file + 0.1%).
     let fixed: u64 = files.iter().map(|f| f.bytes).sum();

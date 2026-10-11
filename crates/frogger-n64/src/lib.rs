@@ -18,6 +18,7 @@ pub mod data;
 pub mod ffi;
 pub mod input;
 pub mod kernels;
+pub mod ntx;
 pub mod r3d;
 pub mod texconv;
 
@@ -30,6 +31,8 @@ use f2_draw as _;
 
 #[cfg(target_vendor = "nintendo64")]
 pub mod app;
+#[cfg(target_vendor = "nintendo64")]
+pub mod ntxload;
 #[cfg(target_vendor = "nintendo64")]
 pub mod render_cpu;
 #[cfg(all(target_vendor = "nintendo64", not(feature = "render-cpu")))]

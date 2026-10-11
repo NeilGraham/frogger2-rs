@@ -57,6 +57,9 @@ pub struct RenderCpu {
     skip_once: Vec<u32>,
     /// Per image: bumped whenever its N64 texture handle changes (r3d aliases follow it).
     gen: Vec<u32>,
+    /// Per image: the buffer an NTX texture's texels live in (a pack file shared by the
+    /// bank's images, or a converted copy), kept alive while the texture exists.
+    ext: Vec<Option<alloc::sync::Arc<Vec<u8>>>>,
     /// The frame built by [`build`](Self::build).
     fverts: Vec<TlVertex>,
     fcmds: Vec<DrawCmd>,
@@ -93,6 +96,7 @@ impl RenderCpu {
             persp: false,
             skip_once: Vec::new(),
             gen: Vec::new(),
+            ext: Vec::new(),
             fverts: Vec::new(),
             fcmds: Vec::new(),
             marks: [0; 10],
@@ -114,6 +118,7 @@ impl RenderCpu {
             }
         }
         self.bytes.clear();
+        self.ext.clear();
         self.skip_once.clear();
         self.tex_bytes = 0;
         for g in &mut self.gen {
@@ -189,8 +194,29 @@ impl RenderCpu {
         if self.tex.len() <= i {
             self.tex.resize(i + 1, 0);
             self.bytes.resize(i + 1, 0);
+        }
+        if self.gen.len() <= i {
             self.gen.resize(i + 1, 0);
         }
+        if self.ext.len() <= i {
+            self.ext.resize(i + 1, None);
+        }
+    }
+
+    /// Registry image `idx` shows an NTX1 image of the pack (`desc` points into `owner`).
+    pub fn adopt_ntx(&mut self, idx: u32, owner: alloc::sync::Arc<Vec<u8>>, desc: &ffi::NtxDesc) -> bool {
+        let i = idx as usize;
+        self.release(i);
+        let h = unsafe { ffi::n64_tex_create_ntx(desc) };
+        if h == 0 {
+            return false;
+        }
+        self.tex[i] = h;
+        self.gen[i] = self.gen[i].wrapping_add(1);
+        self.ext[i] = Some(owner);
+        self.bytes[i] = desc.stride * desc.height;
+        self.tex_bytes += self.bytes[i];
+        true
     }
 
     /// Frees image `i`'s N64 texture (if any), growing the tables to cover `i`.
@@ -198,6 +224,7 @@ impl RenderCpu {
         self.grow(i);
         if self.tex[i] != 0 {
             self.gen[i] = self.gen[i].wrapping_add(1);
+            self.ext[i] = None;
             rt::tex_free(self.tex[i]);
             self.tex[i] = 0;
             self.tex_bytes -= self.bytes[i];

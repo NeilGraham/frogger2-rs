@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the Frogger 2 N64 ROM: target/n64/frogger2.z64.
 #
-#   tools/n64/build.sh [--debug] [--bringup | --r3d-test]
+#   tools/n64/build.sh [--debug] [--small] [--bringup | --r3d-test]
 #
 # Steps: (1) Rust staticlib crates/frogger-n64 for the custom VR4300 n32 target
 # (nightly, -Zbuild-std=core,alloc); (2) relabel its objects n32 -> o64 so GNU ld accepts
@@ -10,7 +10,14 @@
 # via tools/n64/Makefile (title "FROGGER 2", Expansion Pak required); (5) size check
 # against the 64 MiB cartridge.
 #
-# Game data (phase 2G; never committed, it lives in target/n64/): tools/f2-n64prep lays out
+# Game data (phase 3I, default; never committed, it lives in target/n64/): tools/f2-n64pack
+# builds the 1C asset pack from the rendition (F2_GAME_DIR/..: game/, music/, video/) into
+# target/n64/pack (levels F2Z, object banks + F2NM meshes and NTX1 textures aPLib, VADPCM
+# sound effects with the F2SX index, Opus music, H.264 FMV), copied to the DFS root.
+# --small: the pack without music and FMV (target/n64/pack-small): a ROM under ares'
+# 0x3FF0000-byte ISViewer limit, so debugf logging works.
+#
+# F2N64_DATA=prep: the phase-2G layout instead: tools/f2-n64prep lays out
 # target/n64/filesystem from F2_GAME_DIR (object banks pre-parsed to postcard, sound banks
 # split into metadata + per-sample WAVs); audioconv64 turns the samples into VADPCM wav64
 # (streamed from ROM) and the music tracks F2N64_MUSIC into 22 kHz VADPCM wav64; mkasset
@@ -30,11 +37,13 @@ toolchain="${RUST_TOOLCHAIN:-nightly}"
 profile=release
 bringup=0
 r3dtest=0
+small=0
 for a in "$@"; do
     case "$a" in
     --debug) profile=dev ;;
     --bringup) bringup=1 ;;
     --r3d-test) r3dtest=1 ;;
+    --small) small=1 ;;
     *) echo "unknown option $a" >&2; exit 2 ;;
     esac
 done
@@ -43,6 +52,8 @@ fs="$out/filesystem"
 mkdir -p "$out"
 
 features="${F2N64_FEATURES:-}"
+[ "${F2N64_DATA:-pack}" = prep ] && features="$features prep-data"
+[ $small = 1 ] && features="$features small"
 [ $bringup = 1 ] && features="$features bringup"
 [ $r3dtest = 1 ] && features="$features r3d-test"
 echo "== [1/5] Rust staticlib ($profile; features:${features:- none})"
@@ -81,6 +92,21 @@ elif [ $r3dtest = 1 ]; then
     echo "   r3d test: $(ls "$fs"/scene*.f2nm 2>/dev/null | wc -l) scene(s) in $fs"
 elif [ "${F2N64_KEEP_DFS:-0}" = 1 ] && [ -d "$fs/objects" ]; then
     echo "   reusing $fs"
+elif [ "${F2N64_DATA:-pack}" = pack ]; then
+    game="${F2_GAME_DIR:-$root/game-data/usa/game}"
+    [ -d "$game/objects" ] || { echo "ERROR: game data not found at $game (set F2_GAME_DIR)" >&2; exit 1; }
+    rendition="$(cd "$game/.." && pwd)"
+    pack="$out/pack"
+    only=()
+    if [ $small = 1 ]; then
+        pack="$out/pack-small"
+        only=(--only levels,models,textures,sfx)
+    fi
+    cargo build --release -q --manifest-path "$root/Cargo.toml" -p f2-n64pack
+    (cd "$root" && "$root/target/release/f2-n64pack" --rendition "$rendition" --out "$pack" --cache "$out/cache" "${only[@]}")
+    rm -rf "$fs"
+    cp -r "$pack" "$fs"
+    echo "   filesystem (pack): $(du -sk "$fs" | cut -f1) KiB"
 else
     game="${F2_GAME_DIR:-$root/game-data/usa/game}"
     [ -d "$game/objects" ] || { echo "ERROR: game data not found at $game (set F2_GAME_DIR)" >&2; exit 1; }

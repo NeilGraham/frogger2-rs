@@ -20,6 +20,7 @@ pub mod codec;
 pub mod ctx;
 pub mod levels;
 pub mod models;
+pub mod rmodels;
 pub mod textures;
 pub mod tools;
 pub mod video;

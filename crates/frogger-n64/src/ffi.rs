@@ -79,6 +79,24 @@ pub struct Voice {
     pub freq: f32,
 }
 
+/// `n64_ntx_desc_t`: an NTX1 image as a texture (texels/TLUT stay in the caller's buffer).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct NtxDesc {
+    pub fmt: u32,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub texels: *const u8,
+    pub tlut: *const u8,
+    pub tlut_count: u32,
+    pub flags: u32,
+    pub tile_w: u32,
+    pub tile_h: u32,
+}
+pub const NTX_SINGLE: u32 = 1 << 0;
+pub const NTX_PER_TILE: u32 = 1 << 1;
+
 // ---- r3d (csrc/r3d.c): RSP 3D renderer ----
 
 #[repr(C)]
@@ -228,4 +246,6 @@ extern "C" {
     pub fn n64_r3d_tex_alias(tex: u32) -> u32;
     pub fn n64_r3d_reset(tex_first: u32, group_first: u32);
     pub fn n64_r3d_counts() -> u32;
+    pub fn n64_tex_create_ntx(desc: *const NtxDesc) -> u32;
+    pub fn n64_sfx_freq(handle: u32) -> u32;
 }

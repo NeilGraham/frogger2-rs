@@ -71,6 +71,8 @@
     RUST_TO_C n64_r3d_tex_alias
     RUST_TO_C n64_r3d_reset
     RUST_TO_C n64_r3d_counts
+    RUST_TO_C n64_tex_create_ntx
+    RUST_TO_C n64_sfx_freq
 
 # void f2n64_call(void (*fn)(void)) - C -> Rust.
     .globl f2n64_call

@@ -178,7 +178,7 @@ fn sample_key(s: &Sample) -> String {
 fn encode_sample(ctx: &Ctx, s: &Sample, codec: Codec) -> Result<Vec<u8>> {
     let cache = ctx.cache_dir("sfx").map_err(|e| e.to_string())?;
     let tag = match codec {
-        Codec::Vadpcm => "vadpcm".to_string(),
+        Codec::Vadpcm => "vadpcm-nohuff".to_string(),
         Codec::Opus => format!("opus{SFX_OPUS_KBPS}"),
     };
     let key = sample_key(s);
@@ -192,7 +192,9 @@ fn encode_sample(ctx: &Ctx, s: &Sample, codec: Codec) -> Result<Vec<u8>> {
     std::fs::write(&wav_path, wav16(s.sample_rate, s.channels, &s.pcm_i16())).map_err(|e| e.to_string())?;
     let mut flags: Vec<String> = Vec::new();
     match codec {
-        Codec::Vadpcm => flags.extend(["--wav-compress".into(), "1".into()]),
+        // No Huffman stage: it decodes on the CPU (~10 % of a frame with a few voices,
+        // research/n64-performance.md §2G); plain VADPCM decodes on the RSP.
+        Codec::Vadpcm => flags.extend(["--wav-compress".into(), "vadpcm,huffman=false".into()]),
         Codec::Opus => {
             flags.extend(["--wav-compress".into(), "3".into(), "--wav-resample".into(), opus_resample_for(SFX_OPUS_KBPS, u32::from(s.channels)).to_string()])
         }

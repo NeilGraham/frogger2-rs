@@ -82,6 +82,38 @@ impl TextureRegistry {
         self.replace_image(h, 1, 1, vec![0; 4]);
     }
 
+    /// Adds an image without pixels (a back end that brings its own texels, e.g. the N64's
+    /// pre-converted pack textures). It is not queued for upload.
+    pub fn add_placeholder(&mut self, width: u32, height: u32) -> TexHandle {
+        let h = TexHandle(self.images.len() as u32);
+        self.images.push(Image { width, height, rgba: Vec::new() });
+        h
+    }
+
+    /// Adds (or replaces, like `LoadTexBankFile`) the entry for `crc` showing `image`.
+    pub fn add_entry(&mut self, crc: u32, name: &str, tex_type: TexType, image: TexHandle) {
+        let e = TexEntry { crc, name: name.to_string(), tex_type, image, frames: Vec::new(), last_frame: 0, last_game_frame: 0, current: Some(image) };
+        if let Some(&i) = self.by_crc.get(&crc) {
+            self.entries[i] = e;
+        } else {
+            self.by_crc.insert(crc, self.entries.len());
+            self.entries.push(e);
+        }
+    }
+
+    /// The animation table of a bank (`LoadTexBankFile`'s second half): applied against
+    /// every entry loaded so far; stops at the first animation whose base is unknown.
+    pub fn apply_anims(&mut self, anims: &[f2_formats::texture::TexAnim]) {
+        for a in anims {
+            let Some(&ei) = self.by_crc.get(&a.base_crc) else { break };
+            let frames: Vec<_> = a.frames.iter().map(|f| (self.by_crc.get(&f.crc).map(|&i| self.entries[i].image), f.time)).collect();
+            let e = &mut self.entries[ei];
+            e.frames = frames;
+            e.last_frame = 0;
+            e.last_game_frame = 0;
+        }
+    }
+
     /// Adds (or replaces) an entry for `crc` from an RGBA8 image.
     pub fn add_rgba(&mut self, crc: u32, name: &str, tex_type: TexType, width: u32, height: u32, rgba: Vec<u8>) -> TexHandle {
         let image = self.add_image(width, height, rgba);
@@ -113,15 +145,7 @@ impl TextureRegistry {
             let h = self.add_texture(t);
             on_image(h, &mut self.images[h.0 as usize], t);
         }
-        for a in &bank.anims {
-            // The original stops at the first animation whose base is unknown.
-            let Some(&ei) = self.by_crc.get(&a.base_crc) else { break };
-            let frames: Vec<_> = a.frames.iter().map(|f| (self.by_crc.get(&f.crc).map(|&i| self.entries[i].image), f.time)).collect();
-            let e = &mut self.entries[ei];
-            e.frames = frames;
-            e.last_frame = 0;
-            e.last_game_frame = 0;
-        }
+        self.apply_anims(&bank.anims);
     }
 
     pub fn entry(&self, crc: u32) -> Option<&TexEntry> {
