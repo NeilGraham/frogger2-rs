@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Vector ("modern") version of a Frogger 2 font strip, traced from the user's own game data.
 
-Defaults (owner-chosen v5, 2026-10-11): anti-aliasing-aware tracing: the fill's luminance as
-greyscale, low-pass filtered and cubic-interpolated 8x by mkbitmap (potrace's companion) and
-thresholded at 50%, then potrace with smooth corners (alphamax 1.3) and curve simplification
-(opttolerance 2.0); uniform 1.5 px outline and 1.1 px drop shadow, no bevel. Needs potrace,
-mkbitmap (apt potrace), ffmpeg; render the SVG with rsvg-convert.
+Defaults (owner-chosen v6, 2026-10-11): anti-aliasing-aware tracing (fill luminance as
+greyscale, mkbitmap low-pass 1.5 + cubic 8x + 50% threshold), enclosed counters opened by one
+pixel so they survive the smoothing, potrace alphamax 1.33 / opttolerance 3.0; uniform 1.5 px
+outline and 1.1 px drop shadow. Needs potrace + mkbitmap (apt potrace), ffmpeg, rsvg-convert.
 
 usage: python3 -I trace2.py STRIP.ppm OUTDIR [SIGMA] [OUTLINE_PX] [SHADOW_PX]
 The glyph FILL (white pixels) is upscaled 8x (bicubic), blurred (SIGMA, upscaled pixels) and
@@ -53,7 +52,14 @@ def main():
             if j >= 0 and not seen[j] and g[j] == 255:
                 seen[j] = 1
                 stack.append(j)
-    holes = [i for i in range(w * h) if g[i] == 255 and not seen[i]] if os.environ.get("F2T_OPEN", "0") == "1" else []
+    holes = [i for i in range(w * h) if g[i] == 255 and not seen[i]] if os.environ.get("F2T_OPEN", "1") == "1" else []
+    holes_set = set()
+    for i in holes:
+        x, y = i % w, i // w
+        holes_set.add(i)
+        for j in ((i - 1) if x > 0 else -1, (i + 1) if x < w - 1 else -1, (i - w) if y > 0 else -1, (i + w) if y < h - 1 else -1):
+            if j >= 0:
+                holes_set.add(j)
     for i in holes:
         x, y = i % w, i // w
         for j in ((i - 1) if x > 0 else -1, (i + 1) if x < w - 1 else -1, (i - w) if y > 0 else -1, (i + w) if y < h - 1 else -1):
@@ -71,16 +77,16 @@ def main():
             r, g2, b = px[3 * i], px[3 * i + 1], px[3 * i + 2]
             key = r > 180 and b > 180 and g2 < 100
             lum = 0 if key else (r * 299 + g2 * 587 + b * 114) // 1000
-            gg[i] = 255 - lum
+            gg[i] = 255 if g[i] == 255 and not key and holes_set and i in holes_set else 255 - lum
         with open(f"{out}/gray.pgm", "wb") as f:
             f.write(b"P5\n%d %d\n255\n" % (w, h))
             f.write(bytes(gg))
-        subprocess.run(["mkbitmap", "-n", "-b", os.environ.get("F2T_BLUR", "0.9"), "-s", "8", "-3", "-t", os.environ.get("F2T_THR", "0.5"), "-o", f"{out}/fill_up.pgm", f"{out}/gray.pgm"], check=True)
+        subprocess.run(["mkbitmap", "-n", "-b", os.environ.get("F2T_BLUR", "1.5"), "-s", "8", "-3", "-t", os.environ.get("F2T_THR", "0.5"), "-o", f"{out}/fill_up.pgm", f"{out}/gray.pgm"], check=True)
         UPX = 8
     vf = f"scale=iw*{UP}:ih*{UP}:flags=neighbor" + (f",gblur=sigma={sigma},lut=y='if(lt(val\\,128)\\,0\\,255)'" if sigma > 0 else "")
     if os.environ.get("F2T_MODE", "gray") != "gray":
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", f"{out}/fill.pgm", "-vf", vf, "-pix_fmt", "gray", f"{out}/fill_up.pgm"], check=True)
-    subprocess.run(["potrace", "-s", "-a", os.environ.get("F2T_A", "1.3"), "-O", os.environ.get("F2T_O", "2.0"), "-t", os.environ.get("F2T_T", "30"), "-o", f"{out}/fill.svg", f"{out}/fill_up.pgm"], check=True)
+    subprocess.run(["potrace", "-s", "-a", os.environ.get("F2T_A", "1.33"), "-O", os.environ.get("F2T_O", "3.0"), "-t", os.environ.get("F2T_T", "40"), "-o", f"{out}/fill.svg", f"{out}/fill_up.pgm"], check=True)
     s = open(f"{out}/fill.svg").read()
     head = s[: s.index("<g")]
     g_open = s[s.index("<g"): s.index(">", s.index("<g")) + 1]
