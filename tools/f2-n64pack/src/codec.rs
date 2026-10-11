@@ -26,8 +26,8 @@ pub struct ClassCodec {
 impl ClassCodec {
     pub fn for_class(c: Class) -> ClassCodec {
         match c {
-            Class::Models => ClassCodec { dict_id: 1, dict_size: 64 << 10, level: 9 },
-            Class::Textures => ClassCodec { dict_id: 2, dict_size: 64 << 10, level: 9 },
+            Class::Models => ClassCodec { dict_id: 1, dict_size: 128 << 10, level: 9 },
+            Class::Textures => ClassCodec { dict_id: 2, dict_size: 128 << 10, level: 9 },
             Class::Levels => ClassCodec { dict_id: 3, dict_size: 64 << 10, level: 9 },
             _ => ClassCodec { dict_id: 4, dict_size: 32 << 10, level: 9 },
         }
