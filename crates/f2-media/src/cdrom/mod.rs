@@ -157,6 +157,7 @@ impl DriveInfo {
     }
 }
 
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub(crate) fn looks_like_frogger(root: Option<&std::path::Path>, label: Option<&str>) -> bool {
     label.is_some_and(|l| l.trim().eq_ignore_ascii_case("FROGGER2"))
         || root.is_some_and(|r| crate::disc::find_case_insensitive(r, "FROGGER2").and_then(|d| crate::disc::find_case_insensitive(&d, "DATA1.CAB")).is_ok())

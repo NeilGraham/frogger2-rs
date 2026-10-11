@@ -73,9 +73,7 @@ pub struct Requests {
 
 pub struct App {
     pub data: Data,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    format: wgpu::TextureFormat,
+    gfx: Gfx,
     pub r: Renderer,
     font: Option<Font>,
     font_id: Option<FontId>,
@@ -203,8 +201,43 @@ pub enum NetRequest {
     Join { code: String },
 }
 
+/// What the renderer is (re)created from.
+#[cfg(feature = "desktop")]
+struct Gfx {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    format: wgpu::TextureFormat,
+}
+
+/// No GPU: the renderer draws on the CPU (`Renderer::render_soft`).
+#[cfg(not(feature = "desktop"))]
+struct Gfx;
+
+impl Gfx {
+    #[cfg(feature = "desktop")]
+    fn renderer(&self) -> Renderer {
+        Renderer::new(&self.device, &self.queue, self.format)
+    }
+
+    #[cfg(not(feature = "desktop"))]
+    fn renderer(&self) -> Renderer {
+        Renderer::new_soft()
+    }
+}
+
 impl App {
-    pub fn new(data: Data, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, mut audio: AudioEngine, mapper: InputMapper) -> App {
+    #[cfg(feature = "desktop")]
+    pub fn new(data: Data, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, audio: AudioEngine, mapper: InputMapper) -> App {
+        Self::with_gfx(data, Gfx { device: device.clone(), queue: queue.clone(), format }, audio, mapper)
+    }
+
+    /// An app whose renderer draws on the CPU (builds without the `desktop` feature).
+    #[cfg(not(feature = "desktop"))]
+    pub fn new_soft(data: Data, audio: AudioEngine, mapper: InputMapper) -> App {
+        Self::with_gfx(data, Gfx, audio, mapper)
+    }
+
+    fn with_gfx(data: Data, gfx: Gfx, mut audio: AudioEngine, mapper: InputMapper) -> App {
         let font = ["textures/font/smallfont.bmp", "textures/font/monofont.bmp"].iter().find_map(|p| data.read(p).ok().and_then(|b| Font::from_bmp(&b)));
         let load_font = |p: &str| data.read(p).ok().and_then(|b| Font::from_bmp(&b));
         let book_font = load_font("textures/font/monofont.bmp");
@@ -218,10 +251,8 @@ impl App {
         audio.set_music_dir(data.rendition.join("music"));
         let mut app = App {
             data,
-            device: device.clone(),
-            queue: queue.clone(),
-            format,
-            r: Renderer::new(device, queue, format),
+            r: gfx.renderer(),
+            gfx,
             font,
             font_id: None,
             game_font_files,
@@ -420,7 +451,7 @@ impl App {
     /// Recreates the renderer (the texture registry cannot free images) and reloads the
     /// level's texture banks.
     fn rebuild_renderer(&mut self) {
-        self.r = Renderer::new(&self.device, &self.queue, self.format);
+        self.r = self.gfx.renderer();
         self.apply_display();
         self.font_id = self.font.clone().map(|f| self.r.add_font(f));
         self.game_fonts = self.game_font_files.clone().map(|(b, s)| GameFonts { normal: self.r.add_font(b), small: self.r.add_font(s) });

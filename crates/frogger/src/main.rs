@@ -28,21 +28,12 @@
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
-mod app;
-mod book;
-mod controls;
-mod data;
-mod editor;
 mod firstrun;
-mod fx;
-mod gameplay;
-mod mods;
-mod netplay;
-mod overlay;
-mod padscript;
 mod present;
-mod render;
-mod video;
+
+use frogger::{app, data, gameplay, netplay, padscript};
+#[cfg(test)]
+use frogger::render;
 
 use app::{App, NetRequest, Step};
 use f2_audio::AudioEngine;

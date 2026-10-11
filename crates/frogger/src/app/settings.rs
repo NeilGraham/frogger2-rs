@@ -21,9 +21,9 @@ use f2_game::levplay::{
     PAD_CIRCLE, PAD_CROSS, PAD_DOWN, PAD_L1, PAD_L2, PAD_LEFT, PAD_R1, PAD_R2, PAD_RIGHT, PAD_SELECT, PAD_SQUARE, PAD_START, PAD_TRIANGLE, PAD_UP,
 };
 use f2_platform::bindings::{ConflictPolicy, RebindMode, ACTIONS, DEFAULT_DEADZONE};
+use f2_platform::config::VideoMode;
 use f2_platform::config::ENHANCED_HOP_BUFFER_FRAMES;
 use f2_platform::controller::{FaceLayout, StickMode};
-use f2_platform::window::VideoMode;
 use f2_platform::{dik, Binding, ControllerFamily, FpsCorner, KeyboardState, PadData, Profile, RawEvent, Rebind, RebindStatus, TextureFilter, WindowMode};
 use std::time::Instant;
 

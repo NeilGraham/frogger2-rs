@@ -45,7 +45,8 @@ Build instructions: [BUILDING.md](BUILDING.md). Packaging: `tools/package/`, `pa
 | Linux aarch64 | expected to work, untested | native | same | same | same | tar.gz/AppImage (`uname -m`) |
 | macOS arm64 / x86_64 | **compile-checked from Linux; CI builds + tests on macos-14**; not run on a Mac yet | native (Xcode CLT) | winit / Metal; Retina-aware | cpal CoreAudio | gilrs (IOKit) | `.app` (universal), ad-hoc signed |
 | WSL2 (WSLg) | works (dev setup) | native Linux | X11 via XWayland (native Wayland crashes WSLg's Weston), llvmpipe/lavapipe | Pulse via ALSA plugin | usbipd only | — |
-| Web, Android, iOS, Switch, PlayStation, N64 | not started | see §4 | | | | |
+| PS4 / PS5 (homebrew) | **builds; runs in the shadPS4 emulator**; not yet run on hardware | `tools/ps4/build-pkg.sh` (OpenOrbis, `x86_64-unknown-freebsd` std) | VideoOut + CPU renderer (`f2-engine/soft.rs`) | sceAudioOut | scePad | PS4 fPKG (also installs on a jailbroken PS5) |
+| Web, Android, iOS, Switch, PS2/PS3, N64 | not started | see §4 | | | | |
 
 Verified for this document (2026-10-10): Linux release build, workspace test suite (no game
 data, 63 test binaries green), windowed smoke run under WSLg (llvmpipe Vulkan, audio on),
@@ -136,13 +137,24 @@ General constraints:
 - RAM is ample for the PC data. Renderer: RSX through PSL1GHT's `rsx` library (a new backend).
 
 ### PlayStation 4 / PlayStation 5
-- x86-64 (Jaguar / Zen 2), FreeBSD-derived OS. Official SDKs: NDA only. Homebrew: OpenOrbis PS4
-  toolchain (clang/LLVM, jailbroken firmware); PS5 homebrew is limited to specific exploitable
-  firmware versions with ELF loaders and little GPU access.
-- Rust code generation is a non-issue (x86_64); the OS needs a custom target (no upstream `std`),
-  so no_std + alloc over the homebrew libc. GPU APIs (GNM/AGC) are proprietary; homebrew GPU
-  access is limited (OpenOrbis exposes the system's GLES2 library, PiGlet, on PS4). wgpu has no
-  backend for these. Treat as research only; legal exposure is highest here.
+- **Done (homebrew fPKG)**: `crates/frogger-ps4` + `tools/ps4/build-pkg.sh`, details in
+  [tools/ps4/README.md](../tools/ps4/README.md). A PS4 fake package built with the OpenOrbis
+  toolchain (no Sony SDK); a jailbroken PS5 installs it as a PS4 title (etaHEN/kstuff).
+- Rust std works: the crate is a staticlib for the stock `x86_64-unknown-freebsd` target
+  linked against the console's `libkernel`/`libSceLibcInternal`, with shims for the calls
+  whose structs differ between FreeBSD 9 (console) and the FreeBSD 12+ ABI std uses
+  (`stat`, `readdir`, ...), our own heap (dlmalloc over `mmap`) and libm. No `no_std` port
+  of the game was needed.
+- Rendering: the GPU APIs (GNM/AGC) are proprietary and wgpu has no backend for them, so the
+  console build uses `f2-engine`'s CPU rasteriser (`soft.rs`, feature `gpu` off) over the
+  same draw list, into a VideoOut framebuffer (852x480 internal, scaled to 1080p). The
+  `frogger` crate is a library (`desktop` feature = winit/wgpu/gilrs) driven by the console
+  host. Audio: sceAudioOut thread pulling the mixer; pads: scePad -> `RawPad`.
+- Verified in the shadPS4 emulator (boot, FMV, frontend, gameplay, pad, 60 fps); real
+  hardware untested.
+- Native PS5 GPU: open-source PS5 Vulkan drivers now exist (e.g. mihawk-99/PS5_Vulkan, a RADV
+  port built with the ps5-payload-sdk); a native PS5 build could run the wgpu renderer on
+  them (native homebrew, not a `.pkg`). Future work.
 
 ### Nintendo 64 (owner's interest)
 - Hardware: VR4300 (MIPS III, 93.75 MHz, 64-bit integer + FPU), 4 MB RDRAM (8 MB with the

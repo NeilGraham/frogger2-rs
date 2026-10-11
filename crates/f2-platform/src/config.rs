@@ -542,6 +542,14 @@ impl Config {
     }
 }
 
+/// A video mode of the window's monitor (`window::video_modes`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoMode {
+    pub width: u32,
+    pub height: u32,
+    pub refresh_mhz: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,12 +6,19 @@ edition.workspace = true
 license = "GPL-3.0-or-later"
 publish.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "frogger"
 path = "src/main.rs"
+required-features = ["desktop"]
 
 [features]
-default = ["audio-device"]
+default = ["desktop", "audio-device"]
+# Window, GPU and gamepads (winit, wgpu, gilrs): the desktop executable. Without it the
+# library builds for hosts that bring their own platform layer and use the CPU renderer.
+desktop = ["dep:wgpu", "f2-engine/gpu", "f2-platform/window", "f2-platform/gamepad"]
 # Real audio output (cpal: ALSA/PulseAudio/PipeWire, WASAPI, CoreAudio). Off = always muted;
 # lets `cargo check --target *-apple-darwin --no-default-features` run without the macOS SDK
 # (coreaudio-sys needs it for bindgen). See docs/PLATFORMS.md.
@@ -19,8 +26,8 @@ audio-device = ["f2-audio/cpal"]
 
 [dependencies]
 f2-game = { path = "../f2-game" }
-f2-engine = { path = "../f2-engine" }
-f2-platform = { path = "../f2-platform", features = ["window", "gamepad"] }
+f2-engine = { path = "../f2-engine", default-features = false }
+f2-platform = { path = "../f2-platform", default-features = false }
 f2-audio = { path = "../f2-audio", default-features = false }
 f2-bink = { path = "../f2-bink" }
 f2-mods = { path = "../f2-mods" }
@@ -31,4 +38,4 @@ f2-math = { path = "../f2-math" }
 f2-net = { path = "../f2-net" }
 f2-import = { path = "../f2-import" }
 f2-media = { path = "../f2-media" }
-wgpu = "=30.0.1"
+wgpu = { version = "=30.0.1", optional = true }

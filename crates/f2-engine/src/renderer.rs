@@ -7,6 +7,7 @@ use crate::scene::*;
 use crate::textures::{TexHandle, TextureRegistry};
 use f2_formats::objbank::Model;
 use f2_formats::texture::Texture;
+#[cfg(feature = "gpu")]
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ fn err(e: impl std::fmt::Display) -> EngineError {
 }
 
 /// Instance, adapter, device and queue.
+#[cfg(feature = "gpu")]
 pub struct GpuContext {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
@@ -29,6 +31,7 @@ pub struct GpuContext {
     pub queue: wgpu::Queue,
 }
 
+#[cfg(feature = "gpu")]
 impl GpuContext {
     /// Creates a context with no surface (offscreen rendering). Honours `WGPU_BACKEND` etc.
     pub fn new_headless() -> Result<GpuContext, EngineError> {
@@ -59,11 +62,13 @@ impl GpuContext {
 
 /// A configured window surface. Create the `wgpu::Surface` from any
 /// raw-window-handle provider with `ctx.instance.create_surface(window)`.
+#[cfg(feature = "gpu")]
 pub struct WindowSurface {
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
 }
 
+#[cfg(feature = "gpu")]
 impl WindowSurface {
     pub fn new(ctx: &GpuContext, surface: wgpu::Surface<'static>, width: u32, height: u32) -> Result<WindowSurface, EngineError> {
         let caps = surface.get_capabilities(&ctx.adapter);
@@ -104,7 +109,7 @@ pub enum Blend {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum DepthMode {
+pub(crate) enum DepthMode {
     /// `normalZRS`: LESSEQUAL, write.
     TestWrite,
     /// `xluZRS`: LESSEQUAL, no write.
@@ -136,6 +141,7 @@ impl Quad2D {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FontId(pub usize);
 
+#[cfg(feature = "gpu")]
 struct GpuImage {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -148,26 +154,29 @@ pub const OVERLAY_SPACE: f32 = 4096.0;
 const ALPHA_TIGHT: f32 = 100.0;
 const ALPHA_NONZERO: f32 = 0.0;
 
-struct DrawCmd {
-    blend: Blend,
-    depth: DepthMode,
-    tex: TexHandle,
-    wrap: bool,
+pub(crate) struct DrawCmd {
+    pub(crate) blend: Blend,
+    pub(crate) depth: DepthMode,
+    pub(crate) tex: TexHandle,
+    pub(crate) wrap: bool,
     /// 3D frame triangle (scissored to the viewport when it is clamped).
-    scene: bool,
-    first: u32,
-    count: u32,
+    pub(crate) scene: bool,
+    pub(crate) first: u32,
+    pub(crate) count: u32,
 }
 
 /// Sampler variant: (wrap, linear, anisotropy).
+#[cfg(feature = "gpu")]
 type SamplerKey = (bool, bool, u16);
 
 /// Largest texture that gets a mip chain when anisotropic filtering is on (bank textures
 /// are <= 256; screen-sized backdrops and video frames are drawn ~1:1 and skip it).
+#[cfg(feature = "gpu")]
 const MIP_MAX_SIZE: u32 = 512;
 
 /// Box-filtered mip chain (alpha-weighted colour, so colour-keyed texels do not bleed
 /// black into their neighbours). Returns levels 1.. (level 0 is the image itself).
+#[cfg(feature = "gpu")]
 fn build_mips(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
     let mut out = Vec::new();
     let (mut pw, mut ph) = (w, h);
@@ -227,6 +236,7 @@ impl RgbaImage {
     }
 }
 
+#[cfg(feature = "gpu")]
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The MDX replacement renderer.
@@ -236,8 +246,11 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// [`render`](Self::render) (to any texture view) or
 /// [`render_to_image`](Self::render_to_image) (headless).
 pub struct Renderer {
+    #[cfg(feature = "gpu")]
     pub device: wgpu::Device,
+    #[cfg(feature = "gpu")]
     pub queue: wgpu::Queue,
+    #[cfg(feature = "gpu")]
     pub format: wgpu::TextureFormat,
     pub textures: TextureRegistry,
     pub view: View,
@@ -250,30 +263,46 @@ pub struct Renderer {
     overlays: Vec<Quad2D>,
     fonts: Vec<(Font, TexHandle)>,
     white: TexHandle,
+    #[cfg(feature = "gpu")]
     gpu_images: Vec<GpuImage>,
+    #[cfg(feature = "gpu")]
     bind_groups: HashMap<(u32, SamplerKey), wgpu::BindGroup>,
+    #[cfg(feature = "gpu")]
     tex_layout: wgpu::BindGroupLayout,
+    #[cfg(feature = "gpu")]
     uniform_buf: wgpu::Buffer,
+    #[cfg(feature = "gpu")]
     uniform_bg: wgpu::BindGroup,
+    #[cfg(feature = "gpu")]
     pipeline_layout: wgpu::PipelineLayout,
+    #[cfg(feature = "gpu")]
     shader: wgpu::ShaderModule,
+    #[cfg(feature = "gpu")]
     pipelines: HashMap<(Blend, DepthMode, u32), wgpu::RenderPipeline>,
+    #[cfg(feature = "gpu")]
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
     /// Depth buffer (view, width, height, samples).
+    #[cfg(feature = "gpu")]
     depth: Option<(wgpu::TextureView, u32, u32, u32)>,
     /// Internal colour target for supersampling (view, width, height).
+    #[cfg(feature = "gpu")]
     internal: Option<(wgpu::TextureView, u32, u32)>,
     /// MSAA colour target (view, width, height, samples).
+    #[cfg(feature = "gpu")]
     msaa_target: Option<(wgpu::TextureView, u32, u32, u32)>,
+    #[cfg(feature = "gpu")]
     blit: Option<(wgpu::RenderPipeline, wgpu::Sampler)>,
+    #[cfg(feature = "gpu")]
     vbuf: Option<wgpu::Buffer>,
     /// Size passed to [`begin_frame`](Self::begin_frame) (the target); `view` holds the
     /// internal (render-scaled) size.
     output: (u32, u32),
     /// Whether the GPU images were uploaded with mip chains.
+    #[cfg(feature = "gpu")]
     gpu_mips: bool,
 }
 
+#[cfg(feature = "gpu")]
 const SHADER: &str = r#"
 struct U { size: vec2<f32>, persp: f32, fog_on: f32, fog_color: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
@@ -319,6 +348,7 @@ struct VOut {
 
 /// Supersampling resolve: draws the internal target over the output with bilinear
 /// filtering (a 2x2 box filter at render scale 2).
+#[cfg(feature = "gpu")]
 const BLIT_SHADER: &str = r#"
 @group(0) @binding(0) var t: texture_2d<f32>;
 @group(0) @binding(1) var s: sampler;
@@ -336,6 +366,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 "#;
 
 impl Renderer {
+    #[cfg(feature = "gpu")]
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Renderer {
         let device = device.clone();
         let queue = queue.clone();
@@ -420,6 +451,36 @@ impl Renderer {
         r
     }
 
+    /// A renderer without a GPU (build without the `gpu` feature): frames are drawn
+    /// on the CPU by [`render_soft`](Self::render_soft).
+    #[cfg(not(feature = "gpu"))]
+    pub fn new_soft() -> Renderer {
+        let mut r = Renderer {
+            textures: TextureRegistry::new(),
+            view: View::new(640, 480),
+            options: RenderOptions::default(),
+            frames: Frames::default(),
+            backdrops: Vec::new(),
+            overlays: Vec::new(),
+            fonts: Vec::new(),
+            white: TexHandle(0),
+            output: (640, 480),
+            sprite_clip: None,
+        };
+        r.white = r.textures.add_image(1, 1, vec![255; 4]);
+        r
+    }
+
+    /// Renders the queued frame on the CPU (size = `begin_frame` size; the render scale
+    /// is ignored) and returns it.
+    #[cfg(not(feature = "gpu"))]
+    pub fn render_to_image(&mut self, clear: [f64; 4]) -> Result<RgbaImage, EngineError> {
+        let mut t = crate::soft::SoftTarget::default();
+        self.render_soft(&mut t, clear, 1);
+        let pixels = t.pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
+        Ok(RgbaImage { width: t.width, height: t.height, pixels })
+    }
+
     // ---------------------------------------------------------------- textures
 
     /// Loads a texture bank (`LoadTexBankFile`).
@@ -443,6 +504,7 @@ impl Renderer {
         &self.fonts[id.0].0
     }
 
+    #[cfg(feature = "gpu")]
     fn upload_dirty(&mut self) {
         let mips = self.options.linear_filter && self.options.anisotropy > 0;
         if mips != self.gpu_mips {
@@ -504,11 +566,13 @@ impl Renderer {
         }
     }
 
+    #[cfg(feature = "gpu")]
     fn sampler_key(&self, wrap: bool) -> SamplerKey {
         let linear = self.options.linear_filter;
         (wrap, linear, if linear { self.options.anisotropy.min(16) } else { 0 })
     }
 
+    #[cfg(feature = "gpu")]
     fn sampler(&mut self, key: SamplerKey) -> &wgpu::Sampler {
         let device = &self.device;
         self.samplers.entry(key).or_insert_with(|| {
@@ -533,6 +597,7 @@ impl Renderer {
         })
     }
 
+    #[cfg(feature = "gpu")]
     fn bind_group(&mut self, tex: TexHandle, wrap: bool) -> &wgpu::BindGroup {
         let skey = self.sampler_key(wrap);
         let key = (tex.0, skey);
@@ -552,6 +617,7 @@ impl Renderer {
         &self.bind_groups[&key]
     }
 
+    #[cfg(feature = "gpu")]
     fn pipeline(&mut self, blend: Blend, depth: DepthMode, samples: u32) -> &wgpu::RenderPipeline {
         let key = (blend, depth, samples);
         if !self.pipelines.contains_key(&key) {
@@ -652,6 +718,7 @@ impl Renderer {
 
     /// Effective MSAA sample count: 1 or 4 (the counts every backend supports for the
     /// colour and depth formats without adapter-specific features).
+    #[cfg(feature = "gpu")]
     fn samples(&self) -> u32 {
         if self.options.msaa > 1 {
             4
@@ -937,7 +1004,7 @@ impl Renderer {
 
     // ---------------------------------------------------------------- submission
 
-    fn build(&mut self, clear: [f64; 4]) -> (Vec<TlVertex>, Vec<DrawCmd>) {
+    pub(crate) fn build(&mut self, clear: [f64; 4]) -> (Vec<TlVertex>, Vec<DrawCmd>) {
         let mut verts: Vec<TlVertex> = Vec::with_capacity(self.frames.total() * 3 + 6 * (self.backdrops.len() + self.overlays.len() + 1));
         let mut cmds: Vec<DrawCmd> = Vec::new();
         let white = self.white;
@@ -1003,6 +1070,7 @@ impl Renderer {
         (verts, cmds)
     }
 
+    #[cfg(feature = "gpu")]
     fn colour_texture(&self, label: &str, w: u32, h: u32, samples: u32, usage: wgpu::TextureUsages) -> wgpu::TextureView {
         self.device
             .create_texture(&wgpu::TextureDescriptor {
@@ -1018,6 +1086,7 @@ impl Renderer {
             .create_view(&Default::default())
     }
 
+    #[cfg(feature = "gpu")]
     fn ensure_targets(&mut self, w: u32, h: u32, samples: u32, scaled: bool) {
         if !matches!(self.depth, Some((_, dw, dh, ds)) if dw == w && dh == h && ds == samples) {
             let tex = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1080,6 +1149,7 @@ impl Renderer {
     /// With the default (authentic) options this is a single pass straight into
     /// `target`. Enhanced options add an MSAA target (resolved into `target`) and/or an
     /// internal render-scaled target that is then filtered down to `target`.
+    #[cfg(feature = "gpu")]
     pub fn encode(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, width: u32, height: u32, clear: [f64; 4]) {
         self.upload_dirty();
         let (iw, ih) = (self.view.width as u32, self.view.height as u32);
@@ -1198,6 +1268,7 @@ impl Renderer {
     }
 
     /// Renders the queued frame to `target` and submits.
+    #[cfg(feature = "gpu")]
     pub fn render(&mut self, target: &wgpu::TextureView, width: u32, height: u32, clear: [f64; 4]) {
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode(&mut enc, target, width, height, clear);
@@ -1205,6 +1276,7 @@ impl Renderer {
     }
 
     /// Renders the queued frame offscreen (size = `begin_frame` size) and reads it back.
+    #[cfg(feature = "gpu")]
     pub fn render_to_image(&mut self, clear: [f64; 4]) -> Result<RgbaImage, EngineError> {
         let (w, h) = self.output;
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {

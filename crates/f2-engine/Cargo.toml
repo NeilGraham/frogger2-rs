@@ -6,9 +6,14 @@ edition.workspace = true
 license = "MIT OR Apache-2.0"
 publish.workspace = true
 
+[features]
+default = ["gpu"]
+# wgpu back end. Without it the renderer only draws on the CPU (`Renderer::new_soft`).
+gpu = ["dep:wgpu", "dep:pollster"]
+
 [dependencies]
 f2-formats = { path = "../f2-formats" }
-wgpu = "=30.0.1"
+wgpu = { version = "=30.0.1", optional = true }
 bytemuck = { version = "=1.25.2", features = ["derive"] }
-pollster = "=1.0.1"
+pollster = { version = "=1.0.1", optional = true }
 png = "=0.18.1"

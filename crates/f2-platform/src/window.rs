@@ -56,13 +56,7 @@ impl WindowConfig {
     }
 }
 
-/// A video mode of the window's monitor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VideoMode {
-    pub width: u32,
-    pub height: u32,
-    pub refresh_mhz: u32,
-}
+pub use crate::config::VideoMode;
 
 fn monitor(window: &Window) -> Option<winit::monitor::MonitorHandle> {
     window.current_monitor().or_else(|| window.primary_monitor()).or_else(|| window.available_monitors().next())

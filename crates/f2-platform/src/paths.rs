@@ -32,9 +32,20 @@ pub fn default_data_root() -> PathBuf {
     data_base().unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR).join("data")
 }
 
-/// Settings directory: `$F2_CONFIG_DIR`, else `%APPDATA%\frogger2-rs`,
+static CONFIG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Fixes the settings directory for this process (hosts without environment variables or a
+/// home directory, e.g. consoles). Takes precedence over `$F2_CONFIG_DIR`; first call wins.
+pub fn set_config_dir(dir: PathBuf) {
+    let _ = CONFIG_DIR.set(dir);
+}
+
+/// Settings directory: [`set_config_dir`], else `$F2_CONFIG_DIR`, else `%APPDATA%\frogger2-rs`,
 /// `~/Library/Application Support/frogger2-rs`, or `$XDG_CONFIG_HOME`/`~/.config` + `frogger2-rs`.
 pub fn config_dir() -> PathBuf {
+    if let Some(p) = CONFIG_DIR.get() {
+        return p.clone();
+    }
     if let Some(p) = env_path("F2_CONFIG_DIR") {
         return p;
     }

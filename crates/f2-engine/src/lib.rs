@@ -15,12 +15,16 @@ pub mod load;
 pub mod math;
 pub mod renderer;
 pub mod scene;
+pub mod soft;
 pub mod textures;
 
 pub use anim::{actor_bounds, xform_actor, Actor};
 pub use font::Font;
-pub use renderer::{Blend, EngineError, FontId, GpuContext, Quad2D, Renderer, RgbaImage, WindowSurface, OVERLAY_SPACE};
+pub use renderer::{Blend, EngineError, FontId, Quad2D, Renderer, RgbaImage, OVERLAY_SPACE};
+#[cfg(feature = "gpu")]
+pub use renderer::{GpuContext, WindowSurface};
 pub use scene::{Camera, Fog, Frame, RenderOptions, TlVertex, Tri, View, XluSort};
+pub use soft::SoftTarget;
 pub use textures::{TexHandle, TextureRegistry};
 
 /// Finds a model in a bank by root object name (case-insensitive, with or
