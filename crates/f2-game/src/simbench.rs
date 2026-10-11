@@ -129,3 +129,54 @@ pub fn run(s: &Scenario, g: &mut Game, hook: &mut dyn FnMut(bool)) -> Outcome {
     }
     Outcome { ticks: n, actors, checksum: g.checksum() }
 }
+
+/// Phase 3S probe: the actor pass split into its steps on a loaded game, each over all
+/// actors (`[copy, visibility test, xform of visible ones]` via `clock`, plus counts).
+/// Changes the game state (runs the steps); for measurements only.
+pub fn probe_actor_pass(g: &mut Game, clock: &mut dyn FnMut() -> u32) -> ([u32; 5], u32, u32) {
+    let view = g.specfx.view;
+    let frog0 = g.frog0_position();
+    let ids = g.actor2.act_list.ids(&g.actor2.actors);
+    let t0 = clock();
+    for &id in &ids {
+        g.copy_actor(id, frog0);
+    }
+    let t1 = clock();
+    let mut vis = alloc::vec::Vec::new();
+    if let Some(v) = view.as_ref() {
+        for &id in &ids {
+            if let Some((visible, over, _)) = g.actor_visibility(id, v) {
+                if visible {
+                    vis.push((id, over));
+                }
+            }
+        }
+    }
+    let t2 = clock();
+    for &(id, over) in &vis {
+        g.xform_actor(id, over);
+    }
+    let t3 = clock();
+    let mut roots = 0;
+    for &(id, _) in &vis {
+        if let Some(m) = g.actor2.actors[id].actor.actual_actor.object_controller.and_then(|m| g.models.get(m)) {
+            if m.root_object.as_ref().is_some_and(|r| r.bbox.is_some()) {
+                roots += 1;
+            }
+        }
+    }
+    let t4 = clock();
+    for &(id, over) in &vis {
+        g.transform_root_object(id, over);
+    }
+    let t5 = clock();
+    for &(id, _) in &vis {
+        g.transform_actor_sprites(id);
+    }
+    let t6 = clock();
+    (
+        [t1.wrapping_sub(t0), t2.wrapping_sub(t1), t3.wrapping_sub(t2), t5.wrapping_sub(t4), t6.wrapping_sub(t5)],
+        ids.len() as u32,
+        (vis.len() as u32) << 16 | roots,
+    )
+}

@@ -598,18 +598,22 @@ pub fn sphere_visible(model: &crate::assets::ModelInfo, p: &MdxPlacement, view: 
     let rotmat = quaternion_to_matrix(&p.q_rot);
     let t2 = mtx_xfm(&rotmat, t_pos);
     let t_pos = [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]];
-    let wh = view.xfm_point_f(t_pos);
-    let t2 = mtx_xfm(&view.matrix, t_pos);
-    let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
-    let mut radius = model.actor_radius * scale;
-    let depth = t2[2] + view.dist as f32;
-    if depth + radius > view.near_clip && depth - radius < view.far_clip {
+    {
+        // Phase 3S: the depth test needs only the view-space z (the same sum as
+        // `mtx_xfm`'s third component); the projection is computed only if it passes.
+        let m = &view.matrix;
+        let z = m[0][2] * t_pos[0] + m[1][2] * t_pos[1] + m[2][2] * t_pos[2] + m[3][2];
+        let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
+        let mut radius = model.actor_radius * scale;
+        let depth = z + view.dist as f32;
+        if !(depth + radius > view.near_clip && depth - radius < view.far_clip) {
+            return false;
+        }
+        let wh = view.xfm_point_f(t_pos);
         if wh[2] > view.near_clip {
             radius = (view.fov as f32 * radius * (view.x_res * (1.0 / 640.0))) / (wh[2] + view.dist as f32);
         }
         (wh[0] > -radius && wh[0] < view.x_res + radius) && (wh[1] > -radius && wh[1] < view.y_res + radius)
-    } else {
-        false
     }
 }
 
@@ -834,7 +838,7 @@ impl Game {
 
     /// The root object's `OBJECT_FLAGS_CLIPPED` as `TransformObject` sets it (only the
     /// root's flag is ever read, by `CopyActorList`).
-    fn transform_root_object(&mut self, id: ActorId, no_clip: bool) {
+    pub(crate) fn transform_root_object(&mut self, id: ActorId, no_clip: bool) {
         let Some(view) = self.specfx.view.as_ref() else { return };
         let a = &self.actor2.actors[id].actor.actual_actor;
         let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return };
@@ -864,6 +868,47 @@ impl Game {
         }
     }
 
+    /// Phase 3S probe: cycles of the parts of `transform_root_object` for actor `id`, each
+    /// repeated `n` times: `[object_local, actor_top, 2 mtx_cat, check_bounding_box]`.
+    pub fn probe_root_parts(&self, id: ActorId, n: u32, clock: &mut dyn FnMut() -> u32) -> [u32; 4] {
+        let mut r = [0u32; 4];
+        let Some(view) = self.specfx.view.as_ref() else { return r };
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return r };
+        let Some(root) = model.root_object.as_ref() else { return r };
+        let Some(b) = root.bbox.as_ref() else { return r };
+        let animated = a.animation.is_some();
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        let p = a.placement;
+        let t0 = clock();
+        let mut out = None;
+        for _ in 0..n {
+            let mut last = p.last_keys;
+            out = Some(core::hint::black_box(object_local_k(root, animated, core::hint::black_box(time), &mut last, p.scale, [1.0; 3])));
+        }
+        let (rotmat, scale) = out.unwrap();
+        let t1 = clock();
+        let mut top = IDENTITY;
+        for _ in 0..n {
+            top = core::hint::black_box(actor_top(core::hint::black_box(p.pos), &p.q_rot));
+        }
+        let t2 = clock();
+        let mut obj = IDENTITY;
+        for _ in 0..n {
+            let m1 = mtx_cat(&rotmat, core::hint::black_box(&top));
+            obj = core::hint::black_box(mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1));
+        }
+        let t3 = clock();
+        let mut c = false;
+        for _ in 0..n {
+            c ^= view.check_bounding_box(b, core::hint::black_box(&obj));
+        }
+        core::hint::black_box(c);
+        let t4 = clock();
+        r = [t1.wrapping_sub(t0), t2.wrapping_sub(t1), t3.wrapping_sub(t2), t4.wrapping_sub(t3)];
+        r
+    }
+
     /// Port of `XformActor` (mdxActor.cpp:547): `UpdateAnims`, then the object transform.
     pub fn xform_actor(&mut self, id: ActorId, no_clip: bool) {
         if self.actor2.actors[id].actor.actual_actor.object_controller.is_none() {
@@ -888,7 +933,7 @@ impl Game {
 
     /// The object sprites of `TransformObject` (mdxObject.cpp:461) for actor `id`: the sprites
     /// the model's objects point at follow the actor (position, size, `xlu`, `draw`).
-    fn transform_actor_sprites(&mut self, id: ActorId) {
+    pub(crate) fn transform_actor_sprites(&mut self, id: ActorId) {
         let a2 = &self.actor2.actors[id];
         let a = &a2.actor.actual_actor;
         let Some(mid) = a.object_controller else { return };
@@ -1081,6 +1126,17 @@ impl Game {
                 self.actor_list_draw_one(id, view.as_ref());
             }
         }
+    }
+
+    /// `ActorListDraw`'s test for actor `id` with a view: `(visible, ACTOR_ALWAYSDRAW,
+    /// placement.draw)`, `None` without a model.
+    pub(crate) fn actor_visibility(&self, id: ActorId, view: &ViewXform) -> Option<(bool, bool, u32)> {
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let model = a.object_controller.and_then(|m| self.models.get(m))?;
+        let p = a.placement;
+        let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
+        let visible = if draw_override { true } else { sphere_visible(model, &p, view) };
+        Some((visible, draw_override, p.draw as u32))
     }
 
     /// The loop body of `ActorListDraw` for actor `id` (`view` = the current

@@ -304,6 +304,46 @@ fn probes(data: Arc<N64Data<DfsStore>>) {
     black_box(v);
     let mu = cyc(ticks().wrapping_sub(t0), 1000);
     log!("simbench probes (cycles): fmul i64 {} fmul 4-part {} fdiv {} make_unit {}", fm64, fm4, fd, mu);
+    {
+        let ids = g.actor2.act_list.ids(&g.actor2.actors);
+        let mut tot = [0u32; 4];
+        let mut k = 0;
+        for &id in &ids {
+            if g.actor2.actors[id].actor.actual_actor.root_object_flags & i16::MIN != 0 {
+                continue;
+            }
+            let r = g.probe_root_parts(id, 20, &mut || ticks());
+            if r[0] != 0 || r[3] != 0 {
+                for j in 0..4 {
+                    tot[j] += r[j];
+                }
+                k += 1;
+            }
+        }
+        let k = k.max(1) * 20;
+        log!(
+            "simbench probes (cycles per call, {} unclipped actors x20): object_local {} actor_top {} 2x mtx_cat {} check_bounding_box {}",
+            k / 20,
+            tot[0] * 2 / k,
+            tot[1] * 2 / k,
+            tot[2] * 2 / k,
+            tot[3] * 2 / k
+        );
+    }
+    for _ in 0..3 {
+        let (t, n, v) = simbench::probe_actor_pass(&mut g, &mut || ticks());
+        log!(
+            "simbench probes (us): actor pass copy {} vis-test {} xform {} (root rerun {}, sprites rerun {}); actors {} visible {} with bbox {}",
+            ticks_to_us(t[0]),
+            ticks_to_us(t[1]),
+            ticks_to_us(t[2]),
+            ticks_to_us(t[3]),
+            ticks_to_us(t[4]),
+            n,
+            v >> 16,
+            v & 0xffff
+        );
+    }
     log!(
         "simbench probes (cycles): actors {} walk {}/actor walk+pos {}/actor copy_actor_list {}/actor distance_ss {} f32 mul-add {} cold line read {} hot word read {}",
         n_act, walk, walk_pos, copy, dist, fp, line, hot
