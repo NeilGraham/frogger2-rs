@@ -16,7 +16,24 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 f2-math = { path = "../f2-math", default-features = false }
+f2-formats = { path = "../f2-formats", default-features = false, features = ["serde"] }
+f2-game = { path = "../f2-game", default-features = false }
+f2-engine = { path = "../f2-engine", default-features = false }
+f2-draw = { path = "../f2-draw", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 libm = "0.2.16"
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+
+[features]
+# The phase-1B bring-up demo and performance probes instead of the game (tools/n64/build.sh --bringup).
+bringup = []
+# Print the simulation's debug log (`Effect::Log`) through debugf.
+game-log = []
+# Sampling profiler: dumps the hottest code addresses with every perf log line.
+profile = []
+# With `profile`: sample only inside `Game::tick` (the simulation).
+profile-sim = ["profile"]
 
 [lints.rust]
 # `target_vendor = "nintendo64"` comes from tools/n64/mips-nintendo64-none.json.

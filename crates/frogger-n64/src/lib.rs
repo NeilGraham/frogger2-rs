@@ -1,29 +1,45 @@
-//! Frogger 2 — Nintendo 64 front end (phase 1B bring-up).
+//! Frogger 2 — Nintendo 64 front end.
 //!
 //! Built as a `staticlib` for the custom MIPS III n32 target in `tools/n64/` and linked into
 //! a libdragon ROM whose C `main()` (csrc/main.c) calls [`f2n64_init`] once and
 //! [`f2n64_frame`] every frame. Rust calls back the narrow `n64_*` C interface (`ffi`).
 //!
-//! Current content: platform bring-up demo (textured + shaded + z-buffered triangles via
-//! rdpq, joypad, mixer beep, DFS file read, f2-math self-test) and the CPU/RDP/DFS
-//! performance probes recorded in research/n64-performance.md.
+//! Phase 2G: the game (`app`): `f2-game` at a fixed 60 Hz, `f2-draw`'s draw loop rendered by
+//! `render_cpu`, audio on the libdragon mixer (`audio`), data from the DFS (`data`), pad
+//! (`input`). With the `bringup` feature the ROM instead runs the phase-1B demo and
+//! performance probes (research/n64-performance.md).
 #![cfg_attr(target_vendor = "nintendo64", no_std)]
 
 extern crate alloc;
 
+pub mod audio;
+pub mod data;
 pub mod ffi;
+pub mod input;
 pub mod kernels;
+pub mod texconv;
 
 #[cfg(target_vendor = "nintendo64")]
 pub mod rt;
 
-#[cfg(target_vendor = "nintendo64")]
-mod demo;
-#[cfg(target_vendor = "nintendo64")]
-mod probes;
+// Used by the N64-only front end (`app`); host builds only run the portable modules' tests.
+#[cfg(not(target_vendor = "nintendo64"))]
+use f2_draw as _;
 
 #[cfg(target_vendor = "nintendo64")]
+pub mod app;
+#[cfg(target_vendor = "nintendo64")]
+pub mod render_cpu;
+
+#[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
+mod demo;
+#[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
+mod probes;
+
+#[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
 static mut APP: Option<demo::Demo> = None;
+#[cfg(all(target_vendor = "nintendo64", not(feature = "bringup")))]
+static mut APP: Option<app::App> = None;
 
 /// Called once by csrc/main.c (through `f2n64_call`) after libdragon is initialised.
 #[cfg(target_vendor = "nintendo64")]
@@ -32,14 +48,24 @@ pub extern "C" fn f2n64_init() {
     log!("f2n64_init: Rust core up (n32 on VR4300), RDRAM {} KiB", rt::memory_size() / 1024);
     let (a, b, c, v, r, sum) = kernels::f2_math_selftest();
     log!("f2-math: fmul(3,5)={} fdiv(10,4)={} fsqrt(2)={} unit=({},{},{}) Random(1000)={} checksum={:08x}", a, b, c, v.vx, v.vy, v.vz, r, sum);
-    match rt::file_read("rom:/hello.txt") {
-        Some(d) => log!("DFS: rom:/hello.txt {} bytes: {:?}", d.len(), core::str::from_utf8(&d).unwrap_or("<bin>").trim_end()),
-        None => log!("DFS: rom:/hello.txt missing"),
+    #[cfg(feature = "bringup")]
+    {
+        match rt::file_read("rom:/hello.txt") {
+            Some(d) => log!("DFS: rom:/hello.txt {} bytes: {:?}", d.len(), core::str::from_utf8(&d).unwrap_or("<bin>").trim_end()),
+            None => log!("DFS: rom:/hello.txt missing"),
+        }
+        probes::cpu_probes();
+        probes::dfs_probes();
+        // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
+        unsafe { APP = Some(demo::Demo::new()) };
     }
-    probes::cpu_probes();
-    probes::dfs_probes();
-    // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
-    unsafe { APP = Some(demo::Demo::new()) };
+    #[cfg(not(feature = "bringup"))]
+    {
+        let boot = app::Boot::parse(option_env!("F2N64_BOOT"));
+        log!("f2n64_init: boot {:?}", boot);
+        // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
+        unsafe { APP = Some(app::App::new(boot)) };
+    }
 }
 
 /// Called every frame by csrc/main.c.

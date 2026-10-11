@@ -121,6 +121,16 @@ with the PC data structures (simulation + parsed object banks + 16-bit textures)
      triangle → too slow; 30 fps needs a fused N64-specific CPU path, 60 fps RSP T&L).
 2. **Integration**: `crates/frogger-n64` front end (game loop, DataSource over the pack,
    renderer on rdpq, audio, input, FMV, saves); first playable Garden 1 in ares.
+   - **2G status (2026-10-10)**: boots title → frontend → Garden 1 (story book) with the
+     pad in ares, sound effects (VADPCM wav64 streamed from ROM, PC positional maths) and
+     music (VADPCM wav64), heap ≤ 4.2 MiB used of the 6.1 MiB libdragon heap. Data: loose
+     DFS files from `tools/f2-n64prep` (object banks pre-parsed to postcard, `.wus` split
+     into metadata + samples) behind `data::AssetStore` (the 1C pack plugs in there).
+     Drawing: the shared `f2-draw` crate (the desktop draw loop, now `no_std`) +
+     `render_cpu.rs` (CPU transform → rdpq; the 2R RSP renderer replaces it). **Blocker:
+     speed** — the simulation alone costs 10–14 ms per 60 Hz tick in ares (Garden 1 / the
+     frontend), so with ~150–200 ms of CPU rendering per frame the game runs at 3.5–4 fps
+     and 35–40 % of real time. Numbers and profile: `research/n64-performance.md` §2G.
 3. **Completeness + performance**: all levels, frontend/menus, multiplayer split-screen,
    FMV; profile and move hot paths to RSP; tune budgets to fill 64 MB.
 4. **Polish**: 60 fps where possible, flashcart testing notes, docs.

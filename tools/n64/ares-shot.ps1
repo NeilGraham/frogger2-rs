@@ -1,12 +1,12 @@
 # Screenshot + key harness for ares (N64), adapted from C:\f2-ps5test\shot.ps1.
 #   ares-shot.ps1 -rom C:\f2-n64test\frogger2.z64 -out C:\f2-n64test\a.png [-delay 8] [-shots 1]
-#                 [-gap 3] [-keys "Return;Up,X"] [-log C:\f2-n64test\run.txt]
+#                 [-gap 3] [-keys "Return;Up,X"] [-hold 400] [-log C:\f2-n64test\run.txt]
 #                 [-settings C:\f2-n64test\settings.bml]
 # Takes `shots` captures of the ares window's client area (PrintWindow) (a.png, a_1.png, ...) `gap` seconds
 # apart; before capture i the keys of step i (comma separated System.Windows.Forms.Keys
-# names, held for 400 ms) are pressed. ares' stdout (ISViewer = libdragon debugf, with
+# names, held for -hold ms, default 400; slow ROMs need longer) are pressed. ares' stdout (ISViewer = libdragon debugf, with
 # HomebrewMode on) goes to -log.
-param([string]$rom, [string]$out, [int]$delay = 8, [int]$shots = 1, [int]$gap = 3, [string]$keys = "",
+param([string]$rom, [string]$out, [int]$delay = 8, [int]$shots = 1, [int]$gap = 3, [string]$keys = "", [int]$hold = 400,
       [string]$log = "C:\f2-n64test\run.txt", [string]$settings = "C:\f2-n64test\settings.bml")
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -69,7 +69,7 @@ for ($i = 1; $i -lt $shots; $i++) {
     if ($ks.Length -gt 0) {
       [W]::SetForegroundWindow($h) | Out-Null
       foreach ($k in $ks) { [W]::Down($k) }
-      Start-Sleep -Milliseconds 400
+      Start-Sleep -Milliseconds $hold
       Grab ($out.Replace('.png', "_${i}held.png"))
       foreach ($k in $ks) { [W]::Up($k) }
     }

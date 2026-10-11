@@ -46,6 +46,21 @@
     RUST_TO_C n64_audio_stats
     RUST_TO_C n64_memory_size
     RUST_TO_C n64_probe_c
+    RUST_TO_C n64_tex_create2
+    RUST_TO_C n64_tex_free
+    RUST_TO_C n64_draw_rects
+    RUST_TO_C n64_heap_stats
+    RUST_TO_C n64_sfx_open
+    RUST_TO_C n64_sfx_close
+    RUST_TO_C n64_sfx_channels
+    RUST_TO_C n64_sfx_play
+    RUST_TO_C n64_ch_set
+    RUST_TO_C n64_ch_stop
+    RUST_TO_C n64_ch_playing
+    RUST_TO_C n64_music_play
+    RUST_TO_C n64_music_vol
+    RUST_TO_C n64_audio_poll
+    RUST_TO_C n64_prof
 
 # void f2n64_call(void (*fn)(void)) - C -> Rust.
     .globl f2n64_call

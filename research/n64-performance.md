@@ -143,3 +143,73 @@ data loaded once or rarely (a 3.5 MB level working set would take ~4.6 s). F2Z's
 - ares disables ISViewer (`debugf`) when the ROM exceeds 0x3FF0000 bytes (63.94 MiB): a
   full 64 MiB cartridge build needs another log channel (or a slightly smaller dev ROM).
 - Not yet validated on hardware (no flashcart in this setup).
+
+## 2G: the playable build (2026-10-10)
+
+ROM: `tools/n64/build.sh` with the USA data (36 MiB; 1.45 MB code), ares v148, Expansion Pak.
+Evidence (not in the repo, derived from game data): `C:\f2-n64test\evidence-2g\`
+(`01-title.png`, `02-frontend.png`, `03-frontend-storybook.png` — the frontend's story book
+reached with the pad, prompt "A - Select" from the N64 button names —, `04-garden1-start.png`,
+`05-garden1-after-left.png` — the frog moved by the harness' Left key —, and the debugf log
+`run-frontend-to-garden1.txt` with the `game:` mode/pad lines, `perf`/`heap` lines). Sequence:
+title → (logo FMVs skipped) → frontend → Right, Up, A → Garden 1 (story).
+
+### Frame time (5 s windows of the `perf` log)
+
+| scene | fps | sim ticks/s (of 60) | `Game::tick` | draw per frame (of which `Renderer::build` / RDP submit) | tris + rects per frame |
+|---|---:|---:|---:|---|---|
+| title (one 640x480 backdrop blit) | 21 | 27 (STARTUP mode is light) | 0.06 ms | 32 ms (0 / 19) | 0 + 1 |
+| frontend 8-0, start view | 3.5 | 21 | 11.3–12.0 ms | 200 ms (25 / 75) | 1480 + 35 |
+| frontend, story-book view | 6.3 | 38 | 9.7 ms | 88 ms (6 / 20) | 300 + 40 |
+| training 8-3 | 5.1 | 30 | 9.3 ms | 130 ms (13 / 43) | 730 + 76 |
+| **Garden 1 (0-0)** | **4.2** | **25** | **13.0–13.8 ms** | 145 ms (10 / 35) | 600 + 17 |
+
+Per tick also: `audio_poll` (mixer) 0.35–0.45 ms. "Draw" = `f2_draw::render::draw_loop` (the
+faithful CPU transform, `scene.rs`, ≈ draw − build − submit) + `Renderer::build` + the
+submission (`n64_draw_tris`/`n64_draw_rects`, incl. the wait for a free framebuffer).
+At most 6 ticks run per frame; the rest is dropped (logged as `dropped`), so the game runs at
+35–45 % of real time. Level loads: frontend 6.8 s, Garden 1 4.9 s, training 6.7 s (each
+object bank is decoded twice, once by the simulation's model table and once by the renderer;
+no time-critical work yet).
+
+**The simulation alone does not fit a 60 Hz tick on the VR4300 in ares**: 10–14 ms per tick
+(≈ 1.0–1.3 M CPU cycles; 116 actors in Garden 1 → ≈ 10 k cycles per actor per tick), i.e.
+60–85 % of the CPU before anything is drawn. Real time needs the simulation ≲ 5 ms/tick
+*and* the RSP renderer (2R); keeping real time at a low frame rate needs at least the former
+(60 ticks × 5 ms = 300 ms/s, leaving 700 ms/s for frames).
+
+### Where the time goes (sampling profiler, `F2N64_FEATURES=profile[-sim]`, `tools/n64/prof.py`)
+
+Simulation only (`profile-sim`, Garden 1, self time incl. inlined callees, 3555 samples):
+`actor_list_draw` 14.3 % (per-tick `ActorListDraw` visibility: quaternion → matrix, `XfmPoint`
+per actor, plus the `actor_draw_list` Vec), `update_path_platform` 7.8 % (whole `Platform`
+clones, `PathNode` copies via `unwrap_or_default`), `copy_actor_list` 6.4 %,
+`ViewXform::check_bounding_box` 5.3 %, `list::Head::ids` (a fresh `Vec` per walk) 4.4 %,
+`xform_actor` 4.0 %, `update_path_nme` 3.4 %, `view::object_local` 3.4 %, `update_platforms`
+3.3 %, `iquat_slerp` 3.0 %, `distance_between_points_ss` 2.8 %, `ptexture::water` 2.6 %,
+`update_enemies` 2.4 %; `f2_math` 9.9 % in total, malloc/free ≈ 3 %. No single hot spot:
+the cost is the volume of per-actor passes over large structs (`Option<Actor2>` slots,
+16-byte D-cache lines, 8 KiB D-cache), many small allocations, and float helpers. Candidates
+(behaviour-preserving, need the parity corpus): iterate lists without collecting ids,
+borrow instead of cloning `Platform`/`PathNode`, cache per-actor `quaternion_to_matrix`,
+a bit-exact `rsin`/`rcos`/`arccos` table (§c), keep hot actor fields in a compact array.
+
+Whole frame (frontend start view): `scene::render_mesh` 22 %, `Renderer::build` 8 %,
+`rdpq_triangle` CPU side 7 %, N64 submission 6 %, `prepare_object` 5.5 %; inside
+`render_mesh` ≈ 5 % is the texture registry's `BTreeMap` lookup per face. 2R's RSP renderer
+removes all of these. The VADPCM *Huffman* stage decodes on the CPU (≈ 10 % of a frontend
+frame); the build uses `vadpcm,huffman=false` (RSP-only decode, +10 % sfx size).
+
+### Memory (`heap` log lines)
+
+libdragon heap: 6258 KiB total after code/data (1.7 MB); used at boot 1473 KiB (3 RGBA16
+framebuffers + z-buffer, audio, fonts as N64 textures 405 KiB, `Game`), **peak used 4218 KiB**
+(frontend running; Garden 1 3984 KiB, training 3620 KiB) → ≥ 2.0 MiB free in every scene
+tried. Rust heap peak during a level load: 3245 KiB (frontend), 3341 KiB (Garden 1). N64
+textures: 1.0–1.4 MiB per level (bank textures keep only a TMEM-sized RGBA16/RGBA32 copy;
+fonts and backdrops keep full size for blits). What made it fit: per-image conversion while
+loading texture banks (`TextureRegistry::load_bank_with`, RGBA8 dropped immediately); fonts
+not kept twice (`Renderer::add_font` moves the pixels); the 640x480 backdrop converted in
+16-row strips; the previous level's renderer side freed *before* the simulation's
+`InitLevel` loads the next one (the data source's `before_access` hook) — the PC order
+(load, then drop the old scene) runs out of RDRAM on the frontend → Garden 1 transition.

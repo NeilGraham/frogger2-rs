@@ -19,6 +19,8 @@
 
 # Rust
 /target/
+# Own-workspace crates built with their own target dirs (host tests of crates/frogger-n64 etc.)
+/crates/*/target/
 **/*.rs.bk
 
 # Claude Code worktrees/settings

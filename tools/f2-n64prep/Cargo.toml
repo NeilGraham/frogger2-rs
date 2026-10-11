@@ -1,0 +1,20 @@
+[package]
+name = "f2-n64prep"
+description = "Host pre-pass for the N64 build: lays out a DFS tree from a rendition's game files with object banks pre-parsed (postcard) and sound banks split into metadata + per-sample WAVs for audioconv64."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "f2_n64prep"
+path = "src/lib.rs"
+
+[[bin]]
+name = "f2-n64prep"
+path = "src/main.rs"
+
+[dependencies]
+f2-formats = { path = "../../crates/f2-formats", features = ["serde"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }

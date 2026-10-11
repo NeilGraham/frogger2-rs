@@ -1,0 +1,21 @@
+[package]
+name = "f2-draw"
+description = "Drawing the simulation state (PC/drawloop.cpp): level scene, actors, effects, overlays. Shared by the desktop front end and the N64 port."
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish.workspace = true
+
+[features]
+default = ["std"]
+# Off: `#![no_std]` + `alloc` (the N64 front end). The drawing is identical either way.
+std = ["f2-engine/std", "f2-game/std", "f2-formats/std", "f2-math/std"]
+
+[dependencies]
+f2-engine = { path = "../f2-engine", default-features = false }
+f2-game = { path = "../f2-game", default-features = false }
+f2-formats = { path = "../f2-formats", default-features = false }
+f2-math = { path = "../f2-math", default-features = false }
+# Button-prompt table shared by the text overlays (a `thread_local!` before `no_std`).
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+libm = "0.2.16"

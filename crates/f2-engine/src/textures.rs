@@ -102,8 +102,16 @@ impl TextureRegistry {
 
     /// Port of `LoadTexBankFile` (mdxTexture.cpp:680): textures, then the animation table.
     pub fn load_bank(&mut self, bank: &TexBank) {
+        self.load_bank_with(bank, |_, _| {});
+    }
+
+    /// [`load_bank`](Self::load_bank) calling `on_image` on each new image right after it is
+    /// decoded, so a back end can convert it and drop the RGBA8 pixels before the next one
+    /// (the N64 keeps its RDRAM peak low this way).
+    pub fn load_bank_with(&mut self, bank: &TexBank, mut on_image: impl FnMut(TexHandle, &mut Image)) {
         for t in &bank.textures {
-            self.add_texture(t);
+            let h = self.add_texture(t);
+            on_image(h, &mut self.images[h.0 as usize]);
         }
         for a in &bank.anims {
             // The original stops at the first animation whose base is unknown.

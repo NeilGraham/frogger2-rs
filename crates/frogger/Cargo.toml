@@ -37,6 +37,7 @@ ps5-vulkan = ["desktop", "f2-engine/ps5-vulkan"]
 [dependencies]
 f2-game = { path = "../f2-game" }
 f2-engine = { path = "../f2-engine", default-features = false, features = ["std"] }
+f2-draw = { path = "../f2-draw" }
 f2-platform = { path = "../f2-platform", default-features = false }
 f2-audio = { path = "../f2-audio", default-features = false }
 f2-bink = { path = "../f2-bink" }

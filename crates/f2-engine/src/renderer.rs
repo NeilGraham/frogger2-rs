@@ -516,9 +516,11 @@ impl Renderer {
         self.textures.add_texture(t)
     }
 
-    /// Registers a font and uploads its glyph strip.
-    pub fn add_font(&mut self, font: Font) -> FontId {
-        let h = self.textures.add_image(font.width, font.height, font.rgba.clone());
+    /// Registers a font and uploads its glyph strip. The pixels move into the texture
+    /// registry (the kept `Font` only needs its metrics).
+    pub fn add_font(&mut self, mut font: Font) -> FontId {
+        let rgba = core::mem::take(&mut font.rgba);
+        let h = self.textures.add_image(font.width, font.height, rgba);
         self.fonts.push((font, h));
         FontId(self.fonts.len() - 1)
     }

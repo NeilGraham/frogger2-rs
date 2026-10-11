@@ -15,7 +15,11 @@ use f2_game::sprite::{SPRITE_ADDITIVE, SPRITE_SUBTRACTIVE};
 use f2_game::textover::{Font as GameFont, TEXTOVERLAY_PAUSED, TEXTOVERLAY_SHADOW};
 use f2_game::Game;
 
+#[cfg(not(feature = "std"))]
+use crate::fmath::FloatExt;
 use crate::fx::FIXED_TO_RADS;
+use crate::prelude::*;
+use alloc::borrow::Cow;
 
 /// The two game fonts (`pcFont` = `bigfont.bmp`, `pcFontSmall` = `smallfont.bmp`).
 #[derive(Clone, Copy, Debug)]
@@ -98,24 +102,22 @@ fn print_text(r: &mut Renderer, font: FontId, x: i16, y: i16, text: &str, scale:
     r.draw_text_overlay_ex(font, x as f32, y as f32, &text, rgba, s, centred, dy_px);
 }
 
-thread_local! {
-    /// Button names for the `@X`/`@T`/`@S`/`@C` codes (set by the host each frame).
-    static PROMPTS: std::cell::RefCell<Vec<(char, String)>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+/// Button names for the `@X`/`@T`/`@S`/`@C` codes (set by the host each frame).
+static PROMPTS: spin::Mutex<Vec<(char, String)>> = spin::Mutex::new(Vec::new());
 
 /// Sets the names `@X` (cross), `@T` (triangle), `@S` (square), `@C` (circle) expand to.
 pub fn set_button_prompts(p: Vec<(char, String)>) {
-    PROMPTS.with(|c| *c.borrow_mut() = p);
+    *PROMPTS.lock() = p;
 }
 
 /// The key-name substitutions of the PC font code (`DrawFontStringAtLoc`, mdxFont.cpp,
 /// source not preserved): `@X` etc. become the bound key/button name.
-pub fn expand_prompts(text: &str) -> std::borrow::Cow<'_, str> {
+pub fn expand_prompts(text: &str) -> Cow<'_, str> {
     if !text.contains('@') {
         return text.into();
     }
-    PROMPTS.with(|p| {
-        let p = p.borrow();
+    {
+        let p = PROMPTS.lock();
         let mut out = String::with_capacity(text.len() + 8);
         let mut it = text.chars().peekable();
         while let Some(c) = it.next() {
@@ -131,7 +133,7 @@ pub fn expand_prompts(text: &str) -> std::borrow::Cow<'_, str> {
             out.push(c);
         }
         out.into()
-    })
+    }
 }
 
 /// Shadow offset of `PrintTextOverlays`: 6 pixels (`font`) / 4 (`fontSmall`), constant

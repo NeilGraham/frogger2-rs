@@ -12,6 +12,7 @@
 //! frame in submission order (drawloop.cpp:283-292). Shadows are drawn mid-loop on
 //! retail and stay in `Frame::Xlu`.
 
+use alloc::collections::BTreeMap;
 use f2_engine::math::{mtx_cat, mtx_xfm, quaternion_to_matrix, Mat4, IDENTITY};
 use f2_engine::scene::{Frame, TlVertex, Tri, DIST, SZ_SCALE};
 use f2_engine::{Renderer, TexHandle};
@@ -20,7 +21,10 @@ use f2_game::specfx::{FxDraw, FXTYPE_CROAK, FXTYPE_GARIBCOLLECT, FXTYPE_WAKE, FX
 use f2_game::sprite::{Sprite, SPRITE_ADDITIVE, SPRITE_FLAGS_ROTATE};
 use f2_game::Game;
 use f2_math::{FVector, SVector};
-use std::collections::HashMap;
+
+#[cfg(not(feature = "std"))]
+use crate::fmath::FloatExt;
+use crate::prelude::*;
 
 type V3 = [f32; 3];
 
@@ -523,7 +527,7 @@ fn draw_tongue(r: &mut Renderer, game: &Game, pl: usize) {
 /// `far_clip` is `farClip`. `posed` replaces sprites of the list by a render-side copy
 /// (object sprites of actors the simulation culled but a widened Hor+ view shows, see
 /// [`crate::render::widened_object_sprites`]); empty = retail.
-pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32, posed: &HashMap<SpriteId, Sprite>) {
+pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32, posed: &BTreeMap<SpriteId, Sprite>) {
     if game.sprite.count == 0 {
         return;
     }
