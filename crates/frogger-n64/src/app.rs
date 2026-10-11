@@ -136,6 +136,9 @@ pub struct App {
     level_peak: (u32, u32),
     /// A level loaded during this frame: its time is not frame time.
     loaded: bool,
+    /// The story book's `fontWhite` (`monofont.bmp`) cut down to the glyphs the chapter
+    /// pages use (the whole strip is ~635 KiB as RGBA8; this is a few tens of KiB).
+    book_font: Option<Font>,
     last_mode: i32,
     last_pad: u16,
 }
@@ -172,6 +175,7 @@ impl App {
             level_name: String::from("boot"),
             level_peak: (0, 0),
             loaded: false,
+            book_font: None,
             last_mode: -1,
             last_pad: 0,
         };
@@ -181,6 +185,7 @@ impl App {
         let t0 = ticks();
         app.game = Game::new_session(cfg);
         app.install_game_hooks();
+        app.book_font = load_font(&app.data, "textures/font/monofont.bmp").map(|f| font_subset(&f, &book_chars(&app.game)));
         log!("app: session up in {} ms", ticks_to_us(ticks().wrapping_sub(t0)) / 1000);
         match boot {
             Boot::Frontend { trained } => {
@@ -295,7 +300,7 @@ impl App {
                 Some(Ok(b)) => {
                     let mut g = lv();
                     let gfx = &mut g.as_mut().unwrap().gfx;
-                    self.r.textures.load_bank_with(&b, |h, img| gfx.convert_image(h.0, img));
+                    self.r.textures.load_bank_with(&b, |h, img, t| gfx.convert_image(h.0, img, t));
                 }
                 Some(Err(e)) => log!("app: {e}"),
                 None => log!("app: {f}: not found"),
@@ -396,9 +401,23 @@ impl App {
         }
         self.dispatch_effects();
         self.process_level_loads();
+        self.grab_textures();
         self.update_game_view();
         if self.game.backdrop.tiled_backdrop.is_some() {
             self.tile_scroll.step(self.game.game_speed);
+        }
+    }
+
+    /// The PC renderer's texture grab after a frame (drawloop.cpp:376): the story book page
+    /// composed on the CPU (`f2_draw::book`) into `page256a/b.bmp`.
+    fn grab_textures(&mut self) {
+        if f2_draw::book::grab_target(&self.game).is_none() {
+            return;
+        }
+        if let Some((_, target, ok)) = f2_draw::book::process_grab(&mut self.r, &mut self.game, self.book_font.as_ref(), 1) {
+            if !ok {
+                log!("app: book page texture {target} not loaded");
+            }
         }
     }
 
@@ -612,6 +631,47 @@ impl App {
         };
         self.win_start = ticks();
     }
+}
+
+/// Bytes of every string `f2_draw::book::draw_page_b` prints (all chapters).
+fn book_chars(game: &Game) -> [bool; 256] {
+    use f2_game::language::{c_sprintf, FmtArg};
+    use f2_game::menus::strs::{STR_CHAPTER_1a, STR_CHAPTER};
+    let mut used = [false; 256];
+    let mut mark = |t: &str| t.chars().filter(|&c| (c as u32) < 256).for_each(|c| used[c as usize] = true);
+    for pn in 0..f2_game::menus::BOOK_NUM_PAGES as i32 {
+        mark(&c_sprintf(&game.gamestring(STR_CHAPTER), &[FmtArg::Int(pn + 1)]));
+        mark(&game.gamestring(pn * 2 + STR_CHAPTER_1a));
+        mark(&game.gamestring(1 + pn * 2 + STR_CHAPTER_1a));
+    }
+    used
+}
+
+/// `f` with only the glyphs in `keep`, packed side by side (the CPU text drawing samples
+/// each glyph inside its own columns, so packing does not change the result).
+fn font_subset(f: &Font, keep: &[bool; 256]) -> Font {
+    let mut out = Font { width: 0, height: f.height, glyphs: [None; 256], rgba: Vec::new() };
+    let cols: Vec<(usize, f2_engine::font::Glyph)> = (0..256).filter_map(|c| f.glyphs[c].filter(|_| keep[c]).map(|g| (c, g))).collect();
+    let w: u32 = cols.iter().map(|(_, g)| if g.left < f.width { g.width.min(f.width - g.left) } else { 0 }).sum::<u32>().max(1);
+    out.width = w;
+    out.rgba = vec![0; (w * f.height * 4) as usize];
+    let mut x = 0;
+    for (c, g) in cols {
+        if g.left >= f.width {
+            // No image (the space): keep the advance, point past the strip like the original.
+            out.glyphs[c] = Some(f2_engine::font::Glyph { left: u32::MAX / 2, width: g.width });
+            continue;
+        }
+        let gw = g.width.min(f.width - g.left);
+        for y in 0..f.height {
+            let src = ((y * f.width + g.left) * 4) as usize;
+            let dst = ((y * w + x) * 4) as usize;
+            out.rgba[dst..dst + (gw * 4) as usize].copy_from_slice(&f.rgba[src..src + (gw * 4) as usize]);
+        }
+        out.glyphs[c] = Some(f2_engine::font::Glyph { left: x, width: g.width });
+        x += gw;
+    }
+    out
 }
 
 /// `LoadSfx` world bank (pcaudio.c:232; `f2_audio::tables::world_bank`).

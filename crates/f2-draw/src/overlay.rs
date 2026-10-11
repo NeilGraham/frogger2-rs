@@ -15,7 +15,9 @@ use f2_game::sprite::{SPRITE_ADDITIVE, SPRITE_SUBTRACTIVE};
 use f2_game::textover::{Font as GameFont, TEXTOVERLAY_PAUSED, TEXTOVERLAY_SHADOW};
 use f2_game::Game;
 
+// Newer `core` has some of these methods inherently (then the trait goes unused).
 #[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
 use crate::fmath::FloatExt;
 use crate::fx::FIXED_TO_RADS;
 use crate::prelude::*;

@@ -47,6 +47,13 @@ pub struct RenderCpu {
     pub tex_bytes: u32,
     /// Perspective-correct texturing of 3D batches (`RenderOptions::perspective_correct`).
     persp: bool,
+    /// Images the load hook converted while keeping their pixels (skip their dirty entry).
+    skip_once: Vec<u32>,
+}
+
+/// Whether a bank texture is read back by the CPU (`f2_draw::book::draw_page_b`).
+fn book_source(crc: u32) -> bool {
+    crc == f2_formats::crc("page32.bmp") || f2_game::menus::CHAPTER_PIC.iter().any(|p| crc == f2_formats::crc(&alloc::format!("{p}.bmp").to_lowercase()))
 }
 
 fn desc(t: &N64Tex) -> TexDesc {
@@ -69,6 +76,7 @@ impl RenderCpu {
             stats: FrameStats::default(),
             tex_bytes: 0,
             persp: false,
+            skip_once: Vec::new(),
         }
     }
 
@@ -80,6 +88,7 @@ impl RenderCpu {
             }
         }
         self.bytes.clear();
+        self.skip_once.clear();
         self.tex_bytes = 0;
     }
 
@@ -95,6 +104,13 @@ impl RenderCpu {
     /// full-resolution version for 2D blits when it does not fit TMEM (fonts, screens);
     /// bank textures (mostly 3D) keep only the TMEM-sized one to save RDRAM.
     pub fn convert_image_ex(&mut self, idx: u32, img: &mut Image, keep_full: bool) {
+        self.convert_image_keep(idx, img, keep_full, false);
+    }
+
+    /// [`convert_image_ex`](Self::convert_image_ex); `keep_pixels` leaves the RGBA8 image in
+    /// the registry (sources the CPU composes from: the story book page's `page32.bmp` and
+    /// chapter pictures, read by `f2_draw::book::draw_page_b`).
+    pub fn convert_image_keep(&mut self, idx: u32, img: &mut Image, keep_full: bool, keep_pixels: bool) {
         let i = idx as usize;
         self.release(i);
         if img.rgba.is_empty() {
@@ -104,11 +120,22 @@ impl RenderCpu {
         if img.width == 1 && img.height == 1 && img.rgba == [255, 255, 255, 255] {
             return;
         }
-        let (full, small) = texconv::convert(img.width, img.height, &img.rgba);
-        img.rgba = Vec::new();
+        let (mut full, small) = texconv::convert(img.width, img.height, &img.rgba);
+        if keep_pixels {
+            self.skip_once.push(idx);
+        } else {
+            img.rgba = Vec::new();
+        }
         let (full, small) = match (keep_full, small) {
             (false, Some(s)) => (s, None),
-            (_, s) => (full, s),
+            (_, s) => {
+                if s.is_some() {
+                    // Too big for TMEM: triangles draw it in TMEM tiles (render-to-texture
+                    // pages, screens) rather than from the downscaled copy.
+                    full.fmt |= ffi::TEX_TILE3D;
+                }
+                (full, s)
+            }
         };
         let fd = desc(&full);
         let sd = small.as_ref().map(desc);
@@ -132,9 +159,9 @@ impl RenderCpu {
     }
 
     /// Texture-bank load hook: [`convert_image_ex`](Self::convert_image_ex) keeping only the
-    /// TMEM-sized version.
-    pub fn convert_image(&mut self, idx: u32, img: &mut Image) {
-        self.convert_image_ex(idx, img, false);
+    /// TMEM-sized version (and the RGBA8 pixels of the book page sources).
+    pub fn convert_image(&mut self, idx: u32, img: &mut Image, t: &f2_formats::texture::Texture) {
+        self.convert_image_keep(idx, img, false, book_source(t.crc));
     }
 
     /// Uses an already converted texture for registry image `idx` (whose RGBA8 pixels are a
@@ -151,6 +178,10 @@ impl RenderCpu {
     /// Uploads the images added or replaced since the last call.
     pub fn upload(&mut self, reg: &mut TextureRegistry) {
         for i in reg.take_dirty() {
+            if let Some(k) = self.skip_once.iter().position(|&s| s == i) {
+                self.skip_once.swap_remove(k);
+                continue; // converted by the load hook, pixels kept on purpose
+            }
             if let Some(img) = reg.images.get_mut(i as usize) {
                 if img.rgba.is_empty() && self.tex.get(i as usize).is_some_and(|&h| h != 0) {
                     continue; // converted by the load hook

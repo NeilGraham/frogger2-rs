@@ -38,7 +38,9 @@ typedef struct {
     uint32_t alpha_ref; /* alpha compare threshold 0..255; 0 = off */
 } n64_state_t;
 
-/* Texture description for n64_tex_create. fmt: 0 = RGBA16 (5551), 1 = RGBA32. */
+/* Texture description for n64_tex_create. fmt: 0 = RGBA16 (5551), 1 = RGBA32; | N64_TEX_TILE3D
+ * (on the full image): triangles sample the full image in TMEM tiles instead of the small one. */
+#define N64_TEX_TILE3D 0x100
 typedef struct {
     uint32_t width, height, fmt;
     const void *pixels; /* tightly packed rows */
