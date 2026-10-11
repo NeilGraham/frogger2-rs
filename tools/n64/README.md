@@ -14,6 +14,7 @@ playable build).
 | `Makefile` | libdragon link + ROM (`n64.mk`): title `FROGGER 2`, Expansion Pak *required* |
 | `gen-probe-data.py` | synthetic 1 MiB level-like file for the DFS/decompression probe (no game data) |
 | `run-ares.sh`, `ares-shot.ps1`, `ares-settings.py` | ares runner: screenshots, key presses, debugf log |
+| `stage-f2z-probe.py` | stages pack files + their mkasset re-compressions into the DFS root for the F2Z decode probe (`--bringup` builds; game-derived: `target/` only) |
 | `prof.py` | maps the sampling profiler's `PROF` log lines to functions (`addr2line`) |
 | `../f2-n64prep` | host pre-pass: game files → DFS layout (postcard object banks, split sound banks) |
 

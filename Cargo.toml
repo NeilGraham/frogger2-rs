@@ -27,6 +27,8 @@ members = [
     "tools/f2-etc",
     "tools/f2-parity",
     "tools/f2-n64prep",
+    "tools/f2-n64pack",
+    "crates/f2-n64z",
 ]
 
 [workspace.package]
