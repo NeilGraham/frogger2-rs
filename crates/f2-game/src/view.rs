@@ -279,11 +279,15 @@ pub struct RootObject {
     pub scale_keys: Vec<VKey>,
     pub rotate_keys: Vec<QKey>,
     pub bbox: Option<[Vec3; 8]>,
+    /// Phase 3S: `quaternion_to_matrix` of the first rotate key (the rotation of an object
+    /// that is not interpolated), with the quaternion it was computed from.
+    pub rot0: Option<(Quat, Mat4)>,
 }
 
 impl RootObject {
     pub fn from_object(o: &Object) -> RootObject {
-        RootObject { move_keys: o.move_keys.clone(), scale_keys: o.scale_keys.clone(), rotate_keys: o.rotate_keys.clone(), bbox: o.bbox }
+        let rot0 = o.rotate_keys.first().map(|k| (k.q, quaternion_to_matrix(&k.q)));
+        RootObject { move_keys: o.move_keys.clone(), scale_keys: o.scale_keys.clone(), rotate_keys: o.rotate_keys.clone(), bbox: o.bbox, rot0 }
     }
 }
 
@@ -292,6 +296,27 @@ impl RootObject {
 /// `lastMKey`, `lastSKey`, `lastRKey`.
 #[allow(clippy::too_many_arguments)]
 fn object_local(mk: &[VKey], sk: &[VKey], rk: &[QKey], animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
+    object_local_r(mk, sk, rk, None, animated, time, last, actor_scale, parent_scale)
+}
+
+/// [`object_local`] for a [`RootObject`] (uses its precomputed first-key rotation).
+#[inline]
+fn object_local_k(k: &RootObject, animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
+    object_local_r(&k.move_keys, &k.scale_keys, &k.rotate_keys, k.rot0.as_ref(), animated, time, last, actor_scale, parent_scale)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn object_local_r(
+    mk: &[VKey],
+    sk: &[VKey],
+    rk: &[QKey],
+    rot0: Option<&(Quat, Mat4)>,
+    animated: bool,
+    time: f32,
+    last: &mut [i16; 3],
+    actor_scale: Vec3,
+    parent_scale: Vec3,
+) -> (Mat4, Vec3) {
     let translation = if mk.len() > 1 && animated {
         let (f, t, i) = find_to_from(mk, time, last[0]);
         last[0] = f as i16;
@@ -323,7 +348,11 @@ fn object_local(mk: &[VKey], sk: &[VKey], rk: &[QKey], animated: bool, time: f32
             quaternion_to_matrix(&quat_slerp(&rk[f].q, &rk[t].q, i))
         }
     } else {
-        quaternion_to_matrix(&rk.first().map_or([0.0, 0.0, 0.0, 1.0], |k| k.q))
+        let q = rk.first().map_or([0.0, 0.0, 0.0, 1.0], |k| k.q);
+        match rot0 {
+            Some((q0, m)) if q0.iter().zip(q.iter()).all(|(a, b)| a.to_bits() == b.to_bits()) => *m,
+            _ => quaternion_to_matrix(&q),
+        }
     };
     rotmat[3][0] = translation[0] * actor_scale[0] * parent_scale[0];
     rotmat[3][1] = translation[1] * actor_scale[1] * parent_scale[1];
@@ -430,7 +459,7 @@ fn transform_object_sprites(
 ) {
     for me in chain {
         let mut last = [0i16; 3];
-        let (rotmat, scale) = object_local(&me.keys.move_keys, &me.keys.scale_keys, &me.keys.rotate_keys, animated, time, &mut last, p.scale, parent_scale);
+        let (rotmat, scale) = object_local_k(&me.keys, animated, time, &mut last, p.scale, parent_scale);
         let m1 = mtx_cat(&rotmat, top);
         let a = p.scale;
         let obj = mtx_cat(&gu_scale(scale[0] * a[0], scale[1] * a[1], scale[2] * a[2]), &m1);
@@ -530,7 +559,7 @@ pub fn sub_object_matrix(chain: &[XNode], name: &str, p: &MdxPlacement, animated
     let mut ps = [1.0; 3];
     for (k, me) in path.iter().rev().enumerate() {
         let mut last = [0i16; 3];
-        let (rotmat, scale) = object_local(&me.keys.move_keys, &me.keys.scale_keys, &me.keys.rotate_keys, animated, time, &mut last, p.scale, ps);
+        let (rotmat, scale) = object_local_k(&me.keys, animated, time, &mut last, p.scale, ps);
         let m1 = mtx_cat(&rotmat, &top);
         if k + 1 == path.len() {
             let s = gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]);
@@ -562,11 +591,18 @@ impl ViewXform {
 
     /// `-FOV * oneOver[fftol(z) + DIST]` (`oneOver[i] = (rXRes/640)/i`, `fftol` truncates).
     fn oozd_f(&self, z: f32) -> f32 {
+        self.oozd_k(z, self.x_res / 640.0)
+    }
+
+    /// [`oozd_f`](Self::oozd_f) with `k = x_res / 640.0` computed by the caller (the same
+    /// division gives the same bits; phase 3S hoists it out of the bounding-box loop).
+    #[inline(always)]
+    fn oozd_k(&self, z: f32, k: f32) -> f32 {
         let i = (z as i32).wrapping_add(self.dist);
         if i <= 0 {
             return 0.0;
         }
-        let one_over = (self.x_res / 640.0) / i as f32;
+        let one_over = k / i as f32;
         -(self.fov as f32) * one_over
     }
 
@@ -591,6 +627,7 @@ impl ViewXform {
         const INWARD: u32 = 0x10;
         const OUTWARD: u32 = 0x20;
         let mtx = mtx_cat(m, &self.matrix);
+        let kx = self.x_res / 640.0;
         let mut ocs = [0u32; 8];
         for (k, b) in bbox.iter().enumerate() {
             let mut oc = 0;
@@ -600,7 +637,7 @@ impl ViewXform {
             } else if z > self.far_clip {
                 oc |= OUTWARD;
             } else if z >= self.near_clip && z <= self.far_clip {
-                let o = self.oozd_f(z);
+                let o = self.oozd_k(z, kx);
                 x = self.x_res / 2.0 + x * o;
                 y = self.y_res / 2.0 + y * o;
                 if x < 0.0 {
@@ -711,7 +748,7 @@ impl Game {
         let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
         let p = a.placement;
         let mut last = p.last_keys;
-        let (rotmat, scale) = object_local(&root.move_keys, &root.scale_keys, &root.rotate_keys, animated, time, &mut last, p.scale, [1.0; 3]);
+        let (rotmat, scale) = object_local_k(root, animated, time, &mut last, p.scale, [1.0; 3]);
         let top = actor_top(p.pos, &p.q_rot);
         let m1 = mtx_cat(&rotmat, &top);
         let obj = mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1);

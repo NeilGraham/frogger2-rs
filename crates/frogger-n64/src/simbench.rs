@@ -197,6 +197,75 @@ fn probes(data: Arc<N64Data<DfsStore>>) {
     black_box(acc);
     let fdivs = cyc(ticks().wrapping_sub(t0), 1000);
     log!("simbench probes (cycles): sphere_visible hot {} quaternion_to_matrix {} f32 div loop {}", sphere, q2m, fdivs);
+    if let (Some(f0), Some(name)) = (g.frogger.frog[0], g.tongue.head_object.clone()) {
+        let t0 = ticks();
+        for _ in 0..10 {
+            black_box(g.actor_sub_object_matrix(f0, black_box(&name)));
+        }
+        let head = cyc(ticks().wrapping_sub(t0), 10);
+        let t0 = ticks();
+        for _ in 0..10 {
+            black_box(g.find_actor_sub_object(f0, black_box(&name)));
+        }
+        let find = cyc(ticks().wrapping_sub(t0), 10);
+        log!("simbench probes (cycles): head matrix {} ({}), find_actor_sub_object {}", head, name, find);
+    }
+    // FPU latency: 8 dependent vs 8 independent mul.s / add.s per iteration, and int adds
+    let y = black_box(1.0001f32);
+    let t0 = ticks();
+    let mut x = black_box(1.0f32);
+    for _ in 0..1000 {
+        x = x * y;
+        x = x * y;
+        x = x * y;
+        x = x * y;
+        x = x * y;
+        x = x * y;
+        x = x * y;
+        x = x * y;
+    }
+    black_box(x);
+    let mul_dep = cyc(ticks().wrapping_sub(t0), 8000);
+    let t0 = ticks();
+    let (mut a, mut b, mut c, mut d, mut e, mut f, mut h, mut k) = black_box((1.0f32, 1.1f32, 1.2f32, 1.3f32, 1.4f32, 1.5f32, 1.6f32, 1.7f32));
+    for _ in 0..1000 {
+        a = a * y;
+        b = b * y;
+        c = c * y;
+        d = d * y;
+        e = e * y;
+        f = f * y;
+        h = h * y;
+        k = k * y;
+    }
+    black_box((a, b, c, d, e, f, h, k));
+    let mul_ind = cyc(ticks().wrapping_sub(t0), 8000);
+    let t0 = ticks();
+    let mut x = black_box(1.0f32);
+    for _ in 0..1000 {
+        x = x + y;
+        x = x + y;
+        x = x + y;
+        x = x + y;
+        x = x + y;
+        x = x + y;
+        x = x + y;
+        x = x + y;
+    }
+    black_box(x);
+    let add_dep = cyc(ticks().wrapping_sub(t0), 8000);
+    let yi = black_box(3i32);
+    let t0 = ticks();
+    let mut xi = black_box(1i32);
+    for _ in 0..1000 {
+        xi = xi.wrapping_add(yi) ^ yi;
+        xi = xi.wrapping_add(yi) ^ yi;
+        xi = xi.wrapping_add(yi) ^ yi;
+        xi = xi.wrapping_add(yi) ^ yi;
+    }
+    black_box(xi);
+    let int_ops = cyc(ticks().wrapping_sub(t0), 8000);
+    log!("simbench probes (cycles/op): mul.s dependent {} independent {} add.s dependent {} int alu {}", mul_dep, mul_ind, add_dep, int_ops);
     log!(
         "simbench probes (cycles): actors {} walk {}/actor walk+pos {}/actor copy_actor_list {}/actor distance_ss {} f32 mul-add {} cold line read {} hot word read {}",
         n_act, walk, walk_pos, copy, dist, fp, line, hot
