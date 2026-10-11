@@ -106,6 +106,13 @@ unloaded). Levels load from ROM at level start (PI DMA ~5 MB/s + decompression).
      CPU/RSP timing probes; ares screenshot/automation harness.
    - C. Asset pipeline + compression: `tools/f2-n64pack` (host Rust) producing the DFS pack
      from a rendition; codec evaluation incl. F2Z; budget report.
+   - **B status (done, 2026-10-10)**: ROM boots in ares with the Rust core driving
+     rdpq triangles (textured, Gouraud, z-buffered), joypad, mixer audio, DFS and a panic
+     handler on the libdragon crash screen. ABI: Rust targets **n32** (LLVM has no o64);
+     objects are relabelled o64 at build time and calls cross only a ≤4-integer-argument
+     FFI with asm bridges — `tools/n64/README.md`. Measurements and the 60/30 fps analysis:
+     `research/n64-performance.md` (faithful CPU render path ≈ 6100 CPU cycles per
+     triangle → too slow; 30 fps needs a fused N64-specific CPU path, 60 fps RSP T&L).
 2. **Integration**: `crates/frogger-n64` front end (game loop, DataSource over the pack,
    renderer on rdpq, audio, input, FMV, saves); first playable Garden 1 in ares.
 3. **Completeness + performance**: all levels, frontend/menus, multiplayer split-screen,

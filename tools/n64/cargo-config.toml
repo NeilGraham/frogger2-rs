@@ -1,0 +1,5 @@
+# Cargo configuration for the N64 build of crates/frogger-n64 (passed with `--config` by
+# tools/n64/build.sh; the target JSON is passed with `--target`).
+[unstable]
+build-std = ["core", "alloc"]
+json-target-spec = true

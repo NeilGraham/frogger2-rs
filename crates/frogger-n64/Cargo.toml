@@ -1,0 +1,34 @@
+[package]
+name = "frogger-n64"
+description = "Nintendo 64 front end of the Frogger 2 port: Rust no_std + alloc core linked into a libdragon ROM (tools/n64/build.sh)."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Own workspace (excluded from the main one): built with nightly `-Zbuild-std` for the
+# custom MIPS target in tools/n64/ (see tools/n64/README.md). On the host, `cargo test`
+# runs the portable self-test and probe kernels.
+[workspace]
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+f2-math = { path = "../f2-math", default-features = false }
+libm = "0.2.16"
+
+[lints.rust]
+# `target_vendor = "nintendo64"` comes from tools/n64/mips-nintendo64-none.json.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_vendor, values("nintendo64"))'] }
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+codegen-units = 1
+lto = true
+debug = 1
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
