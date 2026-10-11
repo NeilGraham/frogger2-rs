@@ -681,8 +681,8 @@ impl Game {
         self.transform_root_object(id, no_clip);
         self.transform_actor_sprites(id);
         // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
-        if let Some(name) = self.tongue.head_object.clone() {
-            if self.frogger.frog[0] == Some(id) {
+        if self.frogger.frog[0] == Some(id) {
+            if let Some(name) = self.tongue.head_object.clone() {
                 if let Some(mut m) = self.actor_sub_object_matrix(id, &name) {
                     // TransformObject: objMatrix = postMatrix . top (headPostMatrix).
                     if let Some([x, y, z]) = self.tongue.head_post {
@@ -826,8 +826,11 @@ impl Game {
     /// Port of `CopyActorList` (PC/Main.cpp:621), minus texture sliding (render only).
     pub fn copy_actor_list(&mut self) {
         let frog0 = self.frogger.frog[0].and_then(|f| self.actor2.actors.get(f)).map(|a| a.actor.position);
-        for id in self.actor2.act_list.ids(&self.actor2.actors) {
+        // Walks the links in place (the body never changes the list).
+        let mut cur = self.actor2.act_list.first;
+        while let Some(id) = cur {
             let c = &mut self.actor2.actors[id];
+            cur = c.links.next;
             if let Some(f0) = frog0 {
                 c.distance_from_frog = distance_between_points_ss(&c.actor.position, &f0);
             }
@@ -859,16 +862,32 @@ impl Game {
     /// Port of `ActorListDraw` (mdxActor.cpp:139): the sphere test that decides whether
     /// an actor is transformed (animated, bounding box clipped) this frame.
     pub fn actor_list_draw(&mut self, list: u32) {
+        let ids = self.actor2.act_list.ids(&self.actor2.actors);
+        self.actor_list_draw_ids(list, &ids);
+    }
+
+    /// [`actor_list_draw`](Self::actor_list_draw) over a snapshot of `actList` (the actors
+    /// of draw list `list` in it, in order). Phase 3S: `DrawLoop` takes one snapshot for
+    /// both lists; `ActorListDraw` never creates, frees or re-lists actors, so it is the
+    /// same as a snapshot per list.
+    pub fn actor_list_draw_ids(&mut self, list: u32, ids: &[ActorId]) {
+        let in_list = |g: &Game, id: ActorId| g.actor2.actors[id].actor.actual_actor.list_num == list;
         let Some(view) = self.specfx.view else {
-            for id in self.actor_draw_list(list) {
+            for &id in ids {
+                if !in_list(self, id) {
+                    continue;
+                }
                 self.view.draw_this_objects_sprites = self.actor2.actors[id].actor.actual_actor.placement.draw as u32;
                 self.update_actor_anim(id);
                 self.transform_actor_sprites(id);
             }
             return;
         };
-        for id in self.actor_draw_list(list) {
+        for &id in ids {
             let a = &self.actor2.actors[id].actor.actual_actor;
+            if a.list_num != list {
+                continue;
+            }
             let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { continue };
             self.view.draw_this_objects_sprites = a.placement.draw as u32;
             let p = a.placement;

@@ -137,7 +137,10 @@ impl Game {
     /// `path->nodes[i]` by value. Indices outside the node block (the original reads
     /// whatever precedes/follows it) give a zeroed node.
     pub(crate) fn path_node(&self, path: &Path, i: i32) -> PathNode {
-        self.path.nodes.get(path.node_index(i)).cloned().unwrap_or_default()
+        match self.path.nodes.get(path.node_index(i)) {
+            Some(n) => *n,
+            None => PathNode::default(),
+        }
     }
 
     /// `GetPositionForPathNode(&v, &path->nodes[i])`.
@@ -788,14 +791,15 @@ impl Game {
 
         let length = udiv(afc.wrapping_sub(path.start_frame) << 12, path.end_frame.wrapping_sub(path.start_frame));
 
-        let p = self.plt(pid).clone();
+        let p = self.plt(pid);
+        let (visible, flags, src, dest) = (p.visible, p.flags, p.src_orientation, p.dest_orientation);
         let actor = p.plt_actor.expect("platform actor");
-        if p.visible != 0 && p.flags & PLATFORM_NEW_NOREORIENTATE == 0 {
-            if p.flags & PLATFORM_NEW_SLERPPATH == 0 {
-                self.actor2.actors[actor].actor.q_rot = p.dest_orientation;
+        if visible != 0 && flags & PLATFORM_NEW_NOREORIENTATE == 0 {
+            if flags & PLATFORM_NEW_SLERPPATH == 0 {
+                self.actor2.actors[actor].actor.q_rot = dest;
             } else {
                 // mainly for space2 platforms
-                iquat_slerp(&p.src_orientation, &p.dest_orientation, length, &mut self.actor2.actors[actor].actor.q_rot);
+                iquat_slerp(&src, &dest, length, &mut self.actor2.actors[actor].actor.q_rot);
             }
         }
 

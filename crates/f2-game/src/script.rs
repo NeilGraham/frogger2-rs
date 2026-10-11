@@ -245,7 +245,7 @@ impl Game {
     fn path_effect(&mut self, nme: EnemyId, p: &EffectParams, clip: bool) -> i32 {
         let path = self.enemies.enemy_list.array[nme.idx()].path;
         for k in 0..path.num_nodes.max(0) as i32 {
-            let node = self.path.node(&path, k).clone();
+            let node = *self.path.node(&path, k);
             let Some(t) = node.world_tile else { continue };
             let v = get_position_for_path_node(&self.map, &node);
             let n = self.map.tile(t).normal;

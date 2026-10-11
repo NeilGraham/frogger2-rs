@@ -254,8 +254,9 @@ impl Game {
             return;
         }
         self.calc_view_matrix();
-        self.actor_list_draw(0);
-        self.actor_list_draw(1);
+        let ids = self.actor2.act_list.ids(&self.actor2.actors);
+        self.actor_list_draw_ids(0, &ids);
+        self.actor_list_draw_ids(1, &ids);
         // DrawLoop (PC/drawloop.cpp:250): UpdateFrogTongue(0) after ActorListDraw(1).
         if self.game_state.multi == define::SINGLEPLAYER && self.frogger.frog[0].is_some() {
             self.update_frog_tongue(0);
