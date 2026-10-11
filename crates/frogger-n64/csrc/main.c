@@ -196,9 +196,15 @@ static void fmv_osd(void *ctx, int frame_idx, float time_sec, fmv_control_t *ctr
 
 /* Plays a video over the game's 320x240 16-bit display (no display re-init: the game's
  * framebuffers stay); returns 0 if the file is missing. */
+/* Phase-3P libdragon variant (tools/n64/README.md): the game's rspq ring is 2 x 32 KiB, but
+ * the H.264 decoder recycles its input buffers assuming the stock 2 x 2 KiB (an RSP assert
+ * otherwise): limit the window while a video plays. Weak: absent in stock libdragon. */
+void rspq_set_lowpri_window(int words) __attribute__((weak));
+
 uint32_t n64_fmv_play_impl(const char *path) {
     if (!file_exists(path)) return 0;
     rspq_wait();
+    if (rspq_set_lowpri_window) rspq_set_lowpri_window(0x200);
     if (music) {
         mixer_ch_stop(MUSIC_CH);
         wav64_close(music);
@@ -212,6 +218,8 @@ uint32_t n64_fmv_play_impl(const char *path) {
         .osd_callback = fmv_osd,
     };
     fmv_play(path, &p);
+    rspq_wait();
+    if (rspq_set_lowpri_window) rspq_set_lowpri_window(0);
     display_set_fps_limit(fps_limit); /* the game's frame pacing */
     mixer_ch_set_limits(FMV_CH, 16, 48000, 0);
     mixer_ch_set_limits(FMV_CH + 1, 16, 48000, 0);
