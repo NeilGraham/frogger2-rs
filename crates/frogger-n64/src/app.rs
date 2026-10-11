@@ -861,6 +861,19 @@ impl App {
             ctx.cam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);
             ctx.far_clip = render::far_clip(&self.game, scene);
         }
+        // Procedural textures (water, fire): refilled in place from their ARGB4444 surfaces
+        // (f2-draw's `lean` draw loop leaves them to the front end).
+        for pt in &self.game.ptexture.list {
+            let Some(surf) = pt.surface.as_deref() else { continue };
+            let Some(h) = self.r.textures.entry(pt.crc).map(|e| e.image) else { continue };
+            let side = (1..=256u32).find(|s| (s * s) as usize >= surf.len()).unwrap_or(0);
+            if side * side != surf.len() as u32 || l.gfx.update_argb4444(h.0, side, surf) {
+                continue;
+            }
+            if let Some(rgba) = pt.surface_rgba8() {
+                self.r.textures.replace_image(h, side, side, rgba);
+            }
+        }
         let t_loop = ticks();
         // Meshes go straight to r3d while the loop records them: begin its frame with the
         // view the loop sets first (camera, near 10, far clip).

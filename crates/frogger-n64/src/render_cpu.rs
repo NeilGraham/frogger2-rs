@@ -67,6 +67,8 @@ pub struct RenderCpu {
     /// Depth of scene triangles: RDP z = `sz * zk` (1 = the faithful 0..1 `sz`; r3d maps its
     /// linear depth differently, see `r3d::ViewParams::tl_z`).
     pub zk: f32,
+    /// Texel buffer of `update_argb4444`.
+    scratch: Vec<u8>,
 }
 
 /// Whether a bank texture is read back by the CPU (`f2_draw::book::draw_page_b`).
@@ -101,6 +103,7 @@ impl RenderCpu {
             fcmds: Vec::new(),
             marks: [0; 10],
             zk: 1.0,
+            scratch: Vec::new(),
         }
     }
 
@@ -201,6 +204,35 @@ impl RenderCpu {
         if self.ext.len() <= i {
             self.ext.resize(i + 1, None);
         }
+    }
+
+    /// Refills registry image `idx`'s texture in place from a procedural texture's
+    /// `side` x `side` ARGB4444 surface: the texels `convert_image_ex` makes from its RGBA8
+    /// expansion (`* 17`), without that copy. `false` if the texture cannot be updated in
+    /// place (none yet, an NTX placeholder, another format): use the registry path.
+    pub fn update_argb4444(&mut self, idx: u32, side: u32, s: &[u16]) -> bool {
+        let h = self.tex.get(idx as usize).copied().unwrap_or(0);
+        if h == 0 || s.len() != (side * side) as usize {
+            return false;
+        }
+        let partial = s.iter().any(|&c| c >> 12 != 0 && c >> 12 != 15);
+        let fmt = if partial && side * side * 4 <= texconv::TMEM { texconv::FMT_RGBA32 } else { texconv::FMT_RGBA16 };
+        if fmt == texconv::FMT_RGBA16 && side * side * 2 > texconv::TMEM {
+            return false;
+        }
+        self.scratch.clear();
+        let x = |c: u16, sh: u32| ((c >> sh) & 15) as u8 * 17;
+        if fmt == texconv::FMT_RGBA32 {
+            for &c in s {
+                self.scratch.extend_from_slice(&[x(c, 8), x(c, 4), x(c, 0), x(c, 12)]);
+            }
+        } else {
+            for &c in s {
+                let v = ((x(c, 8) as u16 >> 3) << 11) | ((x(c, 4) as u16 >> 3) << 6) | ((x(c, 0) as u16 >> 3) << 1) | (x(c, 12) >= 128) as u16;
+                self.scratch.extend_from_slice(&v.to_be_bytes());
+            }
+        }
+        rt::tex_update(h, &TexDesc { width: side, height: side, fmt, pixels: self.scratch.as_ptr() })
     }
 
     /// Registry image `idx` shows `rgba` (a render-to-texture result: the story book page),

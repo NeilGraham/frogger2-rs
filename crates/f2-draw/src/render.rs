@@ -247,6 +247,9 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
     r.view.near_clip = 10.0;
     r.view.far_clip = ctx.far_clip;
     r.update_animating_textures(game.act_frame_count);
+    // Console front ends refill the procedural textures themselves (straight into their
+    // texture format, without the RGBA8 registry copy).
+    #[cfg(not(feature = "lean"))]
     overlay::upload_proc_textures(r, game);
 
     if let Some(t) = ctx.backdrop {
