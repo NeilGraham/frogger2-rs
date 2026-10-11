@@ -600,3 +600,107 @@ softer (half-size render target, see RDRAM above).
   arena for level texture files would make loads deterministic.
 - Not done: multiplayer, arcade-machine screen copy, subtractive blend (approximated),
   real-hardware check (RDP fill rate, PI speed, SRAM on a flashcart).
+
+## 3P: draw-side CPU time (2026-10-11)
+
+Branch `worktree-agent-aaa520b4d4f6d5752` (from `feature/n64` at `673125c`). Goal: CPU draw
+time per frame ≤ ~10 ms; result: **−35…−50 %** (Garden 1 54 → 33 ms, Lab 1 87 → 60 ms,
+Halloween 74 → 42 ms, City 19 → 13 ms), not yet the target — see "What's left".
+
+### Before / after (ares v148, 5 s `perf` windows, median after the first; `level W 0` boots)
+"Before" = the 3I ROMs (`f2-lv{W}-0.z64`) re-run with the same harness, frontend from the §3I
+table. "draw" = `App::draw` on the CPU; after 3P its parts are the draw loop **including**
+r3d queueing (meshes now go to r3d while the loop records them), the r3d flush (C-side command
+writing, without the CPU batches), and the CPU batches (sprites, shadows, HUD, text). City's
+"after" includes 11–12 ms of waiting for the next 20 fps display slot (frame pacing): its CPU
+work is 13 ms.
+
+| scene | fps before → after | ticks/s | `Game::tick` | sim / frame | **draw / frame before → after** | after: loop (r3d queue) / flush / CPU batches | RSP busy | r3d draws (reused) |
+|---|---|---|---|---|---|---|---|---|
+| frontend (8-0) | 7.8 → 8.5 | 46 → 51 | 11.2 ms | 84 ms | **51 → 28 ms** | 14 (3.3) / 3.5 / 5 | 20 → 28 % | 100 (63) |
+| Garden 1 | 6.6 → 7.4 | 40 → 44 | 13.6 ms | 95 ms | **54 → 33 ms** | 21 (5.3) / 2.9 / 6 | 20 → 19 % | 205 (144) |
+| Ancients 1 | 7.0 → 8.6 | 42 → 52 | 10.8 ms | 79 ms | **60 → 31 ms** | 21 (4.6) / 2.4 / 5 | 18 → 22 % | 248 (214) |
+| Space 1 | 3.6 → 3.8 | 21 → 22 | 26.4 ms | 188 ms | **85 → 62 ms** | 37 (7.9) / 2.8 / 14 | 19 → 18 % | 243 (106) |
+| City | 27.4 → 20 (paced) | 60 | 5.1 ms | 20 ms | **19 → 13 ms** (+12 pacing wait) | 6 (0.9) / 1.3 / 3 | 30 → 25 % | 27 (21) |
+| Subterranean 1 | 4.6 → 5.5 | 28 → 33 | 15.6 ms | 122 ms | **78 → 44 ms** | 29 (6.4) / 1.8 / 9 | 24 % | 328 (269) |
+| Lab 1 | 4.0 → 4.6 | 24 → 27 | 16.8 ms | 136 ms | **87 → 60 ms** | 36 (7.5) / 2.9 / 15 | 22 → 24 % | 271 (150) |
+| Halloween 1 | 4.8 → 5.6 | 29 → 33 | 17.6 ms | 126 ms | **74 → 42 ms** | 28 (8.7) / 3.5 / 7 | 20 → 21 % | 293 (146) |
+| Retro 1 | 9.7 → 9.8 | 58 → 58 | 11.5 ms | 78 ms | **30 → 20 ms** | 13 (3.3) / 1.3 / 3 | 16 → 15 % | 112 (64) |
+
+The frame rate barely moves because every scene except City is simulation-bound
+(`Game::tick` 10–26 ms × up to 6 ticks per frame; phase 3S). "reused" = mesh draws whose
+uniform and visible parts came unchanged from the previous frame (idle camera in these runs:
+with a moving camera every draw is recomputed, ~40 µs each).
+
+Visual parity: `C:\f2-n64test-3p\evidence\side-lv{0..7}.png` (3I build | 3P build, ares
+captures ~50 s after boot; not in the repo, derived from game data): identical geometry,
+textures, HUD, water, sky; differences are moving actors and the clock (PSNR 19–33 dB, as
+between any two runs). The FMV boot path (logos, intro, frontend) plays.
+
+### What changed
+1. **libdragon rspq ring 2 × 2 KiB → 2 × 32 KiB** (`tools/n64/libdragon-3p.sh` +
+   `libdragon-3p.patch`, a separate prefix `~/opt/n64root-3p`; `build.sh` uses it when
+   installed). The CPU no longer waits in `rspq_next_buffer` while the RSP draws (flush
+   ~9.7 → 2.9 ms in Garden). The H.264 decoder recycles its input assuming the stock ring
+   (RSP assert `0xAF00`), so `n64_fmv_play` sets `rspq_set_lowpri_window(0x200)` (patch)
+   while a video plays.
+2. **Matrix fold on the RSP**: the `F2_DRAW` uniform carries the model matrix (pos_scale
+   folded into the direction rows), `F2_FRAME` the view × projection; `rsp_f2mdx.S`
+   (`F2FoldRow`) multiplies them (32×32-bit s15.16, per vertex-load command). The CPU fold
+   was ~1500 cycles per draw / per bone. Host model `r3d::rsp_fold`; sky (`noClip`) draws get
+   their own frame uniform (`R3dDraw::frame`). Depth error ≤ 3 of 32767 steps.
+3. **Integer `to_fixed`** (exponent/mantissa shifts, bit-identical to the FPU path, host test)
+   and no `memset` in `draw_uniform`; skinned bone uniforms by DMA from the frame arena
+   instead of inline copies; the root-bone fog fold only with fog.
+4. **Pose caches** (`f2_engine::anim::xform_actor_cached`, mesh-sink path only): unchanged
+   actors reuse their matrices; actors that only moved reuse the hierarchy below an identity
+   top (`L × top`, one matrix product per object; equal up to rounding); landscape matrices
+   once per level. Garden: 38 → 5 full hierarchy evaluations per frame. `lean` feature
+   (f2-draw/f2-engine, N64 only): no slerp for actors that did not move, no unit-scale
+   matrix product.
+5. **Stamped draw reuse** (`R3d::draw_slot`): `MeshDraw::stamp` versions the matrices; a
+   draw slot with the same mesh, stamp, parameters and view as last frame reuses its uniform
+   (kept in the slot, ring of 3 so in-flight frames are safe) and visible parts; ~10 µs per
+   reused draw vs ~55 µs computed.
+6. **Direct mesh backend** (`f2_engine::MeshBackend`, `render_r3d::R3dBackend`): recorded
+   meshes go to r3d during the draw loop (no sink copy); mesh-level bounding sphere before
+   the per-batch spheres; draw-slot mesh lookup memo.
+7. **I-cache layout**: the VR4300's 16 KiB I-cache is direct-mapped; with link-order
+   placement the same code ran 2.6 or 9.6 ms per frame depending on unrelated edits.
+   `tools/n64/Makefile` generates `build/f2.ld` (libdragon's `n64.ld` with the hot code first):
+   `.text.f2hot_d`/`.text.f2hot_q` (draw-loop actor path + r3d queueing, 16 KiB) and
+   `.text.f2hot_f` + listed libdragon functions (flush and CPU batches); Rust functions are
+   tagged with `#[cfg_attr(target_vendor = "nintendo64", link_section = ...)]`.
+8. Newlib's `memcpy`/`memset` for Rust too (compiler-builtins' weak copies localised in
+   `build.sh`); procedural textures refilled from their ARGB4444 surface without the RGBA8
+   registry copy; additive variants by reciprocal table (exact) with word stores;
+   minified HUD blits from the TMEM-sized copy (one load instead of one per 4 KiB piece).
+9. **Frame pacing** (`App::pace`): running averages of a tick and of a frame pick the highest
+   of 60/30/20/15 fps at which 60 ticks/s + frames fit into 90 % of a second (faster only
+   below 80 %, 8 stable frames), applied with `display_set_fps_limit`; 0 (unlimited, ticks
+   beyond 6 per frame dropped) when even 15 does not fit. Rendering is already decoupled from
+   ticks with interpolation (`alpha`, PC-style); the cap keeps the rate steady and leaves the
+   CPU to the simulation, so real time is kept whenever sim + draw allow it (City: 60
+   ticks/s at a steady 20–30 fps). Logged as `pacing N fps` / `app: frame pacing`.
+10. Measurement: `r3d queue`/`flush` timers and `reused` in the `perf` line; the profiler
+    prints every bucket (`prof.py` sees 100 %); log lines up to 1 KiB.
+
+### Profiling notes (for the next round)
+- ares attributes timer samples to basic-block entries, so a straight-line function's cost
+  shows at its caller's return point; use the in-ROM timers for precise splits.
+- Costs are dominated by memory, not FLOPs: a D-cache miss ≈ 45 cycles, an I-cache miss
+  similar; hot-loop micro-benchmarks of the same function varied 5600–9500 cycles with
+  layout before the hot sections. Per draw: ~10 µs reused, ~55 µs computed.
+
+### What's left (draw side) / status
+- Draw loop proper (f2-draw `draw_actor_list`, `Renderer::draw_actor`, record, xform for
+  animated actors) 9–29 ms: per actor ~40 µs of scattered reads of `Actor2`/models; next: an
+  N64-side compact per-actor draw state (model slot, override texture, last inputs) so
+  unchanged actors skip f2-draw entirely; animated actors (5–30 per frame) need the
+  hierarchy maths (slerp ~700 cycles/object).
+- CPU batches 3–15 ms (Space, Lab: many sprites/effects through `rdpq_triangle`, ~2500
+  cycles per triangle incl. uncached rspq writes): batch them into a magma dynamic mesh or
+  `rdpq_texture_rectangle` for screen-aligned sprites.
+- Moving camera: every draw recomputed (~55 µs) → ~11 ms queue in Garden while hopping.
+- The ≤ 10 ms target is met only by City/Retro-class scenes; the frame rate is bound by the
+  simulation (3S) in all others.
