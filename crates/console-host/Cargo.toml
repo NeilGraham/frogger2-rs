@@ -1,0 +1,31 @@
+[package]
+name = "console-host"
+description = "Shared PlayStation 4/5 homebrew host for the Frogger 2 port: pads, framebuffer scalers, data/save dirs, the Sony system-library runtime (std shims, heap) and the frame loop."
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish.workspace = true
+
+# Used by crates/frogger-ps4 and crates/frogger-ps5 (each its own workspace, building
+# `frogger` without `desktop`). It is also a member of the main workspace so the portable
+# `host` module is unit-tested by `cargo test --workspace`; everything that needs `frogger`
+# is only built for the consoles' `x86_64-unknown-freebsd` target.
+
+[features]
+# Heap segments from direct memory instead of anonymous mmap (the PS5 build; sce/alloc.rs).
+dmem-heap = []
+# No heap of our own: another component (the PS5 Vulkan driver's platform layer) owns malloc.
+external-heap = []
+# `frogger` with its wgpu `App` (the PS5 GPU build): presenters create the app themselves.
+gpu = ["frogger/gpu"]
+
+[dependencies]
+f2-platform = { path = "../f2-platform", default-features = false }
+
+[target.'cfg(target_os = "freebsd")'.dependencies]
+frogger = { path = "../frogger", default-features = false }
+f2-engine = { path = "../f2-engine", default-features = false }
+f2-audio = { path = "../f2-audio", default-features = false }
+# malloc over libkernel mmap and libm maths, instead of the system libc's (see sce/alloc.rs).
+dlmalloc = "0.2"
+libm = "0.2"

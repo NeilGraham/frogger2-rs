@@ -2,9 +2,9 @@
 //! fPKG): `main`, video out, pads, audio out, logging. Only built for
 //! `x86_64-unknown-freebsd` and linked by `tools/ps4/build-pkg.sh`.
 
-pub mod alloc;
+/// The std runtime shims and heap, shared with the PS5 host.
+pub use console_host::sce::{alloc, shim};
 pub mod piglet;
-pub mod shim;
 
 use crate::host::{self, Scaler};
 use core::ffi::{c_char, c_int, c_void};

@@ -46,6 +46,7 @@ Build instructions: [BUILDING.md](BUILDING.md). Packaging: `tools/package/`, `pa
 | macOS arm64 / x86_64 | **compile-checked from Linux; CI builds + tests on macos-14**; not run on a Mac yet | native (Xcode CLT) | winit / Metal; Retina-aware | cpal CoreAudio | gilrs (IOKit) | `.app` (universal), ad-hoc signed |
 | WSL2 (WSLg) | works (dev setup) | native Linux | X11 via XWayland (native Wayland crashes WSLg's Weston), llvmpipe/lavapipe | Pulse via ALSA plugin | usbipd only | — |
 | PS4 / PS5 (homebrew) | **builds; runs in the shadPS4 emulator**; not yet run on hardware | `tools/ps4/build-pkg.sh` (OpenOrbis, `x86_64-unknown-freebsd` std) | VideoOut + CPU renderer (`f2-engine/soft.rs`) | sceAudioOut | scePad | PS4 fPKG (also installs on a jailbroken PS5) |
+| PS5 (native homebrew) | **builds; runs in the KytyPS5 emulator** (4K, 120 Hz); not yet run on hardware | `tools/ps5/build.sh` (ps5-payload-sdk stubs, PS5_Vulkan packaging, `x86_64-unknown-freebsd` std) | tiled VideoOut + CPU renderer; optional wgpu on PS5 RADV (`--gpu`, untested) | sceAudioOut | scePad | PS5 app folder / `.ffpkg` |
 | Web, Android, iOS, Switch, PS2/PS3, N64 | not started | see §4 | | | | |
 
 Verified for this document (2026-10-10): Linux release build, workspace test suite (no game
@@ -152,6 +153,12 @@ General constraints:
   host. Audio: sceAudioOut thread pulling the mixer; pads: scePad -> `RawPad`.
 - Verified in the shadPS4 emulator (boot, FMV, frontend, gameplay, pad, 60 fps); real
   hardware untested.
+- **Native PS5 (CPU renderer, runs in KytyPS5)**: `crates/frogger-ps5` + `tools/ps5/build.sh`
+  ([tools/ps5/README.md](../tools/ps5/README.md)): a PS5 native app (`eboot.bin` +
+  `sce_sys/param.json` + `sce_module/libc.prx`, etaHEN/ShadowMountPlus/Itemzflow directory
+  title or `.ffpkg`), the same std-on-the-system-libraries approach through the public
+  ps5-payload-sdk stubs and PS5_Vulkan's packaging tools; tiled 4K/1440p/1080p VideoOut
+  buffers, 120 Hz when the display takes it. Shared host code: `crates/console-host`.
 - Native PS5 GPU: the wgpu renderer on mihawk-99/PS5_Vulkan's RADV port (statically linked,
   presenting through `VK_KHR_display` on VideoOut): `f2-engine` features `ps5-vulkan` /
   `ps5-static-driver` (`GpuContext::new_ps5`, `vkraw::VkPresenter`), host-verified; driver

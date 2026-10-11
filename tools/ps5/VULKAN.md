@@ -219,7 +219,9 @@ then the game.
 
 1. **Run on a PS5** (etaHEN/kstuff, fPKG or a debug-installed app folder; klog over the
    network shows the driver's stdout/stderr, PS5_Vulkan `tools/ps5_console.py klog`).
-2. **frogger-ps5 link**: add the driver to the staticlib's link (§3); reconcile its v0.43
+2. **frogger-ps5 link** (done 2026-10-10: `tools/ps5/build.sh --gpu`, see tools/ps5/README.md
+   "GPU build"; links and starts, reaching `vkCreateInstance` in KytyPS5 where Mesa aborts as
+   in §5; untested on hardware). Original notes: add the driver to the staticlib's link (§3); reconcile its v0.43
    payload SDK with the v0.42-based fork the archive needs (same crt/libc ABI family, but the
    archive references `libps5platform.a` `ps5_*` symbols and the fork's libc++); one heap only
    (`radv-link.sh` wraps `malloc`; `console-host`'s `dmem-heap` and the platform heap must

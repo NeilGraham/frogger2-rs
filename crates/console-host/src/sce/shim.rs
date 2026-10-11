@@ -1,7 +1,8 @@
-//! libc shims between Rust's `x86_64-unknown-freebsd` std and the PS4 system libraries.
+//! libc shims between Rust's `x86_64-unknown-freebsd` std and the PS4/PS5 system libraries.
 //!
 //! std is built for the FreeBSD 12+ ABI (64-bit `ino_t`: 224-byte `struct stat`, the
-//! long `struct dirent`); the PS4 kernel and libkernel are FreeBSD 9 based. The calls
+//! long `struct dirent`); the PS4 (FreeBSD 9) and PS5 (FreeBSD 11) kernels and libkernel keep
+//! the older 32-bit `ino_t` layouts (the PS5 payload SDK's `sys/stat.h`, `sys/dirent.h` agree). The calls
 //! whose structs changed are defined here (they take precedence over libkernel's at link
 //! time) and translate from the native layouts. The rest are symbols std references that
 //! the system libraries do not export.
@@ -138,7 +139,7 @@ unsafe extern "C" fn stat(path: *const c_char, out: *mut Stat12) -> c_int {
     r
 }
 
-/// No symlinks on the PS4 filesystems the game reads: same as `stat`.
+/// No symlinks on the console filesystems the game reads: same as `stat`.
 #[no_mangle]
 unsafe extern "C" fn lstat(path: *const c_char, out: *mut Stat12) -> c_int {
     stat(path, out)
@@ -303,7 +304,7 @@ unsafe extern "C" fn clock_nanosleep(clock: c_int, flags: c_int, req: *const [i6
 }
 
 /// Process control std links for `std::process::Command` (the level editor's external
-/// text editor), which a PS4 app cannot do: fail with `ENOSYS`.
+/// text editor), which a console app cannot do: fail with `ENOSYS`.
 macro_rules! enosys {
     ($($name:ident($($arg:ident: $ty:ty),*);)*) => {$(
         #[no_mangle]
@@ -324,7 +325,7 @@ enosys! {
 }
 
 /// Weak imports of std's `Command` (`current_dir`); every import must resolve to a
-/// system library for `create-fself`, so define them (posix_spawn style: return ENOSYS).
+/// system library for `create-fself` / the PS5 converter, so define them (posix_spawn style: return ENOSYS).
 #[no_mangle]
 unsafe extern "C" fn posix_spawn_file_actions_addchdir_np(_fa: *mut c_void, _path: *const c_char) -> c_int {
     78

@@ -170,10 +170,9 @@ path (module loading under the jailbreak's sandbox, the configuration, a 3840x21
 window surface, shader binaries). If it fails there, `frogger.log` in `/data/frogger2`
 and the kernel log (`[frogger2]` lines) show how far it got.
 
-## Native PS5 (future)
+## Native PS5
 
-A native PS5 build could use the GPU through the open-source PS5 Vulkan drivers
-([mihawk-99/PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan), a RADV port, GPL-3.0)
-and the desktop wgpu renderer, built with the ps5-payload-sdk. That produces native PS5
-homebrew (`eboot.bin` folder / `.ffpkg`), not an installable `.pkg`, and needs the same
-std shims for the PS5's libraries.
+A native PS5 build (a PS5 app folder, not a PS4 fPKG; 4K/120 Hz video out, optional wgpu
+on the PS5 Vulkan driver) is `crates/frogger-ps5` + `tools/ps5/build.sh`: see
+[tools/ps5/README.md](../ps5/README.md). The pad mapping, scalers, std shims and heap are
+shared between both hosts in `crates/console-host`.

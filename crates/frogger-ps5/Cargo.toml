@@ -1,0 +1,40 @@
+[package]
+name = "frogger-ps5"
+description = "Native PlayStation 5 homebrew host for the Frogger 2 port (ps5-payload-sdk + PS5 native-app packaging; CPU renderer, optional wgpu on the PS5 Vulkan driver)."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Own workspace (excluded from the main one): `frogger` must build without `desktop`.
+[workspace]
+
+[lib]
+# The staticlib is linked and packaged by `tools/ps5/build.sh`.
+crate-type = ["staticlib", "rlib"]
+
+[features]
+# `main` runs a Rust std smoke test (threads, TLS, files, time, heap) instead of the game:
+# `tools/ps5/build.sh --smoke`.
+smoke = []
+# wgpu on the statically linked PS5 RADV driver (`tools/ps5/build.sh --gpu`), falling back
+# to the CPU renderer when Vulkan does not start. The driver's platform layer owns the
+# heap (its `--wrap=malloc`), so console-host's heap is left out.
+gpu = ["frogger/gpu", "dep:f2-engine", "dep:f2-audio", "dep:f2-platform", "dep:wgpu", "console-host/external-heap", "console-host/gpu"]
+
+[dependencies]
+console-host = { path = "../console-host", features = ["dmem-heap"] }
+
+[target.'cfg(target_os = "freebsd")'.dependencies]
+frogger = { path = "../frogger", default-features = false }
+f2-engine = { path = "../f2-engine", default-features = false, features = ["ps5-static-driver"], optional = true }
+f2-audio = { path = "../f2-audio", default-features = false, optional = true }
+f2-platform = { path = "../f2-platform", default-features = false, optional = true }
+wgpu = { version = "=30.0.1", default-features = false, optional = true }
+
+[profile.release]
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 2
