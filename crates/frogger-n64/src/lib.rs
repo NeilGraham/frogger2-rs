@@ -35,6 +35,8 @@ pub mod render_cpu;
 mod demo;
 #[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
 mod probes;
+#[cfg(all(target_vendor = "nintendo64", feature = "simbench"))]
+mod simbench;
 
 #[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
 static mut APP: Option<demo::Demo> = None;
@@ -59,7 +61,9 @@ pub extern "C" fn f2n64_init() {
         // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
         unsafe { APP = Some(demo::Demo::new()) };
     }
-    #[cfg(not(feature = "bringup"))]
+    #[cfg(all(feature = "simbench", not(feature = "bringup")))]
+    simbench::run_all();
+    #[cfg(not(any(feature = "bringup", feature = "simbench")))]
     {
         let boot = app::Boot::parse(option_env!("F2N64_BOOT"));
         log!("f2n64_init: boot {:?}", boot);

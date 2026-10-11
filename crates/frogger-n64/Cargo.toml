@@ -34,6 +34,9 @@ game-log = []
 profile = []
 # With `profile`: sample only inside `Game::tick` (the simulation).
 profile-sim = ["profile"]
+# Phase 3S: run the f2-game simulation benchmark scenarios (no rendering) and log per-tick
+# times + state checksums instead of the game (see src/simbench.rs).
+simbench = []
 
 [lints.rust]
 # `target_vendor = "nintendo64"` comes from tools/n64/mips-nintendo64-none.json.

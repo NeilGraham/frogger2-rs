@@ -123,20 +123,26 @@ impl Game {
         }
         // Sub-states without serde derives: their `Debug` output is a canonical field walk
         // (no maps; floats print their exact shortest round-trip form).
+        // Streamed into the hasher (`write_fmt`): no `String` of the whole text (the event
+        // state of a big level prints to megabytes, more than an N64 heap holds).
         let s = &self.script;
-        let dbg: [(&'static str, String); 5] = [
-            ("memload", format!("{:?}", self.memload)),
-            ("event", format!("{:?}", self.event)),
-            (
-                "script",
-                format!("{:?}{:?}{}{}{}{}", s.script_flags, s.script_counters, s.line_number, s.vol_test, s.show_end_level_screen, s.script_buffer.is_some()),
-            ),
-            ("textover", format!("{} {} {:?}", self.textover.num_entries, self.textover.alloc, self.textover.block)),
-            ("session", format!("{}", self.session.level_loads.len())),
-        ];
-        for (name, text) in dbg {
-            visit(name, &mut |h: &mut StateHasher| h.write_bytes(text.as_bytes()));
-        }
+        visit("memload", &mut |h: &mut StateHasher| h.write_fmt(format_args!("{:?}", self.memload)));
+        visit("event", &mut |h: &mut StateHasher| h.write_fmt(format_args!("{:?}", self.event)));
+        visit("script", &mut |h: &mut StateHasher| {
+            h.write_fmt(format_args!(
+                "{:?}{:?}{}{}{}{}",
+                s.script_flags,
+                s.script_counters,
+                s.line_number,
+                s.vol_test,
+                s.show_end_level_screen,
+                s.script_buffer.is_some()
+            ))
+        });
+        visit("textover", &mut |h: &mut StateHasher| {
+            h.write_fmt(format_args!("{} {} {:?}", self.textover.num_entries, self.textover.alloc, self.textover.block))
+        });
+        visit("session", &mut |h: &mut StateHasher| h.write_fmt(format_args!("{}", self.session.level_loads.len())));
     }
 }
 
@@ -176,6 +182,46 @@ impl StateHasher {
             let mut w = [0u8; 8];
             w[..r.len()].copy_from_slice(r);
             self.write_u64(u64::from_le_bytes(w));
+        }
+    }
+
+    /// `write_bytes` of the formatted text, without allocating it: one pass counts the
+    /// bytes (the length prefix), a second feeds them in 8-byte words.
+    pub fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) {
+        struct Count(usize);
+        impl core::fmt::Write for Count {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                self.0 += s.len();
+                Ok(())
+            }
+        }
+        struct Feed<'a> {
+            h: &'a mut StateHasher,
+            w: [u8; 8],
+            fill: usize,
+        }
+        impl core::fmt::Write for Feed<'_> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                for &b in s.as_bytes() {
+                    self.w[self.fill] = b;
+                    self.fill += 1;
+                    if self.fill == 8 {
+                        self.h.write_u64(u64::from_le_bytes(self.w));
+                        self.fill = 0;
+                    }
+                }
+                Ok(())
+            }
+        }
+        let mut c = Count(0);
+        let _ = core::fmt::write(&mut c, args);
+        self.write_u64(c.0 as u64);
+        let mut f = Feed { h: self, w: [0; 8], fill: 0 };
+        let _ = core::fmt::write(&mut f, args);
+        if f.fill != 0 {
+            let mut w = [0u8; 8];
+            w[..f.fill].copy_from_slice(&f.w[..f.fill]);
+            f.h.write_u64(u64::from_le_bytes(w));
         }
     }
 

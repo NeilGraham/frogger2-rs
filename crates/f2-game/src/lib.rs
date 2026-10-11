@@ -72,6 +72,7 @@ pub mod ptexture; // wave E
 pub mod savegame;
 pub mod script; // wave D
 pub mod session;
+pub mod simbench; // phase 3S: benchmark scenarios (host + N64)
 pub mod specfx;
 pub mod sprite; // wave E
 pub mod story;

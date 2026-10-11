@@ -216,3 +216,42 @@ not kept twice (`Renderer::add_font` moves the pixels); the 640x480 backdrop con
 16-row strips; the previous level's renderer side freed *before* the simulation's
 `InitLevel` loads the next one (the data source's `before_access` hook) — the PC order
 (load, then drop the old scene) runs out of RDRAM on the frontend → Garden 1 transition.
+
+## 3S: simulation speed-up (zero behaviour change)
+
+### Method
+- **Benchmark** (`f2_game::simbench`): fixed scenarios run back to back without rendering —
+  frontend (idle), arcade 0-0, 2-0, 2-2, 4-1, 6-0 (idle, 600 ticks; the heaviest levels by host
+  cost of all 40 arcade levels: `sim_bench --all-levels`) and the attract demos 0-0, 1-0, 6-1
+  (1500 ticks, gameplay). Host: `cargo run --release -p f2-game --example sim_bench`. N64:
+  `F2N64_FEATURES=simbench tools/n64/build.sh` (add `profile` for one `PROF` window per
+  scenario, window index = scenario index). Each scenario logs `Game::checksum` (netsync's
+  full-state hash, floats by bit pattern) after its last tick: **the N64 checksums equal the
+  host's**, so the MIPS build computes bit-identical state.
+- **Parity** after every change: `f2-parity check --corpus all` (102 cases) + the three demo
+  traces (`demo_trace`), all Rust traces sha1-hashed and compared with the pre-3S hashes
+  (`b0818758…`, `148391ab…`, `592b9d2a…` for the demos), plus the simbench checksums.
+- `Game::checksum` no longer builds the `Debug` text of the event state as a `String`
+  (megabytes on 2-2 — the N64 ran out of heap); it streams it into the hasher (same value).
+
+### Baseline (ares v148, `Game::tick` mean / worst per tick, µs)
+
+| scenario | actors | before | | after | |
+|---|---:|---:|---:|---:|---:|
+| frontend | 67 | 10749 | 17241 | | |
+| 0-0 Garden 1 | 116 | 12786 | 15180 | | |
+| 2-0 | 131 | 27566 | 32358 | | |
+| 2-2 | 197 | 26545 | 28382 | | |
+| 4-1 | 148 | 20986 | 23721 | | |
+| 6-0 | 121 | 17006 | 18953 | | |
+| demo 0-0 | 116 | 13233 | 15641 | | |
+| demo 1-0 | 117 | 11210 | 13220 | | |
+| demo 6-1 | 141 | 19227 | 23129 | | |
+
+Baseline profile (Garden 1, self time): `actor_list_draw` 15 % (`xfm_point_f` 6.8 %),
+`update_path_platform` 6.9 %, `copy_actor_list` 6.3 %, `list::Head::ids` 5.2 %,
+`xform_actor` 4.3 %, `ftol` 4.9 % (inlined everywhere), `distance_between_points_ss` 3.4 %;
+2-0: `iquat_slerp` 7.1 %, `make_unit` 6.8 %, `run_fx_update` (callers) 11 %, `orientate` 3.3 %.
+
+### Status / next steps
+- [x] benchmark + on-target checksum harness, baseline.
