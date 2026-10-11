@@ -32,7 +32,10 @@ tools/n64/build.sh --bringup                # phase-1B demo + probes instead of 
 tools/n64/run-ares.sh                       # boots target/n64/frogger2.z64, 1 screenshot after 8 s
 tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 28 -shots 8 -gap 5 -hold 900 -keys "Right;;Up;;X"
 cargo +nightly test --manifest-path crates/frogger-n64/Cargo.toml   # host: portable modules
+# host render of the N64 drawing path (320x240, CPU rasteriser; --n64 = texel round trip):
+cargo +nightly run --release --manifest-path crates/frogger-n64/Cargo.toml --example host_shot -- GAME_DIR out.png garden|book [TICKS] [--n64] [--cmds]
 ```
+Status / next steps: `research/n64-performance.md` §2G (end).
 `build.sh` steps: cargo (`--target tools/n64/mips-nintendo64-none.json`, target dir
 `target/n64/cargo`, features from `F2N64_FEATURES`) → `n32-to-o64.py` + `ranlib` → DFS root
 `target/n64/filesystem` → `make -f tools/n64/Makefile` (n64sym, n64elfcompress, n64tool
