@@ -152,7 +152,10 @@ Evidence (not in the repo, derived from game data): `C:\f2-n64test\evidence-2g\`
 reached with the pad, prompt "A - Select" from the N64 button names —, `04-garden1-start.png`,
 `05-garden1-after-left.png` — the frog moved by the harness' Left key —, and the debugf log
 `run-frontend-to-garden1.txt` with the `game:` mode/pad lines, `perf`/`heap` lines). Sequence:
-title → (logo FMVs skipped) → frontend → Right, Up, A → Garden 1 (story).
+title → (logo FMVs skipped) → frontend → Right, Up, A → Garden 1 (story). Garden 1 booted
+directly (`F2N64_BOOT="level 0 0"`): `garden1-direct_*.png` + `run-garden1-direct.txt` (Up,
+Up move the frog from tile 561 to 569 to 582; music track 2 playing, ambient + one-shot sfx
+voices counted in the `perf` lines).
 
 ### Frame time (5 s windows of the `perf` log)
 
