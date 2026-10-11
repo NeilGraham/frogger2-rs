@@ -56,7 +56,7 @@ fn load_every_level() {
             }
             let assets = g.load_level(w as u32, l as u32, &data).unwrap_or_else(|e| panic!("level {w}-{l}: {e}"));
             assert!(!g.map.tiles.is_empty(), "{w}-{l}: no tiles");
-            assert!(g.models.models.len() > 10, "{w}-{l}: only {} models", g.models.models.len());
+            assert!(g.models.len() > 10, "{w}-{l}: only {} models", g.models.len());
             assert!(assets.object_banks.iter().any(|b| b.ends_with("gamegeneric.dll")));
             assert!(assets.object_banks.iter().any(|b| b.ends_with("frogger.dll")));
             assert!(assets.texture_banks.len() >= 2, "{w}-{l}: {:?}", assets.texture_banks);
@@ -76,7 +76,7 @@ fn load_every_level() {
                 g.map.tiles.len(),
                 g.map.scenics.len(),
                 ids.len(),
-                g.models.models.len(),
+                g.models.len(),
                 assets.missing_object_banks,
                 g.level_files.script.is_some(),
                 g.level_files.sfx_mapping.len()

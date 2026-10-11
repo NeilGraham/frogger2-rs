@@ -255,3 +255,19 @@ Baseline profile (Garden 1, self time): `actor_list_draw` 15 % (`xfm_point_f` 6.
 
 ### Status / next steps
 - [x] benchmark + on-target checksum harness, baseline.
+- [x] exact `rsin`/`rcos`/`arccos` tables (f2-math).
+- [x] hashed `ModelTable::get`; one actList walk per `DrawLoop` splitting the two draw lists;
+  `CopyActorList` walks links in place and stores only changed fields; no `Platform` clone
+  in `UpdatePathPlatform`; head matrix (`sub_object_matrix`) computed along the found
+  object's ancestor path only; `EnemyAtFlag`/`PlatformAtFlag` answered from a per-pass
+  `(uid, fromNode)` snapshot inside `UpdateEvents` (2-2 events 2.9 → 1.45 ms).
+- [x] per-phase timing (`Game::phase_hook`, logged by the N64 simbench) and cost probes
+  (N64, cycles): cold 16-byte line read ≈ 46, `sphere_visible` with hot data ≈ 970 (float
+  latency, 4 `div.s`), `quaternion_to_matrix` 108, `distance_between_points_ss` 150,
+  `copy_actor_list` ≈ 750 per actor.
+- Tried and reverted (slower on the N64): memo tables of the per-actor sphere test / root
+  object matrix (the extra memory traffic of the memo entries costs more than the float
+  work saved, even with a static camera); `opt-level = "s"` for f2-game/f2-math
+  (I-cache gain < instruction-count loss).
+- Next: `UpdateEnemies` (2–5.7 ms), `ActorListDraw` sphere tests (1.9–3.2 ms) and root
+  transforms (0.75–2.1 ms), `CopyActorList` (1.1–1.9 ms), platforms, specfx.

@@ -156,11 +156,13 @@ impl ModelInfo {
 #[derive(Clone, Debug, Default)]
 pub struct ModelTable {
     /// Keyed lookups only (never iterated), so the map type does not affect behaviour.
-    pub models: BTreeMap<u32, Arc<ModelInfo>>,
+    models: BTreeMap<u32, Arc<ModelInfo>>,
     /// Phase 3S: open-addressing copy of `models` for [`ModelTable::get`] (a `BTreeMap`
-    /// search per actor per tick was a hot spot on the N64). Rebuilt by every method that
-    /// changes `models`; ids it lacks (direct `models` inserts in tests) fall back to the map.
+    /// search per actor per tick was a hot spot on the N64), rebuilt by every method that
+    /// changes `models`.
     index: Vec<Option<(u32, Arc<ModelInfo>)>>,
+    /// Bumped whenever `models` changes (memo tables keyed by model id check it).
+    generation: u32,
 }
 
 impl ModelTable {
@@ -231,6 +233,28 @@ impl ModelTable {
             index[i] = Some((id, m.clone()));
         }
         self.index = index;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Changes whenever a model is added or the table is cleared.
+    #[inline]
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// Adds (or replaces) one model (tests and tools; banks use [`ModelTable::add_bank`]).
+    pub fn insert(&mut self, m: Arc<ModelInfo>) {
+        self.models.insert(m.id, m);
+        self.rebuild_index();
+    }
+
+    /// Number of models.
+    pub fn len(&self) -> usize {
+        self.models.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty()
     }
 
     #[inline]
@@ -241,16 +265,17 @@ impl ModelTable {
     #[inline]
     pub fn get(&self, id: u32) -> Option<&Arc<ModelInfo>> {
         let size = self.index.len();
-        if size != 0 {
-            let mut i = Self::slot(id, size);
-            while let Some((k, m)) = &self.index[i] {
-                if *k == id {
-                    return Some(m);
-                }
-                i = (i + 1) & (size - 1);
-            }
+        if size == 0 {
+            return None;
         }
-        self.models.get(&id)
+        let mut i = Self::slot(id, size);
+        while let Some((k, m)) = &self.index[i] {
+            if *k == id {
+                return Some(m);
+            }
+            i = (i + 1) & (size - 1);
+        }
+        None
     }
 
     /// Port of `FindObject(&ctl, UpdateCRC(name), name)` (`mdxObject.cpp:587`).
@@ -261,6 +286,7 @@ impl ModelTable {
     pub fn clear(&mut self) {
         self.models.clear();
         self.index.clear();
+        self.generation = self.generation.wrapping_add(1);
     }
 }
 

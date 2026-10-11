@@ -12,6 +12,44 @@ use crate::{Game, TickInput};
 /// `rseed` when the oracle's frontend starts a demo (as in `examples/demo_trace.rs`).
 const RSEED_AT_DEMO_START: u32 = 144_420_441;
 
+/// Phase ids passed to [`Game::phase_hook`] (each marks the end of a part of the tick).
+pub mod phase {
+    pub const INPUT: u32 = 0;
+    /// `RunGameLoop` up to the frog updates (camera, controller, frogs).
+    pub const FROGS: u32 = 1;
+    pub const PLATFORMS: u32 = 2;
+    pub const ENEMIES: u32 = 3;
+    pub const SPECFX: u32 = 4;
+    pub const EVENTS: u32 = 5;
+    /// The rest of `GameLoop` (ambient sounds, collectables, HUD, ...).
+    pub const GAME_LOOP_REST: u32 = 6;
+    pub const COPY_ACTOR_LIST: u32 = 7;
+    pub const ACTOR_LIST_DRAW: u32 = 8;
+    pub const DRAW_3D: u32 = 9;
+    pub const DRAW_2D: u32 = 10;
+    pub const COUNT: usize = 18;
+    pub const NAMES: [&str; COUNT] = [
+        "input",
+        "frogs",
+        "platforms",
+        "enemies",
+        "specfx",
+        "events",
+        "loop-rest",
+        "copyactors",
+        "actordraw",
+        "draw3d",
+        "draw2d",
+        "ad:loop+other",
+        "ad:anim",
+        "ad:root",
+        "ad:sprites",
+        "ad:vis",
+        "ad:head",
+        "ad:kill",
+    ];
+}
+
 /// How a scenario starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Start {

@@ -24,7 +24,7 @@ fn game_with_line(n: i16) -> Game {
         });
     }
     let id = f2_formats::crc("box.obe");
-    g.models.models.insert(id, Arc::new(ModelInfo { id, name: "box".into(), ..Default::default() }));
+    g.models.insert(Arc::new(ModelInfo { id, name: "box".into(), ..Default::default() }));
     g
 }
 

@@ -146,13 +146,18 @@ impl Game {
             }
         }
 
+        self.phase(crate::simbench::phase::FROGS);
         if self.enhance_enemy_tick() {
             // P6-1: always true in the authentic profile.
             self.update_platforms();
+            self.phase(crate::simbench::phase::PLATFORMS);
             self.update_enemies();
+            self.phase(crate::simbench::phase::ENEMIES);
         }
         self.update_special_effects();
+        self.phase(crate::simbench::phase::SPECFX);
         self.update_events(); // wave D
+        self.phase(crate::simbench::phase::EVENTS);
         if self.game_state.mode != PAUSE_MODE {
             self.update_ambient_sounds(); // ambient
         }

@@ -448,6 +448,47 @@ fn transform_object_sprites(
     }
 }
 
+/// `*dst = v` unless it already holds `v` (phase 3S: avoids dirtying cache lines).
+#[inline(always)]
+fn set<T: PartialEq + Copy>(dst: &mut T, v: T) {
+    if *dst != v {
+        *dst = v;
+    }
+}
+
+/// `*dst = v` unless every float already has the same bit pattern (`==` would treat
+/// `-0.0` and `0.0` as equal).
+#[inline(always)]
+fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) {
+    if dst.iter().zip(v.iter()).any(|(a, b)| a.to_bits() != b.to_bits()) {
+        *dst = v;
+    }
+}
+
+/// The sphere test of `ActorListDraw` (mdxActor.cpp:139) for an actor without
+/// `ACTOR_ALWAYSDRAW`: whether its bounding sphere is on screen.
+#[inline]
+pub fn sphere_visible(model: &crate::assets::ModelInfo, p: &MdxPlacement, view: &ViewXform) -> bool {
+    let tc = model.true_centre;
+    let t_pos = [tc[0] * p.scale[0], tc[1] * p.scale[1], tc[2] * p.scale[2]];
+    let rotmat = quaternion_to_matrix(&p.q_rot);
+    let t2 = mtx_xfm(&rotmat, t_pos);
+    let t_pos = [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]];
+    let wh = view.xfm_point_f(t_pos);
+    let t2 = mtx_xfm(&view.matrix, t_pos);
+    let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
+    let mut radius = model.actor_radius * scale;
+    let depth = t2[2] + view.dist as f32;
+    if depth + radius > view.near_clip && depth - radius < view.far_clip {
+        if wh[2] > view.near_clip {
+            radius = (view.fov as f32 * radius * (view.x_res * (1.0 / 640.0))) / (wh[2] + view.dist as f32);
+        }
+        (wh[0] > -radius && wh[0] < view.x_res + radius) && (wh[1] > -radius && wh[1] < view.y_res + radius)
+    } else {
+        false
+    }
+}
+
 /// A float stored to a `short` (MSVC `_ftol` truncation, low 16 bits kept).
 fn ftol16(v: f32) -> i16 {
     v as i64 as i16
@@ -458,35 +499,47 @@ fn ftol16(v: f32) -> i16 {
 /// given placement; the object's `postMatrix` is the identity (`headPostMatrix`).
 pub fn sub_object_matrix(chain: &[XNode], name: &str, p: &MdxPlacement, animated: bool, time: f32) -> Option<Mat4> {
     // FindObj order: chain[i], then chain[i+1..] (recursively), then chain[i].children.
-    fn find(chain: &[XNode], i: usize, name: &str, top: &Mat4, ps: Vec3, a: &Ctx) -> Option<Mat4> {
+    // Phase 3S: the search needs names only, so it runs first and the matrices are then
+    // computed along the found object's ancestor path alone (a sibling's matrix never
+    // feeds another object's, and `TransformObject`'s key search starts from fresh key
+    // hints per object), instead of for every object visited.
+    fn find<'a>(chain: &'a [XNode], i: usize, name: &str, path: &mut Vec<&'a XNode>) -> bool {
         let me = &chain[i];
-        let mut last = [0i16; 3];
-        let (rotmat, scale) = object_local(&me.keys.move_keys, &me.keys.scale_keys, &me.keys.rotate_keys, a.animated, a.time, &mut last, a.scale, ps);
-        let m1 = mtx_cat(&rotmat, top);
         if me.name.eq_ignore_ascii_case(name) {
-            let s = gu_scale(scale[0] * a.scale[0], scale[1] * a.scale[1], scale[2] * a.scale[2]);
-            return Some(mtx_cat(&IDENTITY, &mtx_cat(&s, &m1)));
+            path.push(me);
+            return true;
         }
-        if i + 1 < chain.len() {
-            if let Some(m) = find(chain, i + 1, name, top, ps, a) {
-                return Some(m);
-            }
+        if i + 1 < chain.len() && find(chain, i + 1, name, path) {
+            return true;
         }
-        if !me.children.is_empty() {
-            return find(&me.children, 0, name, &m1, scale, a);
+        if !me.children.is_empty() && find(&me.children, 0, name, path) {
+            path.push(me);
+            return true;
         }
-        None
-    }
-    struct Ctx {
-        animated: bool,
-        time: f32,
-        scale: Vec3,
+        false
     }
     if chain.is_empty() {
         return None;
     }
-    let top = actor_top(p.pos, &p.q_rot);
-    find(chain, 0, name, &top, [1.0; 3], &Ctx { animated, time, scale: p.scale })
+    let mut path = Vec::new();
+    if !find(chain, 0, name, &mut path) {
+        return None;
+    }
+    // `path` is target first, then its ancestors.
+    let mut top = actor_top(p.pos, &p.q_rot);
+    let mut ps = [1.0; 3];
+    for (k, me) in path.iter().rev().enumerate() {
+        let mut last = [0i16; 3];
+        let (rotmat, scale) = object_local(&me.keys.move_keys, &me.keys.scale_keys, &me.keys.rotate_keys, animated, time, &mut last, p.scale, ps);
+        let m1 = mtx_cat(&rotmat, &top);
+        if k + 1 == path.len() {
+            let s = gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]);
+            return Some(mtx_cat(&IDENTITY, &mtx_cat(&s, &m1)));
+        }
+        top = m1;
+        ps = scale;
+    }
+    None
 }
 
 // ---- mdxRender.cpp / mdxActor.cpp: projection and clipping --------------------------
@@ -677,9 +730,13 @@ impl Game {
         if self.actor2.actors[id].actor.actual_actor.object_controller.is_none() {
             return;
         }
+        self.phase(100);
         self.update_actor_anim(id);
+        self.phase(101);
         self.transform_root_object(id, no_clip);
+        self.phase(102);
         self.transform_actor_sprites(id);
+        self.phase(103);
         // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
         if self.frogger.frog[0] == Some(id) {
             if let Some(name) = self.tongue.head_object.clone() {
@@ -831,30 +888,32 @@ impl Game {
         while let Some(id) = cur {
             let c = &mut self.actor2.actors[id];
             cur = c.links.next;
+            // Phase 3S: fields are only stored when their bits change, so unchanged actors
+            // keep clean cache lines (no write-backs on the N64); the values are the same.
             if let Some(f0) = frog0 {
-                c.distance_from_frog = distance_between_points_ss(&c.actor.position, &f0);
+                set(&mut c.distance_from_frog, distance_between_points_ss(&c.actor.position, &f0));
             }
             if c.actor.actual_actor.object_controller.is_none() {
                 continue;
             }
-            c.clipped = (c.actor.actual_actor.root_object_flags & OBJECT_FLAGS_CLIPPED != 0) as i8;
+            set(&mut c.clipped, (c.actor.actual_actor.root_object_flags & OBJECT_FLAGS_CLIPPED != 0) as i8);
             let draw = c.draw != 0;
             let pos = c.actor.position;
             let size = c.actor.size;
             let q = c.actor.q_rot;
             let p = &mut c.actor.actual_actor.placement;
             if !draw {
-                p.visible = 0;
-                p.draw = 0;
+                set(&mut p.visible, 0);
+                set(&mut p.draw, 0);
                 continue;
             }
-            p.visible = 1;
-            p.draw = 1;
-            p.pos = [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1];
+            set(&mut p.visible, 1);
+            set(&mut p.draw, 1);
+            set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
             const S: f32 = 1.0 / 4096.0;
-            p.scale = [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S];
+            set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
             if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
-                p.q_rot = [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S];
+                set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
             }
         }
     }
@@ -892,32 +951,14 @@ impl Game {
             self.view.draw_this_objects_sprites = a.placement.draw as u32;
             let p = a.placement;
             let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
-            let visible = if draw_override {
-                true
-            } else {
-                let tc = model.true_centre;
-                let t_pos = [tc[0] * p.scale[0], tc[1] * p.scale[1], tc[2] * p.scale[2]];
-                let rotmat = quaternion_to_matrix(&p.q_rot);
-                let t2 = mtx_xfm(&rotmat, t_pos);
-                let t_pos = [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]];
-                let wh = view.xfm_point_f(t_pos);
-                let t2 = mtx_xfm(&view.matrix, t_pos);
-                let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
-                let mut radius = model.actor_radius * scale;
-                let depth = t2[2] + view.dist as f32;
-                if depth + radius > view.near_clip && depth - radius < view.far_clip {
-                    if wh[2] > view.near_clip {
-                        radius = (view.fov as f32 * radius * (view.x_res * (1.0 / 640.0))) / (wh[2] + view.dist as f32);
-                    }
-                    (wh[0] > -radius && wh[0] < view.x_res + radius) && (wh[1] > -radius && wh[1] < view.y_res + radius)
-                } else {
-                    false
-                }
-            };
+            let visible = if draw_override { true } else { sphere_visible(model, &p, &view) };
+            self.phase(104);
             if visible {
                 self.xform_actor(id, draw_override);
+                self.phase(105);
             } else {
                 self.kill_object_sprites(id);
+                self.phase(106);
             }
         }
     }

@@ -203,6 +203,13 @@ pub struct Game {
     pub enhance: enhance::EnhanceState,
     // P7b: mod behaviour scripts (empty = authentic).
     pub modscript: modscript::ModScriptState,
+    /// Phase 3S profiling glue: called with a [`simbench::phase`] id at fixed points of a
+    /// tick (not game state; `None` in the game).
+    pub phase_hook: Option<fn(u32)>,
+    /// Phase 3S: `(uid, path.fromNode)` snapshots of the enemy/platform lists for
+    /// `EnemyAtFlag`/`PlatformAtFlag` while `UpdateEvents` evaluates triggers (not game
+    /// state; see `evenfunc.rs`).
+    pub(crate) flag_snap: evenfunc::FlagSnap,
 }
 
 impl Game {
@@ -231,7 +238,16 @@ impl Game {
         self.act_frame_count = self.act_frame_count.wrapping_add(1);
         // LoopFunc (PC/Main.cpp): ProcessUserInput, then GameLoop, then DrawLoop.
         self.process_user_input(input.pads);
+        self.phase(simbench::phase::INPUT);
         self.game_loop();
+        self.phase(simbench::phase::GAME_LOOP_REST);
+    }
+
+    #[inline]
+    pub(crate) fn phase(&self, id: u32) {
+        if let Some(h) = self.phase_hook {
+            h(if id >= 100 { id - 100 + 11 } else { id });
+        }
     }
 
     /// The rest of `LoopFunc` (PC/Main.cpp:686) after `GameLoop`: `CopyActorList`, then
@@ -240,10 +256,14 @@ impl Game {
     /// frontend (`InitDemoMode`/`InitLevel` happen inside the frontend's `GameLoop`).
     pub fn after_game_loop(&mut self) {
         self.copy_actor_list();
+        self.phase(simbench::phase::COPY_ACTOR_LIST);
         self.draw_loop_actors();
+        self.phase(simbench::phase::ACTOR_LIST_DRAW);
         self.draw_loop_3d_state(); // wave E
+        self.phase(simbench::phase::DRAW_3D);
         self.draw_screen_transition();
         self.draw_loop_2d_state(); // wave E
+        self.phase(simbench::phase::DRAW_2D);
     }
 
     /// `DrawLoop` (PC/drawloop.cpp:142) up to `UpdateFrogTongue`: `CalcViewMatrix`,
@@ -254,9 +274,21 @@ impl Game {
             return;
         }
         self.calc_view_matrix();
-        let ids = self.actor2.act_list.ids(&self.actor2.actors);
-        self.actor_list_draw_ids(0, &ids);
-        self.actor_list_draw_ids(1, &ids);
+        // One walk of actList splits it into the two draw lists (`listNum` never changes
+        // after creation and ActorListDraw neither creates nor frees actors).
+        let (mut ids0, mut ids1) = (Vec::with_capacity(self.actor2.act_list.count.max(0) as usize), Vec::new());
+        let mut cur = self.actor2.act_list.first;
+        while let Some(id) = cur {
+            let a = &self.actor2.actors[id];
+            if a.actor.actual_actor.list_num == 0 {
+                ids0.push(id);
+            } else if a.actor.actual_actor.list_num == 1 {
+                ids1.push(id);
+            }
+            cur = a.links.next;
+        }
+        self.actor_list_draw_ids(0, &ids0);
+        self.actor_list_draw_ids(1, &ids1);
         // DrawLoop (PC/drawloop.cpp:250): UpdateFrogTongue(0) after ActorListDraw(1).
         if self.game_state.multi == define::SINGLEPLAYER && self.frogger.frog[0].is_some() {
             self.update_frog_tongue(0);
