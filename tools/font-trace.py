@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Vector ("modern") version of a Frogger 2 font strip, traced from the user's own game data.
 
-Defaults (owner-reviewed v4, 2026-10-11): potrace on the original pixels, corner threshold
-0.75 (straight strokes, notches and slots kept), original counters, 0.9 px outline, 1 px drop
-shadow and a light-grey inner bevel on the lower-right edges like the original pixel art.
+Defaults (owner-chosen v5, 2026-10-11): anti-aliasing-aware tracing: the fill's luminance as
+greyscale, low-pass filtered and cubic-interpolated 8x by mkbitmap (potrace's companion) and
+thresholded at 50%, then potrace with smooth corners (alphamax 1.3) and curve simplification
+(opttolerance 2.0); uniform 1.5 px outline and 1.1 px drop shadow, no bevel. Needs potrace,
+mkbitmap (apt potrace), ffmpeg; render the SVG with rsvg-convert.
 
 usage: python3 -I trace2.py STRIP.ppm OUTDIR [SIGMA] [OUTLINE_PX] [SHADOW_PX]
 The glyph FILL (white pixels) is upscaled 8x (bicubic), blurred (SIGMA, upscaled pixels) and
@@ -15,7 +17,7 @@ import os
 import subprocess
 import sys
 
-UP = int(os.environ.get("F2T_UP", "1"))
+UP = int(os.environ.get("F2T_UP", "8"))
 
 
 def read_ppm(path):
@@ -27,8 +29,8 @@ def read_ppm(path):
 def main():
     src, out = sys.argv[1], sys.argv[2]
     sigma = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
-    outline = float(sys.argv[4]) if len(sys.argv) > 4 else 0.9
-    shadow = float(sys.argv[5]) if len(sys.argv) > 5 else 1.0
+    outline = float(sys.argv[4]) if len(sys.argv) > 4 else 1.5
+    shadow = float(sys.argv[5]) if len(sys.argv) > 5 else 1.1
     os.makedirs(out, exist_ok=True)
     w, h, px = read_ppm(src)
     # Fill mask as a grey image: glyph fill black (potrace traces black), the rest white.
@@ -60,9 +62,25 @@ def main():
     with open(f"{out}/fill.pgm", "wb") as f:
         f.write(b"P5\n%d %d\n255\n" % (w, h))
         f.write(bytes(g))
+    if os.environ.get("F2T_MODE", "gray") == "gray":
+        # Anti-aliasing-aware: the fill's luminance as grey levels (white fill -> black for
+        # potrace, black outline / key -> white), cubic-interpolated 8x by mkbitmap and
+        # thresholded at 50%, so edges land between pixels where the grey pixels put them.
+        gg = bytearray(w * h)
+        for i in range(w * h):
+            r, g2, b = px[3 * i], px[3 * i + 1], px[3 * i + 2]
+            key = r > 180 and b > 180 and g2 < 100
+            lum = 0 if key else (r * 299 + g2 * 587 + b * 114) // 1000
+            gg[i] = 255 - lum
+        with open(f"{out}/gray.pgm", "wb") as f:
+            f.write(b"P5\n%d %d\n255\n" % (w, h))
+            f.write(bytes(gg))
+        subprocess.run(["mkbitmap", "-n", "-b", os.environ.get("F2T_BLUR", "0.9"), "-s", "8", "-3", "-t", os.environ.get("F2T_THR", "0.5"), "-o", f"{out}/fill_up.pgm", f"{out}/gray.pgm"], check=True)
+        UPX = 8
     vf = f"scale=iw*{UP}:ih*{UP}:flags=neighbor" + (f",gblur=sigma={sigma},lut=y='if(lt(val\\,128)\\,0\\,255)'" if sigma > 0 else "")
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", f"{out}/fill.pgm", "-vf", vf, "-pix_fmt", "gray", f"{out}/fill_up.pgm"], check=True)
-    subprocess.run(["potrace", "-s", "-a", os.environ.get("F2T_A", "0.75"), "-O", os.environ.get("F2T_O", "0.3"), "-t", os.environ.get("F2T_T", "0"), "-o", f"{out}/fill.svg", f"{out}/fill_up.pgm"], check=True)
+    if os.environ.get("F2T_MODE", "gray") != "gray":
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", f"{out}/fill.pgm", "-vf", vf, "-pix_fmt", "gray", f"{out}/fill_up.pgm"], check=True)
+    subprocess.run(["potrace", "-s", "-a", os.environ.get("F2T_A", "1.3"), "-O", os.environ.get("F2T_O", "2.0"), "-t", os.environ.get("F2T_T", "30"), "-o", f"{out}/fill.svg", f"{out}/fill_up.pgm"], check=True)
     s = open(f"{out}/fill.svg").read()
     head = s[: s.index("<g")]
     g_open = s[s.index("<g"): s.index(">", s.index("<g")) + 1]
@@ -71,7 +89,7 @@ def main():
     unit = 10.0
     sw = outline * UP * unit * 2  # stroke is centred: twice the visible outside width
     off = shadow * UP
-    bevel = float(os.environ.get("F2T_BEVEL", "1.0")) * UP  # inner lower-right bevel width
+    bevel = float(os.environ.get("F2T_BEVEL", "0")) * UP  # inner lower-right bevel width
     bevel_col = os.environ.get("F2T_BEVEL_COL", "#c4c4c4")
     # potrace's transform (translate + scale 0.1,-0.1) baked into one reusable group.
     g_t = g_open.replace('fill="#000000"', "").replace('stroke="none"', "")
