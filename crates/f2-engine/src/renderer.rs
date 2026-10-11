@@ -34,7 +34,17 @@ pub struct GpuContext {
 #[cfg(feature = "gpu")]
 impl GpuContext {
     /// Creates a context with no surface (offscreen rendering). Honours `WGPU_BACKEND` etc.
+    ///
+    /// With feature `ps5-vulkan` and `F2_VK_RAW=1`, goes through the PS5 code path instead
+    /// (`vkraw`: raw `vkGetInstanceProcAddr` from the system loader, instance handed to wgpu
+    /// with `from_hal`), so host runs can check it renders identical frames.
     pub fn new_headless() -> Result<GpuContext, EngineError> {
+        #[cfg(feature = "ps5-vulkan")]
+        if std::env::var_os("F2_VK_RAW").is_some_and(|v| v == "1") {
+            // SAFETY: loads the system Vulkan loader (desktop testing only).
+            let entry = unsafe { ash::Entry::load() }.map_err(err)?;
+            return Self::from_vulkan_entry(entry, &[]);
+        }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         Self::with_instance(instance, None)
     }

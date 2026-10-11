@@ -17,6 +17,8 @@ pub mod renderer;
 pub mod scene;
 pub mod soft;
 pub mod textures;
+#[cfg(feature = "ps5-vulkan")]
+pub mod vkraw;
 
 pub use anim::{actor_bounds, xform_actor, Actor};
 pub use font::Font;

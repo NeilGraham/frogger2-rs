@@ -202,7 +202,7 @@ pub enum NetRequest {
 }
 
 /// What the renderer is (re)created from.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 struct Gfx {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -210,29 +210,29 @@ struct Gfx {
 }
 
 /// No GPU: the renderer draws on the CPU (`Renderer::render_soft`).
-#[cfg(not(feature = "desktop"))]
+#[cfg(not(feature = "gpu"))]
 struct Gfx;
 
 impl Gfx {
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     fn renderer(&self) -> Renderer {
         Renderer::new(&self.device, &self.queue, self.format)
     }
 
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "gpu"))]
     fn renderer(&self) -> Renderer {
         Renderer::new_soft()
     }
 }
 
 impl App {
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub fn new(data: Data, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, audio: AudioEngine, mapper: InputMapper) -> App {
         Self::with_gfx(data, Gfx { device: device.clone(), queue: queue.clone(), format }, audio, mapper)
     }
 
     /// An app whose renderer draws on the CPU (builds without the `desktop` feature).
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "gpu"))]
     pub fn new_soft(data: Data, audio: AudioEngine, mapper: InputMapper) -> App {
         Self::with_gfx(data, Gfx, audio, mapper)
     }

@@ -14,15 +14,25 @@ name = "frogger"
 path = "src/main.rs"
 required-features = ["desktop"]
 
+[[example]]
+name = "vk_present"
+required-features = ["ps5-vulkan"]
+
 [features]
 default = ["desktop", "audio-device"]
 # Window, GPU and gamepads (winit, wgpu, gilrs): the desktop executable. Without it the
 # library builds for hosts that bring their own platform layer and use the CPU renderer.
-desktop = ["dep:wgpu", "f2-engine/gpu", "f2-platform/window", "f2-platform/gamepad"]
+desktop = ["gpu", "f2-platform/window", "f2-platform/gamepad"]
+# The wgpu renderer in the library (`App::new`) without window or gamepads: console hosts
+# that bring their own GPU context (e.g. the PS5 Vulkan path, f2-engine `ps5-static-driver`).
+gpu = ["dep:wgpu", "f2-engine/gpu"]
 # Real audio output (cpal: ALSA/PulseAudio/PipeWire, WASAPI, CoreAudio). Off = always muted;
 # lets `cargo check --target *-apple-darwin --no-default-features` run without the macOS SDK
 # (coreaudio-sys needs it for bindgen). See docs/PLATFORMS.md.
 audio-device = ["f2-audio/cpal"]
+# The PS5 GPU path on the desktop: wgpu from a raw vkGetInstanceProcAddr + own swapchain
+# (f2-engine `vkraw`). `--example vk_present`; `F2_VK_RAW=1 frogger --headless ...`.
+ps5-vulkan = ["desktop", "f2-engine/ps5-vulkan"]
 
 [dependencies]
 f2-game = { path = "../f2-game" }
