@@ -208,6 +208,16 @@ pub struct TexId(pub u16);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MeshId(pub u32);
 
+/// Resource counts of an [`R3d`] at some point ([`R3d::mark`]), to free everything loaded
+/// after it ([`R3d::reset_to`], level unload).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct R3dMark {
+    files: usize,
+    meshes: usize,
+    tex: u32,
+    groups: u32,
+}
+
 /// Errors of [`R3d::load_file`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadError {
@@ -514,6 +524,54 @@ impl R3d {
     #[cfg(not(target_vendor = "nintendo64"))]
     fn c_group_create(_d: &ffi::R3dGroupDesc) -> u32 {
         1
+    }
+
+    /// The current resource counts (see [`R3dMark`]).
+    pub fn mark(&self) -> R3dMark {
+        #[cfg(target_vendor = "nintendo64")]
+        let c = unsafe { ffi::n64_r3d_counts() };
+        #[cfg(not(target_vendor = "nintendo64"))]
+        let c = 0x0001_0001;
+        R3dMark { files: self.files.len(), meshes: self.meshes.len(), tex: c >> 16, groups: c & 0xFFFF }
+    }
+
+    /// Frees every file, mesh and texture registered after `m` (waits for the RSP).
+    pub fn reset_to(&mut self, m: R3dMark) {
+        #[cfg(target_vendor = "nintendo64")]
+        unsafe {
+            ffi::n64_r3d_reset(m.tex, m.groups)
+        };
+        self.discard();
+        self.meshes.truncate(m.meshes);
+        self.files.truncate(m.files);
+        self.tex_by_crc.retain(|_, h| (*h as u32) < m.tex);
+        self.tex_gen += 1;
+    }
+
+    /// An r3d texture sampling main.c texture `tex`'s TMEM-sized surface (power-of-two
+    /// RGBA16/RGBA32; `None` otherwise).
+    pub fn alias_texture(&mut self, tex: u32) -> Option<TexId> {
+        #[cfg(target_vendor = "nintendo64")]
+        let h = unsafe { ffi::n64_r3d_tex_alias(tex) };
+        #[cfg(not(target_vendor = "nintendo64"))]
+        let h = tex;
+        (h != 0).then_some(TexId(h as u16))
+    }
+
+    /// Points a CRC at a texture, or unmaps it (`None`: its groups are not drawn).
+    pub fn map_texture(&mut self, crc: u32, tex: Option<TexId>) {
+        let changed = match tex {
+            Some(t) => self.tex_by_crc.insert(crc, t.0) != Some(t.0),
+            None => self.tex_by_crc.remove(&crc).is_some(),
+        };
+        if changed {
+            self.tex_gen += 1;
+        }
+    }
+
+    /// The packer id of a registered mesh.
+    pub fn mesh_packer_id(&self, m: MeshId) -> u32 {
+        self.meshes[m.0 as usize].id
     }
 
     /// Texture registered for a CRC.

@@ -13,12 +13,14 @@ fn main() -> ExitCode {
     match f2_n64prep::prepare(&game, &out, &wav, &args[3..]) {
         Ok(r) => {
             println!(
-                "f2-n64prep: {} raw files ({} KiB), {} object banks ({} KiB DLL -> {} KiB postcard), {} sound banks ({} samples, {} KiB PCM)",
+                "f2-n64prep: {} raw files ({} KiB), {} object banks ({} KiB DLL -> {} KiB postcard + {} KiB F2NM, {} triangles), {} sound banks ({} samples, {} KiB PCM)",
                 r.raw_files,
                 r.raw_bytes / 1024,
                 r.object_banks,
                 r.object_bytes_in / 1024,
                 r.object_bytes_out / 1024,
+                r.f2nm_bytes / 1024,
+                r.f2nm_tris,
                 r.sound_banks,
                 r.samples,
                 r.sample_bytes / 1024

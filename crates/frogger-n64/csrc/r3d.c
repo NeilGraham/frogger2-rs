@@ -131,6 +131,45 @@ uint32_t n64_r3d_tex_create_impl(const n64_r3d_tex_desc_t *d) {
     return num_texs++;
 }
 
+/* An r3d texture sampling the TMEM-sized surface of main.c texture `tex` (RGBA16/RGBA32,
+ * power-of-two sizes for wrapping); 0 if it cannot be used. */
+const surface_t *n64_tex_surface(uint32_t h);
+uint32_t n64_r3d_tex_alias_impl(uint32_t tex) {
+    const surface_t *s = n64_tex_surface(tex);
+    if (!s || num_texs >= MAX_R3D_TEX) return 0;
+    tex_format_t f = surface_get_format(s);
+    if (f != FMT_RGBA16 && f != FMT_RGBA32) return 0;
+    if ((s->width & (s->width - 1)) || (s->height & (s->height - 1)) || s->width < 4) return 0;
+    if (s->stride != TEX_FORMAT_PIX2BYTES(f, s->width)) return 0;
+    r3d_tex_t *t = &texs[num_texs];
+    memset(t, 0, sizeof *t);
+    t->surf = *s;
+    t->width = s->width;
+    return num_texs++;
+}
+
+/* Frees textures >= tex_first and groups >= group_first (level unload). */
+void n64_r3d_reset_impl(uint32_t tex_first, uint32_t group_first) {
+    rspq_wait();
+    if (tex_first < 1) tex_first = 1;
+    if (group_first < 1) group_first = 1;
+    for (uint32_t i = tex_first; i < num_texs; i++) {
+        for (int v = 0; v < 4; v++)
+            if (texs[i].desc[v]) free(texs[i].desc[v]);
+        memset(&texs[i], 0, sizeof texs[i]);
+    }
+    if (tex_first < num_texs) num_texs = tex_first;
+    for (uint32_t i = group_first; i < num_groups; i++) {
+        if (groups[i].block) rspq_block_free(groups[i].block);
+        memset(&groups[i], 0, sizeof groups[i]);
+    }
+    if (group_first < num_groups) num_groups = group_first;
+    cur_tex = 0;
+}
+
+/* Current counts (next texture handle << 16 | next group handle). */
+uint32_t n64_r3d_counts_impl(void) { return (num_texs << 16) | num_groups; }
+
 uint32_t n64_r3d_group_create_impl(const n64_r3d_group_desc_t *d) {
     if (num_groups >= MAX_R3D_GROUPS) return 0;
     r3d_group_t *g = &groups[num_groups];
@@ -301,11 +340,12 @@ void n64_r3d_begin_impl(const n64_r3d_frame_t *f) {
     memset(&stats, 0, sizeof stats);
 }
 
+void n64_state_invalidate(void);
 void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draws, uint32_t n) {
     if (!n) return;
     apply_list(st);
-    uint32_t tflags = st->flags & (N64_WRAP | N64_BILINEAR);
-    if (tflags != cur_tex_flags) cur_tex = 0; /* re-upload with the new wrap/filter */
+    /* CPU batches (main.c) may have loaded TMEM since the last list. */
+    cur_tex = 0;
     cur_list_flags = st->flags;
     for (uint32_t i = 0; i < n; i++) {
         const n64_r3d_draw_t *d = &draws[i];
@@ -325,6 +365,7 @@ void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draw
         }
         stats.draws++;
     }
+    n64_state_invalidate();
 }
 
 void n64_r3d_stats_impl(n64_r3d_stats_t *out) { *out = stats; }

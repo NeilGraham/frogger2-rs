@@ -24,6 +24,9 @@ extern crate alloc;
 #[cfg(feature = "encode")]
 pub mod encode;
 
+#[cfg(feature = "objbank")]
+pub mod bank;
+
 /// File magic.
 pub const MAGIC: [u8; 4] = *b"F2NM";
 /// Format version (bumped on any layout change).

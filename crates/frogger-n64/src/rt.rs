@@ -147,6 +147,11 @@ pub fn tex_create_rgba16(width: u32, height: u32, pixels: &[u16]) -> u32 {
 }
 
 /// Creates a texture from its full image and an optional TMEM-sized version for triangles.
+/// Replaces texture `h`'s texels in place (same size/format); false if not possible.
+pub fn tex_update(h: u32, d: &TexDesc) -> bool {
+    unsafe { ffi::n64_tex_update(h, d) != 0 }
+}
+
 pub fn tex_create2(full: &TexDesc, small: Option<&TexDesc>) -> u32 {
     unsafe { ffi::n64_tex_create2(full, small.map_or(core::ptr::null(), |s| s as *const TexDesc)) }
 }

@@ -6,7 +6,8 @@
 //! - every file of `maps/`, `collision/`, `scenics/`, `demos/`, `textures/` (recursively)
 //!   copied unchanged (the game parses them itself);
 //! - `objects/<name>.dll` → `objects/<name>.dll.pcd`: the parsed
-//!   [`ObjectBank`](f2_formats::objbank::ObjectBank), postcard-encoded;
+//!   [`ObjectBank`](f2_formats::objbank::ObjectBank), postcard-encoded, and
+//!   `objects/<name>.dll.f2nm`: its render meshes for the RSP renderer (`f2_n64fmt::bank`);
 //! - `sfx/<bank>.wus` → `sfx/<bank>.wus.meta`: the [`SoundBank`] with every sample's PCM
 //!   removed (uid, loop flag, format), postcard-encoded; plus one WAV per sample,
 //!   `<wav dir>/sfx/<bank>/<uid:08x>.wav`, which `tools/n64/build.sh` converts with
@@ -22,6 +23,8 @@ use std::path::{Path, PathBuf};
 
 /// Suffix of a pre-parsed object bank.
 pub const OBJBANK_SUFFIX: &str = ".pcd";
+/// Suffix of an object bank's F2NM render meshes.
+pub const F2NM_SUFFIX: &str = ".f2nm";
 /// Suffix of a sound bank's metadata.
 pub const SFX_META_SUFFIX: &str = ".meta";
 
@@ -32,6 +35,14 @@ pub const RAW_DIRS: [&str; 5] = ["maps", "collision", "scenics", "demos", "textu
 pub fn encode_object_bank(dll: &[u8]) -> Result<Vec<u8>, String> {
     let bank = ObjectBank::parse(dll).map_err(|e| e.to_string())?;
     postcard::to_allocvec(&bank).map_err(|e| e.to_string())
+}
+
+/// The postcard bank and its F2NM render meshes.
+pub fn encode_object_bank_f2nm(dll: &[u8]) -> Result<(Vec<u8>, Vec<u8>, f2_n64fmt::bank::BankStats), String> {
+    let bank = ObjectBank::parse(dll).map_err(|e| e.to_string())?;
+    let pcd = postcard::to_allocvec(&bank).map_err(|e| e.to_string())?;
+    let (f2nm, st) = f2_n64fmt::bank::encode_bank(&bank);
+    Ok((pcd, f2nm, st))
 }
 
 /// Splits a `.wus` bank into its metadata (PCM removed, postcard) and the samples.
@@ -57,6 +68,8 @@ pub struct Report {
     pub object_banks: usize,
     pub object_bytes_in: u64,
     pub object_bytes_out: u64,
+    pub f2nm_bytes: u64,
+    pub f2nm_tris: u64,
     pub sound_banks: usize,
     pub samples: usize,
     pub sample_bytes: u64,
@@ -104,10 +117,14 @@ pub fn prepare(game: &Path, out: &Path, wav_out: &Path, sound_banks: &[String]) 
     fs::create_dir_all(&dst).map_err(|e| io(&dst, e))?;
     for p in sorted_files(&objs, "dll").map_err(|e| io(&objs, e))? {
         let dll = fs::read(&p).map_err(|e| io(&p, e))?;
-        let enc = encode_object_bank(&dll).map_err(|e| format!("{}: {e}", p.display()))?;
+        let (enc, f2nm, st) = encode_object_bank_f2nm(&dll).map_err(|e| format!("{}: {e}", p.display()))?;
         let name = p.file_name().unwrap().to_string_lossy().to_lowercase();
         let o = dst.join(format!("{name}{OBJBANK_SUFFIX}"));
         fs::write(&o, &enc).map_err(|e| io(&o, e))?;
+        let o = dst.join(format!("{name}{F2NM_SUFFIX}"));
+        fs::write(&o, &f2nm).map_err(|e| io(&o, e))?;
+        rep.f2nm_bytes += f2nm.len() as u64;
+        rep.f2nm_tris += st.tris as u64;
         rep.object_banks += 1;
         rep.object_bytes_in += dll.len() as u64;
         rep.object_bytes_out += enc.len() as u64;

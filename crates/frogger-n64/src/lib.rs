@@ -32,6 +32,8 @@ use f2_draw as _;
 pub mod app;
 #[cfg(target_vendor = "nintendo64")]
 pub mod render_cpu;
+#[cfg(all(target_vendor = "nintendo64", not(feature = "render-cpu")))]
+pub mod render_r3d;
 
 #[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
 mod demo;

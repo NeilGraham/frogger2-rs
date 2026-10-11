@@ -235,6 +235,42 @@ uint32_t n64_tex_create2_impl(const n64_tex_desc_t *full, const n64_tex_desc_t *
 
 uint32_t n64_tex_create_impl(const n64_tex_desc_t *d) { return n64_tex_create2_impl(d, NULL); }
 
+/* Replaces the texels of texture h in place (same size and format, single surface): the
+ * procedural textures (water, fire) change every frame. No reallocation, so r3d aliases and
+ * their load descriptors stay valid; the RDP may still be reading the previous texels for an
+ * in-flight frame (a one-frame mix at worst). Returns 0 if h cannot be updated in place. */
+uint32_t n64_tex_update_impl(uint32_t h, const n64_tex_desc_t *d) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return 0;
+    tex_t *t = &textures[h];
+    tex_format_t fmt = (d->fmt & 0xff) == 1 ? FMT_RGBA32 : FMT_RGBA16;
+    if (!t->small_is_full || t->nfull != 1 || t->tile3d) return 0;
+    surface_t *s = &t->full[0];
+    if (s->width != d->width || s->height != d->height || surface_get_format(s) != fmt) return 0;
+    uint32_t row = TEX_FORMAT_PIX2BYTES(fmt, d->width);
+    for (uint32_t y = 0; y < d->height; y++)
+        memcpy((uint8_t *)s->buffer + y * s->stride, (const uint8_t *)d->pixels + y * row, row);
+    /* surface_alloc buffers are uncached; others need a writeback for the RDP. */
+    if (!((uint32_t)s->buffer & 0x20000000)) data_cache_hit_writeback(s->buffer, s->stride * s->height);
+    if (t->has_addv) {
+        surface_free(&t->addv);
+        t->has_addv = false;
+    }
+    if (cur_tex_loaded == h) cur_tex_loaded = 0;
+    return 1;
+}
+
+/* The TMEM-sized surface triangles of texture h sample (r3d aliases it), NULL if none. */
+const surface_t *n64_tex_surface(uint32_t h) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return NULL;
+    return &textures[h].small;
+}
+
+/* Forget the cached RDP mode/texture (another renderer - r3d - changed the RDP state). */
+void n64_state_invalidate(void) {
+    cur_kind = -1;
+    cur_tex_loaded = 0;
+}
+
 void n64_tex_free_impl(uint32_t h) {
     if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return;
     /* The RDP may still read the surfaces of queued commands. */

@@ -25,6 +25,8 @@ use f2_game::assets::DataSource;
 
 /// Suffix of pre-parsed object banks (`f2_n64prep::OBJBANK_SUFFIX`).
 pub const OBJBANK_SUFFIX: &str = ".pcd";
+/// Suffix of an object bank's F2NM render meshes (`f2_n64prep::F2NM_SUFFIX`).
+pub const F2NM_SUFFIX: &str = ".f2nm";
 /// Suffix of sound-bank metadata (`f2_n64prep::SFX_META_SUFFIX`).
 pub const SFX_META_SUFFIX: &str = ".meta";
 

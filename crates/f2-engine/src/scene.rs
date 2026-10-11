@@ -476,6 +476,117 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
     }
 }
 
+/// Pre-order object index of a skinned model's root mesh in a [`MeshDraw`] (the skin is one
+/// mesh deformed by every bone).
+pub const MESH_SKIN: u16 = u16::MAX;
+
+/// One mesh draw recorded instead of transformed on the CPU, for a back end that does the
+/// MDX transform itself (the N64 RSP renderer): which mesh, its model -> world matrices
+/// (`xform_actor`, one per bone for skins), the frame list `DrawObject` would push its faces
+/// to, and the `PCRenderObject` parameters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeshDraw {
+    /// `Model::id` (`crc("name.obe")`).
+    pub model: u32,
+    /// Pre-order object index (`for_each_object`), or [`MESH_SKIN`].
+    pub object: u16,
+    pub frame: Frame,
+    /// `MeshSink::mats[mat_first..mat_first + mat_count]`.
+    pub mat_first: u32,
+    pub mat_count: u32,
+    pub alpha_mul: f32,
+    pub gouraud: Option<[f32; 3]>,
+    pub override_tex: Option<TexHandle>,
+    /// `View::no_clip` at record time (sky backdrop).
+    pub no_clip: bool,
+    /// Per-object fog (actor path) instead of per vertex (landscape).
+    pub object_fog: bool,
+}
+
+/// Recorded mesh draws of a frame (see [`MeshDraw`]).
+#[derive(Clone, Debug, Default)]
+pub struct MeshSink {
+    pub draws: Vec<MeshDraw>,
+    pub mats: Vec<Mat4>,
+}
+
+impl MeshSink {
+    pub fn clear(&mut self) {
+        self.draws.clear();
+        self.mats.clear();
+    }
+
+    fn push(&mut self, d: MeshDraw, mats: &[Mat4]) {
+        let mat_first = self.mats.len() as u32;
+        self.mats.extend_from_slice(mats);
+        self.draws.push(MeshDraw { mat_first, mat_count: mats.len() as u32, ..d });
+    }
+}
+
+/// [`draw_actor`] recorded into a [`MeshSink`]: same matrices, same frame selection, no
+/// vertex work. Objects without a mesh are skipped; whether a mesh has drawable faces is
+/// the back end's business. `Glow` (never drawn on retail PC) is dropped.
+pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink: &mut MeshSink) {
+    let mats = xform_actor(model, actor);
+    let fade = actor.xlu < 1.0;
+    let extra = actor.extra_flags;
+    let base = MeshDraw {
+        model: model.id,
+        object: 0,
+        frame: Frame::Normal,
+        mat_first: 0,
+        mat_count: 0,
+        alpha_mul: cx.alpha_mul,
+        gouraud: cx.gouraud,
+        override_tex: cx.override_tex,
+        no_clip: cx.view.no_clip,
+        object_fog: true,
+    };
+    if model.is_skinned {
+        if model.root.mesh.is_none() {
+            return;
+        }
+        let frame = object_frame(extra, fade);
+        if frame != Frame::Glow {
+            sink.push(MeshDraw { object: MESH_SKIN, frame, ..base }, &mats);
+        }
+    } else {
+        for_each_object(model, |i, o| {
+            if o.mesh.is_none() {
+                return;
+            }
+            let frame = object_frame(o.flags | extra, fade);
+            if frame != Frame::Glow {
+                sink.push(MeshDraw { object: i as u16, frame, ..base }, &mats[i..i + 1]);
+            }
+        });
+    }
+}
+
+/// [`draw_landscape`] recorded into a [`MeshSink`].
+pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink) {
+    let mut actor = Actor { animated: false, ..Default::default() };
+    let mats = xform_actor(model, &mut actor);
+    for_each_object(model, |i, o| {
+        if o.mesh.is_none() {
+            return;
+        }
+        let d = MeshDraw {
+            model: model.id,
+            object: i as u16,
+            frame: Frame::Normal,
+            mat_first: 0,
+            mat_count: 0,
+            alpha_mul: 1.0,
+            gouraud: None,
+            override_tex: None,
+            no_clip: cx.view.no_clip,
+            object_fog: false,
+        };
+        sink.push(d, &mats[i..i + 1]);
+    });
+}
+
 /// Port of `ConvertObjectToLandscape` + `DrawLandscape` (mdxLandscape.cpp:63,
 /// mdxRender.cpp:1005): static level geometry baked with key-0 transforms,
 /// drawn into the current (normal) frame with per-vertex fog.

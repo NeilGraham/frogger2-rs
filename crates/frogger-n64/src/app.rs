@@ -8,7 +8,8 @@
 //! - **Data**: [`N64Data`] over the DFS (`data.rs`); levels load from inside the
 //!   simulation (`InitLevel` → `take_level_loads`).
 //! - **Video**: logo/story FMVs are skipped for now (`Effect::PlayVideo` ignored).
-//! - **Rendering**: `render_cpu.rs` (to be replaced by the RSP renderer).
+//! - **Rendering**: `render_r3d.rs` (meshes on the RSP, the rest through `render_cpu.rs`);
+//!   with the `render-cpu` feature the phase-2G CPU renderer draws everything.
 
 use crate::audio::Audio;
 use crate::data::{norm_path, AssetStore, DfsStore, N64Data};
@@ -74,6 +75,10 @@ struct Window {
     tris: u32,
     rects: u32,
     max_frame: u32,
+    /// r3d: mesh draws, triangles queued / sent to the RSP after culling.
+    draws: u32,
+    rsp_tris: u32,
+    rsp_sent: u32,
 }
 
 /// The renderer side of the loaded level, outside [`App`] so the data source can free it
@@ -82,6 +87,8 @@ struct Window {
 pub struct Level {
     pub scene: Option<LevelScene>,
     pub gfx: RenderCpu,
+    #[cfg(not(feature = "render-cpu"))]
+    pub r3d: crate::render_r3d::R3dLevel,
     /// Registry images below this index (white, fonts) survive a level unload.
     pub keep_images: u32,
 }
@@ -102,6 +109,8 @@ pub fn unload_level_render() {
         l.scene = None;
         let keep = l.keep_images;
         l.gfx.free_from(keep);
+        #[cfg(not(feature = "render-cpu"))]
+        l.r3d.unload();
         log!("app: level render assets freed for the next load");
     }
 }
@@ -152,7 +161,13 @@ impl App {
         let mut data = N64Data::new(DfsStore);
         data.before_access = Some(unload_level_render);
         let data = Arc::new(data);
-        *LEVEL.lock() = Some(Level { scene: None, gfx: RenderCpu::new(), keep_images: 0 });
+        *LEVEL.lock() = Some(Level {
+            scene: None,
+            gfx: RenderCpu::new(),
+            #[cfg(not(feature = "render-cpu"))]
+            r3d: crate::render_r3d::R3dLevel::new(),
+            keep_images: 0,
+        });
         let mut app = App {
             data,
             game: Game::new(),
@@ -228,6 +243,10 @@ impl App {
         let l = g.as_mut().unwrap();
         l.gfx.reset();
         self.r = Renderer::new_soft();
+        #[cfg(not(feature = "render-cpu"))]
+        {
+            self.r.mesh_sink = Some(f2_engine::MeshSink::default());
+        }
         self.backdrop = None;
         self.game_fonts = None;
         if self.have_fonts {
@@ -280,6 +299,8 @@ impl App {
         ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
         if let Some(l) = lv().as_mut() {
             l.scene = None;
+            #[cfg(not(feature = "render-cpu"))]
+            l.r3d.unload();
         }
         self.rebuild_renderer();
         self.audio.free_samples();
@@ -293,6 +314,8 @@ impl App {
             }
             rt::audio_poll();
         }
+        #[cfg(not(feature = "render-cpu"))]
+        let banks = self.load_meshes(&assets.object_banks, banks);
         let scene = LevelScene::new(world, level, banks, assets.texture_banks.clone(), &self.game);
         lv().as_mut().unwrap().scene = Some(scene);
         for f in &assets.texture_banks {
@@ -325,6 +348,45 @@ impl App {
         self.acc = 0;
         self.last = ticks();
         self.loaded = true;
+    }
+
+    /// The banks' F2NM render meshes into r3d; returns the banks without their render
+    /// geometry (the draw loop only needs hierarchies, keys and flags from them).
+    #[cfg(not(feature = "render-cpu"))]
+    fn load_meshes(&mut self, files: &[String], mut banks: Vec<f2_formats::objbank::ObjectBank>) -> Vec<f2_formats::objbank::ObjectBank> {
+        // The model index LevelScene builds (first bank wins).
+        let mut models = alloc::collections::BTreeMap::new();
+        for (bi, b) in banks.iter().enumerate() {
+            for (mi, m) in b.models.iter().enumerate() {
+                models.entry(m.id).or_insert((bi, mi));
+            }
+        }
+        let mut g = lv();
+        let l = g.as_mut().unwrap();
+        let mut total = 0;
+        // `banks` holds the banks that loaded, in `files` order.
+        let mut bi = 0;
+        for f in files {
+            if bi >= banks.len() {
+                break;
+            }
+            let p = norm_path(f) + crate::data::F2NM_SUFFIX;
+            let Some(bytes) = self.data.store.load(&p) else {
+                log!("app: {p}: not found");
+                continue;
+            };
+            match l.r3d.add_bank(bi, bytes, &banks, &models) {
+                Ok(n) => total += n,
+                Err(e) => log!("app: {p}: {e:?}"),
+            }
+            bi += 1;
+            rt::audio_poll();
+        }
+        for b in &mut banks {
+            f2_n64fmt::bank::strip_geometry(b);
+        }
+        log!("app: {total} r3d meshes for {} banks", banks.len());
+        banks
     }
 
     /// `LoadSfx(worldID)` file part (pcaudio.c:186) + `InitVoices` (frogger.c:78).
@@ -542,7 +604,13 @@ impl App {
             None => [0.0, 0.0, 0.0, 1.0],
         };
         l.gfx.upload(&mut self.r.textures);
+        #[cfg(feature = "render-cpu")]
         l.gfx.submit(&mut self.r, clear);
+        #[cfg(not(feature = "render-cpu"))]
+        {
+            l.r3d.sync_textures(&self.r.textures, &l.gfx);
+            l.r3d.draw(&mut self.r, &mut l.gfx, clear);
+        }
     }
 
     // ------------------------------------------------------------ frame
@@ -585,6 +653,12 @@ impl App {
         w.submit += st.submit_ticks;
         w.tris += st.tris;
         w.rects += st.rects;
+        #[cfg(not(feature = "render-cpu"))]
+        if let Some(l) = lv().as_ref() {
+            w.draws += l.r3d.stats.draws;
+            w.rsp_tris += l.r3d.stats.queued_tris;
+            w.rsp_sent += l.r3d.stats.sent_tris;
+        }
         w.max_frame = w.max_frame.max(t2.wrapping_sub(t0));
         let span = t2.wrapping_sub(self.win_start);
         if span >= 5 * TICKS_PER_SEC {
@@ -598,7 +672,7 @@ impl App {
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (build {} ms, rdp submit {} ms), worst frame {} ms; Game::tick {} us/tick, audio poll {} us/tick; {} tris + {} rects/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (build {} ms, rdp submit {} ms), worst frame {} ms; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -618,6 +692,9 @@ impl App {
             ticks_to_us(w.poll / w.ticks.max(1)),
             w.tris / f,
             w.rects / f,
+            w.draws / f,
+            w.rsp_tris / f,
+            w.rsp_sent / f,
             self.audio.active(),
             self.audio.plays,
             self.audio.missing,

@@ -14,6 +14,12 @@
 //!
 //! A replacement keeps these four calls (or the same shape) and may consume the scene at a
 //! higher level instead of `Renderer::build`'s triangles.
+//!
+//! With the RSP renderer (`render_r3d.rs`, the default) this module still owns the textures
+//! (r3d aliases their TMEM-sized surfaces) and draws everything `f2-engine` builds on the CPU
+//! (backdrops, sprites, effects, shadows, overlays, text): [`RenderCpu::build`] once per frame,
+//! then [`RenderCpu::draw_segment`] for each `Renderer::build_segments` segment between the
+//! RSP's frame lists.
 
 use crate::ffi::{self, Rect, State, TexDesc, Vertex};
 use crate::rt::{self, ticks};
@@ -49,6 +55,15 @@ pub struct RenderCpu {
     persp: bool,
     /// Images the load hook converted while keeping their pixels (skip their dirty entry).
     skip_once: Vec<u32>,
+    /// Per image: bumped whenever its N64 texture handle changes (r3d aliases follow it).
+    gen: Vec<u32>,
+    /// The frame built by [`build`](Self::build).
+    fverts: Vec<TlVertex>,
+    fcmds: Vec<DrawCmd>,
+    marks: [u32; 10],
+    /// Depth of scene triangles: RDP z = `sz * zk` (1 = the faithful 0..1 `sz`; r3d maps its
+    /// linear depth differently, see `r3d::ViewParams::tl_z`).
+    pub zk: f32,
 }
 
 /// Whether a bank texture is read back by the CPU (`f2_draw::book::draw_page_b`).
@@ -77,7 +92,18 @@ impl RenderCpu {
             tex_bytes: 0,
             persp: false,
             skip_once: Vec::new(),
+            gen: Vec::new(),
+            fverts: Vec::new(),
+            fcmds: Vec::new(),
+            marks: [0; 10],
+            zk: 1.0,
         }
+    }
+
+    /// N64 texture of registry image `idx` (0 = none) and its generation.
+    pub fn texture_of(&self, idx: u32) -> (u32, u32) {
+        let i = idx as usize;
+        (self.tex.get(i).copied().unwrap_or(0), self.gen.get(i).copied().unwrap_or(0))
     }
 
     /// Frees every texture (the `Renderer` and its registry were recreated).
@@ -90,6 +116,9 @@ impl RenderCpu {
         self.bytes.clear();
         self.skip_once.clear();
         self.tex_bytes = 0;
+        for g in &mut self.gen {
+            *g = g.wrapping_add(1);
+        }
     }
 
     /// Frees the textures of registry images `first..` (a level unload; fonts stay).
@@ -112,15 +141,25 @@ impl RenderCpu {
     /// chapter pictures, read by `f2_draw::book::draw_page_b`).
     pub fn convert_image_keep(&mut self, idx: u32, img: &mut Image, keep_full: bool, keep_pixels: bool) {
         let i = idx as usize;
-        self.release(i);
         if img.rgba.is_empty() {
+            self.release(i);
             return; // already converted (pixels dropped)
         }
+        self.grow(i);
         // The 1x1 white image stands for "untextured".
         if img.width == 1 && img.height == 1 && img.rgba == [255, 255, 255, 255] {
+            self.release(i);
             return;
         }
         let (mut full, small) = texconv::convert(img.width, img.height, &img.rgba);
+        // Same size and format as the current texture (procedural textures every frame):
+        // update in place, keeping the handle (and r3d's alias of it).
+        if small.is_none() && self.tex.get(i).is_some_and(|&h| h != 0) && rt::tex_update(self.tex[i], &desc(&full)) {
+            if !keep_pixels {
+                img.rgba = Vec::new();
+            }
+            return;
+        }
         if keep_pixels {
             self.skip_once.push(idx);
         } else {
@@ -137,20 +176,28 @@ impl RenderCpu {
                 (full, s)
             }
         };
+        self.release(i);
         let fd = desc(&full);
         let sd = small.as_ref().map(desc);
         self.tex[i] = rt::tex_create2(&fd, sd.as_ref());
+        self.gen[i] = self.gen[i].wrapping_add(1);
         self.bytes[i] = (full.data.len() + small.as_ref().map_or(0, |s| s.data.len())) as u32;
         self.tex_bytes += self.bytes[i];
     }
 
-    /// Frees image `i`'s N64 texture (if any), growing the tables to cover `i`.
-    fn release(&mut self, i: usize) {
+    fn grow(&mut self, i: usize) {
         if self.tex.len() <= i {
             self.tex.resize(i + 1, 0);
             self.bytes.resize(i + 1, 0);
+            self.gen.resize(i + 1, 0);
         }
+    }
+
+    /// Frees image `i`'s N64 texture (if any), growing the tables to cover `i`.
+    fn release(&mut self, i: usize) {
+        self.grow(i);
         if self.tex[i] != 0 {
+            self.gen[i] = self.gen[i].wrapping_add(1);
             rt::tex_free(self.tex[i]);
             self.tex[i] = 0;
             self.tex_bytes -= self.bytes[i];
@@ -172,6 +219,7 @@ impl RenderCpu {
         self.bytes[i] = t.data.len() as u32;
         self.tex_bytes += self.bytes[i];
         self.tex[i] = rt::tex_create2(&desc(&t), None);
+        self.gen[i] = self.gen[i].wrapping_add(1);
         img.rgba = Vec::new();
     }
 
@@ -214,6 +262,47 @@ impl RenderCpu {
         State { flags, blend, tex: self.tex.get(c.tex.0 as usize).copied().unwrap_or(0), alpha_ref }
     }
 
+    /// Builds the frame's CPU draw list (`Renderer::build_segments`) for
+    /// [`draw_segment`](Self::draw_segment).
+    pub fn build(&mut self, r: &mut Renderer, clear: [f64; 4]) {
+        let t0 = ticks();
+        self.persp = r.options.perspective_correct;
+        let (verts, cmds, marks) = r.build_segments(clear);
+        self.fverts = verts;
+        self.fcmds = cmds;
+        self.marks = marks;
+        self.stats = FrameStats { cmds: self.fcmds.len() as u32, build_ticks: ticks().wrapping_sub(t0), ..Default::default() };
+    }
+
+    /// Draws segment `seg` of the built frame (0 = backdrops, 1..=7 = the 3D passes in
+    /// `DrawAllFrames` order, 8 = 2D overlays).
+    pub fn draw_segment(&mut self, seg: usize) {
+        let t0 = ticks();
+        let (a, b) = (self.marks[seg] as usize, self.marks[seg + 1] as usize);
+        let cmds = core::mem::take(&mut self.fcmds);
+        let verts = core::mem::take(&mut self.fverts);
+        let mut st = self.stats;
+        for (k, cmd) in cmds[a..b].iter().enumerate() {
+            let tv = &verts[cmd.first as usize..(cmd.first + cmd.count) as usize];
+            if tv.is_empty() {
+                continue;
+            }
+            let state = self.state(cmd, tv[0].alpha_ref);
+            if cmd.scene {
+                self.tris(tv, &state, &mut st);
+            } else {
+                self.overlay(tv, &state, &mut st);
+            }
+            if k % 16 == 15 {
+                rt::audio_poll();
+            }
+        }
+        self.fcmds = cmds;
+        self.fverts = verts;
+        st.submit_ticks += ticks().wrapping_sub(t0);
+        self.stats = st;
+    }
+
     /// Builds the frame's draw list and draws it (begin → batches → present).
     pub fn submit(&mut self, r: &mut Renderer, clear: [f64; 4]) {
         let t0 = ticks();
@@ -246,7 +335,8 @@ impl RenderCpu {
 
     fn tris(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
         self.verts.clear();
-        self.verts.extend(tv.iter().map(vertex));
+        let zk = self.zk;
+        self.verts.extend(tv.iter().map(|v| Vertex { z: (v.sz * zk).clamp(0.0, 1.0), ..vertex(v) }));
         rt::draw_tris(&self.verts, state);
         st.tris += (tv.len() / 3) as u32;
     }

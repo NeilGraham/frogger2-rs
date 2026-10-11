@@ -133,6 +133,7 @@ uint32_t n64_tex_create(const n64_tex_desc_t *desc);
 /* full: the image (2D blits); small: a TMEM-sized version for triangles, NULL = full fits. */
 uint32_t n64_tex_create2(const n64_tex_desc_t *full, const n64_tex_desc_t *small);
 void n64_tex_free(uint32_t handle);
+uint32_t n64_tex_update(uint32_t handle, const n64_tex_desc_t *desc); /* in-place texel update; 0 = not possible */
 void n64_begin_frame(uint32_t clear_rgba);         /* attach next framebuffer + z-buffer, clear both */
 void n64_draw_tris(const n64_vertex_t *verts, uint32_t ntris, const n64_state_t *state);
 void n64_draw_rects(const n64_rect_t *rects, uint32_t n, const n64_state_t *state);
@@ -162,6 +163,9 @@ uint32_t n64_r3d_group_create(const n64_r3d_group_desc_t *desc); /* -> group han
 void n64_r3d_begin(const n64_r3d_frame_t *frame);                /* after n64_begin_frame */
 void n64_r3d_draw_list(const n64_r3d_list_t *state, const n64_r3d_draw_t *draws, uint32_t n);
 void n64_r3d_stats(n64_r3d_stats_t *out);
+uint32_t n64_r3d_tex_alias(uint32_t tex);                        /* r3d texture over a main.c texture's TMEM surface */
+void n64_r3d_reset(uint32_t tex_first, uint32_t group_first);    /* free r3d textures/groups from these handles on */
+uint32_t n64_r3d_counts(void);                                   /* next texture handle << 16 | next group handle */
 
 /* C -> Rust */
 void f2n64_init(void);

@@ -11,5 +11,8 @@ default = ["encode"]
 # Mesh/texture/file encoders. Needs `alloc` only, so it also builds for the N64 target
 # (the renderer benchmarks build synthetic meshes at boot).
 encode = []
+# MDX object bank -> F2NM meshes (bank.rs); no_std + alloc.
+objbank = ["encode", "dep:f2-formats"]
 
 [dependencies]
+f2-formats = { path = "../f2-formats", default-features = false, optional = true }

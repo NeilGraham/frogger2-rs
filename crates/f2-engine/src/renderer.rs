@@ -281,6 +281,11 @@ pub struct Renderer {
     /// `SPRITECLIPLEFT/TOP/RIGHT/BOTTOM` (internal pixels) applied to unrotated sprite
     /// overlays (`DrawSpriteOverlay`); `None` = no clipping. Set per frame by the host.
     pub sprite_clip: Option<[f32; 4]>,
+    /// When set, [`draw_actor`](Self::draw_actor) / [`draw_landscape`](Self::draw_landscape)
+    /// record [`MeshDraw`]s here instead of transforming vertices (a back end with its own
+    /// T&L, e.g. the N64 RSP renderer); everything else (sprites, effects, 2D) still goes
+    /// through the frames. Cleared by [`begin_frame`](Self::begin_frame).
+    pub mesh_sink: Option<MeshSink>,
     frames: Frames,
     backdrops: Vec<Quad2D>,
     overlays: Vec<Quad2D>,
@@ -469,6 +474,7 @@ impl Renderer {
             output: (640, 480),
             gpu_mips: false,
             sprite_clip: None,
+            mesh_sink: None,
         };
         r.white = r.textures.add_image(1, 1, vec![255; 4]);
         r
@@ -489,6 +495,7 @@ impl Renderer {
             white: TexHandle(0),
             output: (640, 480),
             sprite_clip: None,
+            mesh_sink: None,
         };
         r.white = r.textures.add_image(1, 1, vec![255; 4]);
         r
@@ -729,6 +736,9 @@ impl Renderer {
         self.frames.clear();
         self.backdrops.clear();
         self.overlays.clear();
+        if let Some(s) = &mut self.mesh_sink {
+            s.clear();
+        }
     }
 
     /// Effective supersampling factor (clamped to 0.25..=4).
@@ -817,6 +827,12 @@ impl Renderer {
 
     /// Transforms and draws an actor (`XformActor` + `DrawActor`).
     pub fn draw_actor(&mut self, model: &Model, actor: &mut Actor) {
+        if let Some(mut sink) = self.mesh_sink.take() {
+            let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
+            record_actor(&cx, model, actor, &mut sink);
+            self.mesh_sink = Some(sink);
+            return;
+        }
         let mut frames = core::mem::take(&mut self.frames);
         let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
         draw_actor(&cx, model, actor, &mut frames);
@@ -825,6 +841,11 @@ impl Renderer {
 
     /// Draws a static level model like `DrawLandscape` (key-0 pose).
     pub fn draw_landscape(&mut self, model: &Model) {
+        if let Some(mut sink) = self.mesh_sink.take() {
+            record_landscape(&self.emit_ctx(1.0), model, &mut sink);
+            self.mesh_sink = Some(sink);
+            return;
+        }
         let mut frames = core::mem::take(&mut self.frames);
         draw_landscape(&self.emit_ctx(1.0), model, &mut frames);
         self.frames = frames;
@@ -1036,15 +1057,29 @@ impl Renderer {
     /// Does not clear the queued frame (call [`begin_frame`](Self::begin_frame) for that).
     /// Images to upload first: [`TextureRegistry::take_dirty`].
     pub fn build(&mut self, clear: [f64; 4]) -> (Vec<TlVertex>, Vec<DrawCmd>) {
+        let (v, c, _) = self.build_segments(clear);
+        (v, c)
+    }
+
+    /// [`build`](Self::build) plus the segment boundaries: `marks[k]` is the index of the
+    /// first command of segment `k` (0 = viewport clear + backdrops, 1..=7 = the 3D passes
+    /// in `DrawAllFrames` order -- Normal, Wrap, Xlu, Additive, Late, LateAdditive, Overlay --
+    /// 8 = 2D overlays); `marks[9]` = the number of commands. Commands never span two
+    /// segments, so a back end can interleave its own geometry between them.
+    pub fn build_segments(&mut self, clear: [f64; 4]) -> (Vec<TlVertex>, Vec<DrawCmd>, [u32; 10]) {
+        let mut marks = [0u32; 10];
         let mut verts: Vec<TlVertex> = Vec::with_capacity(self.frames.total() * 3 + 6 * (self.backdrops.len() + self.overlays.len() + 1));
         let mut cmds: Vec<DrawCmd> = Vec::new();
         let white = self.white;
+        // Commands before `barrier` belong to an earlier segment and are never extended.
+        let barrier = core::cell::Cell::new(0usize);
         #[allow(clippy::too_many_arguments)]
         let push = |verts: &mut Vec<TlVertex>, cmds: &mut Vec<DrawCmd>, blend, depth, wrap, scene: bool, tex: Option<TexHandle>, tri: &[TlVertex]| {
             let tex = tex.unwrap_or(white);
             let first = verts.len() as u32;
             verts.extend_from_slice(tri);
-            if let Some(last) = cmds.last_mut() {
+            let open = cmds.len() > barrier.get();
+            if let Some(last) = cmds.last_mut().filter(|_| open) {
                 if last.blend == blend && last.depth == depth && last.tex == tex && last.wrap == wrap && last.scene == scene && last.first + last.count == first
                 {
                     last.count += tri.len() as u32;
@@ -1081,7 +1116,9 @@ impl Renderer {
             (Frame::LateAdditive, Blend::Additive, DepthMode::Test, false, ALPHA_NONZERO, false),
             (Frame::Overlay, Blend::Semi, DepthMode::Off, false, ALPHA_NONZERO, false),
         ];
-        for (frame, blend, depth, wrap, aref, sorted) in passes {
+        for (k, (frame, blend, depth, wrap, aref, sorted)) in passes.into_iter().enumerate() {
+            barrier.set(cmds.len());
+            marks[k + 1] = cmds.len() as u32;
             let tris = &mut self.frames.tris[frame as usize];
             if sorted && sort == XluSort::BackToFront {
                 let key = |t: &Tri| t.v[0].sz + t.v[1].sz + t.v[2].sz;
@@ -1095,10 +1132,13 @@ impl Renderer {
                 push(&mut verts, &mut cmds, blend, depth, wrap, true, t.tex, &v);
             }
         }
+        barrier.set(cmds.len());
+        marks[8] = cmds.len() as u32;
         for q in &self.overlays {
             push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q));
         }
-        (verts, cmds)
+        marks[9] = cmds.len() as u32;
+        (verts, cmds, marks)
     }
 
     #[cfg(feature = "gpu")]
