@@ -315,6 +315,7 @@ platform-independent (bit-identical on Linux/Windows/macOS, x86-64/aarch64):
 | `f2_math::util::{rsin, rcos, util_calc_angle}` | x87 PC24 emulation: argument / quotient rounded once to 24 bits (`mul_pc24`/`div_pc24`, Dekker two-product), `sin`/`cos`/`atan2`, `*4096` rounded to `f32`, `ftol32` | `f2_math::detfloat` (pure-Rust `libm` crate), IEEE `+ − × ÷` only |
 | `f2_math::arccos` (24-bit x87 emulation) | `acos` → `f32` → `× 4096/PI2` → `f32` → `ftol32` | `detfloat::acos` |
 | `f2-game/src/view.rs` | f32 matrices/quaternions, `f32::sqrt`; `InitMaths` acos/sin tables (`f64` → `f32`) | tables via `detfloat::{acos, sin}`; the rest is IEEE-exact |
+| `specfx.rs` `DrawFXRing` rotation (feeds twinkle trails and `Random`) | `acos` (f64), `sinf`/`cosf` of the half angle | `detfloat::acos`; `detfloat::{sin, cos}` in f64 rounded once to f32 (MSVC 6's inline `sinf`; was the host's `sinf`/`cosf` until 2026-10-10, PLATFORMS.md §5) |
 | `tongue.rs`, `specfx.rs` view checks, host `spec_fx_view` (`f2_engine::gu_look_at`) | f32 `+ − × ÷ sqrt` | none needed on x86-64 / aarch64 (would differ on x87-only targets, i586) |
 | `actor2.rs` | one `sqrt` | none needed |
 

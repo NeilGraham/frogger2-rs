@@ -9,6 +9,8 @@
 //! semantics match the original exactly (insertion at head, removal while
 //! iterating by grabbing `next` first, ...).
 
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

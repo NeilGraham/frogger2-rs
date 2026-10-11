@@ -5,6 +5,8 @@
 //! [`crate::platform::PlatformState`] next to the code that uses them), the sprite /
 //! overlay / particle lists (later waves) and a few direction constants.
 
+use crate::prelude::*;
+
 use f2_math::{dot_product_ff, sub_vector_fss, FVector, Fixed, IQuaternion, SVector};
 use serde::{Deserialize, Serialize};
 

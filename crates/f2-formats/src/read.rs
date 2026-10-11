@@ -1,6 +1,8 @@
 //! Little-endian cursor and error type shared by all parsers.
 
-use std::fmt;
+use crate::prelude::*;
+
+use core::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
@@ -20,15 +22,16 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
+#[cfg(feature = "std")]
 impl From<Error> for std::io::Error {
     fn from(e: Error) -> Self {
         std::io::Error::new(std::io::ErrorKind::InvalidData, e)
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Bounds-checked little-endian reader.
 #[derive(Clone)]
@@ -41,7 +44,7 @@ pub struct Reader<'a> {
 macro_rules! rd {
     ($name:ident, $t:ty) => {
         pub fn $name(&mut self) -> Result<$t> {
-            const N: usize = std::mem::size_of::<$t>();
+            const N: usize = core::mem::size_of::<$t>();
             let b = self.bytes(N)?;
             Ok(<$t>::from_le_bytes(b.try_into().unwrap()))
         }

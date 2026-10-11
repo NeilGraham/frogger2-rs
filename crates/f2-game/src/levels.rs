@@ -11,6 +11,8 @@
 //! `ENTITY-%d-%d.DAT`/`SCRIPT-%d-%d.FEV`/`SFXANIM%d%c.SAM` patterns. File names are passed
 //! verbatim to the [`DataSource`] (the host's mod VFS).
 
+use crate::prelude::*;
+
 use crate::assets::DataSource;
 use crate::effects::Effect;
 use crate::language::LANG_NUM_STRINGS;

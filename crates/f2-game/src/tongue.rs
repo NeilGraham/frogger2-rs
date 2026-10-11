@@ -11,6 +11,8 @@
 //! Rendering (`tex = FindTexture("TONGUE")`, `tongueColours[]`) is the renderer's job;
 //! the texture name and colours are kept as constants.
 
+use crate::prelude::*;
+
 use f2_math::{
     distance_between_points_sf, distance_between_points_ss, dot_product_ff, fmul, ftol32, linear_interp_fssf, make_unit, new_set_vector_fs,
     rotate_vector_by_quaternion_ff, scale_vector_ff, set_vector_sf, sub_vector_fss, sub_vector_sss, to_fixed, FVector, Fixed, SVector,

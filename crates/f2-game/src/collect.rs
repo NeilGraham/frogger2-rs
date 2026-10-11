@@ -5,6 +5,8 @@
 //! Special effects go through the `specfx.rs` entry points (stubs until specfx is
 //! ported) at their original call positions, since effect creation draws `Random()`.
 
+use crate::prelude::*;
+
 use f2_math::{distance_between_points_ss, rotate_vector_by_quaternion_ff, FVector, Fixed, SVector};
 use serde::{Deserialize, Serialize};
 

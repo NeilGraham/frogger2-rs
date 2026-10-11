@@ -15,7 +15,9 @@
 //! same inputs the original used (sample present, `globalSoundVol`, distance to
 //! `currCamSource`).
 
-use std::collections::BTreeMap;
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 
 use f2_formats::crc::crc;
 use f2_formats::wus::SoundBank;
@@ -295,7 +297,7 @@ impl Game {
     /// Port of `FreeAmbientSoundList` (PC/pcaudio.c:1425): stops each ambient's buffer and
     /// empties the list. (Stopping other looping buffered samples is host-side.)
     pub fn free_ambient_sound_list(&mut self) {
-        let list = std::mem::take(&mut self.pcaudio.ambient_sound_list);
+        let list = core::mem::take(&mut self.pcaudio.ambient_sound_list);
         for a in list {
             if a.has_buffer {
                 self.effects.push(Effect::StopHandle { handle: a.handle });

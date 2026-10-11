@@ -24,7 +24,7 @@ f2-platform = { path = "../f2-platform", default-features = false }
 
 [target.'cfg(target_os = "freebsd")'.dependencies]
 frogger = { path = "../frogger", default-features = false }
-f2-engine = { path = "../f2-engine", default-features = false }
+f2-engine = { path = "../f2-engine", default-features = false, features = ["std"] }
 f2-audio = { path = "../f2-audio", default-features = false }
 # malloc over libkernel mmap and libm maths, instead of the system libc's (see sce/alloc.rs).
 dlmalloc = "0.2"

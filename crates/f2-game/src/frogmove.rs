@@ -1854,7 +1854,7 @@ mod tests {
             .map(|i| crate::assets::MdxAnimation { anim_start: (i * 10) as i16, anim_end: (i * 10 + 5) as i16, speed: 1.0, looped: 0 })
             .collect();
         let id = f2_formats::crc::crc("frogger.obe");
-        g.models.models.insert(id, std::sync::Arc::new(crate::assets::ModelInfo { id, name: "frogger".into(), animations: anims, ..Default::default() }));
+        g.models.models.insert(id, alloc::sync::Arc::new(crate::assets::ModelInfo { id, name: "frogger".into(), animations: anims, ..Default::default() }));
         let a = g.create_and_add_actor("frogger.obe", 0, 0, 0, crate::mdx_actor::INIT_ANIMATION);
         g.frogger.frog[0] = a;
         g.actor2.actors[a.unwrap()].actor.shadow = Some(Default::default());

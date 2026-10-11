@@ -7,7 +7,20 @@
 //! * calls into platform services become [`effects::Effect`]s;
 //! * one call to [`Game::tick`] = one 60 Hz logical frame (`gameSpeed == 4096`).
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
+
+extern crate alloc;
+
+/// `alloc` items the std prelude would provide (the crate also builds `no_std`).
+#[allow(unused_imports)]
+pub(crate) mod prelude {
+    pub use alloc::borrow::ToOwned;
+    pub use alloc::boxed::Box;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec::Vec;
+    pub use alloc::{format, vec};
+}
 
 pub mod actor2;
 pub mod anim;
@@ -65,11 +78,13 @@ pub mod story;
 pub mod textover; // wave E
 pub mod timer;
 pub mod tongue;
+#[cfg(feature = "std")]
 pub mod trace;
 pub mod training;
 pub mod view; // P3-T: MDX view model / culling
 
 use f2_math::Rng;
+use prelude::*;
 
 pub use define::GameStateStruct;
 pub use effects::Effect;
@@ -249,6 +264,6 @@ impl Game {
 
     /// Drains platform requests produced since the last call.
     pub fn take_effects(&mut self) -> Vec<Effect> {
-        std::mem::take(&mut self.effects)
+        core::mem::take(&mut self.effects)
     }
 }

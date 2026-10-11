@@ -9,6 +9,8 @@
 //! The multiplayer HUD (`multiHud`: `InitMultiHUD`, `EnableMultiHUD`, `DisableMultiHUD`,
 //! `UpDateMultiplayerInfo`) is at the end of this file.
 
+use crate::prelude::*;
+
 use f2_math::{fmul, rsin};
 use serde::{Deserialize, Serialize};
 

@@ -12,7 +12,9 @@
 //!
 //! No gameplay state lives outside [`Game`]: the only process-wide data in the crate are
 //! constant tables (`ORIG_WORLD_VISUAL_DATA`, story tables) and the `view.rs` acos/sin
-//! table cache (`OnceLock`, a pure function of nothing).
+//! table cache (`OnceBox`, a pure function of nothing).
+
+use crate::prelude::*;
 
 use serde::ser::{self, Serialize};
 
@@ -33,7 +35,7 @@ impl Game {
     /// are kept (they belong to frames that were already simulated and are still to be
     /// presented).
     pub fn restore(&mut self, s: &Game) {
-        let effects = std::mem::take(&mut self.effects);
+        let effects = core::mem::take(&mut self.effects);
         self.clone_from(s);
         self.effects = effects;
     }
@@ -190,14 +192,14 @@ impl StateHasher {
 #[derive(Debug)]
 pub struct HashError;
 
-impl std::fmt::Display for HashError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for HashError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("hash error")
     }
 }
-impl std::error::Error for HashError {}
+impl core::error::Error for HashError {}
 impl ser::Error for HashError {
-    fn custom<T: std::fmt::Display>(_msg: T) -> Self {
+    fn custom<T: core::fmt::Display>(_msg: T) -> Self {
         HashError
     }
 }

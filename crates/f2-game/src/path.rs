@@ -7,6 +7,8 @@
 //! their nodes (enemy code writes `nodes[n].worldTile` at runtime) - the pool keeps
 //! that aliasing.
 
+use crate::prelude::*;
+
 use f2_math::{fmul, make_unit, sub_vector_fss, FVector, Fixed, Rng, SVector};
 use serde::{Deserialize, Serialize};
 

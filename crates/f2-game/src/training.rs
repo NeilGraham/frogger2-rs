@@ -2,6 +2,8 @@
 //! with its sliding hint panel. The hints come from the level script (`EV_HINT`,
 //! [`crate::script`]): `TrainingHint(GAMESTRING(str + STR_TRAINING1))`.
 
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 use crate::define::mode::TRAINING_MODE;

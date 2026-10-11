@@ -4,8 +4,10 @@
 //! level files and a few facts about models (animation tables, radius), never
 //! textures or audio data.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 
 use f2_formats::objbank::{Object, ObjectBank};
 use serde::{Deserialize, Serialize};
@@ -47,7 +49,7 @@ pub trait DataSource {
 
 /// In-memory data source (tests).
 #[derive(Default)]
-pub struct MemData(pub HashMap<String, Vec<u8>>);
+pub struct MemData(pub BTreeMap<String, Vec<u8>>);
 
 impl DataSource for MemData {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
@@ -57,8 +59,10 @@ impl DataSource for MemData {
 
 /// Simple directory-backed source (case-insensitive by lowercasing; imported
 /// data is stored lowercase).
+#[cfg(feature = "std")]
 pub struct DirData(pub std::path::PathBuf);
 
+#[cfg(feature = "std")]
 impl DataSource for DirData {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         std::fs::read(self.0.join(path.replace('\\', "/").to_lowercase())).ok()
@@ -151,7 +155,8 @@ impl ModelInfo {
 /// Models from all loaded object banks, keyed by `crc("name.obe")`.
 #[derive(Clone, Debug, Default)]
 pub struct ModelTable {
-    pub models: HashMap<u32, Arc<ModelInfo>>,
+    /// Keyed lookups only (never iterated), so the map type does not affect behaviour.
+    pub models: BTreeMap<u32, Arc<ModelInfo>>,
 }
 
 impl ModelTable {
@@ -198,7 +203,7 @@ impl ModelTable {
                     true_centre,
                     actor_radius,
                     obj_sprites,
-                    xform_tree: std::iter::once(&m.root).chain(m.root_siblings.iter()).map(crate::view::XNode::from_object).collect(),
+                    xform_tree: core::iter::once(&m.root).chain(m.root_siblings.iter()).map(crate::view::XNode::from_object).collect(),
                     anim_past_end: bank.anim_past_end.iter().find(|e| e.0 == m.id).and_then(|e| e.1.clone()).map(|a| MdxAnimation {
                         anim_start: a.start,
                         anim_end: a.end,

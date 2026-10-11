@@ -2,6 +2,8 @@
 //! animation→sound maps (`.sam`). Values are kept raw (unscaled) exactly as
 //! stored; the loaders in the game multiply positions by `SCALE` (10).
 
+use crate::prelude::*;
+
 use crate::read::{Reader, Result};
 
 /// `SVECTOR` on PC (`PC/libgte.h`): four i16.
@@ -165,6 +167,10 @@ pub fn parse_scenics(data: &[u8]) -> Result<Vec<Scenic>> {
     Ok(out)
 }
 
+#[cfg(not(feature = "std"))]
+fn log_mismatch(_count: i32, _chained: usize) {}
+
+#[cfg(feature = "std")]
 fn log_mismatch(count: i32, chained: usize) {
     if std::env::var_os("F2_FORMATS_DEBUG").is_some() {
         eprintln!("sce: header count {count} but chain has {chained} entries");

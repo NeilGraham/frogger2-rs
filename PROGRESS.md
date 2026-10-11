@@ -61,8 +61,10 @@ before a public release.
 - **Last 4 puzzle levels in the finish corpus** (agent running): 1-0, 1-2, 2-0 and 6-2 are not yet
   played to the end automatically (deadly-tile timing, a superhop, platform-heavy search, a gated
   level-ending trigger); hand-written waypoints and planner improvements.
-- **`f2-game` `no_std` + `alloc`** (agent running) for future console targets (blockers listed in
-  [docs/PLATFORMS.md](docs/PLATFORMS.md) §5).
+- **`no_std` + `alloc` core done** (N64 phase 1A): `f2-game`, `f2-formats` and `f2-engine`'s render
+  core build without `std` (CI: `thumbv7em-none-eabihf` and big-endian MIPS); parity corpus and demo
+  traces byte-identical. RAM numbers for the N64 budget in
+  [research/n64-memory.md](research/n64-memory.md).
 
 Fixed today by the finish corpus: the frog's celebrate animation reads past the end of the animation
 table in the original (an off-by-one the exe gets away with; ported faithfully, known-bugs #28), and

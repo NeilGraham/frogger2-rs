@@ -17,7 +17,7 @@ unchanged (parity-verified `f2-game`), so the N64 build plays exactly like the P
  │ IPL3 + ELF (compressed)  │  boot  │ code + libdragon + Rust core   ~1.5 MB│
  │ DFS asset pack           │ ─────▶ │ framebuffers 3× 320×240×16b  450 KB   │
  │  ├ global (fonts, UI)    │        │ z-buffer                      150 KB  │
- │  ├ per-world banks       │ stream │ game state (f2-game)          ~? KB   │
+ │  ├ per-world banks       │ stream │ game state (f2-game)        ≤ 0.9 MB  │
  │  ├ per-level data        │ ─────▶ │ level working set (models,    ~3.5 MB │
  │  ├ sfx banks (deduped)   │        │   textures, collision, script)        │
  │  ├ music (Opus)          │        │ audio (mixer, music stream)   ~300 KB │
@@ -95,6 +95,12 @@ Measured by phase 1 (the plan is invalid if this does not fit): `size_of::<Game>
 largest level's decoded working set (models for generic + world + level banks, textures,
 collision, script), mixer and music buffers, FMV decoder buffers (FMV runs with the game
 unloaded). Levels load from ROM at level start (PI DMA ~5 MB/s + decompression).
+
+Phase 1A measurements (`research/n64-memory.md`, 32-bit pointers): `size_of::<Game>()` =
+28,408 bytes on the N64 target; simulation heap ≤ 887 KiB live in any level; level working set
+with the PC data structures (simulation + parsed object banks + 16-bit textures) 2.0–3.6 MiB
+(max 3,649 KiB, Ancients 3). The PC loader's transient peak (whole `.wus` sample banks, up to
+14 MiB) must not be reproduced: the N64 data source hands the simulation pre-extracted facts.
 
 ## 4. Phases and owners
 1. **Foundations (parallel)**

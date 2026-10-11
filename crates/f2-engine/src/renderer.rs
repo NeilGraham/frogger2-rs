@@ -1,6 +1,10 @@
 //! wgpu back end: rasterises the CPU-built TL triangle lists (`scene.rs`) with
 //! the D3D7 render states MDX used, plus 2D quads, backdrops and text.
 
+#[cfg(not(feature = "std"))]
+use crate::fmath::FloatExt;
+use crate::prelude::*;
+
 use crate::anim::Actor;
 use crate::font::Font;
 use crate::scene::*;
@@ -12,13 +16,14 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct EngineError(pub String);
-impl std::fmt::Display for EngineError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for EngineError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.0)
     }
 }
-impl std::error::Error for EngineError {}
-fn err(e: impl std::fmt::Display) -> EngineError {
+impl core::error::Error for EngineError {}
+#[cfg(feature = "std")]
+fn err(e: impl core::fmt::Display) -> EngineError {
     EngineError(e.to_string())
 }
 
@@ -119,7 +124,8 @@ pub enum Blend {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum DepthMode {
+/// Depth state of a [`DrawCmd`] (MDX `normalZRS` / `xluZRS` / `noZRS`).
+pub enum DepthMode {
     /// `normalZRS`: LESSEQUAL, write.
     TestWrite,
     /// `xluZRS`: LESSEQUAL, no write.
@@ -164,15 +170,21 @@ pub const OVERLAY_SPACE: f32 = 4096.0;
 const ALPHA_TIGHT: f32 = 100.0;
 const ALPHA_NONZERO: f32 = 0.0;
 
-pub(crate) struct DrawCmd {
-    pub(crate) blend: Blend,
-    pub(crate) depth: DepthMode,
-    pub(crate) tex: TexHandle,
-    pub(crate) wrap: bool,
+/// One batch of the draw list built by [`Renderer::build`]: `count` vertices (whole
+/// triangles) from `first`, drawn with one render state. Back ends (wgpu, `soft`, `gles`,
+/// external ones such as the N64 RDP) consume these in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawCmd {
+    pub blend: Blend,
+    pub depth: DepthMode,
+    /// Texture (`textures.images[tex.0]`); untextured geometry uses a 1x1 white image.
+    pub tex: TexHandle,
+    /// Texture coordinates wrap (else clamp).
+    pub wrap: bool,
     /// 3D frame triangle (scissored to the viewport when it is clamped).
-    pub(crate) scene: bool,
-    pub(crate) first: u32,
-    pub(crate) count: u32,
+    pub scene: bool,
+    pub first: u32,
+    pub count: u32,
 }
 
 /// Sampler variant: (wrap, linear, anisotropy).
@@ -235,6 +247,7 @@ impl RgbaImage {
         self.pixels[i..i + 4].try_into().unwrap()
     }
 
+    #[cfg(feature = "std")]
     pub fn write_png(&self, path: impl AsRef<std::path::Path>) -> Result<(), EngineError> {
         let f = std::fs::File::create(path).map_err(err)?;
         let mut enc = png::Encoder::new(std::io::BufWriter::new(f), self.width, self.height);
@@ -522,7 +535,7 @@ impl Renderer {
             self.gpu_mips = mips;
             self.textures.dirty = (0..self.textures.images.len() as u32).collect();
         }
-        for i in std::mem::take(&mut self.textures.dirty) {
+        for i in core::mem::take(&mut self.textures.dirty) {
             let img = &self.textures.images[i as usize];
             let size = wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 };
             let chain = if mips && img.width.max(img.height) <= MIP_MAX_SIZE && img.rgba.len() as u32 == img.width * img.height * 4 {
@@ -652,7 +665,7 @@ impl Renderer {
                     entry_point: Some("vs"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<TlVertex>() as u64,
+                        array_stride: core::mem::size_of::<TlVertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attrs,
                     })],
@@ -802,7 +815,7 @@ impl Renderer {
 
     /// Transforms and draws an actor (`XformActor` + `DrawActor`).
     pub fn draw_actor(&mut self, model: &Model, actor: &mut Actor) {
-        let mut frames = std::mem::take(&mut self.frames);
+        let mut frames = core::mem::take(&mut self.frames);
         let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
         draw_actor(&cx, model, actor, &mut frames);
         self.frames = frames;
@@ -810,7 +823,7 @@ impl Renderer {
 
     /// Draws a static level model like `DrawLandscape` (key-0 pose).
     pub fn draw_landscape(&mut self, model: &Model) {
-        let mut frames = std::mem::take(&mut self.frames);
+        let mut frames = core::mem::take(&mut self.frames);
         draw_landscape(&self.emit_ctx(1.0), model, &mut frames);
         self.frames = frames;
     }
@@ -1014,7 +1027,13 @@ impl Renderer {
 
     // ---------------------------------------------------------------- submission
 
-    pub(crate) fn build(&mut self, clear: [f64; 4]) -> (Vec<TlVertex>, Vec<DrawCmd>) {
+    /// Builds the frame's draw list in `DrawAllFrames` order: the viewport clear quad (when
+    /// clamped), backdrops, the seven 3D frame passes (translucent passes depth-sorted per
+    /// [`RenderOptions::xlu_sort`]), then 2D overlays. Screen-space vertices (pixels of the
+    /// internal view, `sz` depth 0..1, `rhw`); each [`DrawCmd`] is a run of whole triangles.
+    /// Does not clear the queued frame (call [`begin_frame`](Self::begin_frame) for that).
+    /// Images to upload first: [`TextureRegistry::take_dirty`].
+    pub fn build(&mut self, clear: [f64; 4]) -> (Vec<TlVertex>, Vec<DrawCmd>) {
         let mut verts: Vec<TlVertex> = Vec::with_capacity(self.frames.total() * 3 + 6 * (self.backdrops.len() + self.overlays.len() + 1));
         let mut cmds: Vec<DrawCmd> = Vec::new();
         let white = self.white;

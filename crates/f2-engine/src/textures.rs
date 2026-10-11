@@ -5,8 +5,10 @@
 //! time (`UpdateAnimatingTextures`, mdxTexture.cpp:768), so faces that
 //! reference the base CRC animate automatically.
 
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 use f2_formats::texture::{TexBank, TexType, Texture};
-use std::collections::HashMap;
 
 /// Index of an uploaded GPU image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -39,7 +41,7 @@ pub struct TexEntry {
 #[derive(Default)]
 pub struct TextureRegistry {
     pub entries: Vec<TexEntry>,
-    by_crc: HashMap<u32, usize>,
+    by_crc: BTreeMap<u32, usize>,
     pub images: Vec<Image>,
     /// Images not yet uploaded to the GPU (indices into `images`).
     pub(crate) dirty: Vec<u32>,
@@ -48,6 +50,12 @@ pub struct TextureRegistry {
 impl TextureRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Images added since the last call (indices into `images`), for a back end that
+    /// uploads them itself.
+    pub fn take_dirty(&mut self) -> Vec<u32> {
+        core::mem::take(&mut self.dirty)
     }
 
     /// Adds a raw RGBA8 image (no CRC entry) and returns its handle.

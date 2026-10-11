@@ -9,10 +9,30 @@
 //!
 //! World conventions: right-handed, Y up, original float units of the banks.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+/// `alloc` items the std prelude would provide (the crate also builds `no_std`).
+#[allow(unused_imports)]
+pub(crate) mod prelude {
+    pub use alloc::borrow::ToOwned;
+    pub use alloc::boxed::Box;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec::Vec;
+    pub use alloc::{format, vec};
+}
+
+#[cfg(not(feature = "std"))]
+mod fmath;
+
+use prelude::*;
+
 pub mod anim;
 pub mod font;
 #[cfg(feature = "gles2")]
 pub mod gles;
+#[cfg(feature = "std")]
 pub mod load;
 pub mod math;
 pub mod renderer;
@@ -24,7 +44,7 @@ pub mod vkraw;
 
 pub use anim::{actor_bounds, xform_actor, Actor};
 pub use font::Font;
-pub use renderer::{Blend, EngineError, FontId, Quad2D, Renderer, RgbaImage, OVERLAY_SPACE};
+pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, Quad2D, Renderer, RgbaImage, OVERLAY_SPACE};
 #[cfg(feature = "gpu")]
 pub use renderer::{GpuContext, WindowSurface};
 pub use scene::{Camera, Fog, Frame, RenderOptions, TlVertex, Tri, View, XluSort};

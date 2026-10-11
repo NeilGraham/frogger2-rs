@@ -3,6 +3,8 @@
 //! `platformList`, `currPlatform[]` and `destPlatform[]` are defined in `frogger.c`
 //! in the original; they live here with the code that owns them.
 
+use crate::prelude::*;
+
 use f2_math::{
     add_to_vector_sf, add_vector_sfs, add_vector_ssf, dot_product_ff, fmul, fsqrt_f, iquat_slerp, make_unit, new_set_vector_fs, scale_vector_ff,
     sub_from_vector_sf, sub_vector_fss, FVector, Fixed, IQuaternion, SVector,

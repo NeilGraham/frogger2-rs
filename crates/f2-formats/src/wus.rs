@@ -6,6 +6,8 @@
 //!                u32 loop;  WAVEFORMATEX (18 bytes, packed; cbSize is junk); u8 pcm[pcmLength] }
 //! ```
 
+use crate::prelude::*;
+
 use crate::read::{Reader, Result};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
