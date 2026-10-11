@@ -1,9 +1,11 @@
 //! `f2z bench <level> <files...>`: compresses each file (no dictionary, no transform),
 //! verifies the round trip and prints totals and decode speed.
-//! `f2z c <in> <out>` / `f2z d <in> <out>`: single file (no dictionary).
+//! `f2z c <in> <out>`: single file (no dictionary).
+//! `f2z d <in> <out> [--dict <class.f2zd>]`: single file; with `--dict`, the pack's
+//! F2Z-compressed dictionary is decoded first and used for the stream.
 
 use f2_n64z::enc::{compress, Options};
-use f2_n64z::{header, Decoder};
+use f2_n64z::{header, Decoder, Dict};
 use std::time::Instant;
 
 fn main() {
@@ -14,12 +16,14 @@ fn main() {
             std::fs::write(&a[2], compress(&d, &[], None, &Options::default())).unwrap();
         }
         Some("d") => {
-            let z = std::fs::read(&a[1]).unwrap();
-            let h = header(&z).unwrap();
-            let mut out = vec![0u8; h.raw_size as usize];
-            let mut tmp = vec![0u8; h.raw_size as usize];
             let mut dec = Box::new(Decoder::new());
-            dec.decode(&z, None, &mut out, &mut tmp).unwrap();
+            let dict_bytes = match a.get(3).map(String::as_str) {
+                Some("--dict") => Some(decode_file(&mut dec, &std::fs::read(&a[4]).unwrap(), None)),
+                Some(o) => panic!("unknown option {o}"),
+                None => None,
+            };
+            let dict = dict_bytes.as_deref().map(|b| Dict::parse(b).unwrap());
+            let out = decode_file(&mut dec, &std::fs::read(&a[1]).unwrap(), dict.as_ref());
             std::fs::write(&a[2], out).unwrap();
         }
         Some("bench") => {
@@ -61,6 +65,14 @@ fn main() {
                 raw as f64 / dec_t / 1e6
             );
         }
-        _ => eprintln!("usage: f2z bench <level> <files...> | c <in> <out> | d <in> <out>"),
+        _ => eprintln!("usage: f2z bench <level> <files...> | c <in> <out> | d <in> <out> [--dict <class.f2zd>]"),
     }
+}
+
+fn decode_file(dec: &mut Decoder, z: &[u8], dict: Option<&Dict>) -> Vec<u8> {
+    let h = header(z).unwrap();
+    let mut out = vec![0u8; h.raw_size as usize];
+    let mut tmp = vec![0u8; h.raw_size as usize];
+    dec.decode(z, dict, &mut out, &mut tmp).unwrap();
+    out
 }

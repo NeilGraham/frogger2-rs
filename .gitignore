@@ -19,6 +19,8 @@
 
 # Rust
 /target/
+# own-workspace crates built on the host (cargo test --manifest-path crates/<crate>/Cargo.toml)
+/crates/*/target/
 **/*.rs.bk
 
 # Claude Code worktrees/settings
