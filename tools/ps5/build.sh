@@ -240,7 +240,7 @@ fi
 "$NT" self --inspect --file "$APP/eboot.bin" | grep -E "integrity|container"
 
 if [ "$FFPKG" = 1 ]; then
-    UFS2="${F2_UFS2TOOL:-$(ls "$PS5VK"/.deps/UFS2Tool/*/UFS2Tool* 2>/dev/null | head -1)}"
+    UFS2="${F2_UFS2TOOL:-$(ls "$PS5VK"/.deps/UFS2Tool/.ufs2tool-run-linux "$PS5VK"/.deps/UFS2Tool/*/UFS2Tool* 2>/dev/null | head -1)}"
     [ -x "$UFS2" ] || { echo "--ffpkg: UFS2Tool not found (set F2_UFS2TOOL; PS5_Vulkan's tools/setup-packaging-dependencies.sh ffpkg builds it)" >&2; exit 1; }
     rm -f "$OUT/$TITLE_ID.ffpkg"
     "$UFS2" makefs -S 4096 -b 20% -t ffs \
