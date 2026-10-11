@@ -17,7 +17,7 @@ agent was told to commit WIP and keep a "Status / next steps" section in its doc
 |---|---|---|---|
 | `adc96df12c4758e62` | N64 1C: asset packer `tools/f2-n64pack`, codec `crates/f2-n64z` (F2Z), `research/n64-compression.md` | 14 commits ahead of `feature/n64`; was measuring F2Z decode speed in ares | **Merge conflicts** with `feature/n64` in `.gitignore`, `Cargo.lock`, `Cargo.toml`, `crates/frogger-n64/{Cargo.toml,src/lib.rs}`, `tools/n64/README.md` — resolve (keep both sides; frogger-n64 is its own workspace) |
 | `a7fca4ab703e18cb9` | N64 2R: RSP renderer (custom rspq ucode / GL RSP pipeline), `crates/f2-n64fmt`, `docs/n64-model-format.md` | in progress | plug into `crates/frogger-n64/src/render_cpu.rs` interface (`reset`/`convert_image`/`upload`/`submit`) |
-| `acca0b3ce23c50ba2` | N64 2G: playable game loop (merged), then fixing **water red splotches** + **empty story book** (user-reported in ares) | fixes in progress | likely causes: RDP additive blend wraps instead of clamping; procedural water texture conversion; book page textures > 4 KB TMEM / 2D path missing |
+| `acca0b3ce23c50ba2` | N64 2G: playable game loop + water/story-book fixes | **done, merged** (`efe8ea4`) | arcade-machine screen copy not drawn (needs retained RGBA like the book); FMV, saves |
 | `a90c2347f335f8b21` | N64 3S: f2-game speed on the VR4300 (sim = 10–14 ms/tick, need ≤ ~5) with bit-identical parity | in progress | exact rsin/rcos tables, no per-tick list copies, cached per-level data; parity: 3 demo traces + `f2-parity check --corpus all` identical |
 | `a0d5f7cb14e199305` | PS4/PS5 real-hardware fixes + hardware test ladder | in progress | see below |
 
