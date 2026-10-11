@@ -101,10 +101,9 @@ pub fn run(s: &Scenario, data: Arc<dyn DataSource + Send + Sync>, k: u32, input:
             g.session.level_loads.clear();
             r.ticks += 1;
             let same_level = before.2 == g.frogger.player[0].level_num && g.act_frame_count > before.0;
-            if before.1 != PAUSE_MODE && g.game_state.mode != PAUSE_MODE && same_level {
-                if g.act_frame_count.wrapping_sub(before.0) != k || g.game_speed != 4096 * k as i32 {
-                    r.bad_steps += 1;
-                }
+            let stepped = g.act_frame_count.wrapping_sub(before.0) == k && g.game_speed == 4096 * k as i32;
+            if before.1 != PAUSE_MODE && g.game_state.mode != PAUSE_MODE && same_level && !stepped {
+                r.bad_steps += 1;
             }
             let f = g.trace_frame();
             if let Some(p) = f.players.first() {
