@@ -42,6 +42,7 @@
     RUST_TO_C n64_draw_tris
     RUST_TO_C n64_present
     RUST_TO_C n64_rdp_wait
+    RUST_TO_C n64_set_fps_limit
     RUST_TO_C n64_beep
     RUST_TO_C n64_audio_stats
     RUST_TO_C n64_memory_size

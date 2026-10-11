@@ -14,6 +14,8 @@
 #define SFX_CH0 2
 
 static surface_t zbuf;
+/* Frame pacing (app.rs, n64_set_fps_limit): frames shown at most this often (0 = no limit). */
+static uint32_t fps_limit;
 static surface_t *last_fb;
 
 /* Textures: `full` is the image as uploaded (2D blits split it into TMEM-sized pieces);
@@ -210,7 +212,7 @@ uint32_t n64_fmv_play_impl(const char *path) {
         .osd_callback = fmv_osd,
     };
     fmv_play(path, &p);
-    display_set_fps_limit(0);
+    display_set_fps_limit(fps_limit); /* the game's frame pacing */
     mixer_ch_set_limits(FMV_CH, 16, 48000, 0);
     mixer_ch_set_limits(FMV_CH + 1, 16, 48000, 0);
     cur_kind = -1;
@@ -876,6 +878,11 @@ void n64_present_impl(void) {
 }
 
 void n64_rdp_wait_impl(void) { rspq_wait(); }
+
+void n64_set_fps_limit_impl(uint32_t fps) {
+    fps_limit = fps;
+    display_set_fps_limit(fps);
+}
 
 /* ---- sampling profiler (feature `profile`): a 2 kHz timer interrupt records the
  * interrupted PC (and $ra) of the main thread in 32-byte buckets; n64_prof(1) prints the

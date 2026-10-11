@@ -226,6 +226,7 @@ extern "C" {
     pub fn n64_draw_tris(verts: *const Vertex, ntris: u32, state: *const State);
     pub fn n64_present();
     pub fn n64_rdp_wait();
+    pub fn n64_set_fps_limit(fps: u32);
     pub fn n64_beep(freq_hz: u32, ms: u32);
     pub fn n64_audio_stats() -> u32;
     pub fn n64_memory_size() -> u32;

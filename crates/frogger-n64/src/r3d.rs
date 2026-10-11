@@ -23,22 +23,6 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use f2_n64fmt::{File, MeshView};
 
-/// TEMP phase-3P probes (no-ops on the host).
-#[inline(always)]
-fn pt() -> u32 {
-    #[cfg(target_vendor = "nintendo64")]
-    return crate::rt::ticks();
-    #[cfg(not(target_vendor = "nintendo64"))]
-    0
-}
-#[inline(always)]
-fn pa(_i: usize, _t0: u32) -> u32 {
-    #[cfg(target_vendor = "nintendo64")]
-    return crate::rt::probe_add(_i, _t0);
-    #[cfg(not(target_vendor = "nintendo64"))]
-    0
-}
-
 /// A row-vector 4x4 matrix (`v' = v * M`, translation in row 3), as f2-engine `math.rs`.
 pub type Mat4 = [[f32; 4]; 4];
 
@@ -483,6 +467,7 @@ pub fn model_scaled(model: &Mat4, pos_scale: f32) -> Mat4 {
 
 /// Packs a scaled model matrix ([`model_scaled`]; lanes x, y, z of each row) and the draw's
 /// colour parameters into the `F2_DRAW` uniform.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
 pub fn draw_uniform(m: &Mat4, p: &DrawParams) -> R3dDrawUniform {
     let mut mtx_i = [0i16; 16];
     let mut mtx_f = [0u16; 16];
@@ -824,6 +809,7 @@ impl R3d {
     /// spheres, pushing the visible part indices to `vis`. Conservative: a culled batch is
     /// one whose every face MDX would reject (all vertices off-screen past one edge, or
     /// beyond near/far), so the image is unchanged.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn cull_parts(&mut self, mesh: usize, mp: &Mat4, no_clip: bool) -> u32 {
         let res = &self.meshes[mesh];
         let first = self.vis.len();
@@ -893,6 +879,7 @@ impl R3d {
     }
 
     /// `W` (view depth - DIST) of a model matrix's origin.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn origin_w(&self, model: &Mat4) -> f32 {
         let vp = &self.vp;
         model[3][0] * vp[0][3] + model[3][1] * vp[1][3] + model[3][2] * vp[2][3] + vp[3][3]
@@ -911,6 +898,7 @@ impl R3d {
     /// (`MeshDraw::stamp`): when the previous frame's draw `slot` had the same mesh, stamp,
     /// parameters and view, its uniform and visible parts are reused (no conversion, no
     /// culling, no copy). `slot` `u32::MAX` or `stamp` 0: no reuse.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     pub fn draw_slot(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams, slot: u32, stamp: u32) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         self.queued_tris += res.tris;
@@ -939,19 +927,16 @@ impl R3d {
                 }
             }
         }
-        let t0 = pt();
         let mp = model_scaled(model, res.pos_scale);
         let vis_first = self.vis.len() as u32;
         let sent0 = self.sent_tris;
         let vis_count = self.cull_parts(mesh.0 as usize, &mp, p.no_clip);
-        let t0 = pa(1, t0);
         let mut u = R3dDrawUniform::default();
         if vis_count != 0 {
             u = draw_uniform(&mp, p);
             let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(model) } else { 0.0 };
             draw_fog(&mut u, &self.view, p, w0);
         }
-        let t0 = pa(6, t0);
         if cached {
             let (frame, view_gen, sent) = (self.frame_no, self.view_gen, self.sent_tris - sent0);
             let e = self.slots[slot as usize].get_or_insert_with(|| {
@@ -985,9 +970,9 @@ impl R3d {
         } else if vis_count != 0 {
             self.push_rec(list, mesh, p, u, vis_first, vis_count);
         }
-        pa(7, t0);
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn push_rec_ptr(&mut self, list: List, mesh: MeshId, p: &DrawParams, uptr: *const R3dDrawUniform, vis_first: u32, vis_count: u32) {
         let rec = DrawRec {
             u: u32::MAX,
@@ -1002,6 +987,7 @@ impl R3d {
         self.lists[list as usize].push(rec);
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn push_rec(&mut self, list: List, mesh: MeshId, p: &DrawParams, u: R3dDrawUniform, vis_first: u32, vis_count: u32) {
         let arena = &mut self.uni[self.uni_frame];
         arena.push(u);
@@ -1020,6 +1006,7 @@ impl R3d {
 
     /// Queues a skinned mesh draw: one model → world matrix per bone (pre-order object
     /// index, as `xform_actor` returns them).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     pub fn draw_skinned(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         if bones.is_empty() {
@@ -1056,6 +1043,7 @@ impl R3d {
     /// Draws all queued lists in `DrawAllFrames` order; `after(list)` runs after each list
     /// (for CPU-side batches that belong between lists: sprites in `Late`, HUD in
     /// `Overlay`, ...). Clears the lists.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     pub fn flush(&mut self, mut after: impl FnMut(List)) {
         #[cfg(target_vendor = "nintendo64")]
         unsafe {
@@ -1068,6 +1056,7 @@ impl R3d {
         // `vis` stays until the next `begin_frame` (reused draws copy from it).
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     fn flush_list(&mut self, list: List) {
         let recs = &self.lists[list as usize];
         if recs.is_empty() {

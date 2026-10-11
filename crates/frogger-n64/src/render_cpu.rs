@@ -314,6 +314,7 @@ impl RenderCpu {
         }
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     fn state(&self, c: &DrawCmd, aref: f32) -> State {
         let mut flags = ffi::BILINEAR | ffi::UVNORM;
         flags |= match c.depth {
@@ -376,6 +377,7 @@ impl RenderCpu {
 
     /// Draws segment `seg` of the built frame (0 = backdrops, 1..=7 = the 3D passes in
     /// `DrawAllFrames` order, 8 = 2D overlays).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     pub fn draw_segment(&mut self, seg: usize) {
         let t0 = ticks();
         let (a, b) = (self.marks[seg] as usize, self.marks[seg + 1] as usize);
@@ -433,6 +435,7 @@ impl RenderCpu {
         self.stats = st;
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     fn tris(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
         self.verts.clear();
         let zk = self.zk;
@@ -449,6 +452,7 @@ impl RenderCpu {
     }
 
     /// 2D batches: screen-aligned quads become blits, anything else triangles.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     fn overlay(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
         self.rects.clear();
         self.verts.clear();

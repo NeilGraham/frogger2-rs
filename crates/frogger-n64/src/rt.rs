@@ -258,16 +258,6 @@ pub fn audio_poll() {
 /// still busy with earlier frames).
 pub static FB_WAIT: AtomicU32 = AtomicU32::new(0);
 
-/// Temporary fine-grained timers (phase-3P investigation): C0 ticks accumulated per probe
-/// index, printed and reset with the perf log.
-pub static PROBE: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
-#[inline]
-pub fn probe_add(i: usize, t0: u32) -> u32 {
-    let t = ticks();
-    PROBE[i].fetch_add(t.wrapping_sub(t0), Relaxed);
-    t
-}
-
 pub fn begin_frame(clear_rgba: u32) {
     let t0 = ticks();
     begin_frame_inner(clear_rgba);
@@ -284,6 +274,11 @@ pub fn draw_tris(verts: &[Vertex], state: &State) {
 
 pub fn present() {
     unsafe { ffi::n64_present() }
+}
+
+/// Shows frames at most `fps` times a second (`display_set_fps_limit`; 0 = no limit).
+pub fn set_fps_limit(fps: u32) {
+    unsafe { ffi::n64_set_fps_limit(fps) }
 }
 
 pub fn rdp_wait() {

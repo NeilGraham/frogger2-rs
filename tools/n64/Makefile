@@ -30,8 +30,33 @@ $(BUILD_DIR)/r3d_rsp_syms.h: $(RSP_OBJS)
 
 $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 
+# Linker script: libdragon's n64.ld with the per-frame hot code first in .text (phase 3P).
+# The VR4300's 16 KiB I-cache is direct-mapped: wherever two functions of the same loop
+# share cache lines they evict each other on every call, and with the default (link order)
+# placement that changed with every code edit (measured: the r3d flush 2.6 vs 9.6 ms per
+# frame between two otherwise identical builds). Two contiguous regions, each < 16 KiB:
+# `.text.f2hot_q` (r3d queueing, during the draw loop) and `.text.f2hot_f` (flushing the
+# lists to the RSP and drawing the CPU batches between them), then the libdragon / newlib
+# functions of those loops.
+HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rspq_block_run mg_uniform_load mg_uniform_load_raw \
+	mg_uniform_load_inline mg_uniform_load_inline_raw mg_draw_begin mg_draw_end \
+	mg_bind_vertex_buffer data_cache_hit_writeback rspq_flush_internal __rspq_deferred_poll \
+	n64_draw_tris_impl apply_state rdpq_triangle rdpq_triangle_rsp __rdpq_write8 \
+	__rdpq_autosync_change memcpy memset
+$(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld
+	@mkdir -p $(BUILD_DIR)
+	@awk -v hot="$(HOT_C)" 'BEGIN { n = split(hot, h, " ") } \
+		!done && $$0 ~ /^[ \t]*\*\(\.text\)[ \t]*$$/ { \
+			print "        __f2_hot_start = .;"; \
+			print "        *(.text.f2hot_q .text.f2hot_q.*)"; \
+			print "        __f2_hot_flush = .;"; \
+			print "        *(.text.f2hot_f .text.f2hot_f.*)"; \
+			for (i = 1; i <= n; i++) print "        *(.text." h[i] ")"; \
+			print "        __f2_hot_end = .;"; done = 1 } { print }' $< > $@
+N64_LDFLAGS := $(subst -Tn64.ld,-T$(CURDIR)/$(BUILD_DIR)/f2.ld,$(N64_LDFLAGS))
+
 $(BUILD_DIR)/frogger2.dfs: $(wildcard filesystem/*)
-$(BUILD_DIR)/frogger2.elf: $(BUILD_DIR)/main.o $(BUILD_DIR)/r3d.o $(BUILD_DIR)/abi.o $(RSP_OBJS) $(RUST_LIB)
+$(BUILD_DIR)/frogger2.elf: $(BUILD_DIR)/main.o $(BUILD_DIR)/r3d.o $(BUILD_DIR)/abi.o $(RSP_OBJS) $(RUST_LIB) $(BUILD_DIR)/f2.ld
 
 frogger2.z64: $(BUILD_DIR)/frogger2.dfs
 

@@ -204,6 +204,7 @@ impl R3dLevel {
     }
 
     /// Queues one recorded mesh draw ([`MeshBackend`] side of the draw loop).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn record(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
         let t0 = rt::ticks();
 
@@ -211,9 +212,9 @@ impl R3dLevel {
         self.slot += 1;
         self.record_inner(cpu, d, mats, slot as usize);
         self.rec.queue_ticks = self.rec.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
-        rt::probe_add(0, t0);
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn record_inner(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]], slot: usize) {
         let Some(mut list) = list_of(d.frame) else { return };
         if d.no_clip && list == List::Normal {
@@ -254,20 +255,10 @@ impl R3dLevel {
             None => None,
         };
         let p = crate::r3d::DrawParams { alpha_mul: d.alpha_mul, gouraud: d.gouraud, override_tex, no_clip: d.no_clip, object_fog: d.object_fog };
-        let t0 = rt::ticks();
         if d.object == MESH_SKIN {
             self.r.draw_skinned(list, mesh, mats, &p);
-            rt::probe_add(2, t0);
         } else if let Some(m) = mats.first() {
-            let h = self.r.cache_hits;
             self.r.draw_slot(list, mesh, m, &p, slot as u32, d.stamp);
-            if self.r.cache_hits != h {
-                rt::probe_add(3, t0);
-
-            } else {
-                rt::probe_add(4, t0);
-
-            }
         }
         self.rec.draws += 1;
         if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {
@@ -280,6 +271,7 @@ impl R3dLevel {
 
     /// Draws the frame: CPU segments and the meshes recorded since [`begin_queue`]
     /// (Self::begin_queue), then presents.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     pub fn draw(&mut self, r: &mut Renderer, cpu: &mut RenderCpu, clear: [f64; 4]) {
         cpu.build(r, clear);
         if self.dump_next {
@@ -346,6 +338,7 @@ impl R3dBackend {
 }
 
 impl MeshBackend for R3dBackend {
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn mesh(&mut self, _view: &View, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
         // SAFETY: see `new`.
         unsafe { (*self.lvl).record(&*self.cpu, d, mats) }

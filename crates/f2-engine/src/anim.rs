@@ -309,9 +309,6 @@ pub fn next_stamp() -> u32 {
     }
 }
 
-/// TEMP (phase 3P investigation): calls, misses, objects transformed.
-pub static XFORM_STATS: [core::sync::atomic::AtomicU32; 3] = [const { core::sync::atomic::AtomicU32::new(0) }; 3];
-
 /// [`xform_actor`] for back ends that consume matrices only (the mesh sink), into
 /// `actor.pose.mats` and recomputed only when an input changed:
 /// - nothing changed (model, position, rotation, scale, animation time, animated flag):
@@ -326,7 +323,6 @@ pub static XFORM_STATS: [core::sync::atomic::AtomicU32; 3] = [const { core::sync
 /// applied to `top`): equal up to float rounding.
 pub fn xform_actor_cached<'a>(model: &Model, actor: &'a mut Actor) -> &'a [Mat4] {
     let key = PoseKey { model: model.id, pos: actor.pos, q_rot: actor.q_rot, scale: actor.scale, anim_time: actor.anim_time, animated: actor.animated };
-    XFORM_STATS[0].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     if actor.pose.key == Some(key) {
         return &actor.pose.mats;
     }
@@ -335,8 +331,6 @@ pub fn xform_actor_cached<'a>(model: &Model, actor: &'a mut Actor) -> &'a [Mat4]
     if pose.local_key != Some(lkey) {
         xform_into(model, actor, &IDENTITY, &mut pose.local);
         pose.local_key = Some(lkey);
-        XFORM_STATS[1].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        XFORM_STATS[2].fetch_add(pose.local.len() as u32, core::sync::atomic::Ordering::Relaxed);
     }
     let top = actor_top(actor);
     pose.mats.clear();
