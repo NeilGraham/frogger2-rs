@@ -104,6 +104,8 @@ struct Window {
     draws: u32,
     rsp_tris: u32,
     rsp_sent: u32,
+    rsp_groups: u32,
+    tex_loads: u32,
 }
 
 /// The renderer side of the loaded level, outside [`App`] so the data source can free it
@@ -116,6 +118,8 @@ pub struct Level {
     pub r3d: crate::render_r3d::R3dLevel,
     /// Registry images below this index (white, fonts) survive a level unload.
     pub keep_images: u32,
+    /// The story book's page canvas (frontend only; 256 KiB).
+    pub page_canvas: Option<f2_draw::book::Canvas>,
 }
 
 pub static LEVEL: spin::Mutex<Option<Level>> = spin::Mutex::new(None);
@@ -132,6 +136,7 @@ pub fn unload_level_render() {
     }
     if let Some(l) = LEVEL.lock().as_mut() {
         l.scene = None;
+        l.page_canvas = None;
         let keep = l.keep_images;
         l.gfx.free_from(keep);
         #[cfg(not(feature = "render-cpu"))]
@@ -155,6 +160,8 @@ pub struct App {
     /// so their pixels are not kept twice).
     have_fonts: bool,
     game_fonts: Option<GameFonts>,
+    /// The game fonts' metrics after the first load (their N64 textures stay loaded).
+    fonts_cache: Option<(Font, Font)>,
     backdrop: Option<(String, Option<TexHandle>)>,
     tile_scroll: TileScroll,
     prev: Vec<Option<Snap>>,
@@ -175,8 +182,6 @@ pub struct App {
     /// The story book's `fontWhite` (`monofont.bmp`) cut down to the glyphs the chapter
     /// pages use (the whole strip is ~635 KiB as RGBA8; this is a few tens of KiB).
     book_font: Option<Font>,
-    /// The story book's page canvas (`grab_textures`).
-    page_canvas: Option<f2_draw::book::Canvas>,
     last_mode: i32,
     last_pad: u16,
 }
@@ -196,6 +201,7 @@ impl App {
             #[cfg(not(feature = "render-cpu"))]
             r3d: crate::render_r3d::R3dLevel::new(),
             keep_images: 0,
+            page_canvas: None,
         });
         let mut app = App {
             data,
@@ -205,6 +211,7 @@ impl App {
             audio: Audio::new(),
             have_fonts: true,
             game_fonts: None,
+            fonts_cache: None,
             backdrop: None,
             tile_scroll: TileScroll::default(),
             prev: Vec::new(),
@@ -221,7 +228,6 @@ impl App {
             level_peak: (0, 0),
             loaded: false,
             book_font: None,
-            page_canvas: None,
             last_mode: -1,
             last_pad: 0,
         };
@@ -274,10 +280,17 @@ impl App {
     }
 
     /// A fresh `Renderer` (its texture registry cannot free images) with the fonts.
+    ///
+    /// The game fonts' N64 textures survive (registry images 1 and 2 again): reloading
+    /// `bigfont.bmp` needs a 427 KiB RGBA8 block, which a fragmented heap may not have.
     fn rebuild_renderer(&mut self) {
         let mut g = lv();
         let l = g.as_mut().unwrap();
-        l.gfx.reset();
+        if self.fonts_cache.is_some() {
+            l.gfx.free_from(l.keep_images);
+        } else {
+            l.gfx.reset();
+        }
         self.r = Renderer::new_soft();
         #[cfg(not(feature = "render-cpu"))]
         {
@@ -285,13 +298,21 @@ impl App {
         }
         self.backdrop = None;
         self.game_fonts = None;
-        if self.have_fonts {
+        if let Some((b, s)) = &self.fonts_cache {
+            let normal = self.r.add_font_placeholder(b.clone());
+            let small = self.r.add_font_placeholder(s.clone());
+            self.game_fonts = Some(GameFonts { normal, small });
+        } else if self.have_fonts {
             let b = load_font(&self.data, "textures/font/bigfont.bmp").map(|f| self.r.add_font(f));
             l.gfx.upload(&mut self.r.textures);
             let s = load_font(&self.data, "textures/font/smallfont.bmp").map(|f| self.r.add_font(f));
             l.gfx.upload(&mut self.r.textures);
             match (b, s) {
-                (Some(normal), Some(small)) => self.game_fonts = Some(GameFonts { normal, small }),
+                (Some(normal), Some(small)) => {
+                    self.game_fonts = Some(GameFonts { normal, small });
+                    let meta = |f: &Font| Font { width: f.width, height: f.height, glyphs: f.glyphs, rgba: Vec::new() };
+                    self.fonts_cache = Some((meta(self.r.font(normal)), meta(self.r.font(small))));
+                }
                 _ => {
                     log!("app: game fonts (bigfont.bmp/smallfont.bmp) missing");
                     self.have_fonts = false;
@@ -350,26 +371,14 @@ impl App {
         // The story book's page canvas (256 KiB) exists only in the frontend, allocated
         // first while the heap is emptiest (later a block that size can fail to fit).
         if world == f2_game::layout::worldid::FRONTEND {
-            self.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
-        } else {
-            self.page_canvas = None;
+            if let Some(l) = lv().as_mut() {
+                l.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
+            }
         }
         rt::reset_peak();
-        let mut banks = Vec::new();
-        for f in &assets.object_banks {
-            match self.data.object_bank(f) {
-                Some(Ok(b)) => banks.push(b),
-                Some(Err(e)) => log!("app: {e}"),
-                None => log!("app: {f}: not found"),
-            }
-            rt::audio_poll();
-        }
-        #[cfg(not(feature = "render-cpu"))]
-        self.heap_step("object banks");
-        let banks = self.load_meshes(&assets.object_banks, banks);
-        self.heap_step("r3d meshes");
-        let scene = LevelScene::new(world, level, banks, assets.texture_banks.clone(), &self.game);
-        lv().as_mut().unwrap().scene = Some(scene);
+        // Textures first: the NTX bank files are the largest single blocks of a level and
+        // need contiguous free memory, which the many small allocations of the object banks
+        // and meshes fragment.
         for f in &assets.texture_banks {
             if self.data.pack {
                 let p = crate::data::ntx_bank_path(f);
@@ -394,6 +403,21 @@ impl App {
         // The textures hold on to the files they use.
         self.ntx_cache.clear();
         self.heap_step("textures");
+        let mut banks = Vec::new();
+        for f in &assets.object_banks {
+            match self.data.object_bank(f) {
+                Some(Ok(b)) => banks.push(b),
+                Some(Err(e)) => log!("app: {e}"),
+                None => log!("app: {f}: not found"),
+            }
+            rt::audio_poll();
+        }
+        self.heap_step("object banks");
+        #[cfg(not(feature = "render-cpu"))]
+        let banks = self.load_meshes(&assets.object_banks, banks);
+        self.heap_step("r3d meshes");
+        let scene = LevelScene::new(world, level, banks, assets.texture_banks.clone(), &self.game);
+        lv().as_mut().unwrap().scene = Some(scene);
         self.load_sfx(world, level);
         self.heap_step("sound effects");
         self.prev = render::snapshot(&self.game);
@@ -554,8 +578,10 @@ impl App {
     /// per grab, RDRAM is tight): the composed page goes straight into the N64 texture.
     fn grab_textures(&mut self) {
         let Some(target) = f2_draw::book::grab_target(&self.game) else { return };
-        // The frontend's page buffer (allocated by load_scene).
-        let c = self.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
+        // The frontend's page buffer (allocated by load_scene, freed with the level).
+        let mut g = lv();
+        let Some(l) = g.as_mut() else { return };
+        let c = l.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
         f2_draw::book::draw_page_b_into(&self.r, &self.game, self.book_font.as_ref(), c);
         self.game.options.grab_to_texture = if self.game.options.grab_to_texture == 1 { 0 } else { 2 };
         let Some(h) = self.r.textures.entry(f2_formats::crc(target)).map(|e| e.image) else {
@@ -571,9 +597,7 @@ impl App {
             img.height = h2;
             img.rgba = Vec::new();
         }
-        if let Some(l) = lv().as_mut() {
-            l.gfx.grab_rgba(h.0, w, h2, &half);
-        }
+        l.gfx.grab_rgba(h.0, w, h2, &half);
     }
 
     fn dispatch_effects(&mut self) {
@@ -799,6 +823,8 @@ impl App {
             w.draws += l.r3d.stats.draws;
             w.rsp_tris += l.r3d.stats.queued_tris;
             w.rsp_sent += l.r3d.stats.sent_tris;
+            w.rsp_groups += l.r3d.stats.groups;
+            w.tex_loads += l.r3d.stats.tex_loads;
         }
         w.max_frame = w.max_frame.max(t2.wrapping_sub(t0));
         let span = t2.wrapping_sub(self.win_start);
@@ -809,11 +835,12 @@ impl App {
 
     fn log_window(&mut self, span: u32) {
         let w = core::mem::take(&mut self.win);
+        let (rsp, rdp) = rt::rcp_load();
         let ms = |t: u32| ticks_to_us(t) / 1000;
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms), worst frame {} ms; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms), worst frame {} ms; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -832,6 +859,10 @@ impl App {
             ms(w.submit / f),
             ms(w.fb_wait / f),
             ms(w.max_frame),
+            rsp / 10,
+            rsp % 10,
+            rdp / 10,
+            rdp % 10,
             ticks_to_us(w.game_tick / w.ticks.max(1)),
             ticks_to_us(w.poll / w.ticks.max(1)),
             w.tris / f,
@@ -839,6 +870,8 @@ impl App {
             w.draws / f,
             w.rsp_tris / f,
             w.rsp_sent / f,
+            w.rsp_groups / f,
+            w.tex_loads / f,
             self.audio.active(),
             self.audio.plays,
             self.audio.missing,

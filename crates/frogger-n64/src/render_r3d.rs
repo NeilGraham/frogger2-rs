@@ -32,6 +32,9 @@ pub struct R3dFrameStats {
     pub draws: u32,
     pub queued_tris: u32,
     pub sent_tris: u32,
+    /// RSP command groups (vertex-cache batches) run and texture loads.
+    pub groups: u32,
+    pub tex_loads: u32,
     /// C0 ticks of the r3d CPU side (draw queueing + flush incl. the CPU segments).
     pub ticks: u32,
 }
@@ -49,6 +52,8 @@ pub struct R3dLevel {
     missing: alloc::collections::BTreeSet<(u32, u16)>,
     frame_no: u32,
     dump_next: bool,
+    /// Per registry entry: (image, its texture generation, crc) last mapped.
+    synced: Vec<(u32, u32, u32)>,
     seen: alloc::collections::BTreeSet<u32>,
 }
 
@@ -95,6 +100,7 @@ impl R3dLevel {
             frame_no: 0,
             dump_next: false,
             seen: Default::default(),
+            synced: Vec::new(),
         }
     }
 
@@ -104,6 +110,7 @@ impl R3dLevel {
         self.meshes.clear();
         self.img.clear();
         self.missing.clear();
+        self.synced.clear();
     }
 
     pub fn num_meshes(&self) -> usize {
@@ -150,8 +157,20 @@ impl R3dLevel {
     }
 
     /// Points every texture CRC at the image the registry currently shows for it.
+    /// Only entries whose shown image (or that image's N64 texture) changed since the last
+    /// call are looked at again (animated textures, procedural / render-to-texture images).
     pub fn sync_textures(&mut self, reg: &TextureRegistry, cpu: &RenderCpu) {
-        for e in &reg.entries {
+        if self.synced.len() > reg.entries.len() {
+            self.synced.clear();
+        }
+        self.synced.resize(reg.entries.len(), (u32::MAX, u32::MAX, 0));
+        for (i, e) in reg.entries.iter().enumerate() {
+            let img = e.current.map_or(u32::MAX, |h| h.0);
+            let gen = if img == u32::MAX { 0 } else { cpu.texture_of(img).1 };
+            if self.synced[i].0 == img && self.synced[i].1 == gen && self.synced[i].2 == e.crc {
+                continue;
+            }
+            self.synced[i] = (img, gen, e.crc);
             let t = e.current.and_then(|h| self.tex_for(cpu, h.0));
             self.r.map_texture(e.crc, t);
         }
@@ -199,6 +218,9 @@ impl R3dLevel {
             });
             st.queued_tris = self.r.queued_tris;
             st.sent_tris = self.r.sent_tris;
+            let c = self.r.stats();
+            st.groups = c.groups;
+            st.tex_loads = c.tex_loads;
         }
         r.mesh_sink = Some(sink);
         cpu.draw_segment(8);

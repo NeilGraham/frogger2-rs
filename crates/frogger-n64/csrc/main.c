@@ -164,6 +164,24 @@ void n64_audio_poll_impl(void) {
     if (audio_can_write()) mixer_try_play();
 }
 
+/* ---- RSP / RDP load: a 2 kHz timer samples whether the RSP is running (not halted:
+ * rspq halts it when its queue is empty) and whether the RDP pipeline is busy. ---- */
+static volatile uint32_t load_samples, rsp_busy_samples, rdp_busy_samples;
+
+static void load_cb(int ovfl) {
+    load_samples++;
+    if (!(*SP_STATUS & SP_STATUS_HALTED)) rsp_busy_samples++;
+    if (*DP_STATUS & DP_STATUS_PIPE_BUSY) rdp_busy_samples++;
+}
+
+/* RSP busy permille | RDP busy permille << 16 since the last call (resets). */
+uint32_t n64_rcp_load_impl(void) {
+    uint32_t n = load_samples ? load_samples : 1;
+    uint32_t v = (rsp_busy_samples * 1000 / n) | ((rdp_busy_samples * 1000 / n) << 16);
+    load_samples = rsp_busy_samples = rdp_busy_samples = 0;
+    return v;
+}
+
 /* ---- FMV (libdragon fmv_play: H.264 + Opus wav64 next to it) ---- */
 #define FMV_CH 0 /* the music channel pair (the game stops its music around videos) */
 
@@ -953,6 +971,9 @@ int main(void) {
      * up to 4x the 32 kHz output (higher pitches are clamped by the Rust side). */
     /* Music / FMV audio (channels 0-1): up to 48 kHz; sound effects (22 kHz sources): 2x. */
     for (int ch = 0; ch < MIXER_CHANNELS; ch++) mixer_ch_set_limits(ch, 16, ch < SFX_CH0 ? 48000 : 44100, 0);
+
+    timer_init();
+    new_timer(TIMER_TICKS(TICKS_PER_SECOND / 2000), TF_CONTINUOUS, load_cb);
 
     f2n64_call(f2n64_init);
     for (;;) {

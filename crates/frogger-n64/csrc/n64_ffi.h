@@ -159,6 +159,7 @@ uint32_t n64_sfx_open(const char *path, uint32_t looped);
 void n64_sfx_close(uint32_t handle);
 uint32_t n64_sfx_channels(void);
 uint32_t n64_sfx_freq(uint32_t handle);            /* native rate of an opened sample, Hz */
+uint32_t n64_rcp_load(void);                       /* RSP busy permille | RDP busy permille << 16 since the last call */
 uint32_t n64_fmv_play(const char *path);           /* blocking video playback; 0 = missing */
 uint32_t n64_save_read(void *dst, uint32_t len);   /* SRAM -> dst; returns len or 0 */
 uint32_t n64_save_write(const void *src, uint32_t len); /* src -> SRAM; returns len or 0 */                   /* first sfx channel << 8 | count */

@@ -180,6 +180,12 @@ pub fn sfx_open(path: &str, looped: bool) -> u32 {
     unsafe { ffi::n64_sfx_open(z.as_ptr(), looped as u32) }
 }
 
+/// RSP and RDP busy fractions (permille) since the last call.
+pub fn rcp_load() -> (u32, u32) {
+    let v = unsafe { ffi::n64_rcp_load() };
+    (v & 0xFFFF, v >> 16)
+}
+
 /// Plays a video (blocking); false if the file is missing.
 pub fn fmv_play(path: &str) -> bool {
     let z = cpath(path);

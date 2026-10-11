@@ -74,6 +74,7 @@
     RUST_TO_C n64_tex_create_ntx
     RUST_TO_C n64_sfx_freq
     RUST_TO_C n64_fmv_play
+    RUST_TO_C n64_rcp_load
     RUST_TO_C n64_save_read
     RUST_TO_C n64_save_write
 

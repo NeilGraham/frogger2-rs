@@ -537,6 +537,15 @@ impl Renderer {
         FontId(self.fonts.len() - 1)
     }
 
+    /// Adds a font whose image a back end already holds (no pixels: a placeholder image of
+    /// the font's size, not queued for upload). `font.rgba` is ignored.
+    pub fn add_font_placeholder(&mut self, mut font: Font) -> FontId {
+        font.rgba = Vec::new();
+        let h = self.textures.add_placeholder(font.width, font.height);
+        self.fonts.push((font, h));
+        FontId(self.fonts.len() - 1)
+    }
+
     pub fn font(&self, id: FontId) -> &Font {
         &self.fonts[id.0].0
     }
