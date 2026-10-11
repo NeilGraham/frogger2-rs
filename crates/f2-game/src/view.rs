@@ -279,15 +279,11 @@ pub struct RootObject {
     pub scale_keys: Vec<VKey>,
     pub rotate_keys: Vec<QKey>,
     pub bbox: Option<[Vec3; 8]>,
-    /// Phase 3S: `quaternion_to_matrix` of the first rotate key (the rotation of an object
-    /// that is not interpolated), with the quaternion it was computed from.
-    pub rot0: Option<(Quat, Mat4)>,
 }
 
 impl RootObject {
     pub fn from_object(o: &Object) -> RootObject {
-        let rot0 = o.rotate_keys.first().map(|k| (k.q, quaternion_to_matrix(&k.q)));
-        RootObject { move_keys: o.move_keys.clone(), scale_keys: o.scale_keys.clone(), rotate_keys: o.rotate_keys.clone(), bbox: o.bbox, rot0 }
+        RootObject { move_keys: o.move_keys.clone(), scale_keys: o.scale_keys.clone(), rotate_keys: o.rotate_keys.clone(), bbox: o.bbox }
     }
 }
 
@@ -296,13 +292,13 @@ impl RootObject {
 /// `lastMKey`, `lastSKey`, `lastRKey`.
 #[allow(clippy::too_many_arguments)]
 fn object_local(mk: &[VKey], sk: &[VKey], rk: &[QKey], animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
-    object_local_r(mk, sk, rk, None, animated, time, last, actor_scale, parent_scale)
+    object_local_r(mk, sk, rk, animated, time, last, actor_scale, parent_scale)
 }
 
-/// [`object_local`] for a [`RootObject`] (uses its precomputed first-key rotation).
+/// [`object_local`] for a [`RootObject`].
 #[inline]
 fn object_local_k(k: &RootObject, animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
-    object_local_r(&k.move_keys, &k.scale_keys, &k.rotate_keys, k.rot0.as_ref(), animated, time, last, actor_scale, parent_scale)
+    object_local_r(&k.move_keys, &k.scale_keys, &k.rotate_keys, animated, time, last, actor_scale, parent_scale)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -310,7 +306,6 @@ fn object_local_r(
     mk: &[VKey],
     sk: &[VKey],
     rk: &[QKey],
-    rot0: Option<&(Quat, Mat4)>,
     animated: bool,
     time: f32,
     last: &mut [i16; 3],
@@ -348,11 +343,7 @@ fn object_local_r(
             quaternion_to_matrix(&quat_slerp(&rk[f].q, &rk[t].q, i))
         }
     } else {
-        let q = rk.first().map_or([0.0, 0.0, 0.0, 1.0], |k| k.q);
-        match rot0 {
-            Some((q0, m)) if q0.iter().zip(q.iter()).all(|(a, b)| a.to_bits() == b.to_bits()) => *m,
-            _ => quaternion_to_matrix(&q),
-        }
+        quaternion_to_matrix(&rk.first().map_or([0.0, 0.0, 0.0, 1.0], |k| k.q))
     };
     rotmat[3][0] = translation[0] * actor_scale[0] * parent_scale[0];
     rotmat[3][1] = translation[1] * actor_scale[1] * parent_scale[1];
