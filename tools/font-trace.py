@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Vector ("modern") version of a Frogger 2 font strip, traced from the user's own game data.
 
-Defaults (chosen with the owner, 2026-10-11): potrace directly on the original pixels, corner
-threshold 0.9 (straight strokes stay straight, curves stay smooth), original counters kept,
-uniform stroke outline + offset drop shadow. F2T_UP / F2T_A / F2T_O / F2T_T / F2T_OPEN and
-SIGMA override (upscale, alphamax, opttolerance, turdsize, counter opening, blur).
+Defaults (owner-reviewed v4, 2026-10-11): potrace on the original pixels, corner threshold
+0.75 (straight strokes, notches and slots kept), original counters, 0.9 px outline, 1 px drop
+shadow and a light-grey inner bevel on the lower-right edges like the original pixel art.
 
 usage: python3 -I trace2.py STRIP.ppm OUTDIR [SIGMA] [OUTLINE_PX] [SHADOW_PX]
 The glyph FILL (white pixels) is upscaled 8x (bicubic), blurred (SIGMA, upscaled pixels) and
@@ -28,8 +27,8 @@ def read_ppm(path):
 def main():
     src, out = sys.argv[1], sys.argv[2]
     sigma = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
-    outline = float(sys.argv[4]) if len(sys.argv) > 4 else 1.6
-    shadow = float(sys.argv[5]) if len(sys.argv) > 5 else 1.2
+    outline = float(sys.argv[4]) if len(sys.argv) > 4 else 0.9
+    shadow = float(sys.argv[5]) if len(sys.argv) > 5 else 1.0
     os.makedirs(out, exist_ok=True)
     w, h, px = read_ppm(src)
     # Fill mask as a grey image: glyph fill black (potrace traces black), the rest white.
@@ -63,7 +62,7 @@ def main():
         f.write(bytes(g))
     vf = f"scale=iw*{UP}:ih*{UP}:flags=neighbor" + (f",gblur=sigma={sigma},lut=y='if(lt(val\\,128)\\,0\\,255)'" if sigma > 0 else "")
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", f"{out}/fill.pgm", "-vf", vf, "-pix_fmt", "gray", f"{out}/fill_up.pgm"], check=True)
-    subprocess.run(["potrace", "-s", "-a", os.environ.get("F2T_A", "0.9"), "-O", os.environ.get("F2T_O", "0.3"), "-t", os.environ.get("F2T_T", "0"), "-o", f"{out}/fill.svg", f"{out}/fill_up.pgm"], check=True)
+    subprocess.run(["potrace", "-s", "-a", os.environ.get("F2T_A", "0.75"), "-O", os.environ.get("F2T_O", "0.3"), "-t", os.environ.get("F2T_T", "0"), "-o", f"{out}/fill.svg", f"{out}/fill_up.pgm"], check=True)
     s = open(f"{out}/fill.svg").read()
     head = s[: s.index("<g")]
     g_open = s[s.index("<g"): s.index(">", s.index("<g")) + 1]
@@ -72,10 +71,19 @@ def main():
     unit = 10.0
     sw = outline * UP * unit * 2  # stroke is centred: twice the visible outside width
     off = shadow * UP
+    bevel = float(os.environ.get("F2T_BEVEL", "1.0")) * UP  # inner lower-right bevel width
+    bevel_col = os.environ.get("F2T_BEVEL_COL", "#c4c4c4")
+    # potrace's transform (translate + scale 0.1,-0.1) baked into one reusable group.
+    g_t = g_open.replace('fill="#000000"', "").replace('stroke="none"', "")
     body = (
-        f'<defs><g id="glyphs">{paths}</g></defs>'
-        f'<g transform="translate({off},{off})">{g_open}<use href="#glyphs" fill="#101010" stroke="#101010" stroke-width="{sw}" stroke-linejoin="round"/></g></g>'
-        f'{g_open}<use href="#glyphs" fill="#ffffff" stroke="#101010" stroke-width="{sw}" stroke-linejoin="round" paint-order="stroke"/></g>'
+        f'<defs><g id="g">{g_t}{paths}</g></g>'
+        f'<mask id="inside" maskUnits="userSpaceOnUse"><use href="#g" fill="#ffffff"/></mask></defs>'
+        # drop shadow
+        f'<use href="#g" transform="translate({off},{off})" fill="#101010" stroke="#101010" stroke-width="{sw}" stroke-linejoin="miter" stroke-miterlimit="3"/>'
+        # outline + bevel-grey face
+        f'<use href="#g" fill="{bevel_col}" stroke="#101010" stroke-width="{sw}" stroke-linejoin="miter" stroke-miterlimit="3" paint-order="stroke"/>'
+        # white face shifted up-left, clipped to the glyph: a grey band remains on the lower-right inside edge
+        f'<g mask="url(#inside)"><use href="#g" transform="translate({-bevel},{-bevel})" fill="#ffffff"/></g>'
     )
     open(f"{out}/styled.svg", "w").write(head + body + "</svg>\n")
 
