@@ -154,29 +154,53 @@ pub struct ReactiveAnim {
     pub type_: i32,
 }
 
-/// `ENEMY` (`enemies.h:85`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Phase 3S: `repr(C)` with the fields `UpdateEnemies` reads for every enemy first;
+/// `ser_order!` keeps the serialized field order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct Enemy {
     pub links: Links<EnemyId>,
-    /// `next != NULL`: the enemy is in `enemyList`.
-    pub linked: bool,
-    pub uid: i32,
     pub nme_actor: Option<ActorId>,
-    pub flags: u32,
-    pub reactive_number: i16,
-    pub speed: Fixed,
-    pub curr_normal: FVector,
-    pub delta_normal: FVector,
     pub active: u8,
-    pub is_waiting: i16,
-    pub is_snapping: i16,
-    pub is_idle: i16,
-    pub facing: u8,
     pub visible: i8,
+    pub is_waiting: i16,
+    pub flags: u32,
     pub in_tile: Option<TileId>,
     pub path: Path,
     pub update: [Option<EnemyUpdate>; ENEMY_UPDATEFUNCS],
+    pub speed: Fixed,
+    pub curr_normal: FVector,
+    pub delta_normal: FVector,
+    pub is_snapping: i16,
+    pub is_idle: i16,
+    pub facing: u8,
+    /// `next != NULL`: the enemy is in `enemyList`.
+    pub linked: bool,
+    pub reactive_number: i16,
+    pub uid: i32,
 }
+
+crate::ser_order!(Enemy, "Enemy", EnemyWire {
+    links: Links<EnemyId>,
+    linked: bool,
+    uid: i32,
+    nme_actor: Option<ActorId>,
+    flags: u32,
+    reactive_number: i16,
+    speed: Fixed,
+    curr_normal: FVector,
+    delta_normal: FVector,
+    active: u8,
+    is_waiting: i16,
+    is_snapping: i16,
+    is_idle: i16,
+    facing: u8,
+    visible: i8,
+    in_tile: Option<TileId>,
+    path: Path,
+    update: [Option<EnemyUpdate>; ENEMY_UPDATEFUNCS],
+});
 
 impl HasLinks<EnemyId> for Enemy {
     fn links(&self) -> &Links<EnemyId> {

@@ -12,16 +12,27 @@ use crate::ids::TileId;
 /// `SCALE` (`Common/newpsx.h`): world positions in files are multiplied by this at load.
 pub const SCALE: i32 = 10;
 
-/// `GAMETILE` (`Common/define.h`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Phase 3S: `repr(C)` with `centre`/`normal` first (path positions and the nearest-tile
+/// scan read only those); `ser_order!` keeps the serialized field order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct GameTile {
-    /// `tilePtrs[4]`: north, south, east, west.
-    pub tile_ptrs: [Option<TileId>; 4],
-    pub state: u32,
     pub centre: SVector,
     pub normal: SVector,
+    pub state: u32,
+    /// `tilePtrs[4]`: north, south, east, west.
+    pub tile_ptrs: [Option<TileId>; 4],
     pub dir_vector: [SVector; 4],
 }
+
+crate::ser_order!(GameTile, "GameTile", GameTileWire {
+    tile_ptrs: [Option<TileId>; 4],
+    state: u32,
+    centre: SVector,
+    normal: SVector,
+    dir_vector: [SVector; 4],
+});
 
 /// `CAM_PLANE` (`Common/Cam.h`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

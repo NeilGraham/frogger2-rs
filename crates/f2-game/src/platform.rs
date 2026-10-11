@@ -60,32 +60,58 @@ pub enum PlatformUpdate {
     StepOnActivated,
 }
 
-/// `PLATFORM` (`platform.h:50`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Phase 3S: `repr(C)` with the fields `UpdatePlatforms` touches every tick first (D-cache
+/// lines on the N64); `ser_order!` keeps the serialized field order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct Platform {
     pub links: Links<PlatformId>,
+    pub plt_actor: Option<ActorId>,
+    pub carrying: Option<ActorId>,
+    pub active: u8,
+    pub visible: i8,
+    pub is_waiting: i16,
+    pub flags: u32,
+    pub update: Option<PlatformUpdate>,
+    pub path: Path,
+    pub in_tile: [Option<TileId>; 2],
+    pub curr_speed: Fixed,
+    pub src_orientation: IQuaternion,
+    pub dest_orientation: IQuaternion,
+    pub countdown: Fixed,
+    pub uid: i32,
+    pub facing: u8,
     /// `next != NULL`: the platform is in `platformList`.
     pub linked: bool,
     /// `pltPtrs[4]`: adjacent platforms (never set).
     pub plt_ptrs: [Option<PlatformId>; 4],
-    pub uid: i32,
     pub dir_vector: [FVector; 4],
     pub init_dir_vector: [FVector; 4],
-    pub plt_actor: Option<ActorId>,
-    pub active: u8,
-    pub flags: u32,
-    pub curr_speed: Fixed,
-    pub is_waiting: i16,
-    pub src_orientation: IQuaternion,
-    pub dest_orientation: IQuaternion,
-    pub countdown: Fixed,
-    pub facing: u8,
-    pub visible: i8,
-    pub in_tile: [Option<TileId>; 2],
-    pub path: Path,
-    pub carrying: Option<ActorId>,
-    pub update: Option<PlatformUpdate>,
 }
+
+crate::ser_order!(Platform, "Platform", PlatformWire {
+    links: Links<PlatformId>,
+    linked: bool,
+    plt_ptrs: [Option<PlatformId>; 4],
+    uid: i32,
+    dir_vector: [FVector; 4],
+    init_dir_vector: [FVector; 4],
+    plt_actor: Option<ActorId>,
+    active: u8,
+    flags: u32,
+    curr_speed: Fixed,
+    is_waiting: i16,
+    src_orientation: IQuaternion,
+    dest_orientation: IQuaternion,
+    countdown: Fixed,
+    facing: u8,
+    visible: i8,
+    in_tile: [Option<TileId>; 2],
+    path: Path,
+    carrying: Option<ActorId>,
+    update: Option<PlatformUpdate>,
+});
 
 impl HasLinks<PlatformId> for Platform {
     fn links(&self) -> &Links<PlatformId> {

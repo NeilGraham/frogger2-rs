@@ -195,6 +195,25 @@ impl Game {
         }
     }
 
+    /// `PrintSpriteOverlays(0)`, `(1)` and `(2)` in one pass (phase 3S): each overlay is
+    /// stepped by the pass for its own `num` and steps touch only that overlay, so one walk
+    /// over the block (same order) gives the same state as three.
+    pub fn print_sprite_overlays_state_012(&mut self) {
+        let gs = self.game_speed;
+        let l = &mut self.overlays;
+        if !l.draw_overlays || l.num_entries == 0 {
+            return;
+        }
+        for o in l.block.iter_mut().rev() {
+            if !(0..=2).contains(&o.num) {
+                continue;
+            }
+            if o.used != 0 && o.draw != 0 && o.a != 0 {
+                slide_step(&mut o.x_pos, &mut o.y_pos, o.x_pos_to, o.y_pos_to, &mut o.speed, gs);
+            }
+        }
+    }
+
     /// Port of `SlideSpriteOverlayToPos` (Common/frontend.c:575).
     pub fn slide_sprite_overlay_to_pos(&mut self, s: Option<OverlayId>, x: i32, y: i32, from_x: i32, from_y: i32, num_frames: i32) {
         let gs = self.game_speed;
