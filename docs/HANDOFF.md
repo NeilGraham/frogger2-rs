@@ -62,3 +62,4 @@ agent was told to commit WIP and keep a "Status / next steps" section in its doc
 | `a90c2347f335f8b21` | N64 3S: sim speed (resumed after the limit cut it off mid-edit) | in progress |
 | `a0d5f7cb14e199305` | PS4/PS5 hardware fixes + test ladder (resumed) | in progress |
 | `aaa520b4d4f6d5752` | N64 3P: draw-side CPU performance (RSP queue/overlap, matrix caching, sprite fast paths) | started from `673125c` |
+| `adfb9e878e97eca51` | N64 3T: retail variable timestep (`f2_game::timing`: exact `UpdateTiming`/`LoopFunc`, `Game::tick_frames`), N64 pacing (`frogger-n64/src/pacing.rs`: one k-frame tick when behind, cap 4, `F2N64_TIMESTEP=fixed`) | **done, NOT merged** (see `research/n64-performance.md` §3T): `tick` + `tick_frames(1)` trace-identical (demos + 102 corpus); ares fps 1.6–1.8× (Garden 1 7.4 → 12.9), real time 50–100 % at cap 4, 75–100 % at cap 6 |

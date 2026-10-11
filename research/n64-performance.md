@@ -705,3 +705,140 @@ large angles (frontend swarms call the float path ~30×/tick); `Enemy` clones in
 updates; text-overlay slot layout. Bigger wins need the work itself to go: e.g. running
 the simulation at 30 Hz with the renderer (behaviour change, owner decision) or moving the
 float transforms to the RSP like the renderer (2R).
+
+## 3T: the retail variable timestep (N64-only deviation from 60 Hz parity)
+
+After 3S the simulation still costs 8–19 ms per tick on the VR4300, so heavy levels cannot
+run 60 ticks/s next to the renderer. The original PC game never needed that: it has a
+**variable timestep** and simply took larger steps on slow PCs. Phase 3T ports that
+mechanism exactly and lets the N64 use it when it falls behind.
+
+### Retail semantics (source and exe agree)
+- Main loop `RunWindowsLoop` (`MDX Library/mdxWindows.cpp:216`): `AppLoop()` (= `LoopFunc`)
+  then `UpdateTiming()` per rendered frame, so frame N runs with the time measured at the end
+  of frame N-1.
+- `UpdateTiming` (`mdxTiming.cpp:50-69`, retail `0x44b430`): `mult = frameSpeed*0.001f`
+  (PC24 product, stored as a float: 0.060000002); `currentTicks = timeGetTime()+tickModifier
+  -firstTicks`, `interval = currentTicks - tickCount` (unsigned); if `interval >
+  maxTickIncrement` (500 ms) the excess is dropped (`firstTicks += excess`);
+  `speed = (float)(interval*mult)`, `frameCount = ftol(currentTicks*mult)` (chop),
+  `tickCount = currentTicks`. `InitTiming(60)` (inside `InitLevel`, `layout.c:742`/`:942`)
+  restarts the clock; `InitBackdrop` calls `UpdateTiming` after its load (`backdrop.c:55`).
+- `LoopFunc` (`PC/Main.cpp:686-713`, retail `0x43cc90`): unless paused (`mode == PAUSE_MODE`
+  and not `quittingLevel && !pauseConfirmMode`): `lastActFrameCount = actFrameCount;
+  actFrameCount = ftol((frameCount - pFrameModifier) * (float)(turbo/4096))` (absolute,
+  not incremental); `gameSpeed = ftol(turbo/4096 * speed * 4096.0f)`; `lastFrames/lastTicks`
+  saved; on the first frame after a pause `pFrameModifier += actFrameCount -
+  lastActFrameCount`, `actFrameCount` kept, `gameSpeed = pauseGameSpeed`; then
+  `pauseGameSpeed = gameSpeed`. Paused: `beenPaused = 1`, `gameSpeed = 0`, `speed = 0`,
+  `frameCount/tickCount` held. `pFrameModifier` is also zeroed in `InitLevel` (`layout.c:680`)
+  and when the art viewer opens (`options.c:2311`). `RunPauseMenu`'s resume sets
+  `gameSpeed = pauseGameSpeed` (`menus.c:671`; the global LoopFunc writes, retail
+  `0x36bc608` — the port's old comment "never assigned" was wrong for PC).
+- `timeInfo.speed` itself (not `gameSpeed`) drives MDX animation (`UpdateAnims`
+  `animTime += animationSpeed*speed`) and the croak swell (`actor.cpp:181-219`, double
+  constants 0.1/0.08 at PC24).
+
+### API (`crates/f2-game/src/timing.rs`)
+- `Game::tick` is unchanged (gameSpeed 4096, `actFrameCount += 1`) and remains the parity
+  reference; it never touches the timing state (excluded from `Game::checksum` until the
+  variable API is used, so fixed-step checksums are unchanged).
+- `Game::tick_frames(input, n)`: one main-loop iteration that took `n` 60 Hz frames
+  (`advance_timing_frames(n)` = the oracle's `h_tick_timing` generalised: `frameCount += n`,
+  `tickCount = frameCount*1000/60`, `speed = n`, cap 30 = 500 ms) + `tick_timed(input)` =
+  `LoopFunc` including the pause branch. `tick_timed_game_loop` is its trace point.
+- `Game::update_timing(now_ms)`: the exact retail `UpdateTiming` from a millisecond clock
+  (fractional speeds like a real PC: 17 ms → `speed` 1.0200001, `gameSpeed` 4177);
+  `Game::timing_clock` (optional `fn() -> u32`) lets `InitTiming`/`InitBackdrop` read it.
+- Port fixes made for it (no effect under `tick`): `InitTiming` and `pFrameModifier = 0` in
+  `InitLevel`, `pFrameModifier = 0` at the art viewer, `gameSpeed = pauseGameSpeed` on
+  resume (only with the variable timestep), `time_info_speed()` returns `timeInfo.speed`,
+  croak factors as PC24 products of the double constants.
+
+### Parity evidence (speed 1)
+Before/after hashes of all Rust traces: the three demo traces (`b0818758…`, `148391ab…`,
+`592b9d2a…`) and the 102 `f2-parity check --corpus all` cases (all `ok`, 0 regressed) are
+byte-identical both with `Game::tick` and with `tick_frames(input, 1)` (`F2_TICK_FRAMES=1`
+for `demo_trace`/`scenario_trace`). Known difference of `tick` vs the retail loop: in
+`PAUSE_MODE` the retail game freezes `gameSpeed` (0) and `actFrameCount`; `tick` does not
+(the corpus never pauses; `tick_frames` does it right).
+
+### Behaviour at speed 2–4 (host, `examples/timestep_check`, `tests/timestep.rs`)
+Render-free, all 40 arcade levels idle and with a scripted pad (presses timed in game
+frames) for 60 s of game time, plus the three attract demos, at k = 1, 2, 3, 4 (and 5, 6, 8):
+- **No panics; every tick advances `actFrameCount` by k with `gameSpeed` = 4096·k.**
+- **Game time keeps real-time rate**: the arcade runs reach 3600 game frames in 3600/k ticks;
+  the demos end after 792/537/409 ticks at k = 2/3/4 (1557 at k = 1): the `GTUpdate` timers
+  (`general.h:34`, "second" = `actFrameCount > lastCount+60`) tick every 61 frames at k = 1
+  but every 62/63/64 at k = 2/3/4, so every game timer (demo timeout, level clocks, safe
+  time, mode timers) runs 1.6/3.3/4.9 % slow — the original's own quantisation.
+- **Path entities stay on their paths**: path movement is a function of `actFrameCount`
+  (`UpdatePathNME`/platforms: `progress = afc - startFrame`, catch-up loops for several
+  nodes per tick), so clock-driven enemies/platforms are where k = 1 has them; the only
+  offsets are enemies that stop to wait, which freeze where their last update left them:
+  up to (k-1) frames short of the node (29/59/88 units in Garden 1 at k = 2/3/4; p99 over
+  all levels 58/117/176). Entities driven by `Random()` (flappy things, random speeds,
+  procedural textures) take one draw per tick instead of per frame and so diverge
+  (statistically alike). Cyclic paths show a one-sample spike (~8100 units) when one run
+  has wrapped to the start and the other not yet.
+- **Frog**: idle frog identical to k = 1; with the pad pattern the frog never left the map,
+  the at-rest distance from its tile centre stays ≤ 394 units (328 at k = 1; 0 in most
+  levels: it sits on the centre), deaths over 40 levels 115/115/115 vs 117 at k = 1, no
+  extra out-of-map entities (the same off-map entity as at k = 1). No tunnelling seen up
+  to k = 8; frog hops and most collisions are tile-based.
+- **Frame-rate artefacts reproduced (known-bugs #10)**: `actFrameCount & 1` effects never
+  fire at even k (respawn safe-time and teleport rings `game.c:125/130`, the double preen
+  idle `frogger.c`, `DrawFXRing` twinkle trails on odd frames) and every other tick at
+  odd k; `frameCount & 1` smoke (enemies.c pilot lights/smoke bursts) is per tick, i.e.
+  1/k as much smoke per second; per-tick increments that are not scaled by `gameSpeed`
+  (e.g. enemy `currNormal += deltaNormal`) progress per tick; specfx fades scale with
+  `gameSpeed`; input is sampled once per tick (a press shorter than a tick is lost — the
+  scripted pattern's 3-frame presses at k ≥ 5 mostly vanish, which is why the "play" runs
+  diverge there); `UpdateAnims` advances by `speed` per tick.
+- Render-side, not ported here: MDX texture animation (`mdxTexture.cpp:785`) and the water
+  wobble (`mdxRender.cpp:443`) use `timeInfo.frameCount`, which differs from
+  `actFrameCount` by `pFrameModifier` after a pause (`f2-draw` passes `act_frame_count`;
+  use `game.timing.time_info.frame_count` when `timing.active`).
+
+### N64 wiring (`crates/frogger-n64/src/pacing.rs`)
+On time: ordinary 60 Hz ticks (`tick_frames(input, 1)`, bit-identical to `tick` outside the
+pause menu). Behind by k frames: **one** tick of k frames, k ≤ `F2N64_MAXSTEP` (default 4 =
+15 fps game steps); real time beyond the cap is dropped. Render interpolation spans the
+tick's k frames. `F2N64_TIMESTEP=fixed` restores the fixed loop (≤ 6 60 Hz ticks per frame,
+`Game::tick`). The `pace` log line reports game frames per wall second.
+
+ares v148, `F2N64_BOOT="level W 0"` (frontend: `frontend-trained`, FMVs skipped with A),
+frog idle, median of 5 s windows after the first; evidence in `C:\f2-n64test-3t\` (not in
+the repo). "real time" = game frames simulated per wall-clock second / 60.
+
+| scene | fixed 60 Hz (before): fps / real time / `Game::tick` | variable, cap 4 (default): fps / real time / frames per tick / `Game::tick` | variable, cap 6: fps / real time / frames per tick |
+|---|---|---|---|
+| frontend (8-0) | 7.8 / 76 % / 8.3 ms | 12.6 / 84 % / 4.00 / 9.7 ms | 12.7 / 100 % / 4.70 |
+| Garden 1 (0-0) | 7.4 / 73 % / 9.8 ms | 12.9 / 86 % / 4.00 / 10.8 ms | 12.8 / 100 % / 4.67 |
+| Ancients 1 (1-0) | 7.6 / 75 % / 8.2 ms | 12.1 / 81 % / 4.00 / 9.0 ms | 12.1 / 100 % / 4.95 |
+| Space 1 (2-0) | 4.5 / 45 % / 15.8 ms | 8.0 / 53 % / 4.00 / 18.5 ms | 8.0 / 80 % / 6.00 |
+| City (3-0) | 28.0 / 100 % / 4.4 ms | 34.0 / 100 % / 1.76 / 4.7 ms | 34.1 / 100 % / 1.75 |
+| Subterranean 1 (4-0) | 4.9 / 48 % / 12.7 ms | 8.5 / 56 % / 4.00 / 13.4 ms | 8.5 / 85 % / 6.00 |
+| Lab 1 (5-0) | 4.5 / 44 % / 13.4 ms | 7.5 / 50 % / 4.00 / 14.8 ms | 7.5 / 75 % / 6.00 |
+| Halloween 1 (6-0) | 5.9 / 59 % / 11.8 ms | 9.6 / 64 % / 4.00 / 13.3 ms | 9.6 / 96 % / 6.00 |
+| Retro 1 (7-0) | 12.5 / 100 % / 8.0 ms | 22.0 / 100 % / 2.72 / 8.5 ms | 22.0 / 100 % / 2.72 |
+
+- The frame rate goes up 1.6–1.8× (one simulation tick per drawn frame instead of up to 6);
+  a k-frame tick costs ~1 ms more than a 1-frame tick (more animation/path catch-up).
+- The game keeps real time whenever a frame takes ≤ cap/60 s: City and Retro always, the
+  first worlds at cap 6. At cap 4 the heavy levels (Space, Subterranean, Lab) still run at
+  50–56 % of real time: their frames take 115–135 ms (draw 80–90 ms + sim with audio polling 18–25 ms), i.e.
+  7–8 frames. Remaining cost is now the draw side (phase 3P).
+- Cap choice (owner decision, `F2N64_MAXSTEP`): 4 keeps the game steps close to 60 Hz
+  behaviour (host checks above: no tunnelling, positions within (k-1) frames) and is the
+  default; 6 reaches real time in the first worlds and 75–96 % elsewhere, with
+  correspondingly coarser steps (host checks at k = 5, 6, 8: still no panics, no
+  out-of-map entities, waiting enemies up to 4–7 frames short of their nodes). The PC
+  original allowed up to 30.
+
+### Status / next steps
+- Done: `f2_game::timing` (exact `UpdateTiming`/`LoopFunc`), `tick_frames`/`tick_timed`,
+  host check + test, N64 pacing (default variable, cap 4). Commits on branch
+  `worktree-agent-adfb9e878e97eca51`.
+- Next: the render-side `timeInfo.frameCount` users in `f2-draw` (texture animation) when
+  `timing.active`; owner decision on the cap; real-hardware check.
