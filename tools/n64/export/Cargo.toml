@@ -1,0 +1,17 @@
+[package]
+name = "n64r-export"
+description = "Host tool: exports a level's landscape as an F2NM test asset for the N64 renderer and renders the PC reference image (f2-engine CPU renderer) from the same camera."
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Own workspace (excluded from the main one): f2-engine is used without its `gpu` feature
+# (Renderer::new_soft), which workspace feature unification with `frogger` would turn on.
+[workspace]
+
+[dependencies]
+f2-engine = { path = "../../../crates/f2-engine", default-features = false }
+f2-formats = { path = "../../../crates/f2-formats" }
+f2-n64fmt = { path = "../../../crates/f2-n64fmt" }
+png = "=0.18.1"

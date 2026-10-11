@@ -143,3 +143,14 @@ data loaded once or rarely (a 3.5 MB level working set would take ~4.6 s). F2Z's
 - ares disables ISViewer (`debugf`) when the ROM exceeds 0x3FF0000 bytes (63.94 MiB): a
   full 64 MiB cartridge build needs another log channel (or a slightly smaller dev ROM).
 - Not yet validated on hardware (no flashcart in this setup).
+
+## Phase 2R: RSP renderer (r3d) — status / next steps (WIP)
+Design: libdragon magma pipeline + custom vertex shader `crates/frogger-n64/csrc/rsp_f2mdx.S`
+(MDX projection, BETWEEN screen reject via trivial-reject codes, near/far face reject via
+clip bits, in-shader texture loads `F2_LoadTex`, fog), clipper copy `rsp_f2clip.S`, C side
+`csrc/r3d.c`, Rust front end `src/r3d.rs` (matrix fold, per-batch bounding-sphere culling,
+frame lists), test app `src/r3dtest.rs`; format crate `crates/f2-n64fmt`; exporter
+`tools/n64/export` (own workspace; scenes into target/n64/filesystem, PC refs into target/n64).
+Done: cull check PASS, benches (~245 RCP cycles/sent tri, ~4200 tris/frame @60 in ares),
+scenes 1-3 visually match PC (`tools/n64/compare.sh`), fog verified.
+Next: write docs/n64-model-format.md, final perf section, tools/n64/README, commit.

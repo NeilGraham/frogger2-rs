@@ -23,3 +23,5 @@
 
 # Claude Code worktrees/settings
 /.claude/
+/crates/frogger-n64/target/
+/tools/n64/export/target/

@@ -22,6 +22,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "f2-n64fmt"
+version = "0.1.0"
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -32,6 +36,7 @@ name = "frogger-n64"
 version = "0.1.0"
 dependencies = [
  "f2-math",
+ "f2-n64fmt",
  "libm",
 ]
 

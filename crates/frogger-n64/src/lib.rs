@@ -4,26 +4,32 @@
 //! a libdragon ROM whose C `main()` (csrc/main.c) calls [`f2n64_init`] once and
 //! [`f2n64_frame`] every frame. Rust calls back the narrow `n64_*` C interface (`ffi`).
 //!
-//! Current content: platform bring-up demo (textured + shaded + z-buffered triangles via
-//! rdpq, joypad, mixer beep, DFS file read, f2-math self-test) and the CPU/RDP/DFS
-//! performance probes recorded in research/n64-performance.md.
+//! Current content: the RSP 3D renderer (`r3d`, phase 2R) and its test app (`r3dtest`:
+//! cull check, benchmarks, PC-comparison scenes). With the `phase1` feature the ROM instead
+//! runs the phase-1B bring-up demo (rdpq triangles, joypad, mixer beep, DFS) and the
+//! CPU/RDP/DFS probes. Measurements: research/n64-performance.md.
 #![cfg_attr(target_vendor = "nintendo64", no_std)]
 
 extern crate alloc;
 
 pub mod ffi;
 pub mod kernels;
+pub mod r3d;
 
 #[cfg(target_vendor = "nintendo64")]
 pub mod rt;
 
-#[cfg(target_vendor = "nintendo64")]
+#[cfg(all(target_vendor = "nintendo64", feature = "phase1"))]
 mod demo;
-#[cfg(target_vendor = "nintendo64")]
+#[cfg(all(target_vendor = "nintendo64", feature = "phase1"))]
 mod probes;
+#[cfg(all(target_vendor = "nintendo64", not(feature = "phase1")))]
+mod r3dtest;
 
-#[cfg(target_vendor = "nintendo64")]
+#[cfg(all(target_vendor = "nintendo64", feature = "phase1"))]
 static mut APP: Option<demo::Demo> = None;
+#[cfg(all(target_vendor = "nintendo64", not(feature = "phase1")))]
+static mut APP: Option<r3dtest::R3dTest> = None;
 
 /// Called once by csrc/main.c (through `f2n64_call`) after libdragon is initialised.
 #[cfg(target_vendor = "nintendo64")]
@@ -36,10 +42,18 @@ pub extern "C" fn f2n64_init() {
         Some(d) => log!("DFS: rom:/hello.txt {} bytes: {:?}", d.len(), core::str::from_utf8(&d).unwrap_or("<bin>").trim_end()),
         None => log!("DFS: rom:/hello.txt missing"),
     }
-    probes::cpu_probes();
-    probes::dfs_probes();
-    // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
-    unsafe { APP = Some(demo::Demo::new()) };
+    #[cfg(feature = "phase1")]
+    {
+        probes::cpu_probes();
+        probes::dfs_probes();
+        // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
+        unsafe { APP = Some(demo::Demo::new()) };
+    }
+    #[cfg(not(feature = "phase1"))]
+    // SAFETY: as above.
+    unsafe {
+        APP = Some(r3dtest::R3dTest::new())
+    };
 }
 
 /// Called every frame by csrc/main.c.

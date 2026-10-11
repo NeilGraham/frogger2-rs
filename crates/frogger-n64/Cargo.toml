@@ -14,8 +14,13 @@ publish = false
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[features]
+# Phase-1B bring-up demo + CPU/RDP/DFS probes instead of the r3d test app.
+phase1 = []
+
 [dependencies]
 f2-math = { path = "../f2-math", default-features = false }
+f2-n64fmt = { path = "../f2-n64fmt" }
 libm = "0.2.16"
 
 [lints.rust]

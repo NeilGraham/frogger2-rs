@@ -4,10 +4,11 @@ resolver = "2"
 # frogger-ps4/-ps5 need `frogger` without its `desktop` feature, which workspace feature
 # unification would turn on: their own workspaces (tools/ps4/build-pkg.sh, tools/ps5/build.sh).
 # frogger-n64 is a nightly -Zbuild-std staticlib for a custom MIPS target (tools/n64/build.sh).
-exclude = ["crates/f2fix", "crates/frogger-ps4", "crates/frogger-ps5", "crates/frogger-n64"]
+exclude = ["crates/f2fix", "crates/frogger-ps4", "crates/frogger-ps5", "crates/frogger-n64", "tools/n64/export"]
 members = [
     "crates/f2-media",
     "crates/f2-formats",
+    "crates/f2-n64fmt",
     "crates/f2-import",
     "crates/f2-math",
     "crates/f2-game",
