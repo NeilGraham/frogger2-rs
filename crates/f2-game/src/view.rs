@@ -226,6 +226,89 @@ impl KeyTime for QKey {
     }
 }
 
+/// Phase 3S: per key channel of a [`RootObject`], whether the key times are strictly
+/// increasing as `f32` (then [`find_to_from`]'s answer is unique, whatever the hint) and
+/// the index the last search found there (a pure speed hint shared by every actor of the
+/// model; it never changes a result).
+#[derive(Debug, Default)]
+pub struct KeyChannel {
+    pub mono: bool,
+    hint: core::sync::atomic::AtomicU16,
+}
+
+impl Clone for KeyChannel {
+    fn clone(&self) -> Self {
+        KeyChannel { mono: self.mono, hint: core::sync::atomic::AtomicU16::new(self.hint.load(core::sync::atomic::Ordering::Relaxed)) }
+    }
+}
+
+impl PartialEq for KeyChannel {
+    fn eq(&self, o: &Self) -> bool {
+        self.mono == o.mono
+    }
+}
+
+impl KeyChannel {
+    fn of<K: KeyTime>(keys: &[K]) -> KeyChannel {
+        KeyChannel { mono: keys.windows(2).all(|w| (w[0].time() as f32) < (w[1].time() as f32)), hint: Default::default() }
+    }
+}
+
+/// [`find_to_from`] using `ch` (phase 3S): for strictly increasing key times and a
+/// non-NaN `time` the original binary search (whose range always contains the answer)
+/// returns the unique `i` with `t(i) == time`, else the last `i` with `t(i) < time`, so a
+/// short scan from any start finds the same keys; the scan starts at the channel's last
+/// answer and falls back to the original search when it would be long.
+fn find_to_from_ch<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: Option<&KeyChannel>) -> (usize, usize, f32) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let n = keys.len();
+    let Some(ch) = ch.filter(|c| c.mono && n >= 2 && !time.is_nan() && (0..n as i32).contains(&(e_key as i32))) else {
+        return find_to_from(keys, time, e_key);
+    };
+    let t = |i: usize| keys[i].time() as f32;
+    let mut i = ch.hint.load(Relaxed) as usize;
+    if i >= n {
+        i = e_key as usize;
+    }
+    const MAX_STEPS: u32 = 6;
+    let mut steps = 0;
+    // Find h = the last index with t(h) <= time (None: t(0) > time).
+    let h = if t(i) <= time {
+        while i + 1 < n && t(i + 1) <= time {
+            i += 1;
+            steps += 1;
+            if steps > MAX_STEPS {
+                return find_to_from(keys, time, e_key);
+            }
+        }
+        Some(i)
+    } else {
+        loop {
+            if i == 0 {
+                break None;
+            }
+            i -= 1;
+            steps += 1;
+            if steps > MAX_STEPS {
+                return find_to_from(keys, time, e_key);
+            }
+            if t(i) <= time {
+                break Some(i);
+            }
+        }
+    };
+    if let Some(h) = h {
+        ch.hint.store(h as u16, Relaxed);
+        if h + 1 < n {
+            let (from_key, to_key) = (h, h + 1);
+            let temp = (keys[to_key].time().wrapping_sub(keys[from_key].time())).unsigned_abs() as f32;
+            let interp = (time - keys[from_key].time() as f32) / temp;
+            return (from_key, to_key, interp);
+        }
+    }
+    (n - 1, n - 1, 1.0)
+}
+
 /// Port of `FindToFromVKeys`/`FindToFromQKeys` (mdxObject.cpp:229/305): `(from, to, interp)`.
 fn find_to_from<K: KeyTime>(keys: &[K], time: f32, e_key: i16) -> (usize, usize, f32) {
     let num_keys = keys.len() as i32;
@@ -279,11 +362,19 @@ pub struct RootObject {
     pub scale_keys: Vec<VKey>,
     pub rotate_keys: Vec<QKey>,
     pub bbox: Option<[Vec3; 8]>,
+    /// Phase 3S: key search info of the move / scale / rotate channels.
+    pub channels: [KeyChannel; 3],
 }
 
 impl RootObject {
     pub fn from_object(o: &Object) -> RootObject {
-        RootObject { move_keys: o.move_keys.clone(), scale_keys: o.scale_keys.clone(), rotate_keys: o.rotate_keys.clone(), bbox: o.bbox }
+        RootObject {
+            move_keys: o.move_keys.clone(),
+            scale_keys: o.scale_keys.clone(),
+            rotate_keys: o.rotate_keys.clone(),
+            bbox: o.bbox,
+            channels: [KeyChannel::of(&o.move_keys), KeyChannel::of(&o.scale_keys), KeyChannel::of(&o.rotate_keys)],
+        }
     }
 }
 
@@ -292,13 +383,13 @@ impl RootObject {
 /// `lastMKey`, `lastSKey`, `lastRKey`.
 #[allow(clippy::too_many_arguments)]
 fn object_local(mk: &[VKey], sk: &[VKey], rk: &[QKey], animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
-    object_local_r(mk, sk, rk, animated, time, last, actor_scale, parent_scale)
+    object_local_r(mk, sk, rk, None, animated, time, last, actor_scale, parent_scale)
 }
 
 /// [`object_local`] for a [`RootObject`].
 #[inline]
 fn object_local_k(k: &RootObject, animated: bool, time: f32, last: &mut [i16; 3], actor_scale: Vec3, parent_scale: Vec3) -> (Mat4, Vec3) {
-    object_local_r(&k.move_keys, &k.scale_keys, &k.rotate_keys, animated, time, last, actor_scale, parent_scale)
+    object_local_r(&k.move_keys, &k.scale_keys, &k.rotate_keys, Some(&k.channels), animated, time, last, actor_scale, parent_scale)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -306,6 +397,7 @@ fn object_local_r(
     mk: &[VKey],
     sk: &[VKey],
     rk: &[QKey],
+    ch: Option<&[KeyChannel; 3]>,
     animated: bool,
     time: f32,
     last: &mut [i16; 3],
@@ -313,7 +405,7 @@ fn object_local_r(
     parent_scale: Vec3,
 ) -> (Mat4, Vec3) {
     let translation = if mk.len() > 1 && animated {
-        let (f, t, i) = find_to_from(mk, time, last[0]);
+        let (f, t, i) = find_to_from_ch(mk, time, last[0], ch.map(|c| &c[0]));
         last[0] = f as i16;
         if (mk[t].time as f32 - time) < ANIMSNAP_THRESHHOLD {
             mk[t].v
@@ -324,7 +416,7 @@ fn object_local_r(
         mk.first().map_or([0.0; 3], |k| k.v)
     };
     let scale = if sk.len() > 1 && animated {
-        let (f, t, i) = find_to_from(sk, time, last[1]);
+        let (f, t, i) = find_to_from_ch(sk, time, last[1], ch.map(|c| &c[1]));
         last[1] = f as i16;
         if (sk[t].time as f32 - time) < ANIMSNAP_THRESHHOLD {
             sk[t].v
@@ -335,7 +427,7 @@ fn object_local_r(
         sk.first().map_or([1.0; 3], |k| k.v)
     };
     let mut rotmat = if rk.len() > 1 && animated {
-        let (f, t, i) = find_to_from(rk, time, last[2]);
+        let (f, t, i) = find_to_from_ch(rk, time, last[2], ch.map(|c| &c[2]));
         last[2] = f as i16;
         if (rk[t].time as f32 - time) < ANIMSNAP_THRESHHOLD * ROTATESNAP_MULT {
             quaternion_to_matrix(&rk[t].q)
@@ -1043,6 +1135,48 @@ mod tests {
         assert_eq!(m[0][0], -1.0);
         let p = mtx_xfm(&m, [0.0, 0.0, 50.0]);
         assert!((p[2] - 50.0).abs() < 1e-4);
+    }
+
+    /// The hinted search equals the original binary search for strictly increasing keys,
+    /// any valid hint, cached hint and time (incl. exact key times, before/after the keys).
+    #[test]
+    fn hinted_key_search_matches_binary_search() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..3000 {
+            let n = 2 + (rnd() % 60) as usize;
+            let mut t = (rnd() % 7) as i32 - 3;
+            let keys: Vec<VKey> = (0..n)
+                .map(|_| {
+                    t += 1 + (rnd() % 5) as i32;
+                    VKey { time: t, v: [0.0; 3] }
+                })
+                .collect();
+            let ch = KeyChannel::of(&keys);
+            assert!(ch.mono);
+            for _ in 0..200 {
+                let time = match rnd() % 4 {
+                    0 => keys[(rnd() % n as u64) as usize].time as f32,
+                    1 => (rnd() % (t as u64 + 10)) as f32 - 5.0,
+                    _ => ((rnd() % 100_000) as f32 / 100_000.0) * (t + 6) as f32 - 3.0,
+                };
+                let e = (rnd() % n as u64) as i16;
+                ch.hint.store((rnd() % (n as u64 + 3)) as u16, core::sync::atomic::Ordering::Relaxed);
+                let a = find_to_from(&keys, time, e);
+                let b = find_to_from_ch(&keys, time, e, Some(&ch));
+                assert_eq!(
+                    (a.0, a.1, a.2.to_bits()),
+                    (b.0, b.1, b.2.to_bits()),
+                    "time {time} hint {e} keys {:?}",
+                    keys.iter().map(|k| k.time).collect::<Vec<_>>()
+                );
+            }
+        }
     }
 
     #[test]
