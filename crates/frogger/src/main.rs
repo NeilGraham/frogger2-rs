@@ -31,9 +31,9 @@
 mod firstrun;
 mod present;
 
-use frogger::{app, data, gameplay, netplay, padscript};
 #[cfg(test)]
 use frogger::render;
+use frogger::{app, data, gameplay, netplay, padscript};
 
 use app::{App, NetRequest, Step};
 use f2_audio::AudioEngine;

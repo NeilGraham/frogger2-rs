@@ -1064,7 +1064,7 @@ fn go_explore(pl: &mut Planner, g0: &Game, o: &PlanOpts, sim_budget: u64) -> Exp
                 index.insert(key, parent);
             }
         }
-        if iter % 2000 == 0 {
+        if iter.is_multiple_of(2000) {
             eprintln!("plan: go-explore iter {iter} sim {sim} cells {} best saved {max_saved} dist {min_d}", cells.len());
         }
     }
@@ -1397,7 +1397,7 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
         let mut ci = 0usize;
         while cands.len() < k {
             ci += 1;
-            let only = if planned.len() > 1 && ci % 2 == 0 { Some(planned[(ci / 2) % planned.len()]) } else { None };
+            let only = if planned.len() > 1 && ci.is_multiple_of(2) { Some(planned[(ci / 2) % planned.len()]) } else { None };
             let mut s = rival.clone();
             if only.is_some() && !prev_best.is_empty() {
                 for (i, row) in s.iter_mut().enumerate() {
@@ -1465,7 +1465,7 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
     // After the goal: single player continues through the level-complete screen (CROSS
     // until the game saves and moves on); multiplayer idles to the frontend.
     let mut end_note = String::new();
-    if let Some(_) = goal_tick {
+    if let Some(goal) = goal_tick {
         let start_level = (g.frogger.player[0].world_num, g.frogger.player[0].level_num);
         let mut saved_at: Option<usize> = None;
         let mut tail = 0usize;
@@ -1494,7 +1494,7 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
             }
             if kind == Kind::Single {
                 let lvl = (g.frogger.player[0].world_num, g.frogger.player[0].level_num);
-                if saved_at.is_none() && (lvl != start_level || g.game_state.mode == INGAME_MODE && t > goal_tick.unwrap() + 600) {
+                if saved_at.is_none() && (lvl != start_level || g.game_state.mode == INGAME_MODE && t > goal + 600) {
                     saved_at = Some(t);
                     end_note.push_str(&format!(" moved-on@{t} level {}-{}", lvl.0, lvl.1));
                 }
@@ -1507,8 +1507,8 @@ pub fn plan(g0: Game, players: usize, o: &PlanOpts) -> (Vec<(u32, u16, usize)>, 
             }
         }
         // Release everything at the end.
-        for p in 0..4 {
-            if prev[p] != 0 {
+        for (p, &held) in prev.iter().enumerate().take(4) {
+            if held != 0 {
                 recs.push((g.act_frame_count, 0, p));
             }
         }
