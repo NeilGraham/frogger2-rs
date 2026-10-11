@@ -53,27 +53,28 @@ fn main() {
     }
     list.retain(|(s, _)| names.is_empty() || names.iter().any(|n| s.name.starts_with(n.as_str())));
 
-    println!("| scenario | k | ticks | game frames | panic | bad steps | score timer | path ents: frames / max err / p99 / <=8 | frog vs k=1 | frog rest max | deaths | tiles | babies | demo end | out of box |");
+    println!("| scenario | k | ticks | game frames | panic | bad steps | path ents vs k=1: frames / max err / p99 / <=8 | all ents: max / <=8 | frog vs k=1 | frog rest max | deaths | tiles | babies | demo end | out of box |");
     println!("|---|---:|---:|---:|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|");
     for (s, input) in &list {
         let reference = check::run(s, data.clone(), 1, *input);
         for &k in &speeds {
             let r = if k == 1 { reference.clone() } else { check::run(s, data.clone(), k, *input) };
-            let (nf, _n, max, p99, within) = check::compare(&reference, &r);
+            let (nf, _n, max, p99, within) = check::compare(&reference, &r, true);
+            let (_, _, all_max, _, all_within) = check::compare(&reference, &r, false);
             println!(
-                "| {} | {} | {} | {} | {} | {} | {}→{} | {} / {} / {} / {:.1}% | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} / {} / {} / {:.1}% | {} / {:.1}% | {} | {} | {} | {} | {} | {} | {} |",
                 s.name,
                 k,
                 r.ticks,
                 r.act,
                 r.panicked.as_deref().unwrap_or("-"),
                 r.bad_steps,
-                r.score_timer.0,
-                r.score_timer.1,
                 nf,
                 max,
                 p99,
                 within * 100.0,
+                all_max,
+                all_within * 100.0,
                 check::frog_err(&reference, &r),
                 r.frog_rest_max,
                 r.deaths,
@@ -82,6 +83,20 @@ fn main() {
                 r.demo_end_tick.map_or("-".to_string(), |t| t.to_string()),
                 r.out_of_bounds
             );
+            if std::env::var_os("F2_TS_DEBUG").is_some() && k > 1 {
+                for (i, uid, act, err) in check::divergence(&reference, &r).into_iter().take(12) {
+                    let kind = reference.snaps.get(&act).and_then(|s| s.kinds.get(i)).copied();
+                    eprintln!("  {} k={k}: entity #{i} uid {uid} {kind:x?} first off at frame {act}, max {err}", s.name);
+                }
+                // F2_TS_ENT=i: entity #i's positions (k = 1 / k) over the first frames.
+                if let Some(i) = std::env::var("F2_TS_ENT").ok().and_then(|s| s.parse::<usize>().ok()) {
+                    let from = std::env::var("F2_TS_FROM").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) / k * k + k;
+                    for act in (from..=from + 240).step_by(k as usize) {
+                        let p = |run: &check::Run| run.snaps.get(&act).and_then(|s| s.ents.get(i)).map(|e| e.1);
+                        eprintln!("    frame {act}: {:?} / {:?}", p(&reference), p(&r));
+                    }
+                }
+            }
         }
     }
 }

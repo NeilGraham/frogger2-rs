@@ -39,6 +39,8 @@ pub fn pattern(t: u32) -> u16 {
 #[derive(Clone, Debug, Default)]
 pub struct Snap {
     pub ents: Vec<(i32, [i16; 3])>,
+    /// Per entity: 'e'nemy / 'p'latform and its flags.
+    pub kinds: Vec<(char, u32)>,
     pub frog: Option<[i16; 3]>,
 }
 
@@ -51,8 +53,6 @@ pub struct Run {
     pub panicked: Option<String>,
     /// Ticks whose `actFrameCount` delta or `gameSpeed` was not k (outside pause / reloads).
     pub bad_steps: u32,
-    /// `scoreTimer.time` at the start and end (the arcade clock, 1 per 61 frames at 60 Hz).
-    pub score_timer: (u16, u16),
     /// Lives lost (play).
     pub deaths: u32,
     /// Max distance of the resting frog from its tile centre (fell off / through the map).
@@ -87,7 +87,6 @@ pub fn run(s: &Scenario, data: Arc<dyn DataSource + Send + Sync>, k: u32, input:
         }
     }
     const MARGIN: i32 = 4000;
-    r.score_timer.0 = g.game.score_timer.time;
     let mut lives = g.frogger.player[0].lives;
     let mut tiles = std::collections::HashSet::new();
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -126,14 +125,14 @@ pub fn run(s: &Scenario, data: Arc<dyn DataSource + Send + Sync>, k: u32, input:
                 }
             }
             let mut snap = Snap { frog: f.players.first().and_then(|p| p.pos), ..Default::default() };
-            for (uid, pos) in
-                f.enemies.iter().filter(|e| e.active != 0).map(|e| (e.uid, e.pos)).chain(f.platforms.iter().filter(|p| p.active != 0).map(|p| (p.uid, p.pos)))
-            {
+            let enemies = f.enemies.iter().filter(|e| e.active != 0).map(|e| (e.uid, e.pos, 'e', e.flags));
+            for (uid, pos, kind, flags) in enemies.chain(f.platforms.iter().filter(|p| p.active != 0).map(|p| (p.uid, p.pos, 'p', p.flags))) {
                 if let Some(p) = pos {
                     if (0..3).any(|i| (p[i] as i32) < lo[i] as i32 - MARGIN || (p[i] as i32) > hi[i] as i32 + MARGIN) {
                         r.out_of_bounds += 1;
                     }
                     snap.ents.push((uid, p));
+                    snap.kinds.push((kind, flags));
                 }
             }
             r.snaps.insert(g.act_frame_count, snap);
@@ -150,7 +149,6 @@ pub fn run(s: &Scenario, data: Arc<dyn DataSource + Send + Sync>, k: u32, input:
         r.panicked = Some(e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default());
     }
     r.act = g.act_frame_count;
-    r.score_timer.1 = g.game.score_timer.time;
     r.tiles_visited = tiles.len();
     r
 }
@@ -163,7 +161,11 @@ pub fn frog_err(reference: &Run, run: &Run) -> i32 {
 /// Path-entity position error of `run` against the `k` = 1 `reference` at equal game time:
 /// `(frames compared, entity samples, max error, 99th percentile, share within 8 units)`.
 /// Entities are matched by list position when both lists have the same uids.
-pub fn compare(reference: &Run, run: &Run) -> (u32, usize, i32, i32, f64) {
+/// With `path_only`, only entities that follow a path on a clock (`*_NEW_FOLLOWPATH`, and for
+/// enemies none of RANDOMSPEED / HOMING / FLAPPYTHING, which consume `Random()` or chase the
+/// frog) are counted.
+pub fn compare(reference: &Run, run: &Run, path_only: bool) -> (u32, usize, i32, i32, f64) {
+    const RANDOMISH: u32 = (1 << 11) | (1 << 14) | (1 << 22);
     let mut errs = Vec::new();
     let mut frames = 0;
     for (act, s) in &run.snaps {
@@ -172,7 +174,13 @@ pub fn compare(reference: &Run, run: &Run) -> (u32, usize, i32, i32, f64) {
             continue;
         }
         frames += 1;
-        errs.extend(r.ents.iter().zip(&s.ents).map(|(a, b)| dist(a.1, b.1)));
+        for (i, (a, b)) in r.ents.iter().zip(&s.ents).enumerate() {
+            let (kind, flags) = r.kinds[i];
+            if path_only && (flags & 1 == 0 || (kind == 'e' && flags & RANDOMISH != 0)) {
+                continue;
+            }
+            errs.push(dist(a.1, b.1));
+        }
     }
     errs.sort_unstable();
     let n = errs.len();
@@ -181,4 +189,28 @@ pub fn compare(reference: &Run, run: &Run) -> (u32, usize, i32, i32, f64) {
     }
     let within = errs.iter().filter(|&&e| e <= 8).count() as f64 / n as f64;
     (frames, n, errs[n - 1], errs[(n * 99 / 100).min(n - 1)], within)
+}
+
+/// Per entity (list position, uid): the first game frame its position differs from the
+/// reference by more than 8 units, and its max error; worst first.
+pub fn divergence(reference: &Run, run: &Run) -> Vec<(usize, i32, u32, i32)> {
+    let mut acts: Vec<u32> = run.snaps.keys().copied().collect();
+    acts.sort_unstable();
+    let mut out: HashMap<(usize, i32), (u32, i32)> = HashMap::new();
+    for act in acts {
+        let (s, Some(r)) = (&run.snaps[&act], reference.snaps.get(&act)) else { continue };
+        if r.ents.len() != s.ents.len() {
+            continue;
+        }
+        for (i, (a, b)) in r.ents.iter().zip(&s.ents).enumerate() {
+            let e = dist(a.1, b.1);
+            if e > 8 {
+                let v = out.entry((i, a.0)).or_insert((act, 0));
+                v.1 = v.1.max(e);
+            }
+        }
+    }
+    let mut v: Vec<_> = out.into_iter().map(|((i, u), (a, e))| (i, u, a, e)).collect();
+    v.sort_by_key(|x| -x.3);
+    v
 }

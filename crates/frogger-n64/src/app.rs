@@ -179,6 +179,10 @@ pub struct App {
     level_peak: (u32, u32),
     /// A level loaded during this frame: its time is not frame time.
     loaded: bool,
+    /// Phase 3T (`pacing.rs`): 60 Hz frames covered by the last tick, and game frames
+    /// simulated in this perf window.
+    step_frames: u32,
+    pace_frames: u32,
     /// The story book's `fontWhite` (`monofont.bmp`) cut down to the glyphs the chapter
     /// pages use (the whole strip is ~635 KiB as RGBA8; this is a few tens of KiB).
     book_font: Option<Font>,
@@ -227,6 +231,8 @@ impl App {
             level_name: String::from("boot"),
             level_peak: (0, 0),
             loaded: false,
+            step_frames: 1,
+            pace_frames: 0,
             book_font: None,
             last_mode: -1,
             last_pad: 0,
@@ -526,7 +532,7 @@ impl App {
 
     /// One simulation tick; `last`: the last one before the next drawn frame (only its
     /// starting state is needed for interpolation, so only then is it snapshotted).
-    fn tick(&mut self, pad: u16, last: bool) {
+    fn tick(&mut self, pad: u16, last: bool, frames: u32) {
         if last {
             self.prev = render::snapshot(&self.game);
             self.prev_cam = Some(render::game_camera(&self.game));
@@ -540,7 +546,9 @@ impl App {
         unsafe {
             crate::ffi::n64_prof(3)
         };
-        self.game.tick(TickInput { pads: [pad, 0, 0, 0] });
+        crate::pacing::tick(&mut self.game, TickInput { pads: [pad, 0, 0, 0] }, frames);
+        self.step_frames = frames;
+        self.pace_frames += frames;
         #[cfg(feature = "profile-sim")]
         unsafe {
             crate::ffi::n64_prof(2)
@@ -733,7 +741,7 @@ impl App {
 
     fn draw_inner(&mut self) {
         self.r.begin_frame(WIDTH, HEIGHT);
-        let alpha = (self.acc as f32 / TICK as f32).clamp(0.0, 1.0);
+        let alpha = crate::pacing::alpha(self.acc, TICK, self.step_frames);
         let backdrop = self.backdrop_image();
         let mut ctx = DrawCtx {
             prev: &self.prev,
@@ -785,16 +793,15 @@ impl App {
         let t0 = ticks();
         self.acc = self.acc.saturating_add(t0.wrapping_sub(self.last));
         self.last = t0;
-        let mut n = self.acc / TICK;
-        if n > MAX_TICKS_PER_FRAME {
-            self.dropped_ticks += (n - MAX_TICKS_PER_FRAME) as u64;
-            self.acc -= (n - MAX_TICKS_PER_FRAME) * TICK;
-            n = MAX_TICKS_PER_FRAME;
-        }
+        // Phase 3T (`pacing.rs`): one tick of k frames when behind (variable timestep), or up
+        // to MAX_TICKS_PER_FRAME 60 Hz ticks (F2N64_TIMESTEP=fixed).
+        let plan = crate::pacing::plan(&mut self.acc, TICK, MAX_TICKS_PER_FRAME);
+        self.dropped_ticks += plan.dropped as u64;
+        let (n, k) = (plan.ticks, plan.frames);
         let pad = input::psx_pad(rt::pad(0));
         for i in 0..n {
-            self.tick(pad, i + 1 == n);
-            self.acc -= TICK.min(self.acc);
+            self.tick(pad, i + 1 == n, k);
+            self.acc -= (k * TICK).min(self.acc);
             let tp = ticks();
             rt::audio_poll();
             self.win.poll += ticks().wrapping_sub(tp);
@@ -805,6 +812,7 @@ impl App {
         self.frames += 1;
         if core::mem::take(&mut self.loaded) {
             self.win = Window::default();
+            self.pace_frames = 0;
             self.win_start = t2;
             return;
         }
@@ -879,6 +887,20 @@ impl App {
             self.audio.music_playing()
         );
         self.heap_log("running");
+        // Phase 3T: game time vs wall clock (variable timestep: one tick may cover k frames).
+        let gf = core::mem::take(&mut self.pace_frames);
+        log!(
+            "pace [{}]: timestep {} (max {} frames/tick), {} game frames in {}.{:02} s => {}% real time, {}.{:02} frames/tick",
+            self.level_name,
+            if crate::pacing::VARIABLE { "variable" } else { "fixed" },
+            crate::pacing::MAX_FRAMES_PER_TICK,
+            gf,
+            secs_x100 / 100,
+            secs_x100 % 100,
+            gf * 10_000 / 60 / secs_x100.max(1),
+            gf / w.ticks.max(1),
+            gf * 100 / w.ticks.max(1) % 100
+        );
         #[cfg(feature = "profile")]
         unsafe {
             crate::ffi::n64_prof(1)
