@@ -58,6 +58,7 @@ agent was told to commit WIP and keep a "Status / next steps" section in its doc
 ## Phase 3 (started 2026-10-11 after the rate-limit reset)
 | Branch suffix | Task | Status |
 |---|---|---|
-| `adf53493d6484db51` | N64 3I: merge 2R renderer, wire `r3d` + 1C pack into the game, full ≤64 MiB ROM, FMV, saves, per-world ares evidence | started from `2fc5b3d` |
+| `adf53493d6484db51` | N64 3I: merge 2R renderer, wire `r3d` + 1C pack into the game, full ≤64 MiB ROM, FMV, saves, per-world ares evidence | **done, merged** (`673125c`): ROM 61.34 MiB, all worlds boot, 3.6–9.7 fps (CPU draw 51–87 ms/frame, sim 10–25 ms/tick); music switched Opus→ULC 128 kbps (CPU cost) |
 | `a90c2347f335f8b21` | N64 3S: sim speed (resumed after the limit cut it off mid-edit) | in progress |
 | `a0d5f7cb14e199305` | PS4/PS5 hardware fixes + test ladder (resumed) | in progress |
+| `aaa520b4d4f6d5752` | N64 3P: draw-side CPU performance (RSP queue/overlap, matrix caching, sprite fast paths) | started from `673125c` |
