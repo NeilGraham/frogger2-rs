@@ -84,6 +84,39 @@ pub mod trace;
 pub mod training;
 pub mod view; // P3-T: MDX view model / culling
 
+/// `Serialize`/`Deserialize` for a struct whose declaration order (memory layout) differs
+/// from its serialized field order: a mirror struct `$wire` lists the fields in serialized
+/// order (phase 3S keeps the netsync checksum and any serialized form unchanged).
+#[macro_export]
+#[doc(hidden)]
+macro_rules! ser_order {
+    ($ty:ident, $name:literal, $wire:ident { $( $(#[$m:meta])* $f:ident : $t:ty ),* $(,)? }) => {
+        #[derive(serde::Serialize)]
+        #[serde(rename = $name)]
+        struct $wire<'a> {
+            $( $(#[$m])* $f: &'a $t, )*
+        }
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                $wire { $( $f: &self.$f, )* }.serialize(s)
+            }
+        }
+        const _: () = {
+            #[derive(serde::Deserialize)]
+            #[serde(rename = $name)]
+            struct Owned {
+                $( $(#[$m])* $f: $t, )*
+            }
+            impl<'de> serde::Deserialize<'de> for $ty {
+                fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                    let o = Owned::deserialize(d)?;
+                    Ok($ty { $( $f: o.$f, )* })
+                }
+            }
+        };
+    };
+}
+
 use f2_math::Rng;
 use prelude::*;
 

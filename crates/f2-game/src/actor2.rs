@@ -59,47 +59,87 @@ pub struct ActorShadow {
 
 /// `ACTOR` (`PC/actor.h:52`). The PSX-style `ACTOR_ANIMATION animation` member is
 /// unused on PC (animation lives in the MDX actor) and is not kept.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+///
+/// Phase 3S: `repr(C)` with the fields the per-tick passes touch first (D-cache lines on
+/// the N64); `Serialize`/`Deserialize` keep the original field order (`ser_order!`).
+#[derive(Clone, Debug, Default, PartialEq)]
+#[repr(C)]
 pub struct Actor {
-    pub visible: i32,
-    pub old_position: SVector,
     pub position: SVector,
-    pub rotaim: SVector,
     pub size: FVector,
-    pub vel: FVector,
-    pub shadow: Option<ActorShadow>,
     pub q_rot: IQuaternion,
     /// `actualActor`.
     pub actual_actor: MdxActor,
+    pub vel: FVector,
+    pub visible: i32,
+    pub old_position: SVector,
+    pub rotaim: SVector,
+    pub shadow: Option<ActorShadow>,
     /// The (rewritten, lower-case) model name used to create the actor.
     pub name: String,
 }
 
+crate::ser_order!(Actor, "Actor", ActorWire {
+    visible: i32,
+    old_position: SVector,
+    position: SVector,
+    rotaim: SVector,
+    size: FVector,
+    vel: FVector,
+    shadow: Option<ActorShadow>,
+    q_rot: IQuaternion,
+    actual_actor: MdxActor,
+    name: String,
+});
+
 /// `ACTOR2` (`actor2.h:60`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+///
+/// Phase 3S: `repr(C)` with the hot fields first (see [`Actor`]); serde keeps the original
+/// field order.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[repr(C)]
 pub struct Actor2 {
-    pub actor: Actor,
     pub links: Links<ActorId>,
+    pub distance_from_frog: Fixed,
     pub draw: i8,
+    pub clipped: i8,
+    pub miles_away: i8,
+    pub depth_shift: i8,
+    pub actor: Actor,
     pub flags: u16,
+    pub dff_clipping: i8,
     pub effects: u32,
     pub fx_count: u32,
     pub radius: Fixed,
     pub anim_speed: Fixed,
     pub value1: Fixed,
-    pub distance_from_frog: Fixed,
     /// `((MDX_ACTOR*)actualActor)->overrideTex` as a texture name (baby frogs).
     pub override_tex: Option<String>,
-    pub clipped: i8,
-    pub miles_away: i8,
-    pub depth_shift: i8,
-    pub dff_clipping: i8,
     /// `obj->sprites[i].sprite` of the actor's own object tree (`MakeUniqueActor` copies the
     /// objects per actor), in `AddObjectsSpritesToSpriteList` order, with the model id they
     /// belong to. `TransformObject` positions them (`view.rs`).
-    #[serde(default)]
     pub obj_sprites: Option<(u32, Vec<Option<crate::ids::SpriteId>>)>,
 }
+
+crate::ser_order!(Actor2, "Actor2", Actor2Wire {
+    actor: Actor,
+    links: Links<ActorId>,
+    draw: i8,
+    flags: u16,
+    effects: u32,
+    fx_count: u32,
+    radius: Fixed,
+    anim_speed: Fixed,
+    value1: Fixed,
+    distance_from_frog: Fixed,
+    override_tex: Option<String>,
+    clipped: i8,
+    miles_away: i8,
+    depth_shift: i8,
+    dff_clipping: i8,
+    #[serde(default)]
+    obj_sprites: Option<(u32, Vec<Option<crate::ids::SpriteId>>)>,
+});
 
 /// Arena of actors; freed slots stay `None` until the next level.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

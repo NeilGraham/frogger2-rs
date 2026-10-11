@@ -89,23 +89,36 @@ impl MdxActorAnimation {
 }
 
 /// Gameplay-visible part of `MDX_ACTOR` (`mdxActor.h:16`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+///
+/// Phase 3S: `repr(C)`, hot fields first; serde keeps the original field order.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[repr(C)]
 pub struct MdxActor {
     /// `objectController`: model id (`crc("name.obe")`), `None` = `NULL`.
     pub object_controller: Option<u32>,
-    /// `LODObjectController` (used by `ChangeModel` to remember the original model).
-    pub lod_object_controller: Option<u32>,
+    /// `objectController->object->flags` of this actor's (unique) root object.
+    pub root_object_flags: i16,
     /// `flags` (`mdx_flags::*`).
     pub flags: i32,
     /// `listNum`: which `actorDrawList` the actor is on (0 normal, 1 shadows/additive).
     pub list_num: u32,
-    /// `objectController->object->flags` of this actor's (unique) root object.
-    pub root_object_flags: i16,
-    /// `animation`; `None` when the model has no animation table.
-    pub animation: Option<MdxActorAnimation>,
     /// `pos`/`qRot`/`scale`/`visible`/`draw` as `CopyActorList` sets them (`view.rs`).
     pub placement: crate::view::MdxPlacement,
+    /// `animation`; `None` when the model has no animation table.
+    pub animation: Option<MdxActorAnimation>,
+    /// `LODObjectController` (used by `ChangeModel` to remember the original model).
+    pub lod_object_controller: Option<u32>,
 }
+
+crate::ser_order!(MdxActor, "MdxActor", MdxActorWire {
+    object_controller: Option<u32>,
+    lod_object_controller: Option<u32>,
+    flags: i32,
+    list_num: u32,
+    root_object_flags: i16,
+    animation: Option<MdxActorAnimation>,
+    placement: crate::view::MdxPlacement,
+});
 
 /// Port of `QueueFlush` (`MDX Library/mdxActor.cpp:288`).
 pub fn queue_flush(anim: &mut MdxActorAnimation) {
