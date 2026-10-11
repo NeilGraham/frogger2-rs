@@ -55,7 +55,8 @@ USA data: 36 MiB ROM. The compressed pack of phase 1C replaces this layout behin
 | env | effect |
 |---|---|
 | `F2N64_BOOT` | `frontend` (default; training marked done like an existing save, since there is no save medium yet), `frontend-fresh`, `level W L` |
-| `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` (sample inside `Game::tick` only), `game-log` (the simulation's `Effect::Log`) |
+| `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` (sample inside `Game::tick` only), `game-log` (the simulation's `Effect::Log`), `simbench` (no game: runs the `f2_game::simbench` scenarios, logs per-tick times, phases and state checksums; research/n64-performance.md §3S) |
+| `F2N64_TUNE` | with `simbench`: experiment masks run one after another in the same ROM (`f2_game::simbench::tune`), e.g. `"0 1"` |
 | `F2N64_KEEP_DFS=1` | skip the data pre-pass |
 
 Log lines (debugf → `C:\f2-n64test\run.txt`): `perf [W-L] ...` every 5 s (fps, sim ticks/s,
