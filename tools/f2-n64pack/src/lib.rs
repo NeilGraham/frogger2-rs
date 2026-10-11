@@ -14,6 +14,7 @@
 //! Nothing produced here may be committed: it is all derived from the user's game data.
 
 pub mod audio;
+pub mod bench;
 pub mod budget;
 pub mod codec;
 pub mod ctx;
@@ -69,6 +70,9 @@ pub struct RawAsset {
     pub source_bytes: u64,
     /// Human-readable conversion notes (e.g. "256x256 RGBA16 -> 2x CI8 64x32 tiles").
     pub notes: Vec<String>,
+    /// F2Z structure transforms describing `data` (must cover it exactly), or empty to let
+    /// the codec try its generic candidates.
+    pub segments: Vec<f2_n64z::Segment>,
 }
 
 /// A finished file inside the pack.

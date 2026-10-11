@@ -10,3 +10,7 @@ publish.workspace = true
 default = []
 # Host-side encoder, dictionary trainer and forward transforms (needs std).
 encoder = []
+
+[[example]]
+name = "f2z"
+required-features = ["encoder"]
