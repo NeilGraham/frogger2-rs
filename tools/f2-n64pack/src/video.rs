@@ -138,12 +138,17 @@ pub fn encode_video(ctx: &Ctx, name: &str, codec: VideoCodec, width: u32, q: u32
 
 /// Encodes one movie's audio track (Opus, cached); returns the `.wav64` bytes.
 pub fn encode_audio(ctx: &Ctx, name: &str) -> Result<Vec<u8>> {
+    encode_audio_at(ctx, name, (AUDIO_KBPS_MONO, AUDIO_KBPS_STEREO))
+}
+
+/// [`encode_audio`] at explicit (mono, stereo) Opus bitrates.
+pub fn encode_audio_at(ctx: &Ctx, name: &str, kbps: (u32, u32)) -> Result<Vec<u8>> {
     let src = src_path(ctx, name);
     let cache = ctx.cache_dir("fmv").map_err(|e| e.to_string())?;
     let mut p = Command::new("ffprobe");
     p.args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0"]).arg(&src);
     let channels: u32 = String::from_utf8_lossy(&run(&mut p)?.stdout).trim().parse().map_err(|_| format!("{name}: no audio stream"))?;
-    let kbps = if channels >= 2 { AUDIO_KBPS_STEREO } else { AUDIO_KBPS_MONO };
+    let kbps = if channels >= 2 { kbps.1 } else { kbps.0 };
     let params = format!("opus{kbps}-ch{channels}");
     let cached = cache.join(format!("{name}-{}.wav64", file_key(&src, &params)));
     if let Ok(b) = std::fs::read(&cached) {
@@ -173,10 +178,15 @@ fn video_sizes(ctx: &Ctx, r: Rung) -> Result<Vec<u64>> {
 
 /// Encodes everything and picks the best rung whose total fits `budget`.
 pub fn pack_fmv(ctx: &Ctx, budget: u64) -> Result<ClassReport> {
+    pack_fmv_with(ctx, budget, (AUDIO_KBPS_MONO, AUDIO_KBPS_STEREO))
+}
+
+/// [`pack_fmv`] with explicit (mono, stereo) Opus bitrates for the audio tracks.
+pub fn pack_fmv_with(ctx: &Ctx, budget: u64, audio_kbps: (u32, u32)) -> Result<ClassReport> {
     if !ctx.rendition.join("video").is_dir() {
         return Err(format!("no video dir under {}", ctx.rendition.display()));
     }
-    let audio: Vec<Result<Vec<u8>>> = par_map(&MOVIES, ctx.jobs, |m| encode_audio(ctx, m));
+    let audio: Vec<Result<Vec<u8>>> = par_map(&MOVIES, ctx.jobs, |m| encode_audio_at(ctx, m, audio_kbps));
     let mut audio_bytes = Vec::new();
     for (m, a) in MOVIES.iter().zip(audio) {
         audio_bytes.push(a.map_err(|e| format!("{m} audio: {e}"))?);
@@ -241,7 +251,7 @@ pub fn pack_fmv(ctx: &Ctx, budget: u64) -> Result<ClassReport> {
         "fmv: codec h264 (see video.rs docs: 2.5-4x smaller than MPEG-1 at equal SSIM); decoder cap maxrate 288 kbps at 25 fps (videoconv64) is never exceeded"
             .into(),
     );
-    rep.notes.push(format!("fmv: audio Opus mono {AUDIO_KBPS_MONO} kbps (blitzs stereo {AUDIO_KBPS_STEREO}); wav64 next to each video"));
+    rep.notes.push(format!("fmv: audio Opus mono {} kbps (blitzs stereo {}); wav64 next to each video", audio_kbps.0, audio_kbps.1));
     Ok(rep)
 }
 

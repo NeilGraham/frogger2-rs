@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use crate::dict::EncDict;
 use crate::enc::{compress_stats, Options};
 use crate::rans::enc::normalize;
+use crate::rans::Freqs;
 use crate::transform::Segment;
 
 /// d-mer length and segment length.
@@ -151,33 +152,53 @@ pub fn train(samples: &[Sample], size: usize, id: u8, opt: &Options) -> EncDict 
         .collect();
     let refs: Vec<&[u8]> = transformed.iter().map(Vec::as_slice).collect();
     let content = train_content(&refs, size);
-    let d0 = EncDict { id, content, tables: [None, None, None, None] };
+    let d0 = EncDict::content_only(id, content);
     let stats: Vec<crate::enc::Stats> = std::thread::scope(|sc| {
         let hs: Vec<_> = samples.iter().map(|s| sc.spawn(|| compress_stats(s.data, s.segs, Some(&d0), opt).1)).collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    let mut acc: [Vec<f64>; 4] = [vec![0.0; 256], vec![0.0; crate::codes::NLL], vec![0.0; crate::codes::NML], vec![0.0; crate::codes::NOF]];
-    for st in &stats {
-        for k in 0..4 {
-            let t: u64 = st.counts[k].iter().map(|&c| u64::from(c)).sum();
+    // equal weight per file: average the normalised distributions
+    let avg = |get: &dyn Fn(&crate::enc::Stats) -> &[u32], n: usize| -> Option<Freqs> {
+        let mut acc = vec![0f64; n];
+        let mut any = false;
+        for st in &stats {
+            let c = get(st);
+            let t: u64 = c.iter().map(|&x| u64::from(x)).sum();
             if t == 0 {
                 continue;
             }
-            for (a, &c) in acc[k].iter_mut().zip(&st.counts[k]) {
-                *a += f64::from(c) / t as f64;
+            any = true;
+            for (a, &x) in acc.iter_mut().zip(c) {
+                *a += f64::from(x) / t as f64;
             }
         }
-    }
-    let tables = core::array::from_fn(|k| {
         // every symbol keeps a small floor so default tables can code anything
-        let counts: Vec<u32> = acc[k].iter().map(|&a| (a * 1e6).round() as u32 + 1).collect();
-        if acc[k].iter().all(|&a| a == 0.0) {
-            None
-        } else {
-            Some(normalize(&counts))
+        any.then(|| normalize(&acc.iter().map(|&a| (a * 1e6).round() as u32 + 1).collect::<Vec<_>>()))
+    };
+    // literal mode: the one cheapest over the whole class
+    let mut total = crate::enc::Stats::default();
+    for st in &stats {
+        total.add(st);
+    }
+    let mut best = (f64::INFINITY, 0u8);
+    for m in 0..crate::litctx::NMODES as u8 {
+        let c: f64 = total.lit_noam[m as usize]
+            .iter()
+            .map(|counts| {
+                let f = normalize(&counts.map(|x| x + 1));
+                crate::rans::enc::cost_bits(counts, &f)
+            })
+            .sum();
+        if c < best.0 {
+            best = (c, m);
         }
-    });
-    EncDict { id, content: d0.content, tables }
+    }
+    let lit_mode = best.1;
+    let lit = (0..crate::litctx::nctx(lit_mode)).map(|ctx| avg(&|st| &st.lit_noam[lit_mode as usize][ctx][..], 256)).collect();
+    let am = avg(&|st| &st.am[..], 256);
+    let codes =
+        [avg(&|st| &st.counts[1][..], crate::codes::NLL), avg(&|st| &st.counts[2][..], crate::codes::NML), avg(&|st| &st.counts[3][..], crate::codes::NOF)];
+    EncDict { id, content: d0.content, lit_mode, lit, am, codes }
 }
 
 #[cfg(test)]

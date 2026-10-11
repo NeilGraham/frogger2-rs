@@ -52,9 +52,40 @@ pub fn candidates(a: &RawAsset) -> Vec<Vec<Segment>> {
     if a.class == Class::Models {
         c.extend(crate::models::candidate_segments(&a.data));
     }
+    if a.class == Class::Textures {
+        c.extend(ntx_segments(&a.data));
+    }
     c.push(Vec::new());
     c.dedup();
     c
+}
+
+/// Transform candidates for an NTX1 texture file: record arrays as byte planes, TLUT
+/// entries split into high/low byte planes; pixel data raw or as planes of 2 (RGBA16 rows).
+pub fn ntx_segments(d: &[u8]) -> Vec<Vec<Segment>> {
+    let be32 = |o: usize| d.get(o..o + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()) as usize);
+    if d.get(..4) != Some(b"NTX1") {
+        return Vec::new();
+    }
+    let offs: Option<Vec<usize>> = [0x14, 0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0x34].iter().map(|&o| be32(o)).collect();
+    let Some(o) = offs else { return Vec::new() };
+    // sections in file order: images, entries, sorted, anims, deps, glyphs, tlut, pixels
+    let mut bounds = o.clone();
+    bounds.push(d.len());
+    if bounds[0] < 64 || bounds.windows(2).any(|w| w[0] > w[1]) || *bounds.last().unwrap() > d.len() {
+        return Vec::new();
+    }
+    let strides: [u16; 8] = [32, 24, 2, 4, 1, 4, 2, 1];
+    let mk = |pix_planes: bool| {
+        let mut v = vec![Segment::raw(bounds[0] as u32)];
+        for i in 0..8 {
+            let len = (bounds[i + 1] - bounds[i]) as u32;
+            let st = if i == 7 && pix_planes { 2 } else { strides[i] };
+            v.push(if st > 1 { Segment::planes(st, len) } else { Segment::raw(len) });
+        }
+        v
+    };
+    vec![mk(false), mk(true)]
 }
 
 /// Compresses with the best candidate; returns (stream, index of the candidate used).

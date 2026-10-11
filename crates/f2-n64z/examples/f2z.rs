@@ -18,7 +18,8 @@ fn main() {
             let h = header(&z).unwrap();
             let mut out = vec![0u8; h.raw_size as usize];
             let mut tmp = vec![0u8; h.raw_size as usize];
-            Box::new(Decoder::new()).decode(&z, None, &mut out, &mut tmp).unwrap();
+            let mut dec = Box::new(Decoder::new());
+            dec.decode(&z, None, &mut out, &mut tmp).unwrap();
             std::fs::write(&a[2], out).unwrap();
         }
         Some("bench") => {

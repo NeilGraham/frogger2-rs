@@ -40,6 +40,7 @@ pub mod bits;
 pub mod codes;
 pub mod dec;
 pub mod dict;
+pub mod litctx;
 pub mod rans;
 pub mod transform;
 

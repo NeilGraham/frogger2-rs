@@ -3,6 +3,7 @@
 use crate::bits::BitReader;
 use crate::codes::{self, LL_DLOG, ML_DLOG, OF_DLOG, REP_CODES};
 use crate::dict::Dict;
+use crate::litctx::{ctx as lit_ctx, nctx, MAX_CTX, NMODES};
 use crate::rans::{Freqs, RansDec, Table};
 use crate::transform::{self, Segment};
 use crate::{Cursor, Error, Result, INIT_REPS, MAGIC};
@@ -41,11 +42,16 @@ pub fn header(src: &[u8]) -> Result<Header> {
 }
 
 /// Decoder state: working tables for the current block plus the pre-built default tables
-/// of the loaded dictionary. ~41 KB; allocate once (static or heap) and reuse.
+/// of the loaded dictionary (24 tables of 5 KiB ≈ 123 KB). Allocate once and reuse.
 pub struct Decoder {
-    tables: [Table; 4],
-    dtables: [Table; 4],
-    dpresent: [bool; 4],
+    /// Literal tables per context, plus the matched-literal table at index `MAX_CTX`.
+    lit: [Table; MAX_CTX + 1],
+    codes: [Table; 3],
+    dlit: [Table; MAX_CTX + 1],
+    dcodes: [Table; 3],
+    dlit_present: [bool; MAX_CTX + 1],
+    dcodes_present: [bool; 3],
+    dlit_mode: u8,
     dict_id: u8,
 }
 
@@ -78,24 +84,49 @@ impl Default for Decoder {
     }
 }
 
+const T: Table = Table::new();
+
+/// A degenerate table that always yields `sym` and consumes no state.
+fn single(t: &mut Table, sym: u8) {
+    let mut f = Freqs::EMPTY;
+    f.n = u16::from(sym) + 1;
+    f.f[sym as usize] = crate::rans::PROB_SCALE as u16;
+    t.build(&f);
+}
+
 impl Decoder {
     pub const fn new() -> Decoder {
         Decoder {
-            tables: [Table::new(), Table::new(), Table::new(), Table::new()],
-            dtables: [Table::new(), Table::new(), Table::new(), Table::new()],
-            dpresent: [false; 4],
+            lit: [T; MAX_CTX + 1],
+            codes: [T; 3],
+            dlit: [T; MAX_CTX + 1],
+            dcodes: [T; 3],
+            dlit_present: [false; MAX_CTX + 1],
+            dcodes_present: [false; 3],
+            dlit_mode: 0,
             dict_id: 0,
         }
     }
 
     /// Pre-builds the dictionary's default tables (done automatically on first use).
     pub fn load_dict(&mut self, d: &Dict) {
-        for k in 0..4 {
-            self.dpresent[k] = d.tables[k].is_some();
-            if let Some(f) = &d.tables[k] {
-                self.dtables[k].build(f);
+        for c in 0..MAX_CTX {
+            self.dlit_present[c] = d.lit[c].is_some();
+            if let Some(f) = &d.lit[c] {
+                self.dlit[c].build(f);
             }
         }
+        self.dlit_present[MAX_CTX] = d.am.is_some();
+        if let Some(f) = &d.am {
+            self.dlit[MAX_CTX].build(f);
+        }
+        for k in 0..3 {
+            self.dcodes_present[k] = d.codes[k].is_some();
+            if let Some(f) = &d.codes[k] {
+                self.dcodes[k].build(f);
+            }
+        }
+        self.dlit_mode = d.lit_mode;
         self.dict_id = d.id;
     }
 
@@ -137,8 +168,9 @@ impl Decoder {
         let nblocks = c.u32()?;
         let mut op = 0usize;
         let mut reps = INIT_REPS;
+        let mut after_match = false;
         for _ in 0..nblocks {
-            op = self.block(c, has_dict, dict, w, op, &mut reps)?;
+            op = self.block(c, has_dict, dict, w, op, &mut reps, &mut after_match)?;
         }
         if op != w.len() {
             return Err(Error::Corrupt("output size mismatch"));
@@ -149,30 +181,75 @@ impl Decoder {
         Ok(())
     }
 
-    fn block(&mut self, c: &mut Cursor, has_dict: bool, dict: &[u8], w: &mut [u8], mut op: usize, reps: &mut [u32; 3]) -> Result<usize> {
+    #[allow(clippy::too_many_arguments)]
+    fn block(
+        &mut self,
+        c: &mut Cursor,
+        has_dict: bool,
+        dict: &[u8],
+        w: &mut [u8],
+        mut op: usize,
+        reps: &mut [u32; 3],
+        after_match: &mut bool,
+    ) -> Result<usize> {
         let out_len = c.u32()? as usize;
         let nseq = c.u32()?;
         let end = op.checked_add(out_len).filter(|&e| e <= w.len()).ok_or(Error::Corrupt("block overruns output"))?;
         if nseq as usize > out_len {
             return Err(Error::Corrupt("too many sequences"));
         }
-        // 0 = dict, 1 = explicit, 2 = single, 3 = unused
-        let mut modes = [3u8; 4];
-        let mut single = [0u32; 4];
-        let mut lens = [0usize; 4];
-        for k in 0..4 {
+        // literal stream: mode, per-context table modes, one payload
+        let lbyte = c.u8()?;
+        let (lmode, am_on) = (lbyte & 0x7f, lbyte & 0x80 != 0);
+        if lmode as usize >= NMODES {
+            return Err(Error::Corrupt("bad literal mode"));
+        }
+        let nc = nctx(lmode);
+        let mut use_dict = [false; MAX_CTX + 1];
+        let mut any_lit = false;
+        let parts: &[usize] = &[0, 1, 2, 3, 4, 5, 6, 7, MAX_CTX];
+        for &ctx in parts.iter().filter(|&&p| p < nc || (p == MAX_CTX && am_on)) {
+            let ud = &mut use_dict[ctx];
+            match c.u8()? {
+                0 => {
+                    let mode_ok = ctx == MAX_CTX || self.dlit_mode == lmode;
+                    if !has_dict || !mode_ok || !self.dlit_present[ctx] {
+                        return Err(Error::Corrupt("default literal table missing"));
+                    }
+                    *ud = true;
+                    any_lit = true;
+                }
+                1 => {
+                    let f = Freqs::read(c)?;
+                    self.lit[ctx].build(&f);
+                    any_lit = true;
+                }
+                2 => {
+                    single(&mut self.lit[ctx], c.u8()?);
+                    any_lit = true;
+                }
+                3 => single(&mut self.lit[ctx], 0),
+                _ => return Err(Error::Corrupt("bad stream mode")),
+            }
+        }
+        let lit_len = if any_lit { c.u32()? as usize } else { 0 };
+        // LL, ML, OF
+        let mut modes = [3u8; 3];
+        let mut sym = [0u32; 3];
+        let mut lens = [0usize; 3];
+        for k in 0..3 {
             let m = c.u8()?;
             match m {
                 0 => {
-                    if !has_dict || !self.dpresent[k] {
+                    if !has_dict || !self.dcodes_present[k] {
                         return Err(Error::Corrupt("default table missing"));
                     }
                 }
                 1 => {
                     let f = Freqs::read(c)?;
-                    self.tables[k].build(&f);
+                    self.codes[k].build(&f);
                 }
-                2 => single[k] = u32::from(c.u8()?),
+                2 => sym[k] = u32::from(c.u8()?),
                 3 => {}
                 _ => return Err(Error::Corrupt("bad stream mode")),
             }
@@ -182,21 +259,55 @@ impl Decoder {
             modes[k] = m;
         }
         let extra_len = c.u32()? as usize;
-        let mut payload: [&[u8]; 4] = [&[]; 4];
-        for k in 0..4 {
+        let lit_payload = c.take(lit_len)?;
+        let mut payload: [&[u8]; 3] = [&[]; 3];
+        for k in 0..3 {
             payload[k] = c.take(lens[k])?;
         }
         let extra = c.take(extra_len)?;
-        let (tables, dtables) = (&self.tables, &self.dtables);
+        let (codes_t, dcodes_t) = (&self.codes, &self.dcodes);
         let mk = |k: usize| -> Result<Stream> {
             Ok(match modes[k] {
-                0 => Stream::Rans(RansDec::new(payload[k])?, &dtables[k]),
-                1 => Stream::Rans(RansDec::new(payload[k])?, &tables[k]),
-                2 => Stream::Single(single[k]),
+                0 => Stream::Rans(RansDec::new(payload[k])?, &dcodes_t[k]),
+                1 => Stream::Rans(RansDec::new(payload[k])?, &codes_t[k]),
+                2 => Stream::Single(sym[k]),
                 _ => Stream::Unused,
             })
         };
-        let (mut lit, mut ll, mut ml, mut of) = (mk(0)?, mk(1)?, mk(2)?, mk(3)?);
+        let (mut ll, mut ml, mut of) = (mk(0)?, mk(1)?, mk(2)?);
+        let mut ltab: [&Table; MAX_CTX + 1] = [&self.lit[0]; MAX_CTX + 1];
+        for ctx in (0..nc).chain(core::iter::once(MAX_CTX)) {
+            ltab[ctx] = if use_dict[ctx] { &self.dlit[ctx] } else { &self.lit[ctx] };
+        }
+        let mut lit = if any_lit { Some(RansDec::new(lit_payload)?) } else { None };
+        let dict_last = dict.last().copied().unwrap_or(0);
+        // `am`: these literals directly follow a match (rep0 predicts the first one)
+        let mut lits = |w: &mut [u8], op: usize, n: usize, am: bool, rep0: usize| -> Result<()> {
+            let d = lit.as_mut().ok_or(Error::Corrupt("literals without a literal stream"))?;
+            let mut prev = if op > 0 { w[op - 1] } else { dict_last };
+            let mut start = op;
+            if am && am_on {
+                let pred = if rep0 <= op {
+                    Some(w[op - rep0])
+                } else if rep0 - op <= dict.len() {
+                    Some(dict[dict.len() - (rep0 - op)])
+                } else {
+                    None
+                };
+                if let Some(p) = pred {
+                    let b = (d.get(ltab[MAX_CTX]) as u8) ^ p;
+                    w[op] = b;
+                    prev = b;
+                    start += 1;
+                }
+            }
+            for (i, x) in w[start..op + n].iter_mut().enumerate() {
+                let b = d.get(ltab[lit_ctx(lmode, prev, start + i)]) as u8;
+                *x = b;
+                prev = b;
+            }
+            Ok(())
+        };
         let mut bits = BitReader::new(extra);
         for _ in 0..nseq {
             let (b, nb) = codes::decode(ll.next()?, LL_DLOG).ok_or(Error::Corrupt("bad LL code"))?;
@@ -204,8 +315,9 @@ impl Decoder {
             if nlit > end - op {
                 return Err(Error::Corrupt("literals overrun block"));
             }
-            for x in &mut w[op..op + nlit] {
-                *x = lit.next()? as u8;
+            if nlit > 0 {
+                lits(w, op, nlit, *after_match, reps[0] as usize)?;
+                *after_match = false;
             }
             op += nlit;
             let (b, nb) = codes::decode(ml.next()?, ML_DLOG).ok_or(Error::Corrupt("bad ML code"))?;
@@ -229,11 +341,14 @@ impl Decoder {
                 return Err(Error::Corrupt("match overruns block"));
             }
             op = copy_match(w, dict, op, d, mlen)?;
+            *after_match = true;
         }
-        for x in &mut w[op..end] {
-            *x = lit.next()? as u8;
+        if end > op {
+            lits(w, op, end - op, *after_match, reps[0] as usize)?;
+            *after_match = false;
         }
-        if !(lit.finished() && ll.finished() && ml.finished() && of.finished() && bits.ok()) {
+        let lit_done = lit.as_ref().is_none_or(|d| d.finished());
+        if !(lit_done && ll.finished() && ml.finished() && of.finished() && bits.ok()) {
             return Err(Error::Corrupt("stream not fully consumed"));
         }
         Ok(end)

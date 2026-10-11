@@ -244,6 +244,39 @@ pub mod enc {
         b
     }
 
+    /// Encodes `syms` where symbol `i` uses table `tables[ctx[i]]`.
+    pub fn encode_ctx(syms: &[u8], ctx: &[u8], tables: &[Freqs]) -> Vec<u8> {
+        let cums: Vec<[u32; MAX_SYM + 1]> = tables
+            .iter()
+            .map(|f| {
+                let mut cum = [0u32; MAX_SYM + 1];
+                for s in 0..MAX_SYM {
+                    cum[s + 1] = cum[s] + u32::from(f.f[s]);
+                }
+                cum
+            })
+            .collect();
+        let mut out = Vec::with_capacity(syms.len() / 2 + 8);
+        let mut x = RANS_L;
+        for (&s, &c) in syms.iter().zip(ctx).rev() {
+            let f = &tables[c as usize];
+            let fr = u32::from(f.f[s as usize]);
+            debug_assert!(fr > 0, "symbol {s} has zero frequency in context {c}");
+            let x_max = ((RANS_L >> PROB_BITS) << 8) * fr;
+            while x >= x_max {
+                out.push(x as u8);
+                x >>= 8;
+            }
+            x = ((x / fr) << PROB_BITS) + (x % fr) + cums[c as usize][s as usize];
+        }
+        out.push((x >> 24) as u8);
+        out.push((x >> 16) as u8);
+        out.push((x >> 8) as u8);
+        out.push(x as u8);
+        out.reverse();
+        out
+    }
+
     /// Encodes `syms` (in forward order) with `f`; returns the payload the decoder reads forward.
     pub fn encode(syms: &[u8], f: &Freqs) -> Vec<u8> {
         let mut cum = [0u32; MAX_SYM + 1];

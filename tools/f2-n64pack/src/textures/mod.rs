@@ -565,7 +565,14 @@ pub fn convert_sources(src: &Sources, policy: &Policy, jobs: usize) -> Result<Ou
             .unwrap_or_default();
         let mut n = vec![format!("shared pool for banks [{users}]: {} images", file.images.len())];
         n.extend(lines.iter().cloned());
-        assets.push(RawAsset { path: format!("textures/{path}"), class: Class::Textures, data: file.to_bytes(), source_bytes: 0, notes: n });
+        assets.push(RawAsset {
+            path: format!("textures/{path}"),
+            class: Class::Textures,
+            segments: Vec::new(),
+            data: file.to_bytes(),
+            source_bytes: 0,
+            notes: n,
+        });
     }
     stats.pools = pools.len();
 
@@ -613,7 +620,14 @@ pub fn convert_sources(src: &Sources, policy: &Policy, jobs: usize) -> Result<Ou
             bank.anims.len()
         )];
         n.extend(lines);
-        assets.push(RawAsset { path: format!("textures/{bname}.ntx"), class: Class::Textures, data: file.to_bytes(), source_bytes: *src_size, notes: n });
+        assets.push(RawAsset {
+            path: format!("textures/{bname}.ntx"),
+            class: Class::Textures,
+            segments: Vec::new(),
+            data: file.to_bytes(),
+            source_bytes: *src_size,
+            notes: n,
+        });
     }
 
     // 5. Backdrops.
@@ -637,7 +651,14 @@ pub fn convert_sources(src: &Sources, policy: &Policy, jobs: usize) -> Result<Ou
         file.add_image(&c.enc, &c.meta);
         let mut n = vec![format!("{}x{} -> {}", t.width, t.height, c.describe())];
         n.extend(report.iter().map(|(v, p, lp, b)| format!("  {v}: PSNR {p:.2} dB, low-pass {lp:.2} dB, {b} B")));
-        assets.push(RawAsset { path: format!("textures/backdrop/{name}.ntx"), class: Class::Textures, data: file.to_bytes(), source_bytes: *size, notes: n });
+        assets.push(RawAsset {
+            path: format!("textures/backdrop/{name}.ntx"),
+            class: Class::Textures,
+            segments: Vec::new(),
+            data: file.to_bytes(),
+            source_bytes: *size,
+            notes: n,
+        });
     }
 
     // 6. Loose BMPs: aliases of identical bank entries, else single-image files.
@@ -665,6 +686,7 @@ pub fn convert_sources(src: &Sources, policy: &Policy, jobs: usize) -> Result<Ou
         assets.push(RawAsset {
             path: format!("textures/{stem}.ntx"),
             class: Class::Textures,
+            segments: Vec::new(),
             data: file.to_bytes(),
             source_bytes: *size,
             notes: vec![format!("{}x{} -> {}", t.width, t.height, c.describe())],

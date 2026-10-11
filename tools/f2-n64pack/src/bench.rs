@@ -41,18 +41,27 @@ fn tool_sizes(files: &[PathBuf], jobs: usize, mk: impl Fn(&Path) -> Command + Sy
     r.into_iter().sum()
 }
 
-fn mkasset(ctx: &Ctx, files: &[PathBuf], level: u32, scratch: &Path) -> Result<u64> {
+/// Total mkasset output size; files the compressor fails on (Shrinkler aborts on a few) are
+/// counted at their raw size and reported.
+fn mkasset(ctx: &Ctx, files: &[PathBuf], level: u32, scratch: &Path) -> Result<(u64, usize)> {
     let out = scratch.join(format!("mkasset{level}"));
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    for chunk in files.chunks(200) {
-        crate::tools::run(Command::new(ctx.tool("mkasset")).args(["-c", &level.to_string(), "-w", "256", "-o"]).arg(&out).args(chunk))?;
-    }
+    // Shrinkler needs ~700 MB per process: bound the parallelism.
+    let jobs = if level == 3 { ctx.jobs.min(6) } else { ctx.jobs };
+    let r = crate::tools::par_map(files, jobs, |f: &PathBuf| -> Result<(u64, bool)> {
+        let ok = crate::tools::run(Command::new(ctx.tool("mkasset")).args(["-c", &level.to_string(), "-w", "256", "-o"]).arg(&out).arg(f)).is_ok();
+        let p = if ok { out.join(f.file_name().unwrap()) } else { f.clone() };
+        Ok((std::fs::metadata(&p).map_err(|e| e.to_string())?.len(), ok))
+    });
     let mut t = 0;
-    for f in files {
-        t += std::fs::metadata(out.join(f.file_name().unwrap())).map_err(|e| e.to_string())?.len();
+    let mut failed = 0;
+    for x in r {
+        let (n, ok) = x?;
+        t += n;
+        failed += usize::from(!ok);
     }
-    Ok(t)
+    Ok((t, failed))
 }
 
 /// Host decode throughput of a set of F2Z streams (MB/s of output), best of 3.
@@ -91,7 +100,9 @@ fn bench_class(ctx: &Ctx, class: Class, assets: &[RawAsset], md: &mut String) ->
     eprintln!("[bench] {:?}: {} files, {raw} B", class, assets.len());
     for l in 1..=3 {
         let n = ["", "LZ4", "aPLib", "Shrinkler"][l as usize];
-        rows.push(Row { name: format!("mkasset -c {l} ({n}, 256 KiB window)"), bytes: mkasset(ctx, &files, l, &scratch)?, note: String::new() });
+        let (bytes, failed) = mkasset(ctx, &files, l, &scratch)?;
+        let note = if failed > 0 { format!("{failed} files failed to compress (counted raw)") } else { String::new() };
+        rows.push(Row { name: format!("mkasset -c {l} ({n}, 256 KiB window)"), bytes, note });
     }
     rows.push(Row {
         name: "zstd -19 --ultra".into(),

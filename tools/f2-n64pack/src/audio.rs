@@ -225,13 +225,26 @@ struct Encoded {
     opus_bytes: Option<usize>,
 }
 
-fn encode_best(ctx: &Ctx, s: &Sample) -> Result<Encoded> {
+/// Sound-effect codec policy (the budget's fill step can turn Opus off).
+#[derive(Clone, Copy, Debug)]
+pub struct SfxOpts {
+    /// Keep Opus when `opus <= ratio * vadpcm`; 0 = all VADPCM.
+    pub opus_max_ratio: f64,
+}
+
+impl Default for SfxOpts {
+    fn default() -> Self {
+        SfxOpts { opus_max_ratio: OPUS_MAX_RATIO }
+    }
+}
+
+fn encode_best(ctx: &Ctx, s: &Sample, opts: &SfxOpts) -> Result<Encoded> {
     let v = encode_sample(ctx, s, Codec::Vadpcm)?;
     let vadpcm_bytes = v.len();
     if opus_candidate(s) {
         let o = encode_sample(ctx, s, Codec::Opus)?;
         let opus_bytes = Some(o.len());
-        if o.len() as f64 <= OPUS_MAX_RATIO * v.len() as f64 {
+        if o.len() as f64 <= opts.opus_max_ratio * v.len() as f64 {
             return Ok(Encoded { codec: Codec::Opus, bytes: o, vadpcm_bytes, opus_bytes });
         }
         return Ok(Encoded { codec: Codec::Vadpcm, bytes: v, vadpcm_bytes, opus_bytes });
@@ -245,9 +258,14 @@ fn encode_best(ctx: &Ctx, s: &Sample) -> Result<Encoded> {
 
 /// Deduplicates and encodes every sample of the 19 sound banks; writes the index.
 pub fn pack_sfx(ctx: &Ctx) -> Result<ClassReport> {
+    pack_sfx_with(ctx, &SfxOpts::default())
+}
+
+/// [`pack_sfx`] with an explicit codec policy.
+pub fn pack_sfx_with(ctx: &Ctx, opts: &SfxOpts) -> Result<ClassReport> {
     let (banks, dd) = load_banks(ctx)?;
     let ids: Vec<usize> = (0..dd.unique.len()).collect();
-    let encoded: Vec<Result<Encoded>> = par_map(&ids, ctx.jobs, |&i| encode_best(ctx, &dd.unique[i]));
+    let encoded: Vec<Result<Encoded>> = par_map(&ids, ctx.jobs, |&i| encode_best(ctx, &dd.unique[i], opts));
     let mut enc = Vec::with_capacity(encoded.len());
     for (i, e) in encoded.into_iter().enumerate() {
         enc.push(e.map_err(|e| format!("sfx sample {i}: {e}"))?);
@@ -324,7 +342,7 @@ pub fn pack_sfx(ctx: &Ctx) -> Result<ClassReport> {
     for (n, (cnt, b)) in codecs {
         rep.notes.push(format!("sfx codec {n}: {cnt} samples, {b} bytes"));
     }
-    rep.notes.push(format!("sfx: total {total} bytes (+{} index) vs all-VADPCM {vad_all}; Opus candidates (>= {OPUS_MIN_SECS}s mono): VADPCM {opus_cmp_v} vs Opus {opus_cmp_o} bytes; rule: Opus if <= {OPUS_MAX_RATIO} x VADPCM, {SFX_OPUS_KBPS} kbps", index_bytes.len()));
+    rep.notes.push(format!("sfx: total {total} bytes (+{} index) vs all-VADPCM {vad_all}; Opus candidates (>= {OPUS_MIN_SECS}s mono): VADPCM {opus_cmp_v} vs Opus {opus_cmp_o} bytes; rule: Opus if <= {} x VADPCM, {SFX_OPUS_KBPS} kbps", index_bytes.len(), opts.opus_max_ratio));
     let loops = dd.unique.iter().filter(|s| s.looped).count();
     let opus_loops = dd.unique.iter().zip(&enc).filter(|(s, e)| s.looped && e.codec == Codec::Opus).count();
     rep.notes.push(format!("sfx: {loops} looped samples (whole-sample loops), {opus_loops} of them Opus"));

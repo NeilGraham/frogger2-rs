@@ -16,7 +16,8 @@
 //! ```text
 //! "F2MB" u8 version(1) u8 0 u16 nstreams(= NSTREAMS)
 //! u32 len[nstreams]
-//! stream 0 .. stream nstreams-1, concatenated
+//! stream 0 .. stream nstreams-1, each zero-padded to a multiple of 4 bytes (so 2/4-byte
+//! elements stay aligned for the codec's position contexts; `len` excludes the padding)
 //! ```
 //! The data is **columnar**: each stream holds one kind of value for the whole bank, in
 //! traversal order, so the F2Z stage sees homogeneous arrays (it then applies byte-plane /
@@ -409,21 +410,21 @@ pub fn encode(bank: &ObjectBank) -> (Vec<u8>, Vec<Segment>) {
     let mut segs = vec![Segment::raw(hdr as u32)];
     for (i, s) in w.s.iter().enumerate() {
         out.extend_from_slice(s);
-        segs.push(stream_segment(i, s.len()));
+        out.resize(out.len().next_multiple_of(4), 0);
+        segs.push(stream_segment(i, s.len().next_multiple_of(4)));
     }
     (out, segs)
 }
 
-/// Default transform for stream `i` (delta for coordinate-like streams, planes otherwise).
+/// Default transform for stream `i`, measured per stream over all retail banks
+/// (`examples/model_streams.rs`): byte planes help only the index/time streams; vertices,
+/// UVs, keys and colours compress best untransformed (the codec's position-aligned literal
+/// contexts and repeat offsets already exploit their structure; delta coding hurts because
+/// vertex order is not spatially coherent).
 fn stream_segment(i: usize, len: usize) -> Segment {
-    let w = STREAM_WIDTH[i];
     let len = len as u32;
     match i {
-        S_VERT => Segment::delta(6, 2, true, len),
-        S_DECV => Segment::delta(12, 4, true, len),
-        S_DECQ => Segment::delta(16, 4, true, len),
-        S_UV => Segment::delta(4, 2, true, len),
-        _ if w > 1 => Segment::planes(u16::from(w), len),
+        S_FACE | S_TIME | S_IDX32 => Segment::planes(u16::from(STREAM_WIDTH[i]), len),
         _ => Segment::raw(len),
     }
 }
@@ -437,8 +438,10 @@ pub fn candidate_segments(data: &[u8]) -> Vec<Vec<Segment>> {
     let mut tuned = vec![Segment::raw(hdr)];
     for (i, &l) in lens.iter().enumerate() {
         let w = STREAM_WIDTH[i];
-        planes.push(if w > 1 { Segment::planes(u16::from(w), l) } else { Segment::raw(l) });
-        deltas.push(if w > 1 { Segment::delta(u16::from(w), w, true, l) } else { Segment::raw(l) });
+        let l4 = l.next_multiple_of(4);
+        planes.push(if w > 1 { Segment::planes(u16::from(w), l4) } else { Segment::raw(l4) });
+        deltas.push(if w > 1 { Segment::delta(u16::from(w), w, true, l4) } else { Segment::raw(l4) });
+        let l = l.next_multiple_of(4);
         tuned.push(stream_segment(i, l as usize));
     }
     vec![tuned, planes, deltas]
@@ -671,8 +674,9 @@ pub fn decode(data: &[u8]) -> RResult<ObjectBank> {
     let mut s = Vec::with_capacity(NSTREAMS);
     for &l in &lens {
         let e = off + l as usize;
+        let next = off + (l as usize).next_multiple_of(4);
         s.push(data.get(off..e).ok_or("stream beyond data")?);
-        off = e;
+        off = next;
     }
     if off != data.len() {
         return Err("trailing bytes".into());

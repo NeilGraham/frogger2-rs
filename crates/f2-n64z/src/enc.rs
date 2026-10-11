@@ -1,10 +1,18 @@
-//! Host-side F2Z encoder: hash-chain match finder, price-based optimal parse (iterated to
-//! convergence of the block statistics), static rANS block writer.
+//! Host-side F2Z encoder: hash-chain match finder, price-based optimal parse (iterated so
+//! the prices converge to the block's own statistics), static rANS block writer.
+//!
+//! Literal modelling (all decided per block by exact cost):
+//! * a context mode selecting the literal table from the previous byte ([`crate::litctx`]);
+//! * optionally **matched literals**: the first literal after a match is coded as
+//!   `lit ^ w[pos - rep0]` with its own table (LZMA's "matched literal" idea with a static
+//!   table) — for record arrays the byte one record back predicts it well. Its price
+//!   depends on the parse state (arrived by a match, rep0), which the optimal parser tracks.
 
 use crate::bits::BitWriter;
 use crate::codes::{self, LL_DLOG, MIN_MATCH, MIN_REP, ML_DLOG, NLL, NML, NOF, OF_DLOG, REP_CODES};
 use crate::dict::EncDict;
-use crate::rans::enc::{cost_bits, encode as rans_encode, normalize};
+use crate::litctx::{ctx as lit_ctx, nctx, MAX_CTX, NMODES};
+use crate::rans::enc::{cost_bits, encode as rans_encode, encode_ctx, normalize};
 use crate::rans::{Freqs, PROB_SCALE};
 use crate::transform::{self, Segment};
 use crate::{INIT_REPS, LIT, LL, MAGIC, ML, OF};
@@ -38,15 +46,22 @@ impl Options {
     }
 }
 
-/// Symbol counts of the four streams (for dictionary table training).
+/// Symbol counts (for table selection and dictionary training).
+/// * `counts[LIT]`: order-0 histogram of all literals; `counts[LL/ML/OF]`: code histograms.
+/// * `lit[mode][ctx]`: all literals by context; `lit_noam[mode][ctx]`: literals that are not
+///   first-after-match; `am`: histogram of `lit ^ predicted` of first-after-match literals.
 #[derive(Clone, Debug)]
 pub struct Stats {
     pub counts: [Vec<u32>; 4],
+    pub lit: Vec<Vec<[u32; 256]>>,
+    pub lit_noam: Vec<Vec<[u32; 256]>>,
+    pub am: [u32; 256],
 }
 
 impl Default for Stats {
     fn default() -> Self {
-        Stats { counts: [vec![0; 256], vec![0; NLL], vec![0; NML], vec![0; NOF]] }
+        let z = || (0..NMODES).map(|m| vec![[0u32; 256]; nctx(m as u8)]).collect();
+        Stats { counts: [vec![0; 256], vec![0; NLL], vec![0; NML], vec![0; NOF]], lit: z(), lit_noam: z(), am: [0; 256] }
     }
 }
 
@@ -56,6 +71,33 @@ impl Stats {
             for (a, b) in self.counts[k].iter_mut().zip(&o.counts[k]) {
                 *a += b;
             }
+        }
+        for (dst, src) in [(&mut self.lit, &o.lit), (&mut self.lit_noam, &o.lit_noam)] {
+            for (a, b) in dst.iter_mut().zip(src) {
+                for (x, y) in a.iter_mut().zip(b) {
+                    for (p, q) in x.iter_mut().zip(y) {
+                        *p += q;
+                    }
+                }
+            }
+        }
+        for (a, b) in self.am.iter_mut().zip(&o.am) {
+            *a += b;
+        }
+    }
+
+    /// `pos`: output position; `pred` = byte at rep0 when the literal is first after a match.
+    fn add_lit(&mut self, prev: u8, pos: usize, b: u8, pred: Option<u8>) {
+        self.counts[LIT][b as usize] += 1;
+        for m in 0..NMODES {
+            let c = lit_ctx(m as u8, prev, pos);
+            self.lit[m][c][b as usize] += 1;
+            if pred.is_none() {
+                self.lit_noam[m][c][b as usize] += 1;
+            }
+        }
+        if let Some(p) = pred {
+            self.am[(b ^ p) as usize] += 1;
         }
     }
 }
@@ -72,8 +114,21 @@ struct Seq {
 const PRICE_SHIFT: u32 = 4; // prices in 1/16 bit
 const INF: u32 = u32::MAX / 2;
 
+/// Literal coding choice of a block.
+#[derive(Clone, Debug)]
+struct LitModel {
+    mode: u8,
+    am_on: bool,
+    /// One table per context (used for pricing / encoding when not a dictionary table).
+    tables: Vec<Freqs>,
+    am: Freqs,
+}
+
 struct Prices {
-    lit: [u32; 256],
+    lit_mode: u8,
+    am_on: bool,
+    lit: [[u32; 256]; MAX_CTX],
+    am: [u32; 256],
     ll: [u32; NLL],
     ml: [u32; NML],
     of: [u32; NOF],
@@ -84,32 +139,34 @@ fn sym_price(f: u16) -> u32 {
     ((f64::from(PROB_SCALE) / f).log2() * f64::from(1 << PRICE_SHIFT)).round() as u32
 }
 
+fn fill(dst: &mut [u32], f: &Freqs) {
+    for (i, x) in dst.iter_mut().enumerate() {
+        *x = sym_price(if i < f.n as usize { f.f[i] } else { 0 });
+    }
+}
+
 impl Prices {
-    fn from_freqs(t: [&Freqs; 4]) -> Prices {
-        let mut p = Prices { lit: [0; 256], ll: [0; NLL], ml: [0; NML], of: [0; NOF] };
-        for (i, x) in p.lit.iter_mut().enumerate() {
-            *x = sym_price(if i < t[0].n as usize { t[0].f[i] } else { 0 });
+    fn new(lm: &LitModel, t: [&Freqs; 3]) -> Prices {
+        let mut p = Prices { lit_mode: lm.mode, am_on: lm.am_on, lit: [[0; 256]; MAX_CTX], am: [0; 256], ll: [0; NLL], ml: [0; NML], of: [0; NOF] };
+        for (c, f) in lm.tables.iter().enumerate() {
+            fill(&mut p.lit[c], f);
         }
-        for (i, x) in p.ll.iter_mut().enumerate() {
-            *x = sym_price(if i < t[1].n as usize { t[1].f[i] } else { 0 });
-        }
-        for (i, x) in p.ml.iter_mut().enumerate() {
-            *x = sym_price(if i < t[2].n as usize { t[2].f[i] } else { 0 });
-        }
-        for (i, x) in p.of.iter_mut().enumerate() {
-            *x = sym_price(if i < t[3].n as usize { t[3].f[i] } else { 0 });
-        }
+        fill(&mut p.am, &lm.am);
+        fill(&mut p.ll, t[0]);
+        fill(&mut p.ml, t[1]);
+        fill(&mut p.of, t[2]);
         p
     }
 
-    /// First-pass guess: literal prices from the block's byte histogram, flat-ish code prices.
-    fn initial(block: &[u8]) -> Prices {
-        let mut h = [1u32; 256];
-        for &b in block {
-            h[b as usize] += 1;
+    /// First-pass guess: literal prices from the block's bytes, flat-ish code prices.
+    fn initial(w: &[u8], base: usize, start: usize, end: usize) -> Prices {
+        let mut st = Stats::default();
+        for pos in start..end {
+            st.add_lit(if pos > 0 { w[pos - 1] } else { 0 }, pos - base, w[pos], None);
         }
-        let lit = normalize(&h);
-        let mut p = Prices::from_freqs([&lit, &Freqs::EMPTY, &Freqs::EMPTY, &Freqs::EMPTY]);
+        let mut lm = best_lit_model(&st, None);
+        lm.am_on = false;
+        let mut p = Prices::new(&lm, [&Freqs::EMPTY, &Freqs::EMPTY, &Freqs::EMPTY]);
         for (c, x) in p.ll.iter_mut().enumerate() {
             *x = (2 + c as u32 / 2) << PRICE_SHIFT;
         }
@@ -122,6 +179,13 @@ impl Prices {
         p
     }
 
+    #[inline]
+    fn lit_price(&self, prev: u8, pos: usize, b: u8, pred: Option<u8>) -> u32 {
+        match pred {
+            Some(p) if self.am_on => self.am[(b ^ p) as usize],
+            _ => self.lit[lit_ctx(self.lit_mode, prev, pos)][b as usize],
+        }
+    }
     #[inline]
     fn ll_price(&self, v: u32) -> u32 {
         let (c, nb, _) = codes::encode(v, LL_DLOG);
@@ -235,8 +299,28 @@ fn next_reps(reps: [u32; 3], ofv: u32) -> [u32; 3] {
     }
 }
 
+/// Predicted byte for a first-after-match literal at window position `pos`.
+#[inline]
+fn pred_at(w: &[u8], pos: usize, rep0: u32) -> Option<u8> {
+    (rep0 as usize <= pos && rep0 > 0).then(|| w[pos - rep0 as usize])
+}
+
 /// Parses `w[start..end]` (window coordinates) given the matches at each position.
-fn parse_block(w: &[u8], start: usize, end: usize, mstart: &[u32], matches: &[(u32, u32)], reps0: [u32; 3], p: &Prices, opt: &Options) -> (Vec<Seq>, [u32; 3]) {
+/// `am0`: the position before `start` ended a match. Returns the sequences, final reps
+/// and whether the block ends right after a match.
+#[allow(clippy::too_many_arguments)]
+fn parse_block(
+    w: &[u8],
+    base: usize,
+    start: usize,
+    end: usize,
+    mstart: &[u32],
+    matches: &[(u32, u32)],
+    reps0: [u32; 3],
+    am0: bool,
+    p: &Prices,
+    opt: &Options,
+) -> (Vec<Seq>, [u32; 3], bool) {
     let n = end - start;
     let mut nodes = vec![Node { cost: INF, len: 0, ofv: 0, litrun: 0, reps: reps0 }; n + 1];
     nodes[0].cost = p.ll_price(0);
@@ -251,7 +335,11 @@ fn parse_block(w: &[u8], start: usize, end: usize, mstart: &[u32], matches: &[(u
         let pos = start + i;
         // literal
         {
-            let c = i64::from(nd.cost) + i64::from(p.lit[w[pos] as usize]) + i64::from(p.ll_price(nd.litrun + 1)) - i64::from(p.ll_price(nd.litrun));
+            let prev = if pos > 0 { w[pos - 1] } else { 0 };
+            let after_match = nd.litrun == 0 && (i > 0 || am0);
+            let pred = if after_match { pred_at(w, pos, nd.reps[0]) } else { None };
+            let c = i64::from(nd.cost) + i64::from(p.lit_price(prev, pos - base, w[pos], pred)) + i64::from(p.ll_price(nd.litrun + 1))
+                - i64::from(p.ll_price(nd.litrun));
             let c = c.max(0) as u32;
             let t = &mut nodes[i + 1];
             if c < t.cost {
@@ -333,6 +421,7 @@ fn parse_block(w: &[u8], start: usize, end: usize, mstart: &[u32], matches: &[(u
         }
     }
     path.reverse();
+    let ends_with_match = path.last().is_some_and(|p| p.0 > 0);
     let mut seqs = Vec::new();
     let mut lits = 0u32;
     for (len, ofv) in path {
@@ -343,11 +432,17 @@ fn parse_block(w: &[u8], start: usize, end: usize, mstart: &[u32], matches: &[(u
             lits = 0;
         }
     }
-    (seqs, nodes[n].reps)
+    (seqs, nodes[n].reps, if n == 0 { am0 } else { ends_with_match })
 }
 
 struct BlockSyms {
     lits: Vec<u8>,
+    /// previous output byte of each literal
+    prevs: Vec<u8>,
+    /// predicted byte (rep0) of first-after-match literals
+    preds: Vec<Option<u8>>,
+    /// output position of each literal
+    poss: Vec<usize>,
     ll: Vec<u8>,
     ml: Vec<u8>,
     of: Vec<u8>,
@@ -355,12 +450,34 @@ struct BlockSyms {
     stats: Stats,
 }
 
-fn block_syms(w: &[u8], start: usize, end: usize, seqs: &[Seq]) -> BlockSyms {
-    let mut s = BlockSyms { lits: Vec::new(), ll: Vec::new(), ml: Vec::new(), of: Vec::new(), bits: BitWriter::default(), stats: Stats::default() };
+fn block_syms(w: &[u8], base: usize, start: usize, end: usize, seqs: &[Seq], reps0: [u32; 3], am0: bool) -> BlockSyms {
+    let mut s = BlockSyms {
+        lits: Vec::new(),
+        prevs: Vec::new(),
+        preds: Vec::new(),
+        poss: Vec::new(),
+        ll: Vec::new(),
+        ml: Vec::new(),
+        of: Vec::new(),
+        bits: BitWriter::default(),
+        stats: Stats::default(),
+    };
     let mut pos = start;
+    let mut reps = reps0;
+    let mut after_match = am0;
+    let push_lits = |s: &mut BlockSyms, from: usize, to: usize, after_match: bool, rep0: u32| {
+        for p in from..to {
+            s.lits.push(w[p]);
+            s.prevs.push(if p > 0 { w[p - 1] } else { 0 });
+            s.preds.push(if p == from && after_match { pred_at(w, p, rep0) } else { None });
+            s.poss.push(p - base);
+        }
+    };
     for q in seqs {
-        s.lits.extend_from_slice(&w[pos..pos + q.ll as usize]);
+        push_lits(&mut s, pos, pos + q.ll as usize, after_match, reps[0]);
         pos += q.ll as usize + q.ml as usize + 2;
+        reps = next_reps(reps, q.ofv);
+        after_match = true;
         let (c, nb, e) = codes::encode(q.ll, LL_DLOG);
         s.ll.push(c as u8);
         s.bits.put(e, nb);
@@ -375,9 +492,9 @@ fn block_syms(w: &[u8], start: usize, end: usize, seqs: &[Seq]) -> BlockSyms {
             s.bits.put(e, nb);
         }
     }
-    s.lits.extend_from_slice(&w[pos..end]);
-    for &b in &s.lits {
-        s.stats.counts[LIT][b as usize] += 1;
+    push_lits(&mut s, pos, end, after_match, reps[0]);
+    for i in 0..s.lits.len() {
+        s.stats.add_lit(s.prevs[i], s.poss[i], s.lits[i], s.preds[i]);
     }
     for &b in &s.ll {
         s.stats.counts[LL][b as usize] += 1;
@@ -397,7 +514,135 @@ fn table_bytes(f: &Freqs) -> usize {
     v.len()
 }
 
-/// Writes one stream header + returns its payload.
+/// Coded cost in bits of one table-selected stream part (mode byte + table + payload
+/// estimate), and the own table when that beats the dictionary's.
+fn part_cost(counts: &[u32], dict: Option<&Freqs>) -> (f64, Option<Freqs>) {
+    let used = counts.iter().filter(|&&c| c > 0).count();
+    match used {
+        0 => (8.0, None),
+        1 => (16.0, None),
+        _ => {
+            let own = normalize(counts);
+            let own_cost = cost_bits(counts, &own) + 8.0 * table_bytes(&own) as f64 + 8.0;
+            let dict_cost = dict.map_or(f64::INFINITY, |d| cost_bits(counts, d) + 8.0);
+            if dict_cost <= own_cost {
+                (dict_cost, None)
+            } else {
+                (own_cost, Some(own))
+            }
+        }
+    }
+}
+
+/// The table actually used for a part (own, dictionary, or a smoothed own table for pricing).
+fn part_table(counts: &[u32], dict: Option<&Freqs>) -> Freqs {
+    match part_cost(counts, dict) {
+        (_, Some(own)) => own,
+        _ => match dict {
+            Some(d) if counts.iter().filter(|&&c| c > 0).count() > 1 => *d,
+            _ => normalize(&counts.iter().map(|c| c + 1).collect::<Vec<_>>()),
+        },
+    }
+}
+
+/// Picks the cheapest literal model (context mode × matched literals on/off).
+fn best_lit_model(st: &Stats, dict: Option<&EncDict>) -> LitModel {
+    let mut best = (f64::INFINITY, 0u8, false);
+    for am_on in [false, true] {
+        for m in 0..NMODES as u8 {
+            let src = if am_on { &st.lit_noam } else { &st.lit };
+            let mut c = 32.0;
+            for (ctx, counts) in src[m as usize].iter().enumerate() {
+                c += part_cost(counts, dict.and_then(|d| d.lit_table(m, ctx))).0;
+            }
+            if am_on {
+                c += part_cost(&st.am, dict.and_then(|d| d.am.as_ref())).0;
+            }
+            if c < best.0 {
+                best = (c, m, am_on);
+            }
+        }
+    }
+    let (_, mode, am_on) = best;
+    let src = if am_on { &st.lit_noam } else { &st.lit };
+    let tables = src[mode as usize].iter().enumerate().map(|(ctx, counts)| part_table(counts, dict.and_then(|d| d.lit_table(mode, ctx)))).collect();
+    let am = part_table(&st.am, dict.and_then(|d| d.am.as_ref()));
+    LitModel { mode, am_on, tables, am }
+}
+
+/// Writes one table-selected part header; returns the table to encode with (None = unused).
+fn write_part(hdr: &mut Vec<u8>, counts: &[u32], dict: Option<&Freqs>) -> Option<Freqs> {
+    let used = counts.iter().filter(|&&x| x > 0).count();
+    if used == 0 {
+        hdr.push(3);
+        return None;
+    }
+    if used == 1 {
+        let sym = counts.iter().position(|&x| x > 0).unwrap();
+        hdr.push(2);
+        hdr.push(sym as u8);
+        let mut f = Freqs::EMPTY;
+        f.n = sym as u16 + 1;
+        f.f[sym] = PROB_SCALE as u16;
+        return Some(f);
+    }
+    match part_cost(counts, dict) {
+        (_, Some(own)) => {
+            hdr.push(1);
+            own.write(hdr);
+            Some(own)
+        }
+        _ => {
+            hdr.push(0);
+            Some(*dict.unwrap())
+        }
+    }
+}
+
+/// Writes the literal stream header (mode | am flag, per-context tables, [AM table]) and
+/// returns its payload.
+fn write_lits(hdr: &mut Vec<u8>, s: &BlockSyms, lm: &LitModel, dict: Option<&EncDict>) -> Vec<u8> {
+    let mode = lm.mode;
+    hdr.push(mode | if lm.am_on { 0x80 } else { 0 });
+    let nc = nctx(mode);
+    let src = if lm.am_on { &s.stats.lit_noam } else { &s.stats.lit };
+    let mut tables = vec![Freqs::EMPTY; MAX_CTX + 1];
+    let mut any = false;
+    for ctx in 0..nc {
+        if let Some(t) = write_part(hdr, &src[mode as usize][ctx], dict.and_then(|d| d.lit_table(mode, ctx))) {
+            tables[ctx] = t;
+            any = true;
+        }
+    }
+    if lm.am_on {
+        if let Some(t) = write_part(hdr, &s.stats.am, dict.and_then(|d| d.am.as_ref())) {
+            tables[MAX_CTX] = t;
+            any = true;
+        }
+    }
+    if !any {
+        return Vec::new();
+    }
+    let mut syms = Vec::with_capacity(s.lits.len());
+    let mut ctxs = Vec::with_capacity(s.lits.len());
+    for i in 0..s.lits.len() {
+        match s.preds[i] {
+            Some(p) if lm.am_on => {
+                syms.push(s.lits[i] ^ p);
+                ctxs.push(MAX_CTX as u8);
+            }
+            _ => {
+                syms.push(s.lits[i]);
+                ctxs.push(lit_ctx(mode, s.prevs[i], s.poss[i]) as u8);
+            }
+        }
+    }
+    let payload = encode_ctx(&syms, &ctxs, &tables);
+    hdr.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    payload
+}
+
+/// Writes one code stream header + returns its payload.
 fn write_stream(hdr: &mut Vec<u8>, syms: &[u8], counts: &[u32], dict: Option<&Freqs>) -> Vec<u8> {
     let used = counts.iter().filter(|&&c| c > 0).count();
     if used == 0 {
@@ -409,15 +654,15 @@ fn write_stream(hdr: &mut Vec<u8>, syms: &[u8], counts: &[u32], dict: Option<&Fr
         hdr.push(counts.iter().position(|&c| c > 0).unwrap() as u8);
         return Vec::new();
     }
-    let own = normalize(counts);
-    let own_cost = cost_bits(counts, &own) + 8.0 * table_bytes(&own) as f64;
-    let dict_cost = dict.map_or(f64::INFINITY, |d| cost_bits(counts, d));
-    let (mode, f) = if dict_cost <= own_cost { (0u8, dict.unwrap()) } else { (1u8, &own) };
+    let (mode, f) = match part_cost(counts, dict) {
+        (_, Some(own)) => (1u8, own),
+        _ => (0u8, *dict.unwrap()),
+    };
     hdr.push(mode);
     if mode == 1 {
         f.write(hdr);
     }
-    let payload = rans_encode(syms, f);
+    let payload = rans_encode(syms, &f);
     hdr.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     payload
 }
@@ -455,10 +700,11 @@ pub fn compress_stats(data: &[u8], segs: &[Segment], dict: Option<&EncDict>, opt
 
     let mut hc = HashChain::new(w.len());
     let mut reps = INIT_REPS;
+    let mut am = false;
     let mut total = Stats::default();
-    let dict_tables: [Option<&Freqs>; 4] = match dict {
-        Some(d) => [d.tables[0].as_ref(), d.tables[1].as_ref(), d.tables[2].as_ref(), d.tables[3].as_ref()],
-        None => [None; 4],
+    let dict_codes: [Option<&Freqs>; 3] = match dict {
+        Some(d) => [d.codes[0].as_ref(), d.codes[1].as_ref(), d.codes[2].as_ref()],
+        None => [None; 3],
     };
     let mut mbuf: Vec<(u32, u32)> = Vec::new();
     for b in 0..nblocks {
@@ -486,32 +732,38 @@ pub fn compress_stats(data: &[u8], segs: &[Segment], dict: Option<&EncDict>, opt
         mstart.push(matches.len() as u32);
         hc.insert_upto(&w, end);
 
-        let mut prices = if dict_tables.iter().all(|t| t.is_some()) {
-            Prices::from_freqs([dict_tables[0].unwrap(), dict_tables[1].unwrap(), dict_tables[2].unwrap(), dict_tables[3].unwrap()])
-        } else {
-            Prices::initial(&w[start..end])
-        };
-        let mut best: Option<(Vec<Seq>, [u32; 3])> = None;
-        for pass in 0..opt.passes.max(1) {
-            let (seqs, r) = parse_block(&w, start, end, &mstart, &matches, reps, &prices, opt);
-            if pass + 1 < opt.passes {
-                let s = block_syms(&w, start, end, &seqs);
-                let t: Vec<Freqs> = (0..4).map(|k| normalize(&s.stats.counts[k])).collect();
-                prices = Prices::from_freqs([&t[0], &t[1], &t[2], &t[3]]);
+        let mut prices = match dict {
+            Some(d) if dict_codes.iter().all(|t| t.is_some()) && d.lit.iter().all(|t| t.is_some()) => {
+                let lm =
+                    LitModel { mode: d.lit_mode, am_on: d.am.is_some(), tables: d.lit.iter().map(|t| t.unwrap()).collect(), am: d.am.unwrap_or(Freqs::EMPTY) };
+                Prices::new(&lm, [dict_codes[0].unwrap(), dict_codes[1].unwrap(), dict_codes[2].unwrap()])
             }
-            best = Some((seqs, r));
+            _ => Prices::initial(&w, base, start, end),
+        };
+        let mut best: Option<(Vec<Seq>, [u32; 3], bool)> = None;
+        for pass in 0..opt.passes.max(1) {
+            let r = parse_block(&w, base, start, end, &mstart, &matches, reps, am, &prices, opt);
+            if pass + 1 < opt.passes {
+                let s = block_syms(&w, base, start, end, &r.0, reps, am);
+                let lm = best_lit_model(&s.stats, dict);
+                let t: Vec<Freqs> = (0..3).map(|k| part_table(&s.stats.counts[k + 1], dict_codes[k])).collect();
+                prices = Prices::new(&lm, [&t[0], &t[1], &t[2]]);
+            }
+            best = Some(r);
         }
-        let (seqs, r) = best.unwrap();
+        let (seqs, r, am_end) = best.unwrap();
+        let s = block_syms(&w, base, start, end, &seqs, reps, am);
         reps = r;
-        let s = block_syms(&w, start, end, &seqs);
+        am = am_end;
         out.extend_from_slice(&((end - start) as u32).to_le_bytes());
         out.extend_from_slice(&(seqs.len() as u32).to_le_bytes());
         let mut hdr = Vec::new();
+        let lm = best_lit_model(&s.stats, dict);
         let payloads = [
-            write_stream(&mut hdr, &s.lits, &s.stats.counts[LIT], dict_tables[LIT]),
-            write_stream(&mut hdr, &s.ll, &s.stats.counts[LL], dict_tables[LL]),
-            write_stream(&mut hdr, &s.ml, &s.stats.counts[ML], dict_tables[ML]),
-            write_stream(&mut hdr, &s.of, &s.stats.counts[OF], dict_tables[OF]),
+            write_lits(&mut hdr, &s, &lm, dict),
+            write_stream(&mut hdr, &s.ll, &s.stats.counts[LL], dict_codes[0]),
+            write_stream(&mut hdr, &s.ml, &s.stats.counts[ML], dict_codes[1]),
+            write_stream(&mut hdr, &s.of, &s.stats.counts[OF], dict_codes[2]),
         ];
         let extra = s.bits.finish();
         out.extend_from_slice(&hdr);
@@ -571,6 +823,21 @@ mod tests {
         v
     }
 
+    /// Struct-array-like data where matched literals pay off.
+    fn records(n: usize) -> Vec<u8> {
+        let mut v = Vec::new();
+        let mut s = 1u32;
+        let mut i = 0u32;
+        while v.len() < n {
+            s = s.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            v.extend_from_slice(&(i * 3).to_be_bytes());
+            v.extend_from_slice(&[(s >> 24) as u8 & 7, 0, 1, (s >> 16) as u8]);
+            i += 1;
+        }
+        v.truncate(n);
+        v
+    }
+
     #[test]
     fn round_trip_basic() {
         for opt in [Options::level(1), Options::level(5), Options::level(9)] {
@@ -580,6 +847,8 @@ mod tests {
             let s = sample(30_000);
             let n = rt(&s, &[], None, &opt);
             assert!(n < s.len() / 2, "{n}");
+            let r = records(30_000);
+            rt(&r, &[], None, &opt);
             let zeros = vec![0u8; 300_000];
             assert!(rt(&zeros, &[], None, &opt) < 400);
         }
@@ -590,6 +859,7 @@ mod tests {
         let s = sample(50_000);
         let opt = Options { block_size: 4096, ..Options::level(9) };
         rt(&s, &[], None, &opt);
+        rt(&records(50_000), &[], None, &opt);
         rt(&s, &[Segment::raw(10), Segment::delta(12, 4, true, 30_000), Segment::planes(5, 19_990)], None, &opt);
     }
 
@@ -598,23 +868,32 @@ mod tests {
         let s = sample(20_000);
         let mut st = Stats::default();
         let content = s[..8000].to_vec();
-        let d0 = EncDict { id: 3, content: content.clone(), tables: [None, None, None, None] };
+        let d0 = EncDict::content_only(3, content.clone());
         let (_, stats) = compress_stats(&s[8000..], &[], Some(&d0), &Options::level(9));
         st.add(&stats);
-        let tables = [Some(normalize(&st.counts[0])), Some(normalize(&st.counts[1])), Some(normalize(&st.counts[2])), Some(normalize(&st.counts[3]))];
-        let d = EncDict { id: 3, content, tables };
+        let d = EncDict {
+            id: 3,
+            content,
+            lit_mode: 2,
+            lit: st.lit_noam[2].iter().map(|c| Some(normalize(&c.map(|x| x + 1)))).collect(),
+            am: Some(normalize(&st.am.map(|x| x + 1))),
+            codes: [Some(normalize(&st.counts[1])), Some(normalize(&st.counts[2])), Some(normalize(&st.counts[3]))],
+        };
         let plain = rt(&s[10_000..12_000], &[], None, &Options::level(9));
         let with = rt(&s[10_000..12_000], &[], Some(&d), &Options::level(9));
         assert!(with < plain, "dict {with} vs plain {plain}");
+        // small blocks spanning dictionary-relative matched literals
+        rt(&s[12_000..20_000], &[], Some(&d), &Options { block_size: 1000, ..Options::level(9) });
         // wrong / missing dictionary is rejected, not mis-decoded
         let z = compress(&s[..100], &[], Some(&d), &Options::level(9));
         let mut out = vec![0u8; 100];
-        assert_eq!(Decoder::new().decode(&z, None, &mut out, &mut []), Err(crate::Error::WrongDict(3)));
+        let mut dec = Box::new(Decoder::new());
+        assert_eq!(dec.decode(&z, None, &mut out, &mut []), Err(crate::Error::WrongDict(3)));
     }
 
     #[test]
     fn corrupt_input_never_panics() {
-        let s = sample(5000);
+        let s = records(5000);
         let z = compress(&s, &[Segment::planes(4, 5000)], None, &Options::level(5));
         let mut out = vec![0u8; s.len()];
         let mut tmp = vec![0u8; s.len()];

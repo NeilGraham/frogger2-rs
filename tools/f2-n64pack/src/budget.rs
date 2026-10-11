@@ -141,6 +141,13 @@ pub fn build(ctx: &Ctx, cfg: &BudgetConfig) -> Result<bool> {
         add(m, &mut files);
         add(f, &mut files);
     }
+    if cfg.wants("sfx") && cfg.wants("fmv") {
+        step("quality upgrades with the remaining space");
+        for n in fill(ctx, cfg, &mut files)? {
+            eprintln!("  {n}");
+            notes.push(n);
+        }
+    }
     let dfs = measure_dfs(ctx)?;
     let total = dfs + cfg.code_reserve;
     let fits = total <= cfg.cart_bytes;
@@ -162,6 +169,59 @@ pub fn build(ctx: &Ctx, cfg: &BudgetConfig) -> Result<bool> {
         eprintln!("error: pack ({dfs} B) + code reserve ({} B) = {total} B exceeds the {} B cartridge", cfg.code_reserve, cfg.cart_bytes);
     }
     Ok(fits)
+}
+
+/// Spends leftover space on quality, in priority order, re-measuring the real DFS image
+/// after each step and reverting a step that does not fit: (1) all sound effects VADPCM
+/// (no Opus: better fidelity, near-free RSP decode, exact loops), (2) FMV audio Opus mono
+/// 48 kbps / stereo 96 kbps (from 32/64). Music and FMV video are already at their caps.
+fn fill(ctx: &Ctx, cfg: &BudgetConfig, files: &mut Vec<PackedFile>) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
+    let fits = |ctx: &Ctx| -> Result<(bool, u64)> {
+        let d = measure_dfs(ctx)?;
+        Ok((d + cfg.code_reserve <= cfg.cart_bytes, d))
+    };
+    let (ok, _) = fits(ctx)?;
+    if !ok {
+        return Ok(notes);
+    }
+    let fmv_info = |files: &[PackedFile]| files.iter().find(|f| f.class == Class::Fmv && f.path.ends_with(".h264")).map(|f| f.format.clone());
+    let replace = |files: &mut Vec<PackedFile>, c: Class, r: ClassReport| {
+        files.retain(|f| f.class != c);
+        files.extend(r.files);
+        r.notes
+    };
+    // (1) sound effects: all VADPCM
+    let before = sum(files, Class::Sfx);
+    let r = audio::pack_sfx_with(ctx, &audio::SfxOpts { opus_max_ratio: 0.0 })?;
+    let after = sum(&r.files, Class::Sfx);
+    let n = replace(files, Class::Sfx, r);
+    if fits(ctx)?.0 {
+        notes.push(format!("fill: sound effects all VADPCM ({before} -> {after} B)"));
+        notes.extend(n);
+    } else {
+        let r = audio::pack_sfx(ctx)?;
+        replace(files, Class::Sfx, r);
+        notes.push(format!("fill: all-VADPCM sound effects do not fit ({after} B), kept Opus for long samples"));
+        return Ok(notes);
+    }
+    // (2) FMV audio bitrate, keeping the chosen video rung
+    let Some(label) = fmv_info(files) else { return Ok(notes) };
+    let video_budget = sum(files, Class::Fmv);
+    for kbps in [(48u32, 96u32), (40, 80)] {
+        let extra = video::pack_fmv_with(ctx, u64::MAX, kbps)?;
+        let same_rung = fmv_info(&extra.files).as_deref() == Some(label.as_str());
+        let new_total = sum(&extra.files, Class::Fmv);
+        let n = replace(files, Class::Fmv, extra);
+        if same_rung && fits(ctx)?.0 {
+            notes.push(format!("fill: FMV audio Opus {} kbps mono / {} kbps stereo ({video_budget} -> {new_total} B)", kbps.0, kbps.1));
+            notes.extend(n);
+            return Ok(notes);
+        }
+        let r = video::pack_fmv(ctx, video_budget)?;
+        replace(files, Class::Fmv, r);
+    }
+    Ok(notes)
 }
 
 /// Music + FMV: the best quality that fits `avail` bytes.
