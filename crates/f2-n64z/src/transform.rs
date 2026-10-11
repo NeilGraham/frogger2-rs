@@ -107,6 +107,24 @@ fn unzigzag(v: u32, width: usize) -> u32 {
     ((v >> 1) ^ (0u32.wrapping_sub(v & 1))) & m
 }
 
+/// Records per tile of the inverse planes transform.
+const TILE: usize = 16;
+
+/// Inverse delta + zigzag over whole records of `st` bytes (words of `W` bytes, `st % W ==
+/// 0`): each word becomes the previous record's word plus the unzigzagged value.
+fn undelta<const W: usize, const BE: bool>(o: &mut [u8], st: usize) {
+    let m = mask(W);
+    let mut r = st;
+    while r + st <= o.len() {
+        let (prev, cur) = o[r - st..r + st].split_at_mut(st);
+        for (p, c) in prev.as_chunks::<W>().0.iter().zip(cur.as_chunks_mut::<W>().0) {
+            let v = read_word(p, W, BE).wrapping_add(unzigzag(read_word(c, W, BE), W)) & m;
+            write_word(c, W, BE, v);
+        }
+        r += st;
+    }
+}
+
 /// Inverse of all segments: `src` (transformed) → `out` (original). Same length.
 pub fn inverse(segs: &[Segment], src: &[u8], out: &mut [u8]) -> Result<()> {
     if src.len() != out.len() {
@@ -114,34 +132,11 @@ pub fn inverse(segs: &[Segment], src: &[u8], out: &mut [u8]) -> Result<()> {
     }
     let mut off = 0usize;
     for s in segs {
-        let len = s.len as usize;
-        let end = off.checked_add(len).filter(|&e| e <= src.len()).ok_or(Error::Corrupt("segments exceed data"))?;
+        let end = seg_end(s, off, src.len())?;
         let (i, o) = (&src[off..end], &mut out[off..end]);
         match s.kind {
             Kind::Raw => o.copy_from_slice(i),
-            Kind::Planes | Kind::DeltaPlanes => {
-                let st = s.stride as usize;
-                let nrec = len / st;
-                let body = nrec * st;
-                for p in 0..st {
-                    let plane = &i[p * nrec..(p + 1) * nrec];
-                    for (r, &b) in plane.iter().enumerate() {
-                        o[r * st + p] = b;
-                    }
-                }
-                o[body..].copy_from_slice(&i[body..]);
-                if s.kind == Kind::DeltaPlanes && nrec > 1 {
-                    let w = s.width as usize;
-                    let m = mask(w);
-                    for r in 1..nrec {
-                        for f in (0..st).step_by(w) {
-                            let prev = read_word(&o[(r - 1) * st + f..], w, s.big_endian);
-                            let cur = unzigzag(read_word(&o[r * st + f..], w, s.big_endian), w);
-                            write_word(&mut o[r * st + f..], w, s.big_endian, prev.wrapping_add(cur) & m);
-                        }
-                    }
-                }
-            }
+            Kind::Planes | Kind::DeltaPlanes => inverse_segment(s, i, o),
         }
         off = end;
     }
@@ -149,6 +144,90 @@ pub fn inverse(segs: &[Segment], src: &[u8], out: &mut [u8]) -> Result<()> {
         return Err(Error::Corrupt("segments do not cover data"));
     }
     Ok(())
+}
+
+/// [`inverse`] in place: `data` (transformed) becomes the original; `tmp` (at least
+/// `data.len()` bytes) is scratch for the transformed segments only, so raw segments are
+/// not copied at all.
+pub fn inverse_in_place(segs: &[Segment], data: &mut [u8], tmp: &mut [u8]) -> Result<()> {
+    let tmp = tmp.get_mut(..data.len()).ok_or(Error::OutputTooSmall)?;
+    let mut off = 0usize;
+    for s in segs {
+        let end = seg_end(s, off, data.len())?;
+        if s.kind != Kind::Raw {
+            let t = &mut tmp[off..end];
+            t.copy_from_slice(&data[off..end]);
+            inverse_segment(s, t, &mut data[off..end]);
+        }
+        off = end;
+    }
+    if off != data.len() {
+        return Err(Error::Corrupt("segments do not cover data"));
+    }
+    Ok(())
+}
+
+#[inline]
+fn seg_end(s: &Segment, off: usize, total: usize) -> Result<usize> {
+    off.checked_add(s.len as usize).filter(|&e| e <= total).ok_or(Error::Corrupt("segments exceed data"))
+}
+
+/// Inverse of one `Planes` / `DeltaPlanes` segment (`i` and `o` have the segment's length).
+fn inverse_segment(s: &Segment, i: &[u8], o: &mut [u8]) {
+    let len = i.len();
+    let st = s.stride as usize;
+    let nrec = len / st;
+    let body = nrec * st;
+    // Gather the planes back into records a tile of TILE records at a time: each
+    // plane contributes TILE consecutive bytes (one 16-byte VR4300 cache line)
+    // and the output tile stays cached, instead of one pass over the whole
+    // output per plane (a cache miss per byte once the output exceeds the cache).
+    // Strides 1, 2 and 4 (the common ones) interleave whole planes directly.
+    match st {
+        1 => o[..body].copy_from_slice(&i[..body]),
+        2 => {
+            let (p0, p1) = (&i[..nrec], &i[nrec..2 * nrec]);
+            for ((r, &a), &b) in o[..body].as_chunks_mut::<2>().0.iter_mut().zip(p0).zip(p1) {
+                r[0] = a;
+                r[1] = b;
+            }
+        }
+        4 => {
+            let (p0, p1, p2, p3) = (&i[..nrec], &i[nrec..2 * nrec], &i[2 * nrec..3 * nrec], &i[3 * nrec..4 * nrec]);
+            for ((((r, &a), &b), &c), &d) in o[..body].as_chunks_mut::<4>().0.iter_mut().zip(p0).zip(p1).zip(p2).zip(p3) {
+                r[0] = a;
+                r[1] = b;
+                r[2] = c;
+                r[3] = d;
+            }
+        }
+        _ => {
+            let mut r0 = 0;
+            while r0 < nrec {
+                let nr = TILE.min(nrec - r0);
+                let tile = &mut o[r0 * st..(r0 + nr) * st];
+                for p in 0..st {
+                    let mut k = p;
+                    for &b in &i[p * nrec + r0..p * nrec + r0 + nr] {
+                        tile[k] = b;
+                        k += st;
+                    }
+                }
+                r0 += nr;
+            }
+        }
+    }
+    o[body..].copy_from_slice(&i[body..]);
+    if s.kind == Kind::DeltaPlanes && nrec > 1 {
+        let body = &mut o[..body];
+        match (s.width, s.big_endian) {
+            (1, _) => undelta::<1, false>(body, st),
+            (2, false) => undelta::<2, false>(body, st),
+            (2, true) => undelta::<2, true>(body, st),
+            (4, false) => undelta::<4, false>(body, st),
+            _ => undelta::<4, true>(body, st),
+        }
+    }
 }
 
 /// Forward transform (encoder). Segments must cover `data` exactly.
@@ -218,6 +297,9 @@ mod tests {
             let mut back = vec![0u8; data.len()];
             inverse(&segs, &t, &mut back).unwrap();
             assert_eq!(back, data, "{segs:?}");
+            let mut in_place = t.clone();
+            inverse_in_place(&segs, &mut in_place, &mut vec![0u8; t.len()]).unwrap();
+            assert_eq!(in_place, data, "in place {segs:?}");
         }
     }
 

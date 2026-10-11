@@ -12,6 +12,7 @@ budgets: `docs/N64-PLAN.md`; measured numbers: `research/n64-performance.md`.
 | `n32-to-o64.py` | relabels the Rust objects as o64 so GNU ld links them with libdragon |
 | `Makefile` | libdragon link + ROM (`n64.mk`): title `FROGGER 2`, Expansion Pak *required* |
 | `gen-probe-data.py` | synthetic 1 MiB level-like file for the DFS/decompression probe (no game data) |
+| `stage-f2z-probe.py` | stages pack files + their mkasset re-compressions into the DFS root for the F2Z decode probe (game-derived: `target/` only) |
 | `run-ares.sh`, `ares-shot.ps1`, `ares-settings.py` | ares runner: screenshots, key presses, debugf log |
 
 ## Prerequisites
@@ -22,6 +23,7 @@ budgets: `docs/N64-PLAN.md`; measured numbers: `research/n64-performance.md`.
 
 ## Build and run
 ```sh
+python3 -I tools/n64/stage-f2z-probe.py target/n64/pack   # optional: F2Z probe (e) input
 tools/n64/build.sh                 # release (LTO); --debug for an unoptimised Rust build
 tools/n64/run-ares.sh              # boots target/n64/frogger2.z64, 1 screenshot after 8 s
 tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 12 -shots 3 -gap 2 -keys "X;Left,Up"

@@ -50,7 +50,7 @@ fn parse_list(text: &str) -> Vec<Entry> {
     v
 }
 
-/// The ~123 KB decoder, allocated zeroed straight on the heap (never on the stack).
+/// The decoder (~31 KB), allocated zeroed straight on the heap (never on the stack).
 fn new_decoder() -> Box<Decoder> {
     let layout = Layout::new::<Decoder>();
     // SAFETY: `Decoder` consists only of integer and bool arrays/fields, for which the
@@ -120,7 +120,8 @@ fn parse_segments(z: &[u8], n: usize) -> Vec<Segment> {
         .collect()
 }
 
-/// rANS symbol decode cost with 1 vs several tables (D-cache footprint: 5 KiB per table).
+/// rANS symbol decode cost with 1 vs several tables (D-cache footprint per table: 1.3 KiB;
+/// 5 KiB with the slot table used before, see research/n64-performance.md).
 fn rans_micro(d: &Dict) {
     use f2_n64z::rans::{RansDec, Table};
     let mut tabs: Vec<Table> = Vec::new();
@@ -131,6 +132,55 @@ fn rans_micro(d: &Dict) {
     }
     let n = 32768u32;
     let payload = d.content;
+    // ares cost calibration: 4 ALU ops, a cached load, an uncached-line load, a multiply.
+    {
+        use core::hint::black_box as bb;
+        let buf = vec![1u8; 256 * 1024];
+        let iters = 16384u32;
+        let mut a = bb(1u32);
+        let t_alu = best_of(2, || {
+            let t0 = ticks();
+            for i in 0..iters {
+                a = (a ^ i).wrapping_add(i << 3) ^ (a >> 5);
+            }
+            ticks() - t0
+        });
+        let small = &buf[..4096];
+        let mut s = 0u32;
+        let t_hit = best_of(2, || {
+            let t0 = ticks();
+            for i in 0..iters as usize {
+                s = s.wrapping_add(u32::from(small[(i * 67) & 4095]));
+            }
+            ticks() - t0
+        });
+        let t_miss = best_of(2, || {
+            let t0 = ticks();
+            for i in 0..iters as usize {
+                s = s.wrapping_add(u32::from(buf[(i * 16 * 7 + 3) & (256 * 1024 - 1)]));
+            }
+            ticks() - t0
+        });
+        let mut m = bb(3u32);
+        let t_mul = best_of(2, || {
+            let t0 = ticks();
+            for i in 0..iters {
+                m = m.wrapping_mul(i | 1).wrapping_add(i);
+            }
+            ticks() - t0
+        });
+        let c = |t: u32| t as u64 * 2 * 100 / u64::from(iters);
+        log!(
+            "PROBE e ares calibration (cyc/iter x100): alu4 {} cached-load {} miss-load {} mul+add {} [{} {} {}]",
+            c(t_alu),
+            c(t_hit),
+            c(t_miss),
+            c(t_mul),
+            a,
+            s,
+            m
+        );
+    }
     for k in [1usize, 2, 4, tabs.len()] {
         let mut sum = 0u32;
         let t = best_of(2, || {
@@ -235,19 +285,22 @@ pub fn f2z_probes() {
         let mut out = vec![0u8; h.raw_size as usize];
         let mut tmp = if h.needs_scratch() { vec![0u8; h.raw_size as usize] } else { Vec::new() };
         let (first, best, ok) = decode_timed(dec, &z, dict, &mut out, &mut tmp);
-        // Profile split: the inverse structure transform alone (same segments; its cost
-        // does not depend on the byte values), the rest of the decode is LZ + rANS.
+        let fnv = fnv1a(&out);
+        // Profile split: the inverse structure transform alone, run as the decoder runs it
+        // (in place when mostly raw, else tmp -> out; same segments; the cost does not
+        // depend on the byte values; clobbers `out` after its checksum), the rest of the
+        // decode is LZ + rANS.
         let t_xf = if h.nseg > 0 {
             let segs = parse_segments(&z, h.nseg as usize);
+            let raw: usize = segs.iter().filter(|s| s.kind == Kind::Raw).map(|s| s.len as usize).sum();
             best_of(2, || {
                 let t0 = ticks();
-                let _ = transform::inverse(&segs, &out, &mut tmp);
+                let _ = if raw * 2 >= out.len() { transform::inverse_in_place(&segs, &mut out, &mut tmp) } else { transform::inverse(&segs, &tmp, &mut out) };
                 ticks() - t0
             })
         } else {
             0
         };
-        let fnv = fnv1a(&out);
         let good = ok && fnv == e.fnv && out.len() == e.raw;
         all_ok &= good;
         let (a, b) = mbs(out.len(), best);

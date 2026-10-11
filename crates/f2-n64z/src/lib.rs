@@ -9,7 +9,7 @@
 //! The decoder ([`dec`], [`rans`], [`bits`], [`codes`], [`transform`], [`dict`]) is
 //! `no_std`, allocation-free, uses only 32-bit integer arithmetic, reads every multi-byte
 //! value bytewise (no unaligned access, endian-neutral) and keeps its tables in one
-//! caller-owned [`dec::Decoder`] (~41 KB). The encoder and dictionary trainer
+//! caller-owned [`dec::Decoder`] (~31 KB). The encoder and dictionary trainer
 //! (feature `encoder`) are host-only.
 //!
 //! # Container (all multi-byte fields little-endian, read bytewise)

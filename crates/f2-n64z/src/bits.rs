@@ -15,7 +15,7 @@ impl<'a> BitReader<'a> {
         BitReader { buf, pos: 0, acc: 0, n: 0 }
     }
 
-    #[inline]
+    #[inline(always)]
     fn refill(&mut self) {
         while self.n <= 24 {
             let b = self.buf.get(self.pos).copied().unwrap_or(0);
@@ -26,7 +26,7 @@ impl<'a> BitReader<'a> {
     }
 
     /// Reads `k` ≤ 24 bits.
-    #[inline]
+    #[inline(always)]
     fn read_small(&mut self, k: u32) -> u32 {
         if k == 0 {
             return 0;
@@ -41,14 +41,19 @@ impl<'a> BitReader<'a> {
     }
 
     /// Reads `k` ≤ 32 bits.
-    #[inline]
+    #[inline(always)]
     pub fn read(&mut self, k: u32) -> u32 {
         if k <= 24 {
             self.read_small(k)
         } else {
-            let hi = self.read_small(k - 16);
-            (hi << 16) | self.read_small(16)
+            self.read_wide(k)
         }
+    }
+
+    #[inline(never)]
+    fn read_wide(&mut self, k: u32) -> u32 {
+        let hi = self.read_small(k - 16);
+        (hi << 16) | self.read_small(16)
     }
 
     /// True when no more than the real payload was consumed.
