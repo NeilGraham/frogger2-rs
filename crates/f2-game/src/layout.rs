@@ -638,6 +638,7 @@ impl Game {
         let mut out = LevelAssets::default();
         self.apply_level_registry(world, level); // P7-1 (no-op without mods)
 
+        self.timing.p_frame_modifier = 0; // pFrameModifier = 0 (layout.c:680, PC)
         self.layout.num_levels_played += 1;
         self.frogger.player[0].world_num = world as u8;
         self.frogger.player[0].level_num = level as u8;
@@ -655,8 +656,10 @@ impl Game {
         self.last_act_frame_count = 0;
         self.act_frame_count = 0;
         self.frame_count = 1;
-        // InitTiming(60) resets the MDX wall-clock frame timer: the port runs fixed 60 Hz
-        // ticks (no state). StoryStartLevel() ran in `init_level_after_free`.
+        // InitTiming(60) resets the MDX wall-clock frame timer (used by the variable timestep,
+        // `timing.rs`; `Game::tick` does not read it). StoryStartLevel() ran in
+        // `init_level_after_free`.
+        self.init_timing();
         // wave E: InitSpriteList
         self.sprite.init_sprite_list();
         // InitSpriteSortArray is renderer state; InitSampleList/InitAmbientSoundList below.
@@ -771,7 +774,8 @@ impl Game {
                 self.game_state.multi = crate::define::SINGLEPLAYER;
             }
         }
-        // InitTiming(60): no state in the port (fixed 60 Hz ticks).
+        // InitTiming(60) (layout.c:942; read only by the variable timestep, `timing.rs`).
+        self.init_timing();
         self.act_frame_count = 0;
         // ambient: un_pause_audio (PrepareSong happens in init_level_finish)
         self.un_pause_audio();

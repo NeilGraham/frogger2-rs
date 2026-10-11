@@ -78,6 +78,7 @@ pub mod sprite; // wave E
 pub mod story;
 pub mod textover; // wave E
 pub mod timer;
+pub mod timing; // phase 3T: the retail variable timestep (opt-in)
 pub mod tongue;
 #[cfg(feature = "std")]
 pub mod trace;
@@ -144,7 +145,8 @@ pub struct Game {
     pub act_frame_count: u32,
     /// `lastActFrameCount`.
     pub last_act_frame_count: u32,
-    /// `gameSpeed` (20.12): fixed at 4096 in the port (one frame per tick).
+    /// `gameSpeed` (20.12): 4096 (one 60 Hz frame) under [`Game::tick`]; set per tick by
+    /// `LoopFunc`'s timing under [`Game::tick_timed`] / [`Game::tick_frames`] (`timing.rs`).
     pub game_speed: i32,
     /// `rseed` and `Random()` (`Common/maths.c`).
     pub rng: Rng,
@@ -244,6 +246,12 @@ pub struct Game {
     /// `EnemyAtFlag`/`PlatformAtFlag` while `UpdateEvents` evaluates triggers (not game
     /// state; see `evenfunc.rs`).
     pub(crate) flag_snap: evenfunc::FlagSnap,
+    /// Phase 3T: `timeInfo` and `LoopFunc`'s timing globals (variable timestep; untouched by
+    /// [`Game::tick`]).
+    pub timing: timing::TimingState,
+    /// Phase 3T: the host's `timeGetTime()` (ms) for `InitTiming`/`InitBackdrop` under
+    /// [`Game::update_timing`] (not game state; `None` = hold the last clock value).
+    pub timing_clock: Option<fn() -> u32>,
 }
 
 impl Game {

@@ -187,7 +187,9 @@ pub struct MenusState {
     pub old_diff_mode: i32,
     /// `pauseConfirmMode`.
     pub pause_confirm_mode: i32,
-    /// `pauseGameSpeed` (never assigned in the original: 0).
+    /// `pauseGameSpeed`: the last unpaused `gameSpeed`, stored by `LoopFunc` (retail
+    /// `0x36bc608`, shared with `PC/Main.cpp`); stays 0 under the fixed-step `Game::tick`
+    /// (where `max(pauseGameSpeed>>12, 1)` = 1 as in the retail game at 60 Hz).
     pub pause_game_speed: i32,
     /// `frogLogo`.
     pub frog_logo: Option<OverlayId>,
@@ -809,8 +811,12 @@ impl Game {
                         }
                     } else {
                         self.game_state.mode = INGAME_MODE;
-                        // gameSpeed = pauseGameSpeed (0): the PC timer recomputes gameSpeed
-                        // every frame; the port's gameSpeed is fixed (4096), so this is dropped.
+                        // gameSpeed = pauseGameSpeed: `LoopFunc` stores the last unpaused
+                        // gameSpeed there (`timing.rs`). Under the fixed-step `Game::tick`
+                        // gameSpeed stays 4096 (what the retail value is at 60 Hz).
+                        if self.timing.active {
+                            self.game_speed = self.menus.pause_game_speed;
+                        }
                         self.enable_hud();
                     }
                     self.un_pause_audio();

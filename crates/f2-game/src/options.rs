@@ -2147,7 +2147,7 @@ impl Game {
         if self.options.going_to_art_viewer {
             if !self.levplay.fading_out {
                 self.game_state.mode = ARTVIEWER_MODE;
-                // pFrameModifier = 0 (PC timing).
+                self.timing.p_frame_modifier = 0; // pFrameModifier = 0 (PC timing)
                 self.options.art_timer.init(10);
                 self.options.current_art = 0;
                 self.options.going_to_art_viewer = false;

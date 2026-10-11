@@ -243,7 +243,16 @@ pub fn start_game(world: u32, level: u32, mp: &MultiOpts, rseed: u32, data: Arc<
 pub fn tick_first(g: &mut Game, prev: [u16; 4], held: [u16; 4]) -> bool {
     // process_user_input derives debounce = ~padData.digital & live.
     g.levplay.pad_data.digital = prev;
-    g.tick_game_loop(TickInput { pads: held });
+    // Phase 3T: `F2_TICK_FRAMES=1` runs the retail variable timestep with a one-frame clock
+    // (`Game::tick_timed`), which must reproduce the fixed-step trace.
+    static TICK_FRAMES: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    match *TICK_FRAMES.get_or_init(|| std::env::var("F2_TICK_FRAMES").ok().and_then(|s| s.parse().ok())) {
+        Some(k) => {
+            g.advance_timing_frames(k);
+            g.tick_timed_game_loop(TickInput { pads: held });
+        }
+        None => g.tick_game_loop(TickInput { pads: held }),
+    }
     g.game_state.mode != FRONTEND_MODE
 }
 

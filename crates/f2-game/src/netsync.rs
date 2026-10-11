@@ -143,6 +143,13 @@ impl Game {
             h.write_fmt(format_args!("{} {} {:?}", self.textover.num_entries, self.textover.alloc, self.textover.block))
         });
         visit("session", &mut |h: &mut StateHasher| h.write_fmt(format_args!("{}", self.session.level_loads.len())));
+        // Phase 3T: the variable-timestep state, once used (absent under `Game::tick`, so
+        // fixed-step checksums are unchanged).
+        if self.timing.active {
+            visit("timing", &mut |h: &mut StateHasher| {
+                let _ = self.timing.serialize(&mut *h);
+            });
+        }
     }
 }
 

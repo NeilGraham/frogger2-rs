@@ -3,6 +3,9 @@
 //!
 //! `cargo run -p f2-game --example demo_trace -- <world> <level> out.jsonl [max_ticks]`
 //!
+//! `F2_TICK_FRAMES=n` (phase 3T): `Game::tick_timed` with an n-frame clock instead of the
+//! fixed-step `Game::tick` (n = 1 is trace-identical).
+//!
 //! Game data: `F2_GAME_DIR` (default `game-data/usa/game`; `.../usa` is accepted).
 
 use std::io::Write;
@@ -50,6 +53,7 @@ fn main() -> Result<(), String> {
     }
 
     let mut w = std::io::BufWriter::new(std::fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?);
+    let tick_frames: Option<u32> = std::env::var("F2_TICK_FRAMES").ok().and_then(|s| s.parse().ok());
     let mut n = 0u32;
     while n < max_ticks {
         if let Ok(t) = std::env::var("F2_RANDOM_LOG") {
@@ -60,7 +64,15 @@ fn main() -> Result<(), String> {
             }
         }
         // The oracle writes its line right after GameLoop, before CopyActorList/DrawLoop.
-        g.tick_game_loop(TickInput::default());
+        match tick_frames {
+            // Phase 3T: the retail variable timestep with an n-frame clock (n = 1 must give
+            // the same trace as `tick_game_loop`).
+            Some(k) => {
+                g.advance_timing_frames(k);
+                g.tick_timed_game_loop(TickInput::default());
+            }
+            None => g.tick_game_loop(TickInput::default()),
+        }
         if g.game_state.mode != DEMO_MODE || g.levplay.demo_finished {
             break;
         }
