@@ -1,5 +1,5 @@
 /* OpenOrbis PS4 toolchain link.x (GPL-3.0, https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain)
- * adapted for Rust objects: Rust emits one section per symbol (.tdata.<sym>, .data.<sym>,
+ * adapted for Rust objects: Rust emits one section per symbol (.data.<sym>, .data.rel.ro.<sym>,
  * .gcc_except_table.<sym>); the original patterns only match the bare names, which leaves
  * those as orphans that break the segment layout (an unaligned RELRO/TLS segment that the
  * PS4 loader rejects). */
@@ -42,7 +42,7 @@ SECTIONS
 
 	.data.rel.ro : ALIGN(0x4000) {
 	   __data_relro_start = .;	
-	   KEEP(*(.data.rel.ro .data.rel.ro.*))
+	   *(.data.rel.ro .data.rel.ro.*)
 	   __data_relro_start = .;
 	}
 	
@@ -54,14 +54,13 @@ SECTIONS
 		*(.dynamic);
 	}
 
-	/* 32-byte aligned and padded: loaders round the static TLS block differently
-	   (to p_align, 16 or 32); with both a multiple of 32 every rounding agrees with the
-	   local-exec offsets lld computes. */
-	.tls : ALIGN(32) {
-		*(.tdata .tdata.*);
-		*(.tbss .tbss.*);
-		. = ALIGN(32);
-	}
+	/* No TLS: the Rust code is built with emulated TLS (tools/ps4/console-target.py,
+	   crates/console-host/csrc/emutls.c), so the executable carries no PT_TLS and does not
+	   depend on how the loader lays out the static TLS block (tools/ps4/build-pkg.sh
+	   checks). A .tdata/.tbss input here would be an error. */
+	.tdata : { *(.tdata .tdata.*) }
+	.tbss : { *(.tbss .tbss.*) }
+	ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0, "native TLS in the PS4 build: everything must use emulated TLS")
 
 	# Align .got to 0x4000 if .data.rel.ro doesn't exist
 	.got : ALIGN(SIZEOF(.data.rel.ro) > 0 ? 8 : 0x4000) {
