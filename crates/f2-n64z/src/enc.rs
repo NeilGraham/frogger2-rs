@@ -675,6 +675,9 @@ fn token_payload(w: &[u8], start: usize, end: usize, seqs: &[Seq]) -> Vec<u8> {
     o
 }
 
+/// An encoded rANS block candidate: bytes, final reps, ends-after-match, estimated cycles, stats.
+type RansBlock = (Vec<u8>, [u32; 3], bool, f64, Stats);
+
 /// (literals, sequences, match bytes) of a parse.
 fn parse_counts(seqs: &[Seq], n: usize) -> (f64, f64, f64) {
     let mbytes: usize = seqs.iter().map(|q| q.ml as usize + 2).sum();
@@ -907,7 +910,7 @@ pub fn compress_stats(data: &[u8], segs: &[Segment], dict: Option<&EncDict>, opt
 
         let n = end - start;
         // candidate 1: rANS block
-        let mut rans: Option<(Vec<u8>, [u32; 3], bool, f64, Stats)> = None;
+        let mut rans: Option<RansBlock> = None;
         if opt.allow_rans {
             let mut prices = match dict {
                 Some(d) if dict_codes.iter().all(|t| t.is_some()) && d.lit.iter().all(|t| t.is_some()) => {
