@@ -1,0 +1,12 @@
+[package]
+name = "f2-n64z"
+description = "F2Z: LZ77 + rANS codec with shared per-class dictionaries for the N64 asset pack (no_std decoder)."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[features]
+default = []
+# Host-side encoder, dictionary trainer and forward transforms (needs std).
+encoder = []

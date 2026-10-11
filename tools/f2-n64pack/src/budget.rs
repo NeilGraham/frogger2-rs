@@ -1,0 +1,1 @@
+//! Cartridge budget table.
