@@ -212,6 +212,9 @@ impl Decoder {
         }
         // literal stream: mode, per-context table modes, one payload
         let lbyte = c.u8()?;
+        if lbyte == TOKEN_BLOCK {
+            return token_block(c, dict, w, op, end, nseq, reps, after_match);
+        }
         let (lmode, am_on) = (lbyte & 0x7f, lbyte & 0x80 != 0);
         if lmode as usize >= NMODES {
             return Err(Error::Corrupt("bad literal mode"));
@@ -370,6 +373,110 @@ impl Decoder {
         }
         Ok(end)
     }
+}
+
+/// Block-type byte (in place of the literal mode) of a byte-aligned token block.
+pub const TOKEN_BLOCK: u8 = 0x40;
+
+#[inline(always)]
+fn byte(p: &[u8], ip: &mut usize) -> Result<u8> {
+    let b = *p.get(*ip).ok_or(Error::Corrupt("token block truncated"))?;
+    *ip += 1;
+    Ok(b)
+}
+
+/// LZ4-style extension: add bytes while they are 255.
+#[inline(always)]
+fn ext(p: &[u8], ip: &mut usize, mut v: usize) -> Result<usize> {
+    loop {
+        let b = byte(p, ip)?;
+        v += usize::from(b);
+        if b != 255 {
+            return Ok(v);
+        }
+    }
+}
+
+/// Decodes a token block (see crate docs): per sequence `token = LL << 4 | (ML - 2)`
+/// (15 = extended by 255-continued bytes), the raw literals, then the offset: one byte
+/// 0/1/2 = repeat offset, else LEB128 of `distance + 2`. Trailing literals raw.
+#[allow(clippy::too_many_arguments)]
+fn token_block(c: &mut Cursor, dict: &[u8], w: &mut [u8], mut op: usize, end: usize, nseq: u32, reps: &mut [u32; 3], after_match: &mut bool) -> Result<usize> {
+    let len = c.u32()? as usize;
+    let p = c.take(len)?;
+    let mut ip = 0usize;
+    let mut r = *reps;
+    let mut am = *after_match;
+    for _ in 0..nseq {
+        let t = byte(p, &mut ip)?;
+        let mut nlit = usize::from(t >> 4);
+        if nlit == 15 {
+            nlit = ext(p, &mut ip, 15)?;
+        }
+        if nlit > end - op || nlit > p.len() - ip {
+            return Err(Error::Corrupt("literals overrun block"));
+        }
+        if nlit <= 16 && w.len() - op >= 16 && p.len() - ip >= 16 {
+            // wild copy: fixed 16 bytes (the excess is rewritten later, output is in order)
+            let mut chunk = [0u8; 16];
+            chunk.copy_from_slice(&p[ip..ip + 16]);
+            w[op..op + 16].copy_from_slice(&chunk);
+        } else {
+            w[op..op + nlit].copy_from_slice(&p[ip..ip + nlit]);
+        }
+        op += nlit;
+        ip += nlit;
+        let mut ml = usize::from(t & 15);
+        if ml == 15 {
+            ml = ext(p, &mut ip, 15)?;
+        }
+        let mlen = ml + 2;
+        let b0 = byte(p, &mut ip)?;
+        let d = if u32::from(b0) < REP_CODES {
+            let d = r[b0 as usize];
+            match b0 {
+                1 => r.swap(0, 1),
+                2 => r = [r[2], r[0], r[1]],
+                _ => {}
+            }
+            d
+        } else {
+            let mut v = u32::from(b0 & 0x7f);
+            let mut sh = 7;
+            let mut b = b0;
+            while b & 0x80 != 0 {
+                if sh > 28 {
+                    return Err(Error::Corrupt("bad offset"));
+                }
+                b = byte(p, &mut ip)?;
+                v |= u32::from(b & 0x7f) << sh;
+                sh += 7;
+            }
+            let d = v.wrapping_sub(2);
+            r = [d, r[0], r[1]];
+            d
+        } as usize;
+        if mlen > end - op {
+            return Err(Error::Corrupt("match overruns block"));
+        }
+        op = copy_match(w, dict, op, d, mlen)?;
+        am = true;
+    }
+    if end > op {
+        let n = end - op;
+        if n != p.len() - ip {
+            return Err(Error::Corrupt("token block size mismatch"));
+        }
+        w[op..end].copy_from_slice(&p[ip..]);
+        ip += n;
+        am = false;
+    }
+    if ip != p.len() {
+        return Err(Error::Corrupt("token block not fully consumed"));
+    }
+    *reps = r;
+    *after_match = am;
+    Ok(end)
 }
 
 #[inline(always)]

@@ -13,7 +13,9 @@ writes target/n64/filesystem/f2z/list.txt, one line per file:
     <rel path> <dictionary rel path or -> <raw size> <FNV-1a 32 of the decoded bytes, hex>
         <mkasset c0 size> <c1 size> <c2 size> <c3 size>   (same line)
 
-Dictionaries come first (dictionary column `-`). The ROM probe (probes::f2z_probes) reads
+The pack must store the chosen files as F2Z (build it with
+`f2-n64pack --codec models=f2z --codec textures=f2z [--size-weight W]`; the default pack stores
+models/textures with aPLib). Dictionaries come first (dictionary column `-`). The ROM probe (probes::f2z_probes) reads
 the list, so nothing game-derived is compiled into the source. Then run tools/n64/build.sh.
 """
 import os

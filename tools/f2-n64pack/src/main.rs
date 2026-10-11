@@ -6,13 +6,16 @@ use f2_n64pack::ctx::{default_tools, find_rendition};
 use f2_n64pack::Ctx;
 
 const USAGE: &str = "usage: f2-n64pack [--rendition DIR] [--out DIR] [--cache DIR] [--tools DIR] [--jobs N]
-                  [--reserve-mib X] [--cart-mib N] [--quick] [--only levels,models,textures,sfx,music,fmv]
+                  [--reserve-mib X] [--cart-mib N] [--size-weight W|inf] [--codec CLASS=NAME]... [--quick] [--only levels,models,textures,sfx,music,fmv]
                   [--bench]
 
 Builds the N64 asset pack (default target/n64/pack) from an imported rendition (default: the
 first game-data/usa found upwards) and prints the cartridge budget. Fails if the pack plus the
 code reserve (default 2.5 MiB) exceeds the cartridge (default 64 MiB). --bench writes the
-codec comparison (research/n64-compression.md numbers) to target/n64/bench.md.";
+codec comparison (research/n64-compression.md numbers) to target/n64/bench.md.
+--size-weight: F2Z space-speed trade-off, decode cycles per stored byte (19 = minimum
+load time on the VR4300; inf = smallest pack, the default).
+--codec: per-class codec, e.g. --codec models=f2z (defaults: models/textures aplib, levels f2z).";
 
 fn main() -> ExitCode {
     let mut rendition: Option<PathBuf> = None;
@@ -34,6 +37,26 @@ fn main() -> ExitCode {
             "--jobs" => jobs = val().parse().unwrap_or(jobs),
             "--reserve-mib" => cfg.code_reserve = (val().parse::<f64>().unwrap_or(2.5) * 1048576.0) as u64,
             "--cart-mib" => cfg.cart_bytes = val().parse::<u64>().unwrap_or(64) << 20,
+            "--size-weight" => cfg.size_weight = val().parse().unwrap_or(f64::INFINITY),
+            "--codec" => {
+                let v = val();
+                let parsed = v.split_once('=').and_then(|(c, k)| {
+                    let class = match c {
+                        "models" => f2_n64pack::Class::Models,
+                        "textures" => f2_n64pack::Class::Textures,
+                        "levels" => f2_n64pack::Class::Levels,
+                        _ => return None,
+                    };
+                    Some((class, f2_n64pack::codec::Codec::parse(k)?))
+                });
+                match parsed {
+                    Some(p) => cfg.codecs.push(p),
+                    None => {
+                        eprintln!("bad --codec {v} (CLASS=f2z|lz4|aplib|shrinkler|none, CLASS = models|textures|levels)");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
             "--only" => cfg.only = Some(val().split(',').map(str::to_string).collect()),
             "--quick" => quick = true,
             "--bench" => bench = true,

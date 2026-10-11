@@ -27,7 +27,41 @@ pub struct Options {
     pub passes: u32,
     /// Output bytes per block (entropy tables are per block).
     pub block_size: usize,
+    /// Space–speed trade-off: the encoder minimises `decode cycles + size_weight × bytes`
+    /// (estimated with [`CycleModel`]) per block and inside the parse. `f64::INFINITY` =
+    /// smallest output; ≈ 19 = minimum load time (VR4300 at 93.75 MHz reading ROM at ~5 MB/s
+    /// spends ~19 cycles per stored byte).
+    pub size_weight: f64,
+    /// Block types the encoder may use.
+    pub allow_rans: bool,
+    pub allow_token: bool,
+    pub cycles: CycleModel,
 }
+
+/// Estimated VR4300 decode cost (CPU cycles) per literal, per sequence and per match byte,
+/// for each block type. rANS values are the least-squares fit of the ares measurement
+/// (`research/n64-performance.md` (e)); token values from the token-block probe.
+#[derive(Clone, Copy, Debug)]
+pub struct CycleModel {
+    pub rans_lit: f64,
+    pub rans_seq: f64,
+    pub rans_mbyte: f64,
+    pub tok_lit: f64,
+    pub tok_seq: f64,
+    pub tok_mbyte: f64,
+}
+
+impl Default for CycleModel {
+    fn default() -> Self {
+        CycleModel { rans_lit: 140.0, rans_seq: 360.0, rans_mbyte: 18.0, tok_lit: 4.0, tok_seq: 50.0, tok_mbyte: 4.0 }
+    }
+}
+
+/// Measured VR4300 cost of the inverse structure transforms per transformed byte (ares).
+pub const TRANSFORM_CYCLES_PER_BYTE: f64 = 21.0;
+
+/// Minimum-load-time weight (cycles per stored byte), see [`Options::size_weight`].
+pub const LOAD_TIME_WEIGHT: f64 = 19.0;
 
 impl Default for Options {
     fn default() -> Self {
@@ -39,10 +73,28 @@ impl Options {
     /// 1 (fast) … 9 (best).
     pub fn level(l: u32) -> Options {
         match l {
-            0..=3 => Options { max_chain: 8, nice_len: 32, passes: 1, block_size: 256 << 10 },
-            4..=6 => Options { max_chain: 48, nice_len: 128, passes: 2, block_size: 256 << 10 },
-            _ => Options { max_chain: 256, nice_len: 273, passes: 3, block_size: 256 << 10 },
+            0..=3 => Options { max_chain: 8, nice_len: 32, passes: 1, ..Options::base() },
+            4..=6 => Options { max_chain: 48, nice_len: 128, passes: 2, ..Options::base() },
+            _ => Options { max_chain: 256, nice_len: 273, passes: 3, ..Options::base() },
         }
+    }
+
+    fn base() -> Options {
+        Options {
+            max_chain: 256,
+            nice_len: 273,
+            passes: 3,
+            block_size: 256 << 10,
+            size_weight: f64::INFINITY,
+            allow_rans: true,
+            allow_token: true,
+            cycles: CycleModel::default(),
+        }
+    }
+
+    /// Level 9 with a space–speed weight (see [`Options::size_weight`]).
+    pub fn speed(size_weight: f64) -> Options {
+        Options { size_weight, ..Options::level(9) }
     }
 }
 
@@ -125,6 +177,12 @@ struct LitModel {
 }
 
 struct Prices {
+    /// Token block pricing (bytes) instead of rANS.
+    token: bool,
+    /// Decode-cycle costs in price units (per literal, per sequence, per match byte).
+    c_lit: u32,
+    c_seq: u32,
+    c_mbyte: u32,
     lit_mode: u8,
     am_on: bool,
     lit: [[u32; 256]; MAX_CTX],
@@ -147,7 +205,19 @@ fn fill(dst: &mut [u32], f: &Freqs) {
 
 impl Prices {
     fn new(lm: &LitModel, t: [&Freqs; 3]) -> Prices {
-        let mut p = Prices { lit_mode: lm.mode, am_on: lm.am_on, lit: [[0; 256]; MAX_CTX], am: [0; 256], ll: [0; NLL], ml: [0; NML], of: [0; NOF] };
+        let mut p = Prices {
+            token: false,
+            c_lit: 0,
+            c_seq: 0,
+            c_mbyte: 0,
+            lit_mode: lm.mode,
+            am_on: lm.am_on,
+            lit: [[0; 256]; MAX_CTX],
+            am: [0; 256],
+            ll: [0; NLL],
+            ml: [0; NML],
+            of: [0; NOF],
+        };
         for (c, f) in lm.tables.iter().enumerate() {
             fill(&mut p.lit[c], f);
         }
@@ -179,27 +249,70 @@ impl Prices {
         p
     }
 
+    /// Token block prices (8 bits per byte) plus its cycle costs.
+    fn token(opt: &Options) -> Prices {
+        let lm = LitModel { mode: 0, am_on: false, tables: vec![Freqs::EMPTY], am: Freqs::EMPTY };
+        let mut p = Prices::new(&lm, [&Freqs::EMPTY, &Freqs::EMPTY, &Freqs::EMPTY]);
+        p.token = true;
+        p.with_cycles(opt, true)
+    }
+
+    fn with_cycles(mut self, opt: &Options, token: bool) -> Prices {
+        let k = if opt.size_weight.is_finite() && opt.size_weight > 0.0 { f64::from(8u32 << PRICE_SHIFT) / opt.size_weight } else { 0.0 };
+        let m = &opt.cycles;
+        let (l, s, b) = if token { (m.tok_lit, m.tok_seq, m.tok_mbyte) } else { (m.rans_lit, m.rans_seq, m.rans_mbyte) };
+        self.c_lit = (l * k).round() as u32;
+        self.c_seq = (s * k).round() as u32;
+        self.c_mbyte = (b * k).round() as u32;
+        self
+    }
+
     #[inline]
     fn lit_price(&self, prev: u8, pos: usize, b: u8, pred: Option<u8>) -> u32 {
-        match pred {
-            Some(p) if self.am_on => self.am[(b ^ p) as usize],
-            _ => self.lit[lit_ctx(self.lit_mode, prev, pos)][b as usize],
+        if self.token {
+            return (8 << PRICE_SHIFT) + self.c_lit;
         }
+        self.c_lit
+            + match pred {
+                Some(p) if self.am_on => self.am[(b ^ p) as usize],
+                _ => self.lit[lit_ctx(self.lit_mode, prev, pos)][b as usize],
+            }
     }
     #[inline]
     fn ll_price(&self, v: u32) -> u32 {
+        if self.token {
+            return if v < 15 { 0 } else { (8 << PRICE_SHIFT) * (1 + (v - 15) / 255) };
+        }
         let (c, nb, _) = codes::encode(v, LL_DLOG);
         self.ll[c as usize] + (nb << PRICE_SHIFT)
     }
+    /// Match length price, including the per-sequence and per-byte decode costs (and the
+    /// token byte in token blocks).
     #[inline]
     fn ml_price(&self, len: u32) -> u32 {
+        let cyc = self.c_seq + self.c_mbyte * len;
+        if self.token {
+            let m = len - 2;
+            return cyc + (8 << PRICE_SHIFT) + if m < 15 { 0 } else { (8 << PRICE_SHIFT) * (1 + (m - 15) / 255) };
+        }
         let (c, nb, _) = codes::encode(len - 2, ML_DLOG);
-        self.ml[c as usize] + (nb << PRICE_SHIFT)
+        cyc + self.ml[c as usize] + (nb << PRICE_SHIFT)
     }
     #[inline]
     fn dist_price(&self, dist: u32) -> u32 {
+        if self.token {
+            return (8 << PRICE_SHIFT) * leb_len(dist + 2);
+        }
         let (c, nb, _) = codes::encode(dist - 1, OF_DLOG);
         self.of[(c + REP_CODES) as usize] + (nb << PRICE_SHIFT)
+    }
+    #[inline]
+    fn rep_price(&self, r: u32) -> u32 {
+        if self.token {
+            8 << PRICE_SHIFT
+        } else {
+            self.of[r as usize]
+        }
     }
 }
 
@@ -359,7 +472,7 @@ fn parse_block(
                 continue;
             }
             longest = longest.max(l);
-            let base = nd.cost + p.of[r as usize] + ll0;
+            let base = nd.cost + p.rep_price(r) + ll0;
             let reps = next_reps(nd.reps, r);
             let mut relax = |len: usize| {
                 let c = base + p.ml_price(len as u32);
@@ -506,6 +619,66 @@ fn block_syms(w: &[u8], base: usize, start: usize, end: usize, seqs: &[Seq], rep
         s.stats.counts[OF][b as usize] += 1;
     }
     s
+}
+
+fn leb_len(v: u32) -> u32 {
+    match v {
+        0..=0x7f => 1,
+        0x80..=0x3fff => 2,
+        0x4000..=0x1f_ffff => 3,
+        0x20_0000..=0x0fff_ffff => 4,
+        _ => 5,
+    }
+}
+
+fn put_ext(o: &mut Vec<u8>, mut v: usize) {
+    // v >= 15 already signalled by the nibble; store v - 15 as 255-continued bytes
+    v -= 15;
+    while v >= 255 {
+        o.push(255);
+        v -= 255;
+    }
+    o.push(v as u8);
+}
+
+/// Token block payload for `seqs` over `w[start..end]`.
+fn token_payload(w: &[u8], start: usize, end: usize, seqs: &[Seq]) -> Vec<u8> {
+    let mut o = Vec::with_capacity((end - start) / 2 + 16);
+    let mut pos = start;
+    for q in seqs {
+        let (ll, ml) = (q.ll as usize, q.ml as usize);
+        o.push(((ll.min(15) as u8) << 4) | ml.min(15) as u8);
+        if ll >= 15 {
+            put_ext(&mut o, ll);
+        }
+        o.extend_from_slice(&w[pos..pos + ll]);
+        if ml >= 15 {
+            put_ext(&mut o, ml);
+        }
+        if q.ofv < REP_CODES {
+            o.push(q.ofv as u8);
+        } else {
+            let mut v = q.ofv; // distance + 2
+            loop {
+                let b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v == 0 {
+                    o.push(b);
+                    break;
+                }
+                o.push(b | 0x80);
+            }
+        }
+        pos += ll + ml + 2;
+    }
+    o.extend_from_slice(&w[pos..end]);
+    o
+}
+
+/// (literals, sequences, match bytes) of a parse.
+fn parse_counts(seqs: &[Seq], n: usize) -> (f64, f64, f64) {
+    let mbytes: usize = seqs.iter().map(|q| q.ml as usize + 2).sum();
+    ((n - mbytes) as f64, seqs.len() as f64, mbytes as f64)
 }
 
 fn table_bytes(f: &Freqs) -> usize {
@@ -732,47 +905,94 @@ pub fn compress_stats(data: &[u8], segs: &[Segment], dict: Option<&EncDict>, opt
         mstart.push(matches.len() as u32);
         hc.insert_upto(&w, end);
 
-        let mut prices = match dict {
-            Some(d) if dict_codes.iter().all(|t| t.is_some()) && d.lit.iter().all(|t| t.is_some()) => {
-                let lm =
-                    LitModel { mode: d.lit_mode, am_on: d.am.is_some(), tables: d.lit.iter().map(|t| t.unwrap()).collect(), am: d.am.unwrap_or(Freqs::EMPTY) };
-                Prices::new(&lm, [dict_codes[0].unwrap(), dict_codes[1].unwrap(), dict_codes[2].unwrap()])
+        let n = end - start;
+        // candidate 1: rANS block
+        let mut rans: Option<(Vec<u8>, [u32; 3], bool, f64, Stats)> = None;
+        if opt.allow_rans {
+            let mut prices = match dict {
+                Some(d) if dict_codes.iter().all(|t| t.is_some()) && d.lit.iter().all(|t| t.is_some()) => {
+                    let lm = LitModel {
+                        mode: d.lit_mode,
+                        am_on: d.am.is_some(),
+                        tables: d.lit.iter().map(|t| t.unwrap()).collect(),
+                        am: d.am.unwrap_or(Freqs::EMPTY),
+                    };
+                    Prices::new(&lm, [dict_codes[0].unwrap(), dict_codes[1].unwrap(), dict_codes[2].unwrap()])
+                }
+                _ => Prices::initial(&w, base, start, end),
             }
-            _ => Prices::initial(&w, base, start, end),
+            .with_cycles(opt, false);
+            let mut best: Option<(Vec<Seq>, [u32; 3], bool)> = None;
+            for pass in 0..opt.passes.max(1) {
+                let r = parse_block(&w, base, start, end, &mstart, &matches, reps, am, &prices, opt);
+                if pass + 1 < opt.passes {
+                    let s = block_syms(&w, base, start, end, &r.0, reps, am);
+                    let lm = best_lit_model(&s.stats, dict);
+                    let t: Vec<Freqs> = (0..3).map(|k| part_table(&s.stats.counts[k + 1], dict_codes[k])).collect();
+                    prices = Prices::new(&lm, [&t[0], &t[1], &t[2]]).with_cycles(opt, false);
+                }
+                best = Some(r);
+            }
+            let (seqs, r, am_end) = best.unwrap();
+            let s = block_syms(&w, base, start, end, &seqs, reps, am);
+            let mut blk = Vec::new();
+            blk.extend_from_slice(&(n as u32).to_le_bytes());
+            blk.extend_from_slice(&(seqs.len() as u32).to_le_bytes());
+            let mut hdr = Vec::new();
+            let lm = best_lit_model(&s.stats, dict);
+            let payloads = [
+                write_lits(&mut hdr, &s, &lm, dict),
+                write_stream(&mut hdr, &s.ll, &s.stats.counts[LL], dict_codes[0]),
+                write_stream(&mut hdr, &s.ml, &s.stats.counts[ML], dict_codes[1]),
+                write_stream(&mut hdr, &s.of, &s.stats.counts[OF], dict_codes[2]),
+            ];
+            let extra = s.bits.finish();
+            blk.extend_from_slice(&hdr);
+            blk.extend_from_slice(&(extra.len() as u32).to_le_bytes());
+            for p in &payloads {
+                blk.extend_from_slice(p);
+            }
+            blk.extend_from_slice(&extra);
+            let (l, q, b) = parse_counts(&seqs, n);
+            let m = &opt.cycles;
+            let cyc = l * m.rans_lit + q * m.rans_seq + b * m.rans_mbyte;
+            rans = Some((blk, r, am_end, cyc, s.stats));
+        }
+        // candidate 2: token block
+        let mut token: Option<(Vec<u8>, [u32; 3], bool, f64)> = None;
+        if opt.allow_token || !opt.allow_rans {
+            let prices = Prices::token(opt);
+            let (seqs, r, am_end) = parse_block(&w, base, start, end, &mstart, &matches, reps, am, &prices, opt);
+            let payload = token_payload(&w, start, end, &seqs);
+            let mut blk = Vec::with_capacity(payload.len() + 16);
+            blk.extend_from_slice(&(n as u32).to_le_bytes());
+            blk.extend_from_slice(&(seqs.len() as u32).to_le_bytes());
+            blk.push(crate::dec::TOKEN_BLOCK);
+            blk.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            blk.extend_from_slice(&payload);
+            let (l, q, b) = parse_counts(&seqs, n);
+            let m = &opt.cycles;
+            let cyc = l * m.tok_lit + q * m.tok_seq + b * m.tok_mbyte;
+            token = Some((blk, r, am_end, cyc));
+        }
+        let score = |bytes: usize, cyc: f64| if opt.size_weight.is_finite() { cyc + opt.size_weight * bytes as f64 } else { bytes as f64 };
+        let use_token = match (&rans, &token) {
+            (Some(r), Some(t)) => score(t.0.len(), t.3) < score(r.0.len(), r.3),
+            (None, Some(_)) => true,
+            _ => false,
         };
-        let mut best: Option<(Vec<Seq>, [u32; 3], bool)> = None;
-        for pass in 0..opt.passes.max(1) {
-            let r = parse_block(&w, base, start, end, &mstart, &matches, reps, am, &prices, opt);
-            if pass + 1 < opt.passes {
-                let s = block_syms(&w, base, start, end, &r.0, reps, am);
-                let lm = best_lit_model(&s.stats, dict);
-                let t: Vec<Freqs> = (0..3).map(|k| part_table(&s.stats.counts[k + 1], dict_codes[k])).collect();
-                prices = Prices::new(&lm, [&t[0], &t[1], &t[2]]);
-            }
-            best = Some(r);
+        if use_token {
+            let (blk, r, am_end, _) = token.unwrap();
+            out.extend_from_slice(&blk);
+            reps = r;
+            am = am_end;
+        } else {
+            let (blk, r, am_end, _, st) = rans.unwrap();
+            out.extend_from_slice(&blk);
+            reps = r;
+            am = am_end;
+            total.add(&st);
         }
-        let (seqs, r, am_end) = best.unwrap();
-        let s = block_syms(&w, base, start, end, &seqs, reps, am);
-        reps = r;
-        am = am_end;
-        out.extend_from_slice(&((end - start) as u32).to_le_bytes());
-        out.extend_from_slice(&(seqs.len() as u32).to_le_bytes());
-        let mut hdr = Vec::new();
-        let lm = best_lit_model(&s.stats, dict);
-        let payloads = [
-            write_lits(&mut hdr, &s, &lm, dict),
-            write_stream(&mut hdr, &s.ll, &s.stats.counts[LL], dict_codes[0]),
-            write_stream(&mut hdr, &s.ml, &s.stats.counts[ML], dict_codes[1]),
-            write_stream(&mut hdr, &s.of, &s.stats.counts[OF], dict_codes[2]),
-        ];
-        let extra = s.bits.finish();
-        out.extend_from_slice(&hdr);
-        out.extend_from_slice(&(extra.len() as u32).to_le_bytes());
-        for p in &payloads {
-            out.extend_from_slice(p);
-        }
-        out.extend_from_slice(&extra);
-        total.add(&s.stats);
     }
     (out, total)
 }
@@ -855,6 +1075,28 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_token_blocks() {
+        let tok = Options { allow_rans: false, ..Options::speed(LOAD_TIME_WEIGHT) };
+        let mixed = Options { block_size: 3000, ..Options::speed(60.0) };
+        for opt in [tok, mixed, Options::speed(LOAD_TIME_WEIGHT)] {
+            rt(&[], &[], None, &opt);
+            rt(b"ab", &[], None, &opt);
+            rt(&sample(40_000), &[], None, &opt);
+            rt(&records(40_000), &[Segment::planes(4, 40_000)], None, &opt);
+            rt(&vec![7u8; 100_000], &[], None, &opt);
+            // long literal runs and long matches (extension bytes)
+            let mut v: Vec<u8> = (0..5000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+            v.extend_from_within(..4000);
+            rt(&v, &[], None, &opt);
+        }
+        // load-time profile decodes cheaper than the size profile on struct data
+        let r = records(60_000);
+        let small = compress(&r, &[], None, &Options::level(9)).len();
+        let fast = compress(&r, &[], None, &Options::speed(LOAD_TIME_WEIGHT)).len();
+        assert!(fast >= small);
+    }
+
+    #[test]
     fn round_trip_small_blocks_and_transforms() {
         let s = sample(50_000);
         let opt = Options { block_size: 4096, ..Options::level(9) };
@@ -894,13 +1136,14 @@ mod tests {
     #[test]
     fn corrupt_input_never_panics() {
         let s = records(5000);
-        let z = compress(&s, &[Segment::planes(4, 5000)], None, &Options::level(5));
+        let zr = compress(&s, &[Segment::planes(4, 5000)], None, &Options::level(5));
+        let zt = compress(&s, &[Segment::planes(4, 5000)], None, &Options { allow_rans: false, ..Options::speed(LOAD_TIME_WEIGHT) });
         let mut out = vec![0u8; s.len()];
         let mut tmp = vec![0u8; s.len()];
         let mut dec = Box::new(Decoder::new());
         let mut x = 99u32;
-        for i in 0..2000 {
-            let mut c = z.clone();
+        for i in 0..4000 {
+            let mut c = if i % 2 == 0 { zr.clone() } else { zt.clone() };
             x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
             let p = (x as usize >> 8) % c.len();
             c[p] ^= 1 << (i % 8);

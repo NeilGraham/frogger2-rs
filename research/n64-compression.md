@@ -16,15 +16,18 @@ Exact output of `f2-n64pack` (DFS image measured with libdragon `mkdfs`):
 | Asset class | Files | From (retail bytes) | Packed bytes | MiB | Plan target |
 |---|---:|---:|---:|---:|---:|
 | boot + code (reserve, `--reserve-mib`) | — | — | 2,621,440 | 2.50 | 2.0 MB |
-| models | 72 | 18,971,136 | 1,727,831 | 1.65 | 5.0 MB |
-| textures + fonts + backdrops | 77 | 7,353,516 | 2,533,611 | 2.42 | 6.0 MB |
-| levels (maps, collision, scenics, scripts, demos, text) | 245 | 2,946,306 | 388,316 | 0.37 | 1.5 MB |
+| models (aPLib) | 71 | 18,971,136 | 2,106,693 | 2.01 | 5.0 MB |
+| textures + fonts + backdrops (aPLib) | 76 | 7,353,516 | 2,753,252 | 2.63 | 6.0 MB |
+| levels (F2Z + 64 KiB dictionary) | 245 | 2,946,306 | 386,176 | 0.37 | 1.5 MB |
 | sound effects (all VADPCM) | 418 | 43,304,730 (unique PCM) | 11,118,388 | 10.60 | 8.0 MB |
 | music (Opus 99 kbps stereo) | 11 | 268,187,284 | 18,499,810 | 17.64 | 7.5 MB |
 | FMV (H.264 320×240 CRF 14 + Opus 48 kbps) | 28 | 121,241,408 | 19,310,600 | 18.42 | 25.0 MB |
-| DFS overhead | | | 51,640 | 0.05 | |
-| **total** (DFS image 53,630,196 B + code reserve) | | | **56,251,636** | **53.65** | 64 MiB |
-| headroom | | | 10,857,228 | 10.35 | |
+| DFS overhead | | | 51,501 | 0.05 | |
+| **total** (DFS image 54,226,420 B + code reserve) | | | **56,847,860** | **54.21** | 64 MiB |
+| headroom | | | 10,261,004 | 9.79 | |
+
+With `--codec models=f2z --codec textures=f2z` (F2Z smallest everywhere) the total is
+53.65 MiB: 1,727,831 B models and 2,533,611 B textures (−0.6 MB) at 1.2–1.6 MB/s decode.
 
 Every class sits at its **quality ceiling**, not at a size compromise:
 - models, levels and the converted textures are **lossless** with respect to what the game
@@ -70,15 +73,20 @@ FLA2-decompressed; models: packed F2MB banks; textures: converted NTX1 files).
 Host F2Z decode throughput (one x86-64 core, Rust release build): 320–420 MB/s on levels and
 models, 215–230 MB/s on textures. VR4300 numbers: §5.
 
-**Winner per class** (ratio, and decode speed ≥ ~2–4 MB/s for level loads): **F2Z with a
-class dictionary for all three classes** — it beats Shrinkler (the best libdragon ratio,
-0.76 MB/s on the VR4300) on levels (−9 %) and models (−1 %), is within 3 % on textures,
-and decodes at LZ-class speed (§5). Against aPLib (the libdragon codec at a comparable speed)
-F2Z is 31 % smaller on levels, 18 % on models and 8 % on textures. The remaining distance to
-xz (adaptive binary range coding, unusable at speed on the VR4300) is 2–6 %.
+On ratio, F2Z (smallest setting) beats Shrinkler, the best libdragon ratio, on levels (−9 %)
+and models (−1 %) and is within 3 % on textures; it is 31 % / 18 % / 8 % smaller than aPLib.
+The remaining distance to xz (adaptive binary range coding, far too slow for the VR4300) is
+2–6 %. **Decode speed on the VR4300 decides the per-class winner (§5):**
 
-Dictionary sizes chosen: models 128 KiB, textures 128 KiB, levels 64 KiB (resident only
-while a level loads; the decoder needs the dictionary content plus its pre-built tables).
+| Class | Winner | Why |
+|---|---|---|
+| models | **aPLib** (mkasset -c 2) | best ratio among codecs decoding ≥ ~3.5 MB/s: 24.7 % at 5.6 MB/s incl. ROM read; F2Z-small 21.5 % at 1.55 MB/s, F2Z-fast 31 % at 5.0 MB/s |
+| textures | **aPLib** | 59.6 % at 3.5 MB/s; F2Z-small 54 % at 0.9 MB/s, F2Z-fast 68 % at 5.7 MB/s |
+| levels | **F2Z, smallest** (64 KiB dictionary) | 13 % vs aPLib 19 % / Shrinkler 14 %; a level's files are ~70 KB decoded → ~40 ms even at 1.8 MB/s |
+
+The packer stores each file with its class codec (`--codec CLASS=f2z|lz4|aplib|shrinkler|none`
+overrides); the loader dispatches on the magic (`F2Z1` / libdragon `DCA`).
+Dictionary sizes: models/textures 128 KiB, levels 64 KiB.
 
 ## 3. F2Z design
 
@@ -149,13 +157,13 @@ Per model stream (all 71 banks concatenated per stream, before the alignment cha
 | META (varints) | 60,224 | 10,871 | — | — | 9,975 |
 
 ### Decoder resources
-- `Decoder`: 24 rANS tables of 5 KiB (8 literal contexts + matched literal + 3 code streams,
-  for the block and for the dictionary defaults) ≈ 123 KB, reusable across files.
+- `Decoder`: 24 rANS tables of 1.3 KiB (8 literal contexts + matched literal + 3 code
+  streams, for the block and for the dictionary defaults) ≈ 31 KB, reusable across files.
 - Output buffer `raw_size`; a second `raw_size` scratch buffer only for files with
   transforms (`Header::needs_scratch`). Dictionary content (≤ 128 KiB) + its file.
 - Per literal: one table load for the context, one rANS step (slot lookup, one 32×32
-  multiply, renormalisation every ~1–2 symbols); matches are byte copies (`copy_within`
-  for non-overlapping runs).
+  multiply, renormalisation every ~1–2 symbols); matches are 8-byte chunk copies. Token
+  blocks: byte reads, 16-byte literal wild copies.
 
 ## 4. Formats chosen per class
 
@@ -222,12 +230,65 @@ Baselines measured by the platform work (`research/n64-performance.md` §(d), `a
 of a 1 MiB synthetic level-like file from ROM, ares v148): none 5.06 MB/s, LZ4 6.17 MB/s,
 aPLib 3.95 MB/s, Shrinkler 0.76 MB/s.
 
-F2Z on the same harness: *pending — see §5.1 when added.*
+All numbers below: ares v148, release + LTO ROM, Garden 1 working set staged by
+`tools/n64/stage-f2z-probe.py` (3 model banks, garden + backdrop textures, collision, scenics,
+entities: 652,647 B decoded), each file also re-compressed with `mkasset -c 0..3 -w 256` so
+every codec decodes identical bytes in the same run; every output checked against the host
+FNV-1a (all match). Probe code: `crates/frogger-n64/src/f2z_probe.rs`; method and the
+per-file table: `research/n64-performance.md` (e). MB/s = decoded bytes per second.
+
+### 5.1 libdragon codecs on the same bytes (`asset_load` = ROM read + decompress)
+
+| | stored | MB/s |
+|---|---:|---:|
+| stored (c0) | 100 % | 5.05 |
+| LZ4 (c1, MIPS assembly) | 45.7 % | **7.77** |
+| aPLib (c2, MIPS assembly) | 36.9 % | **4.59** |
+| Shrinkler (c3) | 32.0 % | 0.79 |
+
+### 5.2 F2Z along its space–speed curve (decode alone; ROM read adds ~19 cycles per stored byte)
+
+| F2Z setting | stored | decode MB/s | read + decode MB/s | models | textures | collision | maps |
+|---|---:|---:|---:|---|---|---|---|
+| smallest (`--size-weight inf`), rANS blocks, original decoder | 32.6 % | 0.79 | — | | | | |
+| smallest, optimised decoder (bit-exact) | 32.6 % | 1.23 | 1.13 | 21.5 %, 1.55 | 54.4 %, 0.89 | 8.5 %, 1.84 | 14.6 %, 1.77 |
+| weight 60 (mixed token/rANS blocks) | ≈ 39 % | ≈ 4.1 | ≈ 3.1 | 28 %, 4.05 | 64 %, 4.04 | 20 %, 4.27 | 19 %, 4.43 |
+| weight 19 = minimum load time (mostly token blocks) | 44.2 % | **5.23** | 3.55 | 31 %, 5.02 | 68 %, 5.67 | 22 %, 5.03 | 20 %, 4.74 |
+
+(class cells: stored %, decode MB/s.) Dictionaries are decoded once at boot (smallest:
+332 KB in 310 ms; weight 19: 77 ms) and stay resident while their class is being loaded.
+
+### 5.3 What limits F2Z on the VR4300, and what was done
+- ares cost model (calibrated in the probe ROM): ~1 cycle per simple instruction, **~45 cycles
+  per D-cache miss** (8 KiB direct-mapped, 16-byte lines). A static-rANS literal costs
+  ~125–155 cycles and a sequence (three rANS symbols + extra bits) ~300–430 cycles, almost all
+  of it table misses. That caps any rANS-literal codec at ~1–2 MB/s on this CPU, whatever the
+  ratio.
+- Decoder work (stream format unchanged): 1.3 KiB bucket tables instead of 5 KiB slot tables
+  (Decoder 123 KB → 31 KB), inlined hot paths, 8-byte match copies, tiled inverse transforms:
+  0.79 → 1.23 MB/s.
+- **Space–speed coding** (format extension, `TOKEN_BLOCK`): a block can instead be
+  byte-aligned tokens (LZ4-style nibble lengths, raw literals, 16-byte wild copies) keeping
+  F2Z's repeat offsets, LEB128 distances into the shared dictionary and the structure
+  transforms. The optimal parser minimises `bits + decode cycles / w` with a per-block-type
+  cycle model, and each block keeps the type with the lower `cycles + w × bytes`; transform
+  candidates are charged their measured 21 cycles/byte. `w ≈ 19` (cycles to read one byte
+  from ROM) minimises total load time.
+- Result: F2Z spans 1.2–5.2 MB/s, but at each point **libdragon's hand-written MIPS LZ4/aPLib
+  decoders are on or beyond the frontier** (aPLib 36.9 % at 4.59 MB/s incl. read vs F2Z 39 %
+  at ~3.1; LZ4 45.7 % at 7.77 vs F2Z 44 % at 3.55). F2Z's win is ratio where speed is
+  irrelevant (small, per-level data) and the Shrinkler niche (same ratio, 1.5× faster).
+- Next steps if F2Z should own the fast end: an assembly token decoder (the Rust one is
+  ~17 cycles/byte; LZ4's assembly ~12 including the read), overlapping decode with PI DMA as
+  `asset_load` does, and fewer/smaller rANS tables (≤ 2 literal contexts, 10–11-bit
+  probabilities) for the rANS blocks.
 
 ## 6. What the N64 runtime must implement
-1. **F2Z loader**: `f2_n64z::header` → allocate `raw_size` (+ scratch if
+0. **Loader dispatch** on the first bytes: `F2Z1` → F2Z, `DCA` → libdragon `asset_load`
+   (models and textures by default), anything else = stored raw.
+1. **F2Z loader** (levels by default): `f2_n64z::header` → allocate `raw_size` (+ scratch if
    `needs_scratch`) → `Decoder::decode(src, Some(&dict), out, tmp)`. Keep one `Decoder`
-   (≈123 KB, heap). Load `dict/<class>.f2zd` (F2Z-compressed without a dictionary) when a
+   (≈31 KB, heap). Load `dict/<class>.f2zd` (F2Z-compressed without a dictionary) when a
    level load starts, `Dict::parse` it, free it afterwards (or keep the 64 KiB levels one).
    Wrong/missing dictionary → `Error::WrongDict(id)`; corrupt input never panics.
 2. **Models**: decode F2MB to `ObjectBank` (reference decoder `models::decode`, std-only
@@ -243,10 +304,24 @@ F2Z on the same harness: *pending — see §5.1 when added.*
    `DataSource` lookups map 1:1 onto `rom:/…` + F2Z decode.
 
 ## 7. Open issues
-- F2Z speed on real hardware (ares is cycle-approximate; a flashcart run should confirm).
+- F2Z / aPLib speeds on real hardware (ares is cycle-approximate; a flashcart run should
+  confirm the ordering).
+- The token-block cycle model (`CycleModel::tok_*`) is a rough calibration from the
+  aggregate ares runs; a per-file regression would sharpen the w trade-off.
 - Textures: F2Z is 3 % behind Shrinkler; a 2D-aware literal context (byte one row above)
   is the obvious next step for CI index data.
 - Sound effects are 417 small files; a single blob + offsets in the index would cut DFS
   overhead and open/seek time.
 - Opus loop seams and FMV audio were not listened to on hardware.
 - The ~10 MiB headroom: decide with the code size known.
+
+## 8. Status / next steps (for resuming this work)
+Branch `worktree-agent-adc96df12c4758e62` (phase 1C). Done: `tools/f2-n64pack` (levels,
+lossless models, textures (NTX1), sfx/music/FMV, budget + fill step, `--bench`), `crates/f2-n64z`
+(F2Z with rANS + token blocks, dictionaries, transforms, space–speed parse), ares probe
+(`crates/frogger-n64/src/f2z_probe.rs`, `tools/n64/stage-f2z-probe.py`). Default codecs:
+models/textures aPLib, levels F2Z. Gates: `cargo test --workspace`, clippy `-D warnings`, fmt.
+Next: (1) a per-file regression to recalibrate `CycleModel::tok_*` from the probe log;
+(2) optional MIPS-assembly token decoder / DMA-overlapped decode to push F2Z-fast past aPLib;
+(3) 2D literal context for textures; (4) no_std port of `models::decode` once the phase-2R
+mesh format lands; (5) single-blob sfx file.

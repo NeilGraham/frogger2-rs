@@ -22,11 +22,15 @@ pub struct BudgetConfig {
     pub code_reserve: u64,
     /// Restrict to some steps (development).
     pub only: Option<Vec<String>>,
+    /// F2Z space–speed weight for every F2Z class.
+    pub size_weight: f64,
+    /// Per-class codec overrides (`--codec models=f2z`).
+    pub codecs: Vec<(Class, crate::codec::Codec)>,
 }
 
 impl Default for BudgetConfig {
     fn default() -> Self {
-        BudgetConfig { cart_bytes: 64 << 20, code_reserve: (2.5 * MIB) as u64, only: None }
+        BudgetConfig { cart_bytes: 64 << 20, code_reserve: (2.5 * MIB) as u64, only: None, size_weight: crate::codec::DEFAULT_SIZE_WEIGHT, codecs: Vec::new() }
     }
 }
 
@@ -72,9 +76,10 @@ struct ClassSummary {
     plan_target: u64,
 }
 
-fn compressed(ctx: &Ctx, class: Class, step: (Vec<RawAsset>, Vec<String>)) -> Result<ClassReport> {
+fn compressed(ctx: &Ctx, cfg: &BudgetConfig, class: Class, step: (Vec<RawAsset>, Vec<String>)) -> Result<ClassReport> {
     let (assets, notes) = step;
-    let mut r = pack_class(ctx, class, &assets, &ClassCodec::for_class(class))?;
+    let codec = cfg.codecs.iter().rev().find(|c| c.0 == class).map_or(crate::codec::Codec::default_for(class), |c| c.1);
+    let mut r = pack_class(ctx, class, &assets, &ClassCodec { size_weight: cfg.size_weight, codec, ..ClassCodec::for_class(class) })?;
     r.notes.splice(0..0, notes);
     Ok(r)
 }
@@ -117,15 +122,15 @@ pub fn build(ctx: &Ctx, cfg: &BudgetConfig) -> Result<bool> {
     let step = |name: &str| eprintln!("[f2-n64pack] {name}");
     if cfg.wants("levels") {
         step("levels");
-        add(compressed(ctx, Class::Levels, levels::convert(ctx)?)?, &mut files);
+        add(compressed(ctx, cfg, Class::Levels, levels::convert(ctx)?)?, &mut files);
     }
     if cfg.wants("models") {
         step("models");
-        add(compressed(ctx, Class::Models, models::convert(ctx)?)?, &mut files);
+        add(compressed(ctx, cfg, Class::Models, models::convert(ctx)?)?, &mut files);
     }
     if cfg.wants("textures") {
         step("textures");
-        add(compressed(ctx, Class::Textures, textures::convert(ctx)?)?, &mut files);
+        add(compressed(ctx, cfg, Class::Textures, textures::convert(ctx)?)?, &mut files);
     }
     if cfg.wants("sfx") {
         step("sound effects");

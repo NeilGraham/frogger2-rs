@@ -48,7 +48,11 @@ fn mkasset(ctx: &Ctx, files: &[PathBuf], level: u32, scratch: &Path) -> Result<(
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     // Shrinkler needs ~700 MB per process: bound the parallelism.
-    let jobs = if level == 3 { ctx.jobs.min(6) } else { ctx.jobs };
+    let jobs = match level {
+        3 => ctx.jobs.min(6),
+        2 => ctx.jobs.min(8),
+        _ => ctx.jobs,
+    };
     let r = crate::tools::par_map(files, jobs, |f: &PathBuf| -> Result<(u64, bool)> {
         let ok = crate::tools::run(Command::new(ctx.tool("mkasset")).args(["-c", &level.to_string(), "-w", "256", "-o"]).arg(&out).arg(f)).is_ok();
         let p = if ok { out.join(f.file_name().unwrap()) } else { f.clone() };
@@ -183,6 +187,19 @@ fn bench_class(ctx: &Ctx, class: Class, assets: &[RawAsset], md: &mut String) ->
         let b: u64 = zs.iter().map(|z| z.len() as u64).sum::<u64>() + db;
         rows.push(Row {
             name: format!("F2Z + transforms + {} KiB class dictionary", size >> 10),
+            bytes: b,
+            note: format!("incl. {db} B compressed dictionary; host decode {:.0} MB/s", f2z_decode_speed(&zs, dict.as_ref())),
+        });
+    }
+    for w in [f2_n64z::enc::LOAD_TIME_WEIGHT, 60.0] {
+        let cfg = ClassCodec { dict_size: 128 << 10, ..ClassCodec::for_class(class) };
+        let dict = train_dict(assets, &cfg);
+        let o = Options { size_weight: w, ..Options::level(9) };
+        let zs: Vec<Vec<u8>> = crate::tools::par_map(assets, ctx.jobs, |a: &RawAsset| compress_asset(a, dict.as_ref(), &o).0);
+        let db = dict.as_ref().map_or(0, |d| compress(&d.to_bytes(), &[], None, &o).len() as u64);
+        let b: u64 = zs.iter().map(|z| z.len() as u64).sum::<u64>() + db;
+        rows.push(Row {
+            name: format!("F2Z space-speed weight {w} (token/rANS blocks chosen by decode cost), 128 KiB dict"),
             bytes: b,
             note: format!("incl. {db} B compressed dictionary; host decode {:.0} MB/s", f2z_decode_speed(&zs, dict.as_ref())),
         });
