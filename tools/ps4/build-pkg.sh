@@ -65,6 +65,13 @@ case "$VARIANT" in
 esac
 ATTRIBUTE="${F2_PS4_ATTRIBUTE:-$ATTRIBUTE}"
 AUTH="${F2_PS4_AUTHINFO:-$AUTH}"
+# Bisect builds (tools/ps4/build-pro-bisect.sh): their own title ID (9 chars), content-ID
+# label (16 chars) and title so they install beside the others. F2_PS4_FB_1080=1 (read by
+# the Rust build) keeps the framebuffers at 1920x1080 in Pro mode.
+TITLE_ID="${F2_PS4_TITLE_ID:-$TITLE_ID}"
+LABEL="${F2_PS4_LABEL:-$LABEL}"
+TITLE="${F2_PS4_TITLE:-$TITLE}"
+[ ${#TITLE_ID} -eq 9 ] && [ ${#LABEL} -eq 16 ] || { echo "title ID must be 9 and label 16 characters" >&2; exit 2; }
 CONTENT_ID="IV0000-${TITLE_ID}_00-${LABEL}"
 # Package version (param.sfo "XX.YY"); bump for updates over an installed copy.
 VERSION="01.00"
@@ -111,7 +118,7 @@ case "$AUTH" in
     piglet) AUTH_ARGS=(--authinfo "$PIGLET_AUTHINFO") ;;
     *) AUTH_ARGS=(--authinfo "$AUTH") ;;
 esac
-echo "variant $VARIANT: title $TITLE_ID, ATTRIBUTE $ATTRIBUTE, auth info $([ "$AUTH" = default ] && echo "create-fself default" || echo "$AUTH")"
+echo "variant $VARIANT: title $TITLE_ID, ATTRIBUTE $ATTRIBUTE, framebuffers $([ -n "${F2_PS4_FB_1080:-}" ] && echo "1920x1080 forced" || echo "output mode"), auth info $([ "$AUTH" = default ] && echo "create-fself default" || echo "$AUTH")"
 "$BIN/create-fself" -in="$BUILD/frogger2.elf" -out="$BUILD/frogger2.oelf" --eboot "$STAGE/eboot.bin" --paid 0x3800000000000011 "${AUTH_ARGS[@]}"
 
 echo "== sce_sys"

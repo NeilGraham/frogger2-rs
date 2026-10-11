@@ -40,6 +40,11 @@ pub struct WinInfo {
     pub modes: Vec<VideoMode>,
     /// The monitor's desktop mode.
     pub desktop: Option<VideoMode>,
+    /// A console host (PS4 / PS5): always fullscreen. `modes` are the output modes the host
+    /// can switch to (Resolution / Refresh rate pick among them; `requests.apply_window`
+    /// asks the host to switch), `desktop` the mode in use. The window mode, VSync and frame
+    /// cap rows are hidden.
+    pub console: bool,
 }
 
 /// Common resolutions offered next to the monitor's video modes.
@@ -51,7 +56,7 @@ impl WinInfo {
     /// fullscreen: only those), plus 640x480 and common sizes that fit the desktop.
     pub fn resolutions(&self, mode: WindowMode) -> Vec<(u32, u32)> {
         let mut v: Vec<(u32, u32)> = self.modes.iter().map(|m| (m.width, m.height)).collect();
-        if mode != WindowMode::Fullscreen || v.is_empty() {
+        if !self.console && (mode != WindowMode::Fullscreen || v.is_empty()) {
             let max = self.desktop.map(|d| (d.width, d.height)).unwrap_or((u32::MAX, u32::MAX));
             v.extend(COMMON.iter().filter(|(w, h)| *w <= max.0 && *h <= max.1));
         }
@@ -629,16 +634,24 @@ impl App {
         let gate = |e: bool, desc: &str| if e { desc.to_string() } else { format!("{desc} {ENH_HINT}") };
         match ui.page() {
             Page::Display => {
-                add(
-                    Id::WindowMode,
-                    "Window mode",
-                    v.window_mode.name().into(),
-                    "Windowed, borderless fullscreen or exclusive fullscreen. Alt+Enter / F11 toggle windowed and your fullscreen choice.",
-                    true,
-                    true,
-                );
+                let console = self.win.console;
+                if !console {
+                    add(
+                        Id::WindowMode,
+                        "Window mode",
+                        v.window_mode.name().into(),
+                        "Windowed, borderless fullscreen or exclusive fullscreen. Alt+Enter / F11 toggle windowed and your fullscreen choice.",
+                        true,
+                        true,
+                    );
+                }
+                // Consoles: the output mode in use, not the (dynamic) render size.
+                let auto = match self.win.desktop {
+                    Some(m) if console => (m.width, m.height),
+                    _ => self.win.size,
+                };
                 let res = match v.resolution {
-                    None => format!("Auto ({}x{})", self.win.size.0, self.win.size.1),
+                    None => format!("Auto ({}x{})", auto.0, auto.1),
                     Some([w, h]) => format!("{w}x{h}"),
                 };
                 let res_desc = match self.win.mode {
@@ -646,31 +659,41 @@ impl App {
                     WindowMode::Borderless => "Auto renders at the desktop size; a fixed size renders at that size, scaled to the screen.",
                     WindowMode::Fullscreen => "The exclusive fullscreen video mode (Auto = desktop size).",
                 };
-                add(Id::Resolution, "Resolution", res, res_desc, true, true);
-                let fs = self.win.mode == WindowMode::Fullscreen;
+                let res_desc = if console {
+                    "Size of the frames sent out (Auto = largest). The console scales them to its video output resolution, set in its Screen and Video settings."
+                } else {
+                    res_desc
+                };
+                add(Id::Resolution, "Resolution", res, res_desc, !console || self.win.resolutions(self.win.mode).len() > 1, true);
+                let fs = console || self.win.mode == WindowMode::Fullscreen;
+                let hz = |r: u32| format!("{:.2} Hz", r as f32 / 1000.0).replace(".00", "");
                 let rate = match v.refresh_mhz {
                     _ if !fs => "N/A".into(),
+                    // Consoles: the rate in use.
+                    None if console => self.win.desktop.map_or("Auto".into(), |m| format!("Auto ({})", hz(m.refresh_mhz))),
                     None => match self.win.rates(v.resolution).first() {
                         Some(r) => format!("Highest ({:.0} Hz)", *r as f32 / 1000.0),
                         None => "Highest".into(),
                     },
-                    Some(r) => format!("{:.2} Hz", r as f32 / 1000.0).replace(".00", ""),
+                    Some(r) => hz(r),
                 };
-                add(
-                    Id::Refresh,
-                    "Refresh rate",
-                    rate,
-                    if fs { "Refresh rate of the exclusive fullscreen mode." } else { "Exclusive fullscreen only." },
-                    fs,
-                    true,
-                );
-                add(Id::VSync, "VSync", on_off(v.vsync), "Wait for the display refresh (no tearing).", true, true);
-                let cap = match v.frame_cap {
-                    0 => "Off".to_string(),
-                    n if FRAME_CAPS.contains(&n) => format!("{n} fps"),
-                    n => format!("{n} fps (custom)"),
+                let rate_desc = if console {
+                    "Auto = 120 Hz when the TV and the console's video output allow it. The game runs at 60 Hz; 120 Hz adds in-between frames."
+                } else if fs {
+                    "Refresh rate of the exclusive fullscreen mode."
+                } else {
+                    "Exclusive fullscreen only."
                 };
-                add(Id::FrameCap, "Frame cap", cap, "Limits rendered frames. The game itself always runs at 60 Hz.", true, true);
+                add(Id::Refresh, "Refresh rate", rate, rate_desc, fs, true);
+                if !console {
+                    add(Id::VSync, "VSync", on_off(v.vsync), "Wait for the display refresh (no tearing).", true, true);
+                    let cap = match v.frame_cap {
+                        0 => "Off".to_string(),
+                        n if FRAME_CAPS.contains(&n) => format!("{n} fps"),
+                        n => format!("{n} fps (custom)"),
+                    };
+                    add(Id::FrameCap, "Frame cap", cap, "Limits rendered frames. The game itself always runs at 60 Hz.", true, true);
+                }
                 add(
                     Id::Profile,
                     "Profile",
@@ -719,7 +742,11 @@ impl App {
                     Id::ResetDisplay,
                     "Reset to defaults",
                     String::new(),
-                    "Restores every Display setting (windowed, auto resolution, enhanced profile).",
+                    if console {
+                        "Restores every Display setting (auto resolution and refresh rate, enhanced profile)."
+                    } else {
+                        "Restores every Display setting (windowed, auto resolution, enhanced profile)."
+                    },
                     true,
                     false,
                 );
@@ -1595,6 +1622,7 @@ mod tests {
             size: (800, 600),
             modes: vec![m(1920, 1080, 60000), m(1920, 1080, 144000), m(1280, 720, 60000)],
             desktop: Some(m(1920, 1080, 144000)),
+            console: false,
         };
         let fs = wi.resolutions(WindowMode::Fullscreen);
         assert_eq!(fs, vec![(1280, 720), (1920, 1080)]);

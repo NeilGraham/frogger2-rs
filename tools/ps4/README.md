@@ -27,7 +27,20 @@ Output: `target/ps4/IV0000-FROG20000_00-FROGGER2RUSTPORT[-with-data].pkg` (title
 `F2_PS4_ATTRIBUTE=<int>` and `F2_PS4_AUTHINFO=default|piglet|<hex>` override either. The
 first hardware attempt with the enhanced settings crashed on a PS5 (CE-108255-1); the
 conservative package matches the very first build's settings, so the two can be bisected.
-`tools/ps5/build-hw-test.sh` builds all three into the hardware test ladder. A `--data` package contains copyrighted game data from your own disc: it is
+`tools/ps5/build-hw-test.sh` builds all three into the hardware test ladder.
+
+**Pro bisect.** The enhanced package crashed again on the second hardware round (PS5 FW
+11.40, kstuff 1.13, CE-108255-1) while the native PS5 package runs.
+`tools/ps4/build-pro-bisect.sh [--data DIR] [--icon IMG] [--copy-to DIR]` builds five
+packages that each change one thing against the conservative one (A FROG20003 Pro bit only,
+B FROG20004 7-CPU bit only, C FROG20005 Piglet auth info only, D FROG20006 Pro bit with
+framebuffers forced to 1920x1080 (`F2_PS4_FB_1080=1`), E FROG20007 the enhanced ATTRIBUTE
+with the default auth info) into `target/ps4-bisect/` with `tools/ps4/pro-bisect-README.txt`.
+`F2_PS4_TITLE_ID` / `F2_PS4_LABEL` / `F2_PS4_TITLE` give `build-pkg.sh` builds their own
+identity. The video set-up logs each step before taking it (`video: sceVideoOutOpen`, the
+reported mode, direct memory, `sceVideoOutRegisterBuffers WxH linear`, the first two
+frames' render / scale / flip) and falls back to 1920x1080 framebuffers when VideoOut
+refuses the output-mode size. shadPS4 in Neo mode runs E (4K linear framebuffers, 60 fps). A `--data` package contains copyrighted game data from your own disc: it is
 for your console only and must not be shared. Neither the package nor the artwork is
 committed (`target/`, `game-data/` are ignored).
 

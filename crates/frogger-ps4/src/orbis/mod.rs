@@ -191,54 +191,91 @@ impl Screen {
     }
 }
 
+/// Bisect builds (`F2_PS4_FB_1080=1 tools/ps4/build-pkg.sh`): 1920x1080 framebuffers even
+/// when VideoOut reports a 4K output mode (PS4 Pro mode on a 4K TV).
+const FORCE_1080: bool = option_env!("F2_PS4_FB_1080").is_some();
+
 impl Video {
+    /// Opens VideoOut with linear framebuffers at the output mode's size, falling back to
+    /// 1920x1080 if VideoOut refuses that size. Each step is logged before it is taken (the
+    /// Pro-mode package's hardware crash, CE-108255-1, has no log yet).
     pub(crate) fn open() -> Result<Video, String> {
         unsafe {
+            log("video: sceVideoOutOpen");
             let handle = sceVideoOutOpen(0xff, 0, 0, core::ptr::null());
             if handle < 0 {
                 return Err(format!("sceVideoOutOpen: {handle:#x}"));
             }
+            log(&format!("video: handle {handle:#x}; sceKernelCreateEqueue"));
             let mut queue = core::ptr::null_mut();
             let r = sceKernelCreateEqueue(&mut queue, c"frogger flip".as_ptr());
             if r < 0 {
                 return Err(format!("sceKernelCreateEqueue: {r:#x}"));
             }
-            sceVideoOutAddFlipEvent(queue, handle, core::ptr::null_mut());
+            log("video: sceVideoOutAddFlipEvent");
+            let r = sceVideoOutAddFlipEvent(queue, handle, core::ptr::null_mut());
+            log(&format!("video: flip event {r:#x}; sceVideoOutGetResolutionStatus"));
             let mut res = ResolutionStatus::default();
             let r = sceVideoOutGetResolutionStatus(handle, &mut res);
-            let (width, height) = host::display_size(if r == 0 { (res.full_width, res.full_height) } else { (0, 0) });
-            log(&format!("video out: mode {}x{} ({r:#x}), framebuffers {width}x{height}", res.full_width, res.full_height));
+            let reported = host::display_size(if r == 0 { (res.full_width, res.full_height) } else { (0, 0) });
+            log(&format!(
+                "video out: mode {}x{} pane {}x{} refresh {:#x} flags {:#x} ({r:#x}), framebuffers {}x{}{}",
+                res.full_width,
+                res.full_height,
+                res.pane_width,
+                res.pane_height,
+                res.refresh_rate,
+                res.flags,
+                reported.0,
+                reported.1,
+                if FORCE_1080 { " (this build forces 1920x1080)" } else { "" }
+            ));
+            let mut sizes = vec![if FORCE_1080 { (1920, 1080) } else { reported }];
+            if sizes[0] != (1920, 1080) {
+                sizes.push((1920, 1080));
+            }
             const ALIGN: usize = 0x20_0000;
-            let fb = (width * height * 4) as usize;
+            let fb = (sizes[0].0 * sizes[0].1 * 4) as usize;
             let fb = fb.div_ceil(ALIGN) * ALIGN;
             let size = fb * BUFFERS;
             let mut phys = 0i64;
+            let dmem = sceKernelGetDirectMemorySize();
+            log(&format!("video: direct memory {dmem:#x}; allocating {size:#x} ({BUFFERS} x {fb:#x}, WB_ONION)"));
             // Memory type 3 = write-combined (WB_ONION), as the OpenOrbis samples.
-            let r = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize() as i64, size, ALIGN, 3, &mut phys);
+            let r = sceKernelAllocateDirectMemory(0, dmem as i64, size, ALIGN, 3, &mut phys);
             if r < 0 {
                 return Err(format!("sceKernelAllocateDirectMemory: {r:#x}"));
             }
+            log(&format!("video: physical {phys:#x}; sceKernelMapDirectMemory"));
             let mut mem = core::ptr::null_mut();
             // prot 0x33 = CPU read/write + GPU read/write.
             let r = sceKernelMapDirectMemory(&mut mem, size, 0x33, 0, phys, ALIGN);
             if r < 0 {
                 return Err(format!("sceKernelMapDirectMemory: {r:#x}"));
             }
+            log(&format!("video: mapped at {mem:p}; clearing"));
+            core::ptr::write_bytes(mem as *mut u8, 0, size);
             let mut buffers = [core::ptr::null_mut(); BUFFERS];
             for (i, b) in buffers.iter_mut().enumerate() {
                 *b = (mem as *mut u8).add(i * fb) as *mut u32;
-                core::ptr::write_bytes(*b, 0, (width * height) as usize);
             }
-            let mut attr = BufferAttribute::default();
-            // Linear tiling, 16:9.
-            sceVideoOutSetBufferAttribute(&mut attr, PIXEL_FORMAT, 1, 0, width, height, width);
             let ptrs: [*mut c_void; BUFFERS] = buffers.map(|b| b as *mut c_void);
-            let r = sceVideoOutRegisterBuffers(handle, 0, ptrs.as_ptr(), BUFFERS as c_int, &attr);
-            if r < 0 {
-                return Err(format!("sceVideoOutRegisterBuffers: {r:#x}"));
+            for &(width, height) in &sizes {
+                log(&format!("video: sceVideoOutRegisterBuffers {width}x{height} linear"));
+                let mut attr = BufferAttribute::default();
+                // Linear tiling, 16:9.
+                sceVideoOutSetBufferAttribute(&mut attr, PIXEL_FORMAT, 1, 0, width, height, width);
+                let r = sceVideoOutRegisterBuffers(handle, 0, ptrs.as_ptr(), BUFFERS as c_int, &attr);
+                if r < 0 {
+                    log(&format!("sceVideoOutRegisterBuffers {width}x{height}: {r:#x}"));
+                    continue;
+                }
+                log("video: sceVideoOutSetFlipRate");
+                sceVideoOutSetFlipRate(handle, 0);
+                log(&format!("video: ready, {width}x{height}"));
+                return Ok(Video { width, height, handle, queue, buffers, frame: 0 });
             }
-            sceVideoOutSetFlipRate(handle, 0);
-            Ok(Video { width, height, handle, queue, buffers, frame: 0 })
+            Err("VideoOut accepted no framebuffer size".into())
         }
     }
 
@@ -521,6 +558,14 @@ impl Shot {
     }
 }
 
+/// The Display settings' view of the console: always fullscreen, one output mode (the
+/// framebuffer size VideoOut scans out; PS4 titles run at 60 Hz, also on a PS5), so the
+/// Resolution row shows the output instead of the render size and offers no switch.
+fn win_info(size: (u32, u32), out: (u32, u32)) -> frogger::app::WinInfo {
+    let m = f2_platform::config::VideoMode { width: out.0, height: out.1, refresh_mhz: 59_940 };
+    frogger::app::WinInfo { size, mode: f2_platform::WindowMode::Fullscreen, modes: vec![m], desktop: Some(m), console: true }
+}
+
 /// One frame's common work: input, update, config saves. Returns false to quit.
 fn frame_update(app: &mut App, pad: &Pad, edges: &mut host::RawEdges, last: &mut Instant) -> bool {
     let now = Instant::now();
@@ -553,7 +598,7 @@ fn frame_update(app: &mut App, pad: &Pad, edges: &mut host::RawEdges, last: &mut
 /// Main loop on the GPU: the game renders at the output resolution, no scaling.
 fn run_gl(mut app: App, mut gl: piglet::PigletGl, pad: Pad, mut shot: Option<Shot>) -> Result<(), String> {
     let (w, h) = (gl.width, gl.height);
-    app.win = frogger::app::WinInfo { size: (w, h), ..Default::default() };
+    app.win = win_info((w, h), (w, h));
     let mut edges = host::RawEdges::default();
     let mut last = Instant::now();
     let (mut frames, mut stat_t, mut busy) = (0u32, Instant::now(), Duration::ZERO);
@@ -583,12 +628,15 @@ fn run_cpu(mut app: App, mut video: Video, pad: Pad, mut shot: Option<Shot>) -> 
     let (dw, dh) = (video.width, video.height);
     let mut dynres = host::DynRes::new(dh);
     let (mut iw, mut ih) = host::internal_size_at(dw, dh, dynres.height());
-    app.win = frogger::app::WinInfo { size: (iw, ih), ..Default::default() };
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 7);
+    app.win = win_info((iw, ih), (dw, dh));
+    let cpus = std::thread::available_parallelism();
+    let threads = cpus.as_ref().map_or(4, |n| n.get()).clamp(2, 7);
     log(&format!(
-        "rendering {iw}x{ih} (dynamic, up to {}p) on {threads} threads, output {dw}x{dh}",
+        "rendering {iw}x{ih} (dynamic, up to {}p) on {threads} threads (available_parallelism {cpus:?}), output {dw}x{dh}",
         host::DynRes::LEVELS[..].iter().rev().find(|&&h| h <= dh).unwrap_or(&480)
     ));
+    // The first frames' steps go to the log one by one (hardware bring-up).
+    let mut first = 2u32;
     let mut target = f2_engine::SoftTarget::new(iw, ih);
     let mut scaler = Scaler::default();
     let mut edges = host::RawEdges::default();
@@ -599,14 +647,27 @@ fn run_cpu(mut app: App, mut video: Video, pad: Pad, mut shot: Option<Shot>) -> 
         if !frame_update(&mut app, &pad, &mut edges, &mut last) {
             return Ok(());
         }
+        let trace = first > 0;
+        if trace {
+            log(&format!("frame: draw ({} to go)", first));
+        }
         app.draw(iw, ih);
         let t0 = Instant::now();
+        if trace {
+            log(&format!("frame: render_soft {iw}x{ih} on {threads} threads"));
+        }
         app.r.render_soft(&mut target, app.clear_color(), threads);
         let render_ms = t0.elapsed().as_secs_f32() * 1000.0;
         if Shot::due(&mut shot) {
             Shot::write(&shot, target.width, target.height, target.pixels.iter().flat_map(|p| p.to_le_bytes()).collect());
         }
+        if trace {
+            log(&format!("frame: rendered in {render_ms:.1} ms; waiting for a buffer"));
+        }
         let fb = video.back_buffer();
+        if trace {
+            log(&format!("frame: scaling into {fb:p} ({dw}x{dh})"));
+        }
         unsafe { scaler.blit_par(&target.pixels, target.width, target.height, fb, dw, dh, dw, threads) };
         if dynres.update(render_ms) {
             (iw, ih) = host::internal_size_at(dw, dh, dynres.height());
@@ -617,6 +678,10 @@ fn run_cpu(mut app: App, mut video: Video, pad: Pad, mut shot: Option<Shot>) -> 
         }
         busy += now.elapsed();
         video.present();
+        if trace {
+            log("frame: flip submitted");
+            first -= 1;
+        }
         frames += 1;
         if stat_t.elapsed() >= Duration::from_secs(10) {
             let s = stat_t.elapsed().as_secs_f64();
