@@ -83,6 +83,7 @@ pub mod tongue;
 pub mod trace;
 pub mod training;
 pub mod view; // P3-T: MDX view model / culling
+mod view_tables; // phase 3S: generated sinFast/acosFast tables
 
 /// `Serialize`/`Deserialize` for a struct whose declaration order (memory layout) differs
 /// from its serialized field order: a mirror struct `$wire` lists the fields in serialized

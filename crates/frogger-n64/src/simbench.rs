@@ -216,6 +216,24 @@ fn probes(data: Arc<N64Data<DfsStore>>) {
         }
         let find = cyc(ticks().wrapping_sub(t0), 10);
         log!("simbench probes (cycles): head matrix {} ({}), find_actor_sub_object {}", head, name, find);
+        let k = g.probe_key_parts(f0, 20, &mut || ticks());
+        log!(
+            "simbench probes (cycles): quat_slerp {} sin_fast {} acos_fast {} find_to_from_ch {} object_local(fghip) {}",
+            k[0] / 10,
+            k[1] / 10,
+            k[2] / 10,
+            k[3] / 10,
+            k[4] / 10
+        );
+        let r = g.probe_head_parts(f0, &name, 10, &mut || ticks());
+        log!(
+            "simbench probes (cycles): head parts: actor_top {} object_local x path {} mtx_cat x path {} whole {} (path {})",
+            r[0] * 2 / 10,
+            r[1] * 2 / 10,
+            r[2] * 2 / 10,
+            r[3] * 2 / 10,
+            r[4]
+        );
     }
     // FPU latency: 8 dependent vs 8 independent mul.s / add.s per iteration, and int adds
     let y = black_box(1.0001f32);

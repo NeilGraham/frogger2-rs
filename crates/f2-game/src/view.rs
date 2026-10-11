@@ -50,48 +50,36 @@ const PI2: f64 = core::f64::consts::PI * 2.0;
 const EPSILON: f32 = 0.00001;
 const HALFPI: f32 = 1.570_796_4;
 
-struct Tables {
-    sin: [f32; 4096],
-    acos: [f32; 4096],
+/// `InitMaths` (mdxMath.cpp:53): tables behind `sinFast`/`acosFast`. Phase 3S: generated
+/// statics (`view_tables.rs`, checked by `fast_tables_match_init_maths`) instead of a lazily
+/// built table (its atomic access costs a `sync` per lookup on the VR4300).
+#[inline(always)]
+fn sin_tab(i: usize) -> f32 {
+    f32::from_bits(crate::view_tables::SIN_BITS[i])
 }
 
-/// `InitMaths` (mdxMath.cpp:53): tables behind `sinFast`/`acosFast`.
-fn tables() -> &'static Tables {
-    // A pure function of nothing: a racing second initialiser builds identical tables.
-    static T: once_cell::race::OnceBox<Tables> = once_cell::race::OnceBox::new();
-    T.get_or_init(|| {
-        let mut t = Box::new(Tables { sin: [0.0; 4096], acos: [0.0; 4096] });
-        for i in 0..4096 {
-            t.acos[i] = f2_math::detfloat::acos((i as f64 - 2048.0) / 2048.0) as f32;
-            t.sin[i] = f2_math::detfloat::sin((i as f64 * PI2) / 4096.0) as f32;
-        }
-        t
-    })
+#[inline(always)]
+fn acos_tab(i: usize) -> f32 {
+    f32::from_bits(crate::view_tables::ACOS_BITS[i])
 }
 
 fn sin_fast(x: f32) -> f32 {
     let i = (x as f64 * (4096.0 / PI2)) as i64;
-    tables().sin[(i & 4095) as usize]
+    sin_tab((i & 4095) as usize)
 }
 
 fn acos_fast(x: f32) -> f32 {
     let i = ((x as f64 * 2048.0) + 2048.0) as i64;
-    tables().acos[(i & 4095) as usize]
+    acos_tab((i & 4095) as usize)
 }
 
 /// The `PushMatrix` macro body (mdxMath.h:86) / `guMtxCatF`: `a · b`, affine.
 pub fn mtx_cat(a: &Mat4, b: &Mat4) -> Mat4 {
-    let mut r = [[0f32; 4]; 4];
-    for i in 0..3 {
-        for j in 0..3 {
-            r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-        }
-    }
-    for j in 0..3 {
-        r[3][j] = a[3][0] * b[0][j] + a[3][1] * b[1][j] + a[3][2] * b[2][j] + b[3][j];
-    }
-    r[3][3] = 1.0;
-    r
+    // Built as one array literal (phase 3S: no zeroing `memset` call first); every entry is
+    // the same expression as before.
+    let c = |i: usize, j: usize| a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+    let t = |j: usize| a[3][0] * b[0][j] + a[3][1] * b[1][j] + a[3][2] * b[2][j] + b[3][j];
+    [[c(0, 0), c(0, 1), c(0, 2), 0.0], [c(1, 0), c(1, 1), c(1, 2), 0.0], [c(2, 0), c(2, 1), c(2, 2), 0.0], [t(0), t(1), t(2), 1.0]]
 }
 
 fn gu_scale(dx: f32, dy: f32, dz: f32) -> Mat4 {
@@ -233,12 +221,12 @@ impl KeyTime for QKey {
 #[derive(Debug, Default)]
 pub struct KeyChannel {
     pub mono: bool,
-    hint: core::sync::atomic::AtomicU16,
+    hint: core::sync::atomic::AtomicU32,
 }
 
 impl Clone for KeyChannel {
     fn clone(&self) -> Self {
-        KeyChannel { mono: self.mono, hint: core::sync::atomic::AtomicU16::new(self.hint.load(core::sync::atomic::Ordering::Relaxed)) }
+        KeyChannel { mono: self.mono, hint: core::sync::atomic::AtomicU32::new(self.hint.load(core::sync::atomic::Ordering::Relaxed)) }
     }
 }
 
@@ -252,6 +240,13 @@ impl KeyChannel {
     fn of<K: KeyTime>(keys: &[K]) -> KeyChannel {
         KeyChannel { mono: keys.windows(2).all(|w| (w[0].time() as f32) < (w[1].time() as f32)), hint: Default::default() }
     }
+}
+
+/// The original search, remembering its answer as the channel's next starting point.
+fn fallback<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: &KeyChannel) -> (usize, usize, f32) {
+    let r = find_to_from(keys, time, e_key);
+    ch.hint.store(r.0 as u32, core::sync::atomic::Ordering::Relaxed);
+    r
 }
 
 /// [`find_to_from`] using `ch` (phase 3S): for strictly increasing key times and a
@@ -278,7 +273,7 @@ fn find_to_from_ch<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: Option<&Ke
             i += 1;
             steps += 1;
             if steps > MAX_STEPS {
-                return find_to_from(keys, time, e_key);
+                return fallback(keys, time, e_key, ch);
             }
         }
         Some(i)
@@ -290,7 +285,7 @@ fn find_to_from_ch<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: Option<&Ke
             i -= 1;
             steps += 1;
             if steps > MAX_STEPS {
-                return find_to_from(keys, time, e_key);
+                return fallback(keys, time, e_key, ch);
             }
             if t(i) <= time {
                 break Some(i);
@@ -298,7 +293,7 @@ fn find_to_from_ch<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: Option<&Ke
         }
     };
     if let Some(h) = h {
-        ch.hint.store(h as u16, Relaxed);
+        ch.hint.store(h as u32, Relaxed);
         if h + 1 < n {
             let (from_key, to_key) = (h, h + 1);
             let temp = (keys[to_key].time().wrapping_sub(keys[from_key].time())).unsigned_abs() as f32;
@@ -868,6 +863,109 @@ impl Game {
         }
     }
 
+    /// Phase 3S probe: `[quat_slerp, sin_fast, acos_fast, find_to_from_ch (fghip rotate
+    /// keys, frog time), find_to_from (same, binary search)]` cycles x n.
+    pub fn probe_key_parts(&self, id: ActorId, n: u32, clock: &mut dyn FnMut() -> u32) -> [u32; 5] {
+        let mut r = [0u32; 5];
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return r };
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        let Some(node) = model.xform_tree.first().and_then(|x| x.children.first()) else { return r };
+        let q1 = [0.1f32, 0.7, 0.2, 0.68];
+        let q2 = [0.3f32, 0.6, -0.1, 0.73];
+        let t0 = clock();
+        for _ in 0..n {
+            core::hint::black_box(quat_slerp(core::hint::black_box(&q1), &q2, core::hint::black_box(0.37)));
+        }
+        let t1 = clock();
+        for _ in 0..n {
+            core::hint::black_box(sin_fast(core::hint::black_box(1.234)));
+        }
+        let t2 = clock();
+        for _ in 0..n {
+            core::hint::black_box(acos_fast(core::hint::black_box(0.4321)));
+        }
+        let t3 = clock();
+        let rk = &node.keys.rotate_keys;
+        for _ in 0..n {
+            core::hint::black_box(find_to_from_ch(rk, core::hint::black_box(time), 0, Some(&node.keys.channels[2])));
+        }
+        let t4 = clock();
+        for _ in 0..n {
+            let mut last = [0i16; 3];
+            core::hint::black_box(object_local_k(&node.keys, true, core::hint::black_box(time), &mut last, [1.0; 3], [1.0; 3]));
+        }
+        let t5 = clock();
+        r = [t1.wrapping_sub(t0), t2.wrapping_sub(t1), t3.wrapping_sub(t2), t4.wrapping_sub(t3), t5.wrapping_sub(t4)];
+        r
+    }
+
+    /// Phase 3S probe: the head matrix of actor `id` (`name`), its parts timed separately
+    /// `n` times: `[actor_top, object_local over the 4 path objects, mtx_cat x4, whole]`.
+    pub fn probe_head_parts(&self, id: ActorId, name: &str, n: u32, clock: &mut dyn FnMut() -> u32) -> [u32; 5] {
+        let mut r = [0u32; 5];
+        let a = &self.actor2.actors[id].actor.actual_actor;
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return r };
+        let animated = a.animation.is_some();
+        let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
+        let p = a.placement;
+        // the path (first match in FindObj order), as sub_object_matrix finds it
+        fn find<'a>(chain: &'a [XNode], i: usize, name: &str, path: &mut Vec<&'a XNode>) -> bool {
+            let me = &chain[i];
+            if me.name.eq_ignore_ascii_case(name) {
+                path.push(me);
+                return true;
+            }
+            if i + 1 < chain.len() && find(chain, i + 1, name, path) {
+                return true;
+            }
+            if !me.children.is_empty() && find(&me.children, 0, name, path) {
+                path.push(me);
+                return true;
+            }
+            false
+        }
+        let mut path = Vec::new();
+        if model.xform_tree.is_empty() || !find(&model.xform_tree, 0, name, &mut path) {
+            return r;
+        }
+        let t0 = clock();
+        for _ in 0..n {
+            core::hint::black_box(actor_top(core::hint::black_box(p.pos), &p.q_rot));
+        }
+        let t1 = clock();
+        let mut rs = Vec::new();
+        for _ in 0..n {
+            rs.clear();
+            let mut ps = [1.0; 3];
+            for me in path.iter().rev() {
+                let mut last = [0i16; 3];
+                let (rotmat, scale) = object_local_k(&me.keys, animated, core::hint::black_box(time), &mut last, p.scale, ps);
+                rs.push(rotmat);
+                ps = scale;
+            }
+        }
+        let t2 = clock();
+        let mut top = IDENTITY;
+        for _ in 0..n {
+            for m in &rs {
+                top = mtx_cat(m, core::hint::black_box(&top));
+            }
+        }
+        core::hint::black_box(top);
+        let t3 = clock();
+        for _ in 0..n {
+            core::hint::black_box(self.actor_sub_object_matrix(id, core::hint::black_box(name)));
+        }
+        let t4 = clock();
+        r[0] = t1.wrapping_sub(t0);
+        r[1] = t2.wrapping_sub(t1);
+        r[2] = t3.wrapping_sub(t2);
+        r[3] = t4.wrapping_sub(t3);
+        r[4] = path.len() as u32;
+        r
+    }
+
     /// Phase 3S probe: cycles of the parts of `transform_root_object` for actor `id`, each
     /// repeated `n` times: `[object_local, actor_top, 2 mtx_cat, check_bounding_box]`.
     pub fn probe_root_parts(&self, id: ActorId, n: u32, clock: &mut dyn FnMut() -> u32) -> [u32; 4] {
@@ -1222,7 +1320,7 @@ mod tests {
                     _ => ((rnd() % 100_000) as f32 / 100_000.0) * (t + 6) as f32 - 3.0,
                 };
                 let e = (rnd() % n as u64) as i16;
-                ch.hint.store((rnd() % (n as u64 + 3)) as u16, core::sync::atomic::Ordering::Relaxed);
+                ch.hint.store((rnd() % (n as u64 + 3)) as u32, core::sync::atomic::Ordering::Relaxed);
                 let a = find_to_from(&keys, time, e);
                 let b = find_to_from_ch(&keys, time, e, Some(&ch));
                 assert_eq!(
@@ -1232,6 +1330,15 @@ mod tests {
                     keys.iter().map(|k| k.time).collect::<Vec<_>>()
                 );
             }
+        }
+    }
+
+    /// The generated `sinFast`/`acosFast` tables equal `InitMaths`' computation.
+    #[test]
+    fn fast_tables_match_init_maths() {
+        for i in 0..4096 {
+            assert_eq!(sin_tab(i).to_bits(), (f2_math::detfloat::sin((i as f64 * PI2) / 4096.0) as f32).to_bits(), "sin {i}");
+            assert_eq!(acos_tab(i).to_bits(), (f2_math::detfloat::acos((i as f64 - 2048.0) / 2048.0) as f32).to_bits(), "acos {i}");
         }
     }
 
