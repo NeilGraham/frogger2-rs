@@ -563,6 +563,15 @@ pub fn pick_output_mode(modes: &[VideoMode], res: Option<[u32; 2]>, refresh_mhz:
             cand = same;
         }
     }
+    // An explicit 4K choice with refresh on Auto takes 4K's 60 Hz mode: the PS5 offers 120 Hz
+    // whenever its current output has *a* 120 Hz format, and on a display without 4K120 it then
+    // drops the signal to 1080p/1440p, so "4K" would not be 4K (owner-reported). A 4K120 display
+    // still gets 120 Hz by picking 119.88 Hz explicitly.
+    if refresh_mhz.is_none() && res.is_some_and(|[_, h]| h >= 2160) {
+        if let Some(m) = cand.iter().copied().filter(|m| m.refresh_mhz < HIGH_REFRESH_MHZ).max_by_key(|m| m.refresh_mhz) {
+            return Some(m);
+        }
+    }
     cand.into_iter().max_by_key(|m| (m.refresh_mhz >= HIGH_REFRESH_MHZ, m.width as u64 * m.height as u64, m.refresh_mhz))
 }
 
@@ -640,6 +649,11 @@ mod tests {
         assert_eq!(pick_output_mode(&m, Some([1920, 1080]), None), Some(vm(1920, 1080, 119_880)));
         // Fixed refresh rate.
         assert_eq!(pick_output_mode(&m, Some([1920, 1080]), Some(59_940)), Some(vm(1920, 1080, 59_940)));
+        // 4K + Auto refresh on a 4K120 TV list: 60 Hz (the PS5 can't tell us 4K120 really is 4K).
+        let mut tv = m.clone();
+        tv.push(vm(3840, 2160, 119_880));
+        assert_eq!(pick_output_mode(&tv, Some([3840, 2160]), None), Some(vm(3840, 2160, 59_940)));
+        assert_eq!(pick_output_mode(&tv, Some([3840, 2160]), Some(119_880)), Some(vm(3840, 2160, 119_880)));
         assert_eq!(pick_output_mode(&m, None, Some(59_940)), Some(vm(3840, 2160, 59_940)));
         // Unknown size / rate: Auto.
         assert_eq!(pick_output_mode(&m, Some([1280, 720]), None), Some(vm(2560, 1440, 119_880)));

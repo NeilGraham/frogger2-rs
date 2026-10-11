@@ -91,7 +91,9 @@ pub fn notify(msg: &str) {
 /// `SCE_VIDEO_OUT_PIXEL_FORMAT_A8B8G8R8_SRGB` (64-bit form): bytes R, G, B, A, the CPU
 /// renderer's order.
 const PIXEL_FORMAT: u64 = 0x8000_0000_2200_0000;
-const BUFFERS: usize = 2;
+/// Three: the back buffer is the one shown two flips ago, free once the previous flip is
+/// on screen (with two, the CPU drew into the buffer still being scanned out: tearing).
+const BUFFERS: usize = 3;
 const ALIGN: usize = 0x20_0000;
 /// Output modes for `sceVideoOutConfigureOutput`: 15 = high frame rate (119.88 Hz),
 /// 1 = the default (59.94 Hz). The only two a title can configure (PS5_Vulkan R92).

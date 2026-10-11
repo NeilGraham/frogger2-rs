@@ -144,7 +144,9 @@ pub(crate) fn notify(msg: &str) {
 
 // ------------------------------------------------------------------ video
 
-const BUFFERS: usize = 2;
+/// Three: the back buffer is the one shown two flips ago, free once the previous flip is
+/// on screen (with two, the CPU drew into the buffer still being scanned out: tearing).
+const BUFFERS: usize = 3;
 /// `ORBIS_VIDEO_OUT_PIXEL_FORMAT_A8B8G8R8_SRGB`: bytes R, G, B, A, the CPU renderer's order.
 const PIXEL_FORMAT: u32 = 0x8000_2200;
 

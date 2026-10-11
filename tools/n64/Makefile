@@ -55,6 +55,8 @@ $(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld
 			for (i = 1; i <= n; i++) print "        *(.text." h[i] ")"; \
 			print "        __f2_hot_end = .;"; done = 1 } { print }' $< > $@
 N64_LDFLAGS := $(subst -Tn64.ld,-T$(CURDIR)/$(BUILD_DIR)/f2.ld,$(N64_LDFLAGS))
+# Large-block pool (csrc/main.c): every malloc in the program, libdragon included.
+N64_LDFLAGS += --wrap malloc --wrap free --wrap memalign --wrap calloc --wrap realloc
 
 $(BUILD_DIR)/frogger2.dfs: $(wildcard filesystem/*)
 $(BUILD_DIR)/frogger2.elf: $(BUILD_DIR)/main.o $(BUILD_DIR)/r3d.o $(BUILD_DIR)/abi.o $(RSP_OBJS) $(RUST_LIB) $(BUILD_DIR)/f2.ld

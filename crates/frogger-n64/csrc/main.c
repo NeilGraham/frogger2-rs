@@ -251,9 +251,113 @@ void n64_panic_impl(const char *msg, uint32_t len) {
     abort();
 }
 
-void *n64_alloc_impl(uint32_t size, uint32_t align) {
-    return memalign(align < 8 ? 8 : align, size ? size : 1);
+/* ---- large-block pool ----
+ * Level loads allocate a few large blocks (texture-bank and mesh files, decode buffers)
+ * among thousands of small simulation allocations; after a few level changes the main heap
+ * has no contiguous hole for the next level's big files and asset_load/malloc fails (seen
+ * on hardware and in ares: frontend -> level -> frontend). Blocks >= BIG_MIN come from this
+ * pool, reserved at boot while the heap is clean (first fit, address-ordered, coalescing);
+ * the main heap keeps the small blocks. Both fall back to the other on failure. */
+#define BIG_MIN (32 * 1024)
+#define BIG_POOL (2560 * 1024)
+typedef struct big_blk { uint32_t size; uint32_t free; struct big_blk *next; uint32_t pad[13]; } big_blk; /* 64 bytes: payloads 64-byte aligned (surfaces, video buffers) */
+void *__real_malloc(size_t);
+void *__real_memalign(size_t, size_t);
+void *__real_realloc(void *, size_t);
+void __real_free(void *);
+static uint8_t *big_base;
+static big_blk *big_head;
+static uint32_t big_used, big_peak;
+
+static void big_init(void) {
+    big_base = __real_memalign(64, BIG_POOL);
+    if (!big_base) return;
+    big_head = (big_blk *)big_base;
+    big_head->size = BIG_POOL - sizeof(big_blk);
+    big_head->free = 1;
+    big_head->next = NULL;
 }
+
+static int big_owns(void *p) { return big_base && (uint8_t *)p >= big_base && (uint8_t *)p < big_base + BIG_POOL; }
+
+static void *big_alloc(uint32_t size) {
+    size = (size + 63) & ~63u;
+    for (big_blk *b = big_head; b; b = b->next) {
+        if (!b->free || b->size < size) continue;
+        if (b->size >= size + sizeof(big_blk) + 1024) { /* split */
+            big_blk *n = (big_blk *)((uint8_t *)(b + 1) + size);
+            n->size = b->size - size - sizeof(big_blk);
+            n->free = 1;
+            n->next = b->next;
+            b->next = n;
+            b->size = size;
+        }
+        b->free = 0;
+        big_used += b->size;
+        if (big_used > big_peak) big_peak = big_used;
+        return b + 1;
+    }
+    return NULL;
+}
+
+static void big_free(void *p) {
+    big_blk *b = (big_blk *)p - 1;
+    b->free = 1;
+    big_used -= b->size;
+    for (big_blk *c = big_head; c; c = c->next) /* coalesce free neighbours */
+        while (c->free && c->next && c->next->free) {
+            c->size += sizeof(big_blk) + c->next->size;
+            c->next = c->next->next;
+        }
+}
+
+/* The whole program's malloc family is routed here (`ld --wrap`, tools/n64/Makefile): Rust,
+ * our C host and libdragon (asset_load, surfaces, the H.264 decoder's frame buffers, ...). */
+void *__wrap_memalign(size_t align, size_t size) {
+    if (size >= BIG_MIN && align <= 64) {
+        void *p = big_alloc(size);
+        if (p) return p;
+        debugf("bigpool: %lu bytes do not fit (used %lu KiB of %d), using the main heap\n", (unsigned long)size, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
+    }
+    void *p = __real_memalign(align < 8 ? 8 : align, size ? size : 1);
+    if (!p && size >= 1024 && align <= 64) p = big_alloc(size); /* main heap full: try the pool */
+    return p;
+}
+
+void *__wrap_malloc(size_t size) { return __wrap_memalign(8, size); }
+
+void *__wrap_calloc(size_t n, size_t size) {
+    size_t t = n * size;
+    void *p = __wrap_memalign(8, t);
+    if (p) memset(p, 0, t);
+    return p;
+}
+
+void __wrap_free(void *ptr) {
+    if (!ptr) return;
+    if (big_owns(ptr)) big_free(ptr);
+    else __real_free(ptr);
+}
+
+void *__wrap_realloc(void *ptr, size_t size) {
+    if (!ptr) return __wrap_malloc(size);
+    if (big_owns(ptr)) {
+        big_blk *b = (big_blk *)ptr - 1;
+        if (size <= b->size) return ptr;
+        void *n = __wrap_malloc(size);
+        if (n) { memcpy(n, ptr, b->size); big_free(ptr); }
+        return n;
+    }
+    void *r = __real_realloc(ptr, size);
+    if (!r && size >= 1024) {
+        void *n = big_alloc(size);
+        if (n) { memcpy(n, ptr, malloc_usable_size(ptr)); __real_free(ptr); }
+        return n;
+    }
+    return r;
+}
+
+void *n64_alloc_impl(uint32_t size, uint32_t align) { return memalign(align < 8 ? 8 : align, size ? size : 1); }
 
 void n64_free_impl(void *ptr) { free(ptr); }
 
@@ -265,7 +369,8 @@ void n64_heap_stats_impl(n64_heap_t *out) {
     heap_stats_t s;
     sys_get_heap_stats(&s);
     out->total = s.total;
-    out->used = s.used;
+    /* The pool is one reserved block of the main heap: count what is used inside it. */
+    out->used = big_base ? s.used - BIG_POOL + big_used : s.used;
 }
 
 uint32_t n64_pad_impl(uint32_t port) {
@@ -275,13 +380,27 @@ uint32_t n64_pad_impl(uint32_t port) {
     return (uint32_t)b.raw | ((uint32_t)(uint8_t)in.stick_x << 16) | ((uint32_t)(uint8_t)in.stick_y << 24);
 }
 
+/* Whole file (mkasset-decompressed) into a buffer from n64_alloc_impl, so large files land
+ * in the large-block pool (asset_load would malloc them from the main heap). */
 void *n64_file_read_impl(const char *path, uint32_t *len) {
     int sz = 0;
     if (!file_exists(path)) return NULL;
-    void *p = asset_load(path, &sz);
-    if (len) *len = (uint32_t)sz;
+    FILE *f = asset_fopen(path, &sz);
+    if (!f) return NULL;
+    uint8_t *p = memalign(16, sz > 0 ? (size_t)sz : 1);
+    assertf(p, "Out of memory reading %s (%d bytes; pool %lu/%d KiB)", path, sz, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
+    int got = 0;
+    while (got < sz) {
+        int n = fread(p + got, 1, sz - got, f);
+        if (n <= 0) break;
+        got += n;
+    }
+    fclose(f);
+    if (len) *len = (uint32_t)got;
     return p;
 }
+
+uint32_t n64_bigpool_peak_kib(void) { return big_peak / 1024; }
 
 /* ---- textures ---- */
 /* Columns x0 .. x0+w of an image description as a new surface. */
@@ -1045,6 +1164,10 @@ int main(void) {
     timer_init();
     new_timer(TIMER_TICKS(TICKS_PER_SECOND / 2000), TF_CONTINUOUS, load_cb);
 
+    /* After the boot-time allocations (framebuffers, z-buffer, audio, RSP queues), which live
+     * for the whole run, so the pool holds only per-level and transient large blocks. */
+    big_init();
+    debugf("large-block pool %d KiB\n", big_base ? BIG_POOL / 1024 : 0);
     f2n64_call(f2n64_init);
     for (;;) {
         joypad_poll();
