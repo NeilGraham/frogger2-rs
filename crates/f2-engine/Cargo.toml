@@ -10,10 +10,17 @@ publish.workspace = true
 default = ["gpu"]
 # wgpu back end. Without it the renderer only draws on the CPU (`Renderer::new_soft`).
 gpu = ["dep:wgpu", "dep:pollster"]
+# wgpu on a Vulkan driver reached through a raw `vkGetInstanceProcAddr` (no loader), presenting
+# through its own `VkSwapchainKHR` (`VK_KHR_display` on the PS5). Host-testable: see `vkraw`.
+ps5-vulkan = ["gpu", "wgpu/vulkan", "dep:ash"]
+# Declares the statically linked PS5 RADV archive's `vk_icdGetInstanceProcAddr`
+# (`GpuContext::new_ps5`). Compiles anywhere; links only against the driver archive.
+ps5-static-driver = ["ps5-vulkan"]
 
 [dependencies]
 f2-formats = { path = "../f2-formats" }
 wgpu = { version = "=30.0.1", optional = true }
 bytemuck = { version = "=1.25.2", features = ["derive"] }
 pollster = { version = "=1.0.1", optional = true }
+ash = { version = "=0.38.0", optional = true }
 png = "=0.18.1"

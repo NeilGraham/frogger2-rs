@@ -152,9 +152,11 @@ General constraints:
   host. Audio: sceAudioOut thread pulling the mixer; pads: scePad -> `RawPad`.
 - Verified in the shadPS4 emulator (boot, FMV, frontend, gameplay, pad, 60 fps); real
   hardware untested.
-- Native PS5 GPU: open-source PS5 Vulkan drivers now exist (e.g. mihawk-99/PS5_Vulkan, a RADV
-  port built with the ps5-payload-sdk); a native PS5 build could run the wgpu renderer on
-  them (native homebrew, not a `.pkg`). Future work.
+- Native PS5 GPU: the wgpu renderer on mihawk-99/PS5_Vulkan's RADV port (statically linked,
+  presenting through `VK_KHR_display` on VideoOut): `f2-engine` features `ps5-vulkan` /
+  `ps5-static-driver` (`GpuContext::new_ps5`, `vkraw::VkPresenter`), host-verified; driver
+  build, link recipe, emulator results and blockers in `tools/ps5/VULKAN.md`. Not yet run on
+  hardware (KytyPS5 cannot run the driver).
 
 ### Nintendo 64 (owner's interest)
 - Hardware: VR4300 (MIPS III, 93.75 MHz, 64-bit integer + FPU), 4 MB RDRAM (8 MB with the
