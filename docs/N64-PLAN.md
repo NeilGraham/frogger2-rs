@@ -1,0 +1,118 @@
+# Frogger 2 on the Nintendo 64 — plan
+
+Goal: the full game (all 26 single-player levels, frontend, story, multiplayer, music,
+FMV) as a **64 MB cartridge ROM** for a console with the **Expansion Pak (8 MB RDRAM)**,
+built from the player's own PC data (never distributed, like the `--data` console packages).
+Frame rate: 60 fps target; 15–30 fps acceptable in heavy scenes (the PSX version dipped there).
+
+Blitz started an N64 version of the early Frogger 2 codebase (`frogger2-vss/teamSpirit/
+FroggerII/N64/`) and never shipped it. This port reuses the *final* game's simulation
+unchanged (parity-verified `f2-game`), so the N64 build plays exactly like the PC release.
+
+## 1. Architecture
+
+```
+ ROM (64 MB)                         RDRAM (8 MB)
+ ┌──────────────────────────┐        ┌───────────────────────────────────────┐
+ │ IPL3 + ELF (compressed)  │  boot  │ code + libdragon + Rust core   ~1.5 MB│
+ │ DFS asset pack           │ ─────▶ │ framebuffers 3× 320×240×16b  450 KB   │
+ │  ├ global (fonts, UI)    │        │ z-buffer                      150 KB  │
+ │  ├ per-world banks       │ stream │ game state (f2-game)          ~? KB   │
+ │  ├ per-level data        │ ─────▶ │ level working set (models,    ~3.5 MB │
+ │  ├ sfx banks (deduped)   │        │   textures, collision, script)        │
+ │  ├ music (Opus)          │        │ audio (mixer, music stream)   ~300 KB │
+ │  └ FMV (MPEG-1 / h264?)  │        │ heap headroom                         │
+ └──────────────────────────┘        └───────────────────────────────────────┘
+```
+
+- **Toolchain**: libdragon *preview* branch (pinned `39d0d60`, installed at
+  `~/opt/n64root/opt/libdragon`, `N64_INST`), GCC 16 `mips64-elf`; tools `mkdfs`, `mkasset`
+  (built-in compression levels 1 = LZ4, 2 = aPLib, 3 = Shrinkler), `audioconv64` (VADPCM,
+  Opus), `videoconv64`, `n64tool`. Test emulator: **ares v148**
+  (`C:\Users\<you>\Emulation\emulators\ares-v148\ares.exe`), the emulator libdragon
+  documents as accurate.
+- **Language split**: a small **C host on libdragon** (boot, display, RDP, audio, joypad,
+  DFS, FMV) linking a **Rust `no_std` + `alloc` static library** (MIPS III, big-endian,
+  `-Zbuild-std=core,alloc`, nightly) containing `f2-math`, `f2-game`, the needed parts of
+  `f2-formats`/`f2-engine` and an `n64` front-end crate. Rust owns the frame: the C side
+  exposes a narrow FFI (`n64_*`: present, draw batch, audio, pad, file).
+- **Simulation**: unchanged `f2-game` at the fixed 60 Hz tick (integer fixed point; the
+  original ran it on a 33 MHz R3000). Parity traces must stay identical after the `no_std`
+  conversion.
+- **Rendering**, phase 1: reuse `f2-engine`'s faithful CPU transform (`scene.rs`, MDX
+  maths) to produce screen-space TL triangles and submit them with `rdpq_triangle`
+  (shade + texture + z) at 320×240, 16-bit colour, RDP blend modes matching
+  Semi/Additive/Subtractive, alpha compare, fog via the blender. Phase 2 (if the CPU
+  transform is the bottleneck): move transform/lighting to the RSP (libdragon's GL 1.1
+  RSP pipeline or a custom ucode) for 60 fps.
+- **Textures**: converted at build time to RDP formats (CI4/CI8 with TLUT, IA, I,
+  RGBA16) chosen per texture by error budget, and sized/split to fit 4 KB TMEM
+  (2 KB for CI with TLUT). Full-screen backdrops: 320×240 RGBA16 tiles.
+- **Audio**: libdragon mixer; sound banks → deduplicated sample set (the 19 world banks
+  share many samples) in VADPCM; music → Opus (RSP-decoded); positional volume/pan from
+  `f2-audio`'s mixer maths.
+- **FMV**: the 14 Bink movies (7.9 min) re-encoded for libdragon's video player at
+  ~256×192–320×240, audio Opus; size-budgeted (see §2).
+- **Saves**: Controller Pak / SRAM / EEPROM per the flashcart; the PC save block is 
+  small (`MakeSaveGameBlock`).
+
+## 2. Cartridge budget (64 MiB = 67,108,864 bytes)
+
+Measured inputs (USA PC data): FMV 472 s (Bink 116 MB), music 1520 s (WAV 256 MB), sfx 45 MB
+PCM in 19 banks, objects 19 MB (PE DLLs), textures 7.8 MB (LZSS FLA2), maps+collision+
+scenics 3.6 MB.
+
+| Asset class | Approach | Target |
+|---|---|---|
+| boot + code (ELF, compressed) | n64elfcompress | 2 MB |
+| models | parsed `ObjectBank`s → compact fixed-point vertices, quantised normals/UVs, delta-coded keyframes, deduplicated, then entropy-coded | 5 MB |
+| textures + fonts + backdrops | RDP formats, perceptual palettes, TMEM-aware, deduplicated, then compressed | 6 MB |
+| levels (maps, collision, scenics, scripts, demos, text) | compact binary + compression | 1.5 MB |
+| sound effects | cross-bank dedupe, resample where inaudible, VADPCM / Opus | 8 MB |
+| music | Opus ~40 kbps stereo (25.3 min) | 7.5 MB |
+| FMV | video ~350 kbps + Opus audio (7.9 min) | 25 MB |
+| headroom / higher FMV quality | | 8 MB |
+
+The asset packer (`tools/f2-n64pack`) prints this table from real outputs and fails the build
+if the ROM exceeds 64 MiB; FMV/music bitrates are then tuned to fill the cartridge exactly.
+
+### Compression ("invent something if necessary")
+Per asset class, pick the best decoder that is fast enough on the VR4300 (93.75 MHz) / RSP:
+- baselines: libdragon's LZ4 (fast), aPLib, Shrinkler (best ratio, slow) via `mkasset`;
+- **F2Z** (our codec, to evaluate): an LZ77 + rANS coder with a **dictionary trained across
+  the whole game's data per asset class** (the 26 levels share most model/texture/script
+  structure, so a shared primed dictionary resident in RAM wins big on small files), plus
+  **structure-aware transforms before entropy coding**: vertex/keyframe delta + zigzag,
+  splitting interleaved struct fields into planes, texture palette-index planes. Decoder
+  target: ≥ 4 MB/s on the VR4300, small tables.
+- textures: optionally **VQ** for large RGBA textures (decoded at load), when it beats
+  CI8+LZ for the same PSNR.
+Ratios and decode speeds are measured on the real data and recorded in
+`research/n64-compression.md`; the packer chooses per file.
+
+## 3. RAM budget (8 MiB)
+Measured by phase 1 (the plan is invalid if this does not fit): `size_of::<Game>()`, the
+largest level's decoded working set (models for generic + world + level banks, textures,
+collision, script), mixer and music buffers, FMV decoder buffers (FMV runs with the game
+unloaded). Levels load from ROM at level start (PI DMA ~5 MB/s + decompression).
+
+## 4. Phases and owners
+1. **Foundations (parallel)**
+   - A. `no_std` + `alloc` for `f2-game`, the used parts of `f2-formats`, and a
+     render-only `f2-engine` core (scene/anim/textures registry without wgpu/png), per
+     `docs/PLATFORMS.md` §5; parity corpus and demo traces identical.
+   - B. N64 platform bring-up: Rust `no_std` staticlib on MIPS III linked into a libdragon
+     ROM; boots in ares; draws RDP triangles, plays audio, reads the pad, reads DFS;
+     CPU/RSP timing probes; ares screenshot/automation harness.
+   - C. Asset pipeline + compression: `tools/f2-n64pack` (host Rust) producing the DFS pack
+     from a rendition; codec evaluation incl. F2Z; budget report.
+2. **Integration**: `crates/frogger-n64` front end (game loop, DataSource over the pack,
+   renderer on rdpq, audio, input, FMV, saves); first playable Garden 1 in ares.
+3. **Completeness + performance**: all levels, frontend/menus, multiplayer split-screen,
+   FMV; profile and move hot paths to RSP; tune budgets to fill 64 MB.
+4. **Polish**: 60 fps where possible, flashcart testing notes, docs.
+
+## 5. Rules
+Same as the repo: no game data or derived assets committed (the ROM and pack live in
+`target/`/`game-data/`); parity first (simulation untouched except mechanical `no_std`);
+untrusted data handled with `python3 -I`; worktrees per agent, local commits only.
