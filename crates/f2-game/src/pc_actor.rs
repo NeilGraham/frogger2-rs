@@ -22,10 +22,15 @@ pub const FROG_ANIM_BREATHE: i32 = 8;
 pub const FROG_BREATHE_SPEED: i32 = 50;
 
 impl Game {
-    /// `timeInfo.speed` for the current tick (`gameSpeed / 4096`, 1.0 at 60 Hz).
+    /// `timeInfo.speed` for the current tick: 1.0 under the fixed 60 Hz [`Game::tick`]
+    /// (`gameSpeed / 4096`), the measured float under the variable timestep (`timing.rs`).
     #[inline]
     pub fn time_info_speed(&self) -> f32 {
-        self.game_speed as f32 / 4096.0
+        if self.timing.active {
+            self.timing.time_info.speed
+        } else {
+            self.game_speed as f32 / 4096.0
+        }
     }
 
     /// The `StartAnim` callback: `PlaySfxMappedSample` (`PC/pcaudio.c:425`). Whether a
@@ -168,25 +173,25 @@ impl Game {
                     *cd = 1;
                 }
             } else if b[0] < 1.5 && *cd == 0 {
-                let kb = 1.0 + 0.1 * speed;
+                let kb = 1.0 + f2_math::mul_pc24(0.1, speed as f64); // double 0.1, PC24 fmul
                 b.iter_mut().for_each(|v| *v *= kb);
                 if b[0] >= 1.5 {
                     *cd = 10;
                     b = [1.5; 3];
                 }
-                let kh = 1.0 + 0.08 * speed;
+                let kh = 1.0 + f2_math::mul_pc24(0.08, speed as f64);
                 h.iter_mut().for_each(|v| *v *= kh);
                 if h[0] >= 1.5 {
                     h = [1.5; 3];
                 }
             } else if b[0] > 1.0 && *cd == 1 {
-                let kb = 1.0 - 0.1 * speed;
+                let kb = 1.0 - f2_math::mul_pc24(0.1, speed as f64);
                 b.iter_mut().for_each(|v| *v *= kb);
                 if b[0] <= 1.0 {
                     *cd = 2;
                     b = [1.0; 3];
                 }
-                let kh = 1.0 - 0.08 * speed;
+                let kh = 1.0 - f2_math::mul_pc24(0.08, speed as f64);
                 h.iter_mut().for_each(|v| *v *= kh);
                 if h[0] <= 1.0 {
                     h = [1.0; 3];

@@ -34,6 +34,7 @@ impl Game {
     /// Port of `InitBackdrop(filename)` (PC/backdrop.c:27): `baseDirectory\textures\<name>.fla`.
     pub fn init_backdrop(&mut self, filename: &str) -> i32 {
         self.backdrop.backdrop = Some(format!("textures\\{filename}.fla"));
+        self.backdrop_update_timing(); // UpdateTiming() after the load (backdrop.c:55)
         1
     }
 
