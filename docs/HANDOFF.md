@@ -52,3 +52,10 @@ agent was told to commit WIP and keep a "Status / next steps" section in its doc
 `~/opt/libdragon`, `~/opt/ref/*`. Emulator scratch dirs: `C:\f2-ps4test`, `C:\f2-ps5test`,
 `C:\f2-ps5vk`, `C:\f2-ps4gl`, `C:\f2-n64test`. User artwork: `game-data/ps4-art/boxart.png`
 (`F2_ICON_CROP_X=85`).
+
+## Phase 3 (started 2026-10-11 after the rate-limit reset)
+| Branch suffix | Task | Status |
+|---|---|---|
+| `adf53493d6484db51` | N64 3I: merge 2R renderer, wire `r3d` + 1C pack into the game, full ≤64 MiB ROM, FMV, saves, per-world ares evidence | started from `2fc5b3d` |
+| `a90c2347f335f8b21` | N64 3S: sim speed (resumed after the limit cut it off mid-edit) | in progress |
+| `a0d5f7cb14e199305` | PS4/PS5 hardware fixes + test ladder (resumed) | in progress |
