@@ -2,17 +2,18 @@
 //! fPKG): `main`, video out, pads, audio out, logging. Only built for
 //! `x86_64-unknown-freebsd` and linked by `tools/ps4/build-pkg.sh`.
 
-/// The std runtime shims and heap, shared with the PS5 host.
-pub use console_host::sce::{alloc, shim};
+/// The std runtime shims and heap, shared with the PS5 host; logging (kernel log +
+/// `frogger.log`) too.
+pub use console_host::sce::{alloc, klog, log, open_log_file, shim};
 pub mod piglet;
+#[cfg(feature = "smoke")]
+mod smoke;
 
 use crate::host::{self, Scaler};
 use core::ffi::{c_char, c_int, c_void};
 use f2_audio::{AudioEngine, AudioOutput, Mixer};
 use f2_platform::{Config, KeyboardState, Profile, RawPad};
 use frogger::app::{App, Step};
-use std::ffi::CString;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -102,7 +103,6 @@ struct NotificationRequest {
 }
 
 extern "C" {
-    fn sceKernelDebugOutText(channel: c_int, text: *const c_char) -> c_int;
     fn sceKernelSendNotificationRequest(device: c_int, req: *const NotificationRequest, size: usize, blocking: c_int) -> c_int;
     fn sceKernelAllocateDirectMemory(start: i64, end: i64, len: usize, align: usize, mem_type: c_int, phys: *mut i64) -> c_int;
     fn sceKernelGetDirectMemorySize() -> usize;
@@ -131,26 +131,10 @@ extern "C" {
     fn sceSystemServiceHideSplashScreen() -> c_int;
 }
 
-// ------------------------------------------------------------------ logging
-
-static LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
-
-/// Writes a line to the kernel log (visible with a klog/debug-log viewer) and to
-/// `frogger.log` in the save directory.
-pub fn log(msg: &str) {
-    if let Ok(c) = CString::new(format!("[frogger2] {msg}\n")) {
-        unsafe { sceKernelDebugOutText(0, c.as_ptr()) };
-    }
-    if let Ok(mut f) = LOG.lock() {
-        if let Some(f) = f.as_mut() {
-            let _ = writeln!(f, "{msg}");
-            let _ = f.flush();
-        }
-    }
-}
+// ------------------------------------------------------------------ notifications
 
 /// A system notification toast.
-fn notify(msg: &str) {
+pub(crate) fn notify(msg: &str) {
     let mut req: Box<NotificationRequest> = unsafe { Box::new(core::mem::zeroed()) };
     req.target_id = -1;
     let n = msg.len().min(1023);
@@ -164,7 +148,7 @@ const BUFFERS: usize = 2;
 /// `ORBIS_VIDEO_OUT_PIXEL_FORMAT_A8B8G8R8_SRGB`: bytes R, G, B, A, the CPU renderer's order.
 const PIXEL_FORMAT: u32 = 0x8000_2200;
 
-struct Video {
+pub(crate) struct Video {
     /// Framebuffer size (`host::display_size` of the output mode).
     width: u32,
     height: u32,
@@ -208,7 +192,7 @@ impl Screen {
 }
 
 impl Video {
-    fn open() -> Result<Video, String> {
+    pub(crate) fn open() -> Result<Video, String> {
         unsafe {
             let handle = sceVideoOutOpen(0xff, 0, 0, core::ptr::null());
             if handle < 0 {
@@ -295,7 +279,7 @@ impl Video {
     }
 
     /// Fills the whole screen with one colour (status screens).
-    fn fill(&mut self, rgba: u32) {
+    pub(crate) fn fill(&mut self, rgba: u32) {
         let b = self.back_buffer();
         for i in 0..(self.width * self.height) as usize {
             unsafe { *b.add(i) = rgba };
@@ -366,8 +350,18 @@ impl Pad {
     }
 }
 
+#[cfg(feature = "smoke")]
 #[no_mangle]
 pub extern "C" fn main(_argc: c_int, _argv: *const *const c_char) -> c_int {
+    klog(c"[frogger2] main entered (PS4 smoke test)\n");
+    smoke::run()
+}
+
+#[cfg(not(feature = "smoke"))]
+#[no_mangle]
+pub extern "C" fn main(_argc: c_int, _argv: *const *const c_char) -> c_int {
+    // Straight to the kernel log, before anything that allocates or touches thread locals.
+    klog(c"[frogger2] main entered (PS4 game)\n");
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("panic: {info}");
         log(&msg);
@@ -384,15 +378,15 @@ pub extern "C" fn main(_argc: c_int, _argv: *const *const c_char) -> c_int {
     }
 }
 
+#[cfg_attr(feature = "smoke", allow(dead_code))]
 fn run() -> Result<(), String> {
+    log("Frogger 2 (Rust port) for PS4/PS5 homebrew starting");
+    open_log_file();
     let save_dir = host::writable_dir(host::SAVE_DIRS);
     if let Some(d) = &save_dir {
         f2_platform::paths::set_config_dir(d.clone());
-        if let Ok(f) = std::fs::File::create(d.join("frogger.log")) {
-            *LOG.lock().unwrap() = Some(f);
-        }
     }
-    log(&format!("Frogger 2 (Rust port) for PS4/PS5 homebrew, save dir {save_dir:?}"));
+    log(&format!("save dir {save_dir:?}"));
 
     let mut user = 0;
     unsafe {
@@ -406,6 +400,7 @@ fn run() -> Result<(), String> {
     log(&format!("user {user:#x}, pad handle {:#x}", pad.handle));
     let mut screen = open_screen(save_dir.as_deref())?;
     unsafe { sceSystemServiceHideSplashScreen() };
+    log("video out open, splash screen hidden");
 
     let mut cfg = Config::load_default().unwrap_or_default();
     // Locate the data; until it is there, show a status screen and keep looking (it can
@@ -427,6 +422,7 @@ fn run() -> Result<(), String> {
     };
     log(&format!("data {}", data.rendition.display()));
 
+    log("starting audio");
     let audio = match (OrbisAudio { user }).start_engine() {
         Ok(a) => a,
         Err(e) => {
@@ -437,6 +433,7 @@ fn run() -> Result<(), String> {
     let mut mapper = cfg.input_mapper();
     mapper.reset_controllers(1);
     cfg.input.controllers = mapper.controllers;
+    log("creating the app (loading data)");
     let mut app = App::new_soft(data, audio, mapper);
     app.set_config(cfg.clone());
     app.apply_master_volume();
@@ -462,18 +459,22 @@ fn run() -> Result<(), String> {
     }
 }
 
-/// Picks the renderer: Piglet (GPU, rendering at the output resolution) unless
-/// `renderer.txt` in the save dir says `cpu` or Piglet / its shaders are unavailable,
-/// else the CPU renderer on VideoOut framebuffers.
+/// Picks the renderer. The CPU renderer on VideoOut framebuffers is the default; Piglet
+/// (the system's OpenGL ES, rendering at the output resolution) is only tried when
+/// `renderer.txt` in the save dir says `piglet`, or when shader binaries for it are present
+/// (`f2_gles2.prog` or `f2_vs.sb` in `<save dir>/shaders` or `/app0/shaders`): loading the
+/// system module and calling into EGL on a retail console without them can crash rather
+/// than fail cleanly, and without shaders it could not render anyway.
 fn open_screen(save_dir: Option<&std::path::Path>) -> Result<Screen, String> {
     let pref = save_dir.and_then(|d| std::fs::read_to_string(d.join("renderer.txt")).ok()).unwrap_or_default();
-    if pref.trim().eq_ignore_ascii_case("cpu") {
-        log("renderer: CPU (renderer.txt)");
-    } else {
+    let pref = pref.trim().to_ascii_lowercase();
+    let cache = save_dir.map(|d| d.join("shaders"));
+    let mut dirs: Vec<PathBuf> = cache.iter().cloned().collect();
+    dirs.push(PathBuf::from("/app0/shaders"));
+    let shaders = dirs.iter().any(|d| d.join("f2_gles2.prog").exists() || d.join("f2_vs.sb").exists());
+    if pref != "cpu" && (pref == "piglet" || shaders) {
+        log(&format!("renderer: trying Piglet (renderer.txt {pref:?}, shader binaries {shaders})"));
         let (dw, dh) = query_display_size();
-        let cache = save_dir.map(|d| d.join("shaders"));
-        let mut dirs: Vec<PathBuf> = cache.iter().cloned().collect();
-        dirs.push(PathBuf::from("/app0/shaders"));
         match piglet::PigletGl::init(dw, dh, &dirs, cache.as_deref()) {
             Ok(g) => {
                 log(&format!("renderer: GPU (Piglet GLES2) at {}x{}", g.width, g.height));
@@ -481,7 +482,10 @@ fn open_screen(save_dir: Option<&std::path::Path>) -> Result<Screen, String> {
             }
             Err(e) => log(&format!("renderer: Piglet unavailable ({e}); using the CPU renderer")),
         }
+    } else {
+        log("renderer: CPU (default; renderer.txt = piglet or shader binaries enable Piglet)");
     }
+    log("opening video out");
     Ok(Screen::Cpu(Video::open()?))
 }
 

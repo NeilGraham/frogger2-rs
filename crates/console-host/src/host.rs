@@ -520,6 +520,7 @@ pub const DATA_DIRS: &[&str] = &[
     "/app0/data",
     "/data/frogger2",
     "/data/frogger2-rs",
+    "/user/data/frogger2",
     "/mnt/usb0/frogger2",
     "/mnt/usb1/frogger2",
     "/mnt/usb0/frogger2-rs",
@@ -528,8 +529,15 @@ pub const DATA_DIRS: &[&str] = &[
     "/mnt/ext1/frogger2",
 ];
 
-/// Writable places for the config, saves and the log, in order of preference.
-pub const SAVE_DIRS: &[&str] = &["/data/frogger2", "/download0/frogger2", "/user/temp/frogger2"];
+/// Writable places for the config and saves, in order of preference. `/data` is the
+/// console's user data partition (`/user/data` is the same place seen from a sandbox that
+/// lacks the `/data` alias, e.g. some PS4 titles on a PS5); `/download0` is app-private.
+pub const SAVE_DIRS: &[&str] = &["/data/frogger2", "/user/data/frogger2", "/download0/frogger2", "/user/temp/frogger2"];
+
+/// Where `frogger.log` goes: the first writable place the user can reach over FTP
+/// (internal storage, then a USB drive), the app-private ones last.
+pub const LOG_DIRS: &[&str] =
+    &["/data/frogger2", "/user/data/frogger2", "/mnt/usb0/frogger2", "/mnt/usb1/frogger2", "/download0/frogger2", "/user/temp/frogger2"];
 
 /// The first of `dirs` that can be created and written to.
 pub fn writable_dir(dirs: &[&str]) -> Option<std::path::PathBuf> {

@@ -15,6 +15,17 @@ use std::time::{Duration, Instant};
 thread_local! {
     static TLS_INIT: Cell<u32> = const { Cell::new(0x5eed) };
     static TLS_LAZY: Vec<u32> = (0..4).collect();
+    static TLS_DROP: DropCount = const { DropCount(Cell::new(0)) };
+}
+
+/// Thread-local with a destructor: counts its drops (with the value it held, which must
+/// still be readable: the destructor runs while emutls storage is alive).
+struct DropCount(Cell<u32>);
+static DROPS: AtomicU32 = AtomicU32::new(0);
+impl Drop for DropCount {
+    fn drop(&mut self) {
+        DROPS.fetch_add(self.0.get(), Ordering::SeqCst);
+    }
 }
 
 fn check(name: &str, ok: bool, detail: String, failures: &mut u32) {
@@ -25,6 +36,7 @@ fn check(name: &str, ok: bool, detail: String, failures: &mut u32) {
 
 pub fn run() -> i32 {
     let mut fails = 0;
+    sce::open_log_file();
     println!("smoke: println via std stdout");
 
     // Heap: many sizes, a big block, realloc growth.
@@ -43,6 +55,13 @@ pub fn run() -> i32 {
     TLS_INIT.with(|c| c.set(1));
     let other = std::thread::spawn(|| (TLS_INIT.with(|c| c.get()), TLS_LAZY.with(|v| v.iter().sum::<u32>()))).join().unwrap();
     check("thread_local", main_tls == 0x5eed && other == (0x5eed, 6), format!("main {main_tls:#x}, other thread {other:?}"), &mut fails);
+    // Thread-local destructors at thread exit (std's key-based list on emulated TLS).
+    let handles: Vec<_> = (0..4).map(|i| std::thread::spawn(move || TLS_DROP.with(|d| d.0.set(10 + i)))).collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let drops = DROPS.load(Ordering::SeqCst);
+    check("thread_local destructors", drops == 10 + 11 + 12 + 13, format!("sum of dropped values {drops} (expected 46)"), &mut fails);
 
     // Threads + mutex + atomics.
     let counter = Arc::new(Mutex::new(0u64));

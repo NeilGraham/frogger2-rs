@@ -70,27 +70,53 @@ extern "C" {
 static LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
 static LOG_SINK: std::sync::OnceLock<fn(&CStr)> = std::sync::OnceLock::new();
 
-/// Replaces where [`log`] lines go besides `frogger.log` (default:
-/// `sceKernelDebugOutText`, the kernel log). Set once, before the first line.
+/// A line straight to the kernel log (`sceKernelDebugOutText`), without allocating: usable
+/// as the very first thing in `main`, before the heap or thread locals are touched.
+pub fn klog(line: &CStr) {
+    unsafe { sceKernelDebugOutText(0, line.as_ptr()) };
+}
+
+/// Adds a second place [`log`] lines go to besides the kernel log and `frogger.log` (the
+/// PS5 build also prints them to stdout, which KytyPS5 shows). Set once, before the first line.
 pub fn set_log_sink(sink: fn(&CStr)) {
     let _ = LOG_SINK.set(sink);
 }
 
-/// Writes a line to the kernel log (visible with a klog viewer) and to `frogger.log` in
-/// the save directory.
+/// Writes a line to the kernel log (klog: `[frogger2] ...`), the extra sink if any, and
+/// `frogger.log` once [`open_log_file`] has opened it.
 pub fn log(msg: &str) {
     if let Ok(c) = CString::new(format!("[frogger2] {msg}\n")) {
-        match LOG_SINK.get() {
-            Some(sink) => sink(&c),
-            None => unsafe {
-                sceKernelDebugOutText(0, c.as_ptr());
-            },
+        klog(&c);
+        if let Some(sink) = LOG_SINK.get() {
+            sink(&c);
         }
     }
     if let Ok(mut f) = LOG.lock() {
         if let Some(f) = f.as_mut() {
             let _ = writeln!(f, "{msg}");
             let _ = f.flush();
+        }
+    }
+}
+
+/// Opens `frogger.log` in the first writable [`host::LOG_DIRS`] entry (internal storage,
+/// then USB, the app-private places last) and says in the kernel log which one it is (or
+/// that none was writable). Returns the file's path.
+pub fn open_log_file() -> Option<PathBuf> {
+    let path = host::writable_dir(host::LOG_DIRS).map(|d| d.join("frogger.log"));
+    match path.as_ref().map(|p| (p, std::fs::File::create(p))) {
+        Some((p, Ok(f))) => {
+            *LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+            log(&format!("log file {}", p.display()));
+            path
+        }
+        Some((p, Err(e))) => {
+            log(&format!("log file {}: {e} (kernel log only)", p.display()));
+            None
+        }
+        None => {
+            log(&format!("no writable log directory among {:?} (kernel log only)", host::LOG_DIRS));
+            None
         }
     }
 }
@@ -271,6 +297,7 @@ impl Pad {
 
 /// The program: call from the platform crate's `main` symbol.
 pub fn main(platform: &Platform) -> c_int {
+    klog(c"[frogger2] sce::main: std runtime up\n");
     let notify = platform.notify;
     std::panic::set_hook(Box::new(move |info| {
         let msg = format!("panic: {info}");
@@ -289,14 +316,13 @@ pub fn main(platform: &Platform) -> c_int {
 }
 
 fn run(platform: &Platform) -> Result<(), String> {
+    log(&format!("Frogger 2 (Rust port) for {} homebrew starting", platform.name));
+    open_log_file();
     let save_dir = host::writable_dir(host::SAVE_DIRS);
     if let Some(d) = &save_dir {
         f2_platform::paths::set_config_dir(d.clone());
-        if let Ok(f) = std::fs::File::create(d.join("frogger.log")) {
-            *LOG.lock().unwrap() = Some(f);
-        }
     }
-    log(&format!("Frogger 2 (Rust port) for {} homebrew, save dir {save_dir:?}", platform.name));
+    log(&format!("save dir {save_dir:?}"));
 
     let mut user = 0;
     unsafe {
@@ -308,8 +334,10 @@ fn run(platform: &Platform) -> Result<(), String> {
     }
     let pad = Pad { handle: unsafe { scePadOpen(user, 0, 0, core::ptr::null()) } };
     log(&format!("user {user:#x}, pad handle {:#x}", pad.handle));
+    log("opening video out");
     let mut present = (platform.open_present)()?;
     unsafe { sceSystemServiceHideSplashScreen() };
+    log("video out open, splash screen hidden");
 
     let mut cfg = Config::load_default().unwrap_or_default();
     // Locate the data; until it is there, show a status screen and keep looking (it can
@@ -331,6 +359,7 @@ fn run(platform: &Platform) -> Result<(), String> {
     };
     log(&format!("data {}", data.rendition.display()));
 
+    log("starting audio");
     let audio = start_audio(user).unwrap_or_else(|e| {
         log(&format!("audio unavailable: {e}"));
         AudioEngine::null(AUDIO_RATE)
@@ -338,6 +367,7 @@ fn run(platform: &Platform) -> Result<(), String> {
     let mut mapper = cfg.input_mapper();
     mapper.reset_controllers(1);
     cfg.input.controllers = mapper.controllers;
+    log("creating the app (loading data)");
     let mut app = present.new_app(data, audio, mapper);
     app.set_config(cfg.clone());
     app.apply_master_volume();
