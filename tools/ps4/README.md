@@ -42,9 +42,14 @@ Select). The settings screen (pause menu -> Settings) works with the pad.
 
 - **Renderer**: the console GPU APIs (GNM/AGC) are proprietary, so the port uses
   `f2-engine`'s CPU back end (`soft.rs`), which rasterises the same draw list the wgpu
-  back end uses (verified near pixel-identical against wgpu). It renders 852x480 (the
-  original 480 lines at 16:9, enhanced profile Hor+) on 4-6 threads and scales to a
-  1920x1080 VideoOut framebuffer.
+  back end uses (verified near pixel-identical against wgpu). The internal resolution is
+  dynamic (`host::DynRes`: 480, 540, 720, 900, 1080, 1440 lines at the display's aspect,
+  stepped by measured render time) and scaled (multithreaded, nearest) to the VideoOut
+  framebuffer.
+- **Output resolution**: the framebuffer follows the output mode VideoOut reports:
+  3840x2160 on a PS4 Pro or PS5 with a 4K TV (the package declares PS4 Pro support,
+  param.sfo ATTRIBUTE bit 23; also 7-CPU mode, bit 16), 1920x1080 otherwise (the base
+  PS4 cannot output more). PS4 titles are limited to 60 Hz, also on a PS5.
 - **Rust on the console**: `crates/frogger-ps4` is a staticlib for the stock
   `x86_64-unknown-freebsd` target (Rust std included), linked against `libkernel` and
   `libSceLibcInternal` instead of OpenOrbis' musl:
@@ -78,6 +83,11 @@ The [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator runs the staged b
 `shadPS4.exe -g <stage>/eboot.bin` with the data in `<stage>/data`. Verified (shadPS4
 v0.19.x on Windows): boot, Bink intro FMVs with audio, frontend, story book, training
 level with HUD and PlayStation button prompts, pad input, steady 60 fps.
+
+Pro mode / 4K: set `neo_mode` and a 3840x2160 internal resolution in shadPS4's config;
+the log then shows `video out: mode 3840x2160` and the render size stepping up.
+For scripted runs, `autostart.txt` in the save directory (`level W L`, `demo W L`,
+`frontend`) skips the start-up and menus.
 
 Not verified: real PS4/PS5 hardware (no console here). If it fails there, `frogger.log`
 in `/data/frogger2` and the kernel log (`[frogger2]` lines) show how far it got.

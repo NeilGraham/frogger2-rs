@@ -2,6 +2,7 @@
 //! scaler and where data and saves live. Unit-tested on the build machine.
 
 use f2_platform::{PadAxis, PadButton, RawEvent, RawPad};
+use frogger::app::Step;
 
 /// `scePadReadState` button bits (`ORBIS_PAD_BUTTON_*`).
 pub mod btn {
@@ -80,6 +81,26 @@ impl RawEdges {
     }
 }
 
+/// Parses `autostart.txt` (testing without pad input): `level W L`, `demo W L`,
+/// `frontend` or `boot`. Anything else: `None` (normal start-up).
+pub fn autostart(text: &str) -> Option<Step> {
+    let mut it = text.split_whitespace();
+    let mut num = || it.next().and_then(|n| n.parse::<u32>().ok());
+    match text.split_whitespace().next()? {
+        "level" => {
+            num();
+            Some(Step::Level(num()?, num()?))
+        }
+        "demo" => {
+            num();
+            Some(Step::Demo(num()?, num()?))
+        }
+        "frontend" => Some(Step::Frontend),
+        "boot" => Some(Step::Boot),
+        _ => None,
+    }
+}
+
 /// Nearest-neighbour scaler from the internal render size to the display, keeping the
 /// aspect ratio (letter/pillarboxed, centred). Index tables are rebuilt on size changes.
 #[derive(Default)]
@@ -136,10 +157,112 @@ impl Scaler {
     }
 }
 
+impl Scaler {
+    /// [`blit`](Self::blit) split over `threads` horizontal bands of the destination.
+    ///
+    /// # Safety
+    /// As [`blit`](Self::blit).
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn blit_par(&mut self, src: &[u32], sw: u32, sh: u32, dst: *mut u32, dw: u32, dh: u32, pitch: u32, threads: usize) {
+        self.setup(sw, sh, dw, dh);
+        let threads = threads.clamp(1, 16);
+        if threads == 1 {
+            return self.blit(src, sw, sh, dst, dw, dh, pitch);
+        }
+        let (xs, ys, [rx, ry, _, _]) = (&self.xs, &self.ys, self.rect);
+        let band = ys.len().div_ceil(threads);
+        let dst = dst as usize; // raw pointers are not Send; bands are disjoint
+        std::thread::scope(|s| {
+            for (i, rows) in ys.chunks(band).enumerate() {
+                s.spawn(move || {
+                    for (j, &sy) in rows.iter().enumerate() {
+                        let y = (i * band + j) as u32;
+                        let row = (dst as *mut u32).add(((ry + y) * pitch + rx) as usize);
+                        let line = &src[(sy * sw) as usize..((sy + 1) * sw) as usize];
+                        for (x, &sx) in xs.iter().enumerate() {
+                            *row.add(x) = line[sx as usize];
+                        }
+                    }
+                });
+            }
+        });
+    }
+}
+
+/// The framebuffer size for the display mode VideoOut reports: 3840x2160 when the console
+/// outputs 4K (PS4 Pro / PS5 with a 4K TV; needs the package's Pro-mode attribute),
+/// 2560x1440 for a 1440p mode, else 1920x1080.
+pub fn display_size(reported: (u32, u32)) -> (u32, u32) {
+    match reported {
+        (w, h) if w >= 3840 && h >= 2160 => (3840, 2160),
+        (w, h) if w >= 2560 && h >= 1440 => (2560, 1440),
+        _ => (1920, 1080),
+    }
+}
+
+/// Dynamic internal resolution: steps the render height through [`DynRes::LEVELS`]
+/// (capped by the display) to keep the CPU renderer's frame time inside budget. Starts at
+/// the original 480 lines; moves up after a run of fast frames, down after slow ones.
+pub struct DynRes {
+    level: usize,
+    max: usize,
+    fast: u32,
+    slow: u32,
+}
+
+impl DynRes {
+    /// Render heights; 540 / 720 / 1080 scale to 1080p and 2160p by whole numbers.
+    pub const LEVELS: [u32; 6] = [480, 540, 720, 900, 1080, 1440];
+    /// Up when rendering takes less than this many ms for `RUN` frames in a row.
+    const UP_MS: f32 = 6.0;
+    /// Down when it takes more than this.
+    const DOWN_MS: f32 = 12.0;
+    const RUN: u32 = 120;
+
+    pub fn new(display_h: u32) -> DynRes {
+        let max = Self::LEVELS.iter().rposition(|&h| h <= display_h).unwrap_or(0);
+        DynRes { level: 0, max, fast: 0, slow: 0 }
+    }
+
+    pub fn height(&self) -> u32 {
+        Self::LEVELS[self.level]
+    }
+
+    /// Feeds one frame's render time; returns true when the level changed.
+    pub fn update(&mut self, render_ms: f32) -> bool {
+        if render_ms < Self::UP_MS {
+            self.fast += 1;
+            self.slow = 0;
+        } else if render_ms > Self::DOWN_MS {
+            self.slow += 1;
+            self.fast = 0;
+        } else {
+            self.fast = 0;
+            self.slow = 0;
+        }
+        if self.fast >= Self::RUN && self.level < self.max {
+            self.level += 1;
+            self.fast = 0;
+            return true;
+        }
+        // Drop quickly (a quarter of the run) so a heavy scene does not stutter for long.
+        if self.slow >= Self::RUN / 4 && self.level > 0 {
+            self.level -= 1;
+            self.slow = 0;
+            return true;
+        }
+        false
+    }
+}
+
 /// Internal render size for a display: 480 lines (the original resolution) at the
 /// display's aspect ratio, so the enhanced profile's Hor+ fills a 16:9 screen.
 pub fn internal_size(dw: u32, dh: u32) -> (u32, u32) {
-    let h = 480;
+    internal_size_at(dw, dh, 480)
+}
+
+/// [`internal_size`] at render height `h`.
+pub fn internal_size_at(dw: u32, dh: u32, h: u32) -> (u32, u32) {
     let w = ((h as u64 * dw as u64) / dh.max(1) as u64) as u32;
     (w & !1, h)
 }
@@ -200,6 +323,55 @@ mod tests {
         assert_eq!(dst[0], 0xdead_beef, "pillarbox untouched");
         assert_eq!(dst[240], 0, "top-left source pixel");
         assert_eq!(dst[(1079 * dw + 240 + 1439) as usize], 640 * 480 - 1, "bottom-right source pixel");
+    }
+
+    #[test]
+    fn parallel_blit_matches() {
+        let src: Vec<u32> = (0..852 * 480).map(|i| i as u32 * 7).collect();
+        let (dw, dh) = (3840u32, 2160u32);
+        let mut a = vec![0u32; (dw * dh) as usize];
+        let mut b = vec![0u32; (dw * dh) as usize];
+        unsafe {
+            Scaler::default().blit(&src, 852, 480, a.as_mut_ptr(), dw, dh, dw);
+            Scaler::default().blit_par(&src, 852, 480, b.as_mut_ptr(), dw, dh, dw, 5);
+        }
+        assert!(a == b);
+    }
+
+    #[test]
+    fn autostart_parse() {
+        assert!(matches!(autostart("level 2 1\n"), Some(Step::Level(2, 1))));
+        assert!(matches!(autostart("frontend"), Some(Step::Frontend)));
+        assert!(autostart("level x").is_none());
+        assert!(autostart("").is_none());
+    }
+
+    #[test]
+    fn display_sizes() {
+        assert_eq!(display_size((3840, 2160)), (3840, 2160));
+        assert_eq!(display_size((2560, 1440)), (2560, 1440));
+        assert_eq!(display_size((1920, 1080)), (1920, 1080));
+        assert_eq!(display_size((1280, 720)), (1920, 1080));
+    }
+
+    #[test]
+    fn dynres_steps() {
+        let mut d = DynRes::new(1080);
+        assert_eq!(d.height(), 480);
+        for _ in 0..119 {
+            assert!(!d.update(3.0));
+        }
+        assert!(d.update(3.0));
+        assert_eq!(d.height(), 540);
+        for _ in 0..1000 {
+            d.update(3.0);
+        }
+        assert_eq!(d.height(), 1080, "capped by the display");
+        for _ in 0..30 {
+            d.update(20.0);
+        }
+        assert_eq!(d.height(), 900);
+        assert_eq!(DynRes::new(2160).max, 5);
     }
 
     #[test]

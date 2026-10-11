@@ -78,7 +78,9 @@ SFO="$STAGE/sce_sys/param.sfo"
 PKGTOOL sfo_new "$SFO"
 PKGTOOL sfo_setentry "$SFO" APP_TYPE --type Integer --maxsize 4 --value 1
 PKGTOOL sfo_setentry "$SFO" APP_VER --type Utf8 --maxsize 8 --value "$VERSION"
-PKGTOOL sfo_setentry "$SFO" ATTRIBUTE --type Integer --maxsize 4 --value 0
+# ATTRIBUTE: bit 23 = supports PS4 Pro mode (4K output, higher clocks on Pro; the PS5
+# runs the title in Pro mode), bit 16 = 7-CPU mode, bit 1 = Cross is the enter button.
+PKGTOOL sfo_setentry "$SFO" ATTRIBUTE --type Integer --maxsize 4 --value $(( (1 << 23) | (1 << 16) | (1 << 1) ))
 PKGTOOL sfo_setentry "$SFO" CATEGORY --type Utf8 --maxsize 4 --value gd
 PKGTOOL sfo_setentry "$SFO" CONTENT_ID --type Utf8 --maxsize 48 --value "$CONTENT_ID"
 # MiB of /download0 (app-private writable storage): the save fallback when /data is not writable.

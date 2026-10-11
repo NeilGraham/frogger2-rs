@@ -44,6 +44,21 @@ struct FlipStatus {
     reserved1: u32,
 }
 
+/// `SceVideoOutResolutionStatus`: the current output mode.
+#[repr(C)]
+#[derive(Default)]
+struct ResolutionStatus {
+    full_width: u32,
+    full_height: u32,
+    pane_width: u32,
+    pane_height: u32,
+    refresh_rate: u64,
+    screen_size: f32,
+    flags: u16,
+    reserved0: u16,
+    reserved1: [u32; 3],
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct KEvent {
@@ -101,6 +116,7 @@ extern "C" {
     fn sceVideoOutAddFlipEvent(eq: *mut c_void, h: c_int, udata: *mut c_void) -> c_int;
     fn sceVideoOutSubmitFlip(h: c_int, index: c_int, mode: c_int, arg: i64) -> c_int;
     fn sceVideoOutGetFlipStatus(h: c_int, status: *mut FlipStatus) -> c_int;
+    fn sceVideoOutGetResolutionStatus(h: c_int, status: *mut ResolutionStatus) -> c_int;
 
     fn sceUserServiceInitialize(param: *const c_int) -> c_int;
     fn sceUserServiceGetInitialUser(user: *mut c_int) -> c_int;
@@ -142,13 +158,14 @@ fn notify(msg: &str) {
 
 // ------------------------------------------------------------------ video
 
-const DISPLAY_W: u32 = 1920;
-const DISPLAY_H: u32 = 1080;
 const BUFFERS: usize = 2;
 /// `ORBIS_VIDEO_OUT_PIXEL_FORMAT_A8B8G8R8_SRGB`: bytes R, G, B, A, the CPU renderer's order.
 const PIXEL_FORMAT: u32 = 0x8000_2200;
 
 struct Video {
+    /// Framebuffer size (`host::display_size` of the output mode).
+    width: u32,
+    height: u32,
     handle: c_int,
     queue: *mut c_void,
     buffers: [*mut u32; BUFFERS],
@@ -168,8 +185,12 @@ impl Video {
                 return Err(format!("sceKernelCreateEqueue: {r:#x}"));
             }
             sceVideoOutAddFlipEvent(queue, handle, core::ptr::null_mut());
+            let mut res = ResolutionStatus::default();
+            let r = sceVideoOutGetResolutionStatus(handle, &mut res);
+            let (width, height) = host::display_size(if r == 0 { (res.full_width, res.full_height) } else { (0, 0) });
+            log(&format!("video out: mode {}x{} ({r:#x}), framebuffers {width}x{height}", res.full_width, res.full_height));
             const ALIGN: usize = 0x20_0000;
-            let fb = (DISPLAY_W * DISPLAY_H * 4) as usize;
+            let fb = (width * height * 4) as usize;
             let fb = fb.div_ceil(ALIGN) * ALIGN;
             let size = fb * BUFFERS;
             let mut phys = 0i64;
@@ -187,18 +208,18 @@ impl Video {
             let mut buffers = [core::ptr::null_mut(); BUFFERS];
             for (i, b) in buffers.iter_mut().enumerate() {
                 *b = (mem as *mut u8).add(i * fb) as *mut u32;
-                core::ptr::write_bytes(*b, 0, (DISPLAY_W * DISPLAY_H) as usize);
+                core::ptr::write_bytes(*b, 0, (width * height) as usize);
             }
             let mut attr = BufferAttribute::default();
             // Linear tiling, 16:9.
-            sceVideoOutSetBufferAttribute(&mut attr, PIXEL_FORMAT, 1, 0, DISPLAY_W, DISPLAY_H, DISPLAY_W);
+            sceVideoOutSetBufferAttribute(&mut attr, PIXEL_FORMAT, 1, 0, width, height, width);
             let ptrs: [*mut c_void; BUFFERS] = buffers.map(|b| b as *mut c_void);
             let r = sceVideoOutRegisterBuffers(handle, 0, ptrs.as_ptr(), BUFFERS as c_int, &attr);
             if r < 0 {
                 return Err(format!("sceVideoOutRegisterBuffers: {r:#x}"));
             }
             sceVideoOutSetFlipRate(handle, 0);
-            Ok(Video { handle, queue, buffers, frame: 0 })
+            Ok(Video { width, height, handle, queue, buffers, frame: 0 })
         }
     }
 
@@ -231,10 +252,17 @@ impl Video {
         unsafe { sceVideoOutSubmitFlip(self.handle, (self.frame as usize % BUFFERS) as c_int, 1, self.frame) };
     }
 
+    /// Clears every framebuffer to black without presenting.
+    fn clear_all(&self) {
+        for &b in &self.buffers {
+            unsafe { core::ptr::write_bytes(b, 0, (self.width * self.height) as usize) };
+        }
+    }
+
     /// Fills the whole screen with one colour (status screens).
     fn fill(&mut self, rgba: u32) {
         let b = self.back_buffer();
-        for i in 0..(DISPLAY_W * DISPLAY_H) as usize {
+        for i in 0..(self.width * self.height) as usize {
             unsafe { *b.add(i) = rgba };
         }
         self.present();
@@ -385,12 +413,22 @@ fn run() -> Result<(), String> {
     let _ = std::fs::create_dir_all(f2_platform::paths::save_dir());
     app.save_path = save_dir.is_some().then(|| save_path.clone());
     app.set_gameplay(cfg.gameplay.clone(), save_dir.is_some().then_some(save_path));
-    app.push_steps([Step::Boot]);
+    // Dev/testing: `autostart.txt` in the save dir picks the start-up (see host::autostart).
+    let start = save_dir.as_ref().and_then(|d| std::fs::read_to_string(d.join("autostart.txt")).ok()).and_then(|t| host::autostart(&t));
+    if let Some(s) = &start {
+        log(&format!("autostart: {s:?}"));
+    }
+    app.push_steps([start.unwrap_or(Step::Boot)]);
 
-    let (iw, ih) = host::internal_size(DISPLAY_W, DISPLAY_H);
+    let (dw, dh) = (video.width, video.height);
+    let mut dynres = host::DynRes::new(dh);
+    let (mut iw, mut ih) = host::internal_size_at(dw, dh, dynres.height());
     app.win = frogger::app::WinInfo { size: (iw, ih), ..Default::default() };
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 6);
-    log(&format!("rendering {iw}x{ih} on {threads} threads"));
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 7);
+    log(&format!(
+        "rendering {iw}x{ih} (dynamic, up to {}p) on {threads} threads, output {dw}x{dh}",
+        host::DynRes::LEVELS[..].iter().rev().find(|&&h| h <= dh).unwrap_or(&480)
+    ));
     let mut target = f2_engine::SoftTarget::new(iw, ih);
     let mut scaler = Scaler::default();
     let mut edges = host::RawEdges::default();
@@ -425,9 +463,18 @@ fn run() -> Result<(), String> {
             return Ok(());
         }
         app.draw(iw, ih);
+        let t0 = Instant::now();
         app.r.render_soft(&mut target, app.clear_color(), threads);
+        let render_ms = t0.elapsed().as_secs_f32() * 1000.0;
         let fb = video.back_buffer();
-        unsafe { scaler.blit(&target.pixels, target.width, target.height, fb, DISPLAY_W, DISPLAY_H, DISPLAY_W) };
+        unsafe { scaler.blit_par(&target.pixels, target.width, target.height, fb, dw, dh, dw, threads) };
+        if dynres.update(render_ms) {
+            (iw, ih) = host::internal_size_at(dw, dh, dynres.height());
+            app.win.size = (iw, ih);
+            // The new size can letterbox differently: clear stale borders.
+            video.clear_all();
+            log(&format!("render size now {iw}x{ih} ({render_ms:.1} ms)"));
+        }
         busy += now.elapsed();
         video.present();
         frames += 1;
