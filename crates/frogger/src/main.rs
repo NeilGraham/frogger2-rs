@@ -476,6 +476,14 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.draw(w, h);
     let tris = app.r.queued_tris();
     eprintln!("frogger: {} ticks, act_frame_count {}, {tris} triangles, profile {}", app.ticks, app.game.act_frame_count, app.profile.name());
+    if std::env::var_os("F2_PRINT_CAMERA").is_some() {
+        // Debug aid (N64 renderer comparisons, tools/n64r-export): the drawn camera.
+        if let Some(c) = app.r.view.camera {
+            let v = |a: [f32; 3]| format!("{},{},{}", a[0], a[1], a[2]);
+            let k = app.clear_color();
+            eprintln!("frogger: camera {} {} {} far {} clear {},{},{}", v(c.source), v(c.target), v(c.up), app.r.view.far_clip, k[0], k[1], k[2]);
+        }
+    }
     let g = &app.game;
     let mut fx = std::collections::BTreeMap::new();
     for (_, e) in g.specfx.iter_list() {

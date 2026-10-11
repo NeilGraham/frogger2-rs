@@ -20,6 +20,8 @@ f2-formats = { path = "../f2-formats", default-features = false, features = ["se
 f2-game = { path = "../f2-game", default-features = false }
 f2-engine = { path = "../f2-engine", default-features = false }
 f2-draw = { path = "../f2-draw", default-features = false }
+# F2NM render-mesh format of the RSP renderer (r3d).
+f2-n64fmt = { path = "../f2-n64fmt" }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 libm = "0.2.16"
@@ -35,6 +37,8 @@ f2-engine = { path = "../f2-engine", default-features = false, features = ["std"
 [features]
 # The phase-1B bring-up demo and performance probes instead of the game (tools/n64/build.sh --bringup).
 bringup = []
+# The phase-2R RSP renderer test app (r3dtest: cull check, benchmarks, F2NM scenes) instead of the game.
+r3d-test = []
 # Print the simulation's debug log (`Effect::Log`) through debugf.
 game-log = []
 # Sampling profiler: dumps the hottest code addresses with every perf log line.

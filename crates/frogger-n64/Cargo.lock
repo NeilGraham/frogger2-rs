@@ -132,6 +132,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "f2-n64fmt"
+version = "0.1.0"
+
+[[package]]
 name = "f2-n64z"
 version = "0.1.0"
 
@@ -178,6 +182,7 @@ dependencies = [
  "f2-formats",
  "f2-game",
  "f2-math",
+ "f2-n64fmt",
  "f2-n64z",
  "libm",
  "postcard",

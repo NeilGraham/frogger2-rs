@@ -15,7 +15,7 @@
 /frogger2-pc/
 
 # Imported asset store produced by `f2-import` (local only)
-/game-data/
+/game-data
 
 # Rust
 /target/
@@ -25,3 +25,5 @@
 
 # Claude Code worktrees/settings
 /.claude/
+/crates/frogger-n64/target/
+/tools/n64/export/target/

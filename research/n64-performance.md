@@ -359,3 +359,119 @@ simulation speed-up (§2G profile, `Game::tick` 10–14 ms) land. Left: arcade-m
 `render_cpu.rs`), subtractive blend approximated as multiply, 1-bit alpha on large textures
 (CI4/CI8 via the 1C pack), FMV, saves, load times (object banks decoded twice).
 `examples/host_shot.rs` renders the N64 drawing path on the host for comparisons.
+## Phase 2R: RSP renderer (r3d), 2026-10-11
+Code: `crates/frogger-n64/csrc/rsp_f2mdx.S` (magma vertex shader), `rsp_f2clip.S` (clipping
+overlay), `r3d.c` (C side), `src/r3d.rs` (Rust API), `src/r3dtest.rs` (test ROM app: cull check,
+benches, scenes); format `crates/f2-n64fmt` + `docs/n64-model-format.md`; exporter
+`tools/n64/export`; comparison `tools/n64/compare.sh`.
+
+### Design
+- **libdragon magma** (preview 3D API: vertex-shader overlays, 48-entry vertex cache, RSP
+  triangle setup `RDPQ_Triangle_Send_Async`, guard-band clipping) with our own shader:
+  `pos x M` (M = model x view x P folded on the CPU, s15.16), `q = floor(W)` (the
+  integer-truncated `oneOver[]` depth), `sx = cx - FOV*s*X/q` in s13.2, linear depth
+  `z = K*vz` (like `sz = vz*0.00025`, full 15-bit range up to far), colour = rgba*mul+add
+  (alpha_mul, Gouraud override), UV scale per texture, fog into shade alpha.
+- **MDX face rejection on the RSP, exactly:** per vertex, the trivial-reject byte holds
+  "x strictly inside" / "y strictly inside" bits -> RDPQ rejects a triangle when no vertex is
+  inside on x or on y = `BETWEEN` screen reject (including faces straddling both sides);
+  near/far map to magma's z clip planes and our clip handler *rejects* (never clips) faces
+  with such a vertex = MDX's `vz = 0` skip. Back faces: magma culling (`CULL_MODE = 3`,
+  verified by framebuffer read-back: `R3D CULL ... PASS`). Guard band (6 x FOV*s px):
+  only real clipping (out-of-range RDP coordinates), in a copy of magma's clipper that keeps
+  linear depth and affine UVs.
+- **Texture loads inside the magma overlay:** a 0-vertex load command makes the shader DMA a
+  prebuilt RDP descriptor (TLUT + LOAD_BLOCK + tile setup + syncs, libultra order) into the
+  RDP stream and update the UV-scale uniform. Going through rdpq instead costs two RSP
+  overlay switches (~2500 RCP cycles) per texture change: measured 750 us for 19 changes;
+  now 20 changes cost 57 us.
+- **Bounding-sphere culling per batch** (CPU, conservative: only batches every face of which
+  MDX would reject; host test `culled_batches_are_fully_rejected`). Garden 1 game camera:
+  3717 landscape tris -> 1053 sent, RSP 13.5 -> 4.3 ms.
+- CPU per draw: matrix fold + s15.16 uniform into a 3-frame arena (RSP loads it by DMA),
+  sphere tests, then one rspq block call per visible batch.
+
+### Results (ares v148; RDP fill rate not modelled, so RSP+RDP ~= RSP time)
+Synthetic: textured, Gouraud, z-buffered grids, every draw switches texture, 320x240.
+"RSP+RDP" = frame recorded (flat mode) and replayed until idle; "CPU" = frame recorded into
+an rspq block (no execution); "live" = 60 vsynced frames, triple buffered.
+
+| scene | draws | tris sent | CPU | RSP+RDP | RCP cyc/tri | live fps |
+|---|---|---|---|---|---|---|
+| 500 / 10 meshes | 10 | 500 | 0.67 ms | 2.1 ms | 261 | 60 |
+| 1000 / 20 | 20 | 1000 | 1.27 ms | 4.1 ms | 253 | 60 |
+| 1000 / 20, 1 texture | 20 | 1000 | 1.18 ms | 4.0 ms | 250 | 60 |
+| 1500 / 30 | 30 | 1500 | 1.77 ms | 6.0 ms | 250 | 60 |
+| 2000 / 40 | 40 | 2000 | 2.35 ms | 7.9 ms | 247 | 60 |
+| 2000 / 10 | 10 | 1998 | 0.98 ms | 7.9 ms | 245 | 60 |
+| 2940 / 30 | 30 | 2940 | 2.05 ms | 11.6 ms | 246 | 60 |
+| Garden 1 game camera (landscape; PC draws 187) | 8 | 1053 of 3717 | 2.1 ms | 4.5 ms | 269 | 60 |
+| Garden 1 wide + 5 actors (PC draws 2241) | 37 | 3814 of 4540 | 7.8 ms | 19.6 ms | 321 | 42 |
+| same, far 1100, fog, water (PC draws 1188) | 32 | 2548 of 4489 | 5.5 ms | 12.8 ms | 313 | 60 |
+
+- **RSP capacity: ~4100 sent triangles per frame at 60 fps (~8300 at 30)** for compact meshes
+  (0.7 vertices/tri); real MDX meshes have ~2 vertices/tri (per-corner UVs/colours) ->
+  ~3300/frame at 60. The game's 450-1500 drawn tris/frame (worst 1513) need at most ~2500
+  sent with culling -> **60 fps on the RSP in typical scenes, 30 fps guaranteed** by a wide
+  margin. Triangle setup (~210 cycles) dominates; vertices ~45 cycles each.
+- vs. phase 1 faithful CPU path (6100 CPU cycles/tri, ~256 tris/frame @60): now the CPU
+  costs ~5000-6000 cycles **per draw** (not per triangle): 60 draws ~ 3 ms.
+- CPU per draw breakdown (`R3D CPU`): `R3d::draw` ~4200 cycles (draw_uniform ~950: 16
+  f32->s15.16 conversions; the rest is the fold, sphere tests and D-cache misses), flush
+  ~1300 cycles per visible batch (C + rspq writes). Next: fixed-point matrix fold, f64
+  magic-number conversion, fewer rspq writes per batch.
+- Real hardware caveat (as phase 1): RDP fill (z-buffered 16-bit, bilinear, ~1 px/clk at
+  best) is not modelled by ares; heavy overdraw scenes must be checked on hardware.
+
+### Visual comparison (PC reference vs N64)
+`tools/n64/export` renders the PC reference with f2-engine's CPU renderer (authentic
+options, same camera, same geometry) and writes the F2NM + scene files; the ROM shows
+`rom:/scene*.f2nm` (`target/n64/filesystem/r3d_show.txt` = scene index to pin one). Evidence
+(derived from game data: target/ only, never committed): `target/n64/compare/scene{1,2,3}_side.png`
+(PC 2x | N64 ares capture), PSNR 25.5 / 21.9 / 21.6 dB (VI filter + 16-bit dither + the VI's
+left border dominate). Geometry, rejection, culling, textures (CI8), alpha-test, skinned frogs,
+multi-object actors, Xlu water and fog match.
+
+### Deviations from the PC renderer
+- Depth: 15-bit linear (RDP z-buffer ~14-bit float: ~0.3 units near the camera at far 1200)
+  vs PC float depth; z compare is the RDP's (less vs LESSEQUAL ties).
+- Bilinear is the RDP's 3-point filter (texel centres matched with a -0.5 texel offset).
+- `Additive` (SRCALPHA, ONE) -> `src*a + dst*(1-a)`: the RDP blender wraps instead of
+  clamping (`N64_TRUE_ADDITIVE` selects the real, wrapping one). `Subtractive`
+  (ZERO, INVSRCCOLOR) -> `dst*(1-a)` (exact for grey sources with the grey in alpha).
+- Opaque lists are not re-sorted, but a mesh's faces are grouped by texture (order matters
+  only for semi-transparent texels > 100 alpha); `ORDERED` keeps face order for translucent
+  meshes.
+- Fog (enhancement) replaces vertex alpha (RDP fog uses shade alpha); per-object fog uses
+  the object origin's depth instead of the first face's vertex.
+- Textures resampled to fit TMEM (Garden: all 32x32 CI8); UVs of clamped faces beyond
+  ~16 periods saturate.
+- Clipped (guard-band) triangles: new vertices use the exact W, not floor(W).
+- Affine texturing only (as retail); perspective-correct option not implemented.
+- `queued_tris` semantics differ: r3d counts mesh tris and culled-batch survivors; the exact
+  MDX survivor count is only known on the RSP.
+
+### API for the game loop (`frogger_n64::r3d`)
+```rust
+let mut r = R3d::new();                          // once
+let meshes = r.load_file(bytes)?;                // F2NM: textures by CRC + meshes
+r.find_mesh(id) / r.set_texture(crc, tex)        // packer ids; animated textures
+// per frame:
+rt::begin_frame(clear);
+r.begin_frame(&ViewParams { view: camera_view(src, tgt, up), far, fog, ..ViewParams::pc_default(320.0, 240.0) });
+r.draw(List::Normal, mesh, &object_world_matrix, &DrawParams { object_fog: true, ..Default::default() });
+r.draw_skinned(List::Normal, skin, &bone_matrices, &params);   // xform_actor matrices
+r.flush(|list| { /* CPU batches after each list: sprites (Late), HUD (Overlay) via
+                    n64_draw_tris; z: ViewParams::tl_z(sz) */ });
+rt::present();
+```
+`List` = scene.rs frames in `DrawAllFrames` order; the game picks the list per object
+(`object_frame`) exactly as `draw_actor`.
+
+### Next steps
+- Integrate with the phase-2 game loop (actors from `f2-game`, sprites/HUD through the CPU
+  rdpq path, animated textures via `set_texture`).
+- CPU per-draw cost (see above); optional cross-draw texture sort.
+- Hardware check of RDP fill rate.
+- Measuring RSP time needs flat mode: replaying magma blocks nested inside an
+  rdpq-recorded block corrupted the RDP buffers in this libdragon preview (probe kind 6).

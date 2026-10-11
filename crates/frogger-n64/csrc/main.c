@@ -14,6 +14,7 @@
 #define SFX_CH0 2
 
 static surface_t zbuf;
+static surface_t *last_fb;
 
 /* Textures: `full` is the image as uploaded (2D blits split it into TMEM-sized pieces);
  * images wider than the RDP's 1024-texel limit are kept as overlapping column chunks
@@ -250,6 +251,7 @@ void n64_tex_free_impl(uint32_t h) {
 /* ---- frame ---- */
 void n64_begin_frame_impl(uint32_t rgba) {
     surface_t *fb = display_get();
+    last_fb = fb;
     rdpq_attach(fb, &zbuf);
     rdpq_set_mode_fill(color_from_packed32(rgba));
     rdpq_fill_rectangle(0, 0, display_get_width(), display_get_height());
@@ -567,12 +569,16 @@ void n64_prof_impl(uint32_t cmd) {
 }
 
 /* C-side probes.
+ *  kind 6: r3d flat mode on/off (n); kind 7: free the recorded block without running it.
+ *  kind 5: pixel (n >> 16, n & 0xFFFF) of the last frame (waits for the RDP): RGBA5551.
  *  kind 0: n shaded z-buffered ~20 px triangles submitted straight from C; returns ticks.
  *  kind 4: same with texture + shade + z (24 px legs, the Rust probe's shape).
  *  kind 1: rspq_block_begin (subsequent rdpq commands are recorded, not executed: measures
  *          CPU-only submission cost); kind 2: rspq_block_end; kind 3: run the recorded
  *          block and wait for RSP+RDP idle (returns ticks), then free it. */
 static rspq_block_t *probe_block;
+extern bool r3d_probe_recording;
+void r3d_set_flat(bool on);
 
 uint32_t n64_probe_c_impl(uint32_t kind, uint32_t n) {
     switch (kind) {
@@ -592,10 +598,26 @@ uint32_t n64_probe_c_impl(uint32_t kind, uint32_t n) {
     }
     case 1:
         rspq_block_begin();
+        r3d_probe_recording = true;
         return 0;
     case 2:
         probe_block = rspq_block_end();
+        r3d_probe_recording = false;
         return 0;
+    case 6:
+        r3d_set_flat(n != 0);
+        return 0;
+    case 7:
+        if (probe_block) rspq_block_free(probe_block);
+        probe_block = NULL;
+        return 0;
+    case 5: {
+        if (!last_fb) return 0;
+        rspq_wait();
+        uint32_t x = n >> 16, y = n & 0xFFFF;
+        if (x >= last_fb->width || y >= last_fb->height) return 0;
+        return ((volatile uint16_t *)UncachedAddr(last_fb->buffer))[y * (last_fb->stride / 2) + x];
+    }
     case 3: {
         if (!probe_block) return 0;
         rspq_wait();

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the Frogger 2 N64 ROM: target/n64/frogger2.z64.
 #
-#   tools/n64/build.sh [--debug] [--bringup]
+#   tools/n64/build.sh [--debug] [--bringup | --r3d-test]
 #
 # Steps: (1) Rust staticlib crates/frogger-n64 for the custom VR4300 n32 target
 # (nightly, -Zbuild-std=core,alloc); (2) relabel its objects n32 -> o64 so GNU ld accepts
@@ -29,10 +29,12 @@ export N64_INST="${N64_INST:-$HOME/opt/n64root/opt/libdragon}"
 toolchain="${RUST_TOOLCHAIN:-nightly}"
 profile=release
 bringup=0
+r3dtest=0
 for a in "$@"; do
     case "$a" in
     --debug) profile=dev ;;
     --bringup) bringup=1 ;;
+    --r3d-test) r3dtest=1 ;;
     *) echo "unknown option $a" >&2; exit 2 ;;
     esac
 done
@@ -42,6 +44,7 @@ mkdir -p "$out"
 
 features="${F2N64_FEATURES:-}"
 [ $bringup = 1 ] && features="$features bringup"
+[ $r3dtest = 1 ] && features="$features r3d-test"
 echo "== [1/5] Rust staticlib ($profile; features:${features:- none})"
 # F2N64_BOOT is read at compile time (option_env!).
 cargo "+$toolchain" build --manifest-path "$root/crates/frogger-n64/Cargo.toml" \
@@ -71,6 +74,11 @@ if [ $bringup = 1 ]; then
         echo "   probe_c$lvl.bin: $(stat -c %s "$fs/probe_c$lvl.bin") bytes (of 1048576)"
     done
     rm -rf "$out/mkasset"
+elif [ $r3dtest = 1 ]; then
+    # Phase-2R renderer test app: scenes written by tools/n64/export (n64r-export) into the
+    # filesystem directory (tools/n64/README.md, "RSP renderer test ROM").
+    mkdir -p "$fs"
+    echo "   r3d test: $(ls "$fs"/scene*.f2nm 2>/dev/null | wc -l) scene(s) in $fs"
 elif [ "${F2N64_KEEP_DFS:-0}" = 1 ] && [ -d "$fs/objects" ]; then
     echo "   reusing $fs"
 else

@@ -61,6 +61,12 @@
     RUST_TO_C n64_music_vol
     RUST_TO_C n64_audio_poll
     RUST_TO_C n64_prof
+    RUST_TO_C n64_r3d_init
+    RUST_TO_C n64_r3d_tex_create
+    RUST_TO_C n64_r3d_group_create
+    RUST_TO_C n64_r3d_begin
+    RUST_TO_C n64_r3d_draw_list
+    RUST_TO_C n64_r3d_stats
 
 # void f2n64_call(void (*fn)(void)) - C -> Rust.
     .globl f2n64_call

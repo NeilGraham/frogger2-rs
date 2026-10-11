@@ -1,0 +1,15 @@
+[package]
+name = "f2-n64fmt"
+description = "Nintendo 64 render-model format (F2NM): RSP-ready meshes and TMEM-ready textures, shared by the asset packer (host) and the N64 renderer (docs/n64-model-format.md)."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[features]
+default = ["encode"]
+# Mesh/texture/file encoders. Needs `alloc` only, so it also builds for the N64 target
+# (the renderer benchmarks build synthetic meshes at boot).
+encode = []
+
+[dependencies]

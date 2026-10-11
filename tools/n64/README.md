@@ -17,6 +17,26 @@ playable build).
 | `stage-f2z-probe.py` | stages pack files + their mkasset re-compressions into the DFS root for the F2Z decode probe (`--bringup` builds; game-derived: `target/` only) |
 | `prof.py` | maps the sampling profiler's `PROF` log lines to functions (`addr2line`) |
 | `../f2-n64prep` | host pre-pass: game files → DFS layout (postcard object banks, split sound banks) |
+| `export/` | `n64r-export` (own workspace): level landscape + actors -> F2NM test scene in `target/n64/filesystem/scene*.f2nm/.f2ns`, plus the PC reference PNG (f2-engine CPU renderer, same camera) |
+| `compare.sh` | side-by-side + PSNR of a PC reference and an ares capture |
+
+## RSP renderer test ROM (phase 2R)
+`tools/n64/build.sh --r3d-test` (crate feature `r3d-test`) builds `src/r3dtest.rs` instead of
+the game: cull check, synthetic benchmarks and the DFS scenes (`R3D` lines in the log). It uses
+whatever `target/n64/filesystem` holds, so build it in a separate checkout/target or restore
+the game filesystem afterwards. Typical loop:
+```sh
+cargo build --release --manifest-path tools/n64/export/Cargo.toml --target-dir target/n64/export
+F2_PRINT_CAMERA=1 target/release/frogger --headless --frames 90 --level 0 0 --size 320x240   # prints camera/far/clear
+target/n64/export/release/n64r-export --data game-data/usa --camera "-50,211.2,1181.2,-50,0,1025,0,0.1,0" \
+    --far 700 --out target/n64/filesystem/scene --ref target/n64/scene_ref.png
+echo 0 > target/n64/filesystem/r3d_show.txt     # pin a scene (else they cycle every 6 s)
+tools/n64/build.sh --r3d-test && cp target/n64/frogger2.z64 target/n64/f2r3d.z64
+N64TEST=/mnt/c/f2-n64test-r3d tools/n64/run-ares.sh target/n64/f2r3d.z64 -- -delay 30
+```
+Use your own `N64TEST` directory and ROM name when other agents run ares at the same time
+(the default `C:\f2-n64test\frogger2.*` files are shared). Design and numbers:
+`research/n64-performance.md` (phase 2R), format: `docs/n64-model-format.md`.
 
 ## Prerequisites
 - libdragon **preview** (pinned `39d0d60`) + its toolchain at `N64_INST`

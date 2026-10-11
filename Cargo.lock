@@ -800,6 +800,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "f2-n64fmt"
+version = "0.1.0"
+
+[[package]]
 name = "f2-n64pack"
 version = "0.1.0"
 dependencies = [

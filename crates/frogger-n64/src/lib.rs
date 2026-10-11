@@ -7,7 +7,8 @@
 //! Phase 2G: the game (`app`): `f2-game` at a fixed 60 Hz, `f2-draw`'s draw loop rendered by
 //! `render_cpu`, audio on the libdragon mixer (`audio`), data from the DFS (`data`), pad
 //! (`input`). With the `bringup` feature the ROM instead runs the phase-1B demo and
-//! performance probes (research/n64-performance.md).
+//! performance probes (research/n64-performance.md); with `r3d-test` the phase-2R RSP
+//! renderer test app (`r3dtest`: cull check, benchmarks, PC-comparison scenes).
 #![cfg_attr(target_vendor = "nintendo64", no_std)]
 
 extern crate alloc;
@@ -17,6 +18,7 @@ pub mod data;
 pub mod ffi;
 pub mod input;
 pub mod kernels;
+pub mod r3d;
 pub mod texconv;
 
 #[cfg(target_vendor = "nintendo64")]
@@ -38,9 +40,14 @@ mod f2z_probe;
 #[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
 mod probes;
 
+#[cfg(all(target_vendor = "nintendo64", feature = "r3d-test", not(feature = "bringup")))]
+mod r3dtest;
+
 #[cfg(all(target_vendor = "nintendo64", feature = "bringup"))]
 static mut APP: Option<demo::Demo> = None;
-#[cfg(all(target_vendor = "nintendo64", not(feature = "bringup")))]
+#[cfg(all(target_vendor = "nintendo64", feature = "r3d-test", not(feature = "bringup")))]
+static mut APP: Option<r3dtest::R3dTest> = None;
+#[cfg(all(target_vendor = "nintendo64", not(any(feature = "bringup", feature = "r3d-test"))))]
 static mut APP: Option<app::App> = None;
 
 /// Called once by csrc/main.c (through `f2n64_call`) after libdragon is initialised.
@@ -62,7 +69,12 @@ pub extern "C" fn f2n64_init() {
         // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
         unsafe { APP = Some(demo::Demo::new()) };
     }
-    #[cfg(not(feature = "bringup"))]
+    #[cfg(all(feature = "r3d-test", not(feature = "bringup")))]
+    // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
+    unsafe {
+        APP = Some(r3dtest::R3dTest::new())
+    };
+    #[cfg(not(any(feature = "bringup", feature = "r3d-test")))]
     {
         let boot = app::Boot::parse(option_env!("F2N64_BOOT"));
         log!("f2n64_init: boot {:?}", boot);
