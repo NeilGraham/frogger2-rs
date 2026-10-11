@@ -113,6 +113,11 @@ unloaded). Levels load from ROM at level start (PI DMA ~5 MB/s + decompression).
      FFI with asm bridges — `tools/n64/README.md`. Measurements and the 60/30 fps analysis:
      `research/n64-performance.md` (faithful CPU render path ≈ 6100 CPU cycles per
      triangle → too slow; 30 fps needs a fused N64-specific CPU path, 60 fps RSP T&L).
+   - **Phase 2R status (2026-10-11)**: RSP renderer `r3d` (libdragon magma + MDX vertex
+     shader with exact BETWEEN/near/far face rejection, in-overlay texture loads, per-batch
+     sphere culling, fog), F2NM format (`crates/f2-n64fmt`, `docs/n64-model-format.md`):
+     ~4100 sent tris/frame @60 on the RSP in ares, Garden 1 scenes match the PC renderer —
+     `research/n64-performance.md`.
 2. **Integration**: `crates/frogger-n64` front end (game loop, DataSource over the pack,
    renderer on rdpq, audio, input, FMV, saves); first playable Garden 1 in ares.
 3. **Completeness + performance**: all levels, frontend/menus, multiplayer split-screen,
