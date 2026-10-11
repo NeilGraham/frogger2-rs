@@ -12,6 +12,16 @@ use crate::{Game, TickInput};
 /// `rseed` when the oracle's frontend starts a demo (as in `examples/demo_trace.rs`).
 const RSEED_AT_DEMO_START: u32 = 144_420_441;
 
+/// A/B switch for performance experiments (phase 3S): code under test checks
+/// [`tune`] so both variants live in one binary (same code layout). Not used by the game.
+pub static TUNE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Whether experiment bit `bit` is on.
+#[inline]
+pub fn tune(bit: u32) -> bool {
+    TUNE.load(core::sync::atomic::Ordering::Relaxed) & (1 << bit) != 0
+}
+
 /// Phase ids passed to [`Game::phase_hook`] (each marks the end of a part of the tick).
 pub mod phase {
     pub const INPUT: u32 = 0;

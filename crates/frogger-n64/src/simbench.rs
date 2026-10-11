@@ -32,56 +32,63 @@ pub fn run_all() {
     }
     log!("simbench: {} scenarios", SCENARIOS.len());
     probes(data.clone());
-    for (i, s) in SCENARIOS.iter().enumerate() {
-        let t0 = ticks();
-        let mut g = simbench::setup(s, data.clone());
-        g.phase_hook = Some(phase_hook);
-        for p in &PHASES {
-            p.store(0, Relaxed);
-        }
-        let load_ms = ticks_to_us(ticks().wrapping_sub(t0)) / 1000;
-        let (mut total, mut worst, mut start) = (0u64, 0u32, 0u32);
-        let out = simbench::run(s, &mut g, &mut |begin| {
-            if begin {
-                #[cfg(feature = "profile")]
-                unsafe {
-                    crate::ffi::n64_prof(3)
-                };
-                start = ticks();
-                LAST.store(start, Relaxed);
-            } else {
-                let d = ticks().wrapping_sub(start);
-                #[cfg(feature = "profile")]
-                unsafe {
-                    crate::ffi::n64_prof(2)
-                };
-                total += d as u64;
-                worst = worst.max(d);
+    // F2N64_TUNE (build time): run every scenario once per listed experiment mask
+    // (`f2_game::simbench::TUNE`, A/B in one binary), e.g. "0 1".
+    let masks: alloc::vec::Vec<u32> = option_env!("F2N64_TUNE").unwrap_or("0").split_whitespace().filter_map(|m| m.parse().ok()).collect();
+    for &mask in &masks {
+        f2_game::simbench::TUNE.store(mask, Relaxed);
+        log!("simbench: tune mask {}", mask);
+        for (i, s) in SCENARIOS.iter().enumerate() {
+            let t0 = ticks();
+            let mut g = simbench::setup(s, data.clone());
+            g.phase_hook = Some(phase_hook);
+            for p in &PHASES {
+                p.store(0, Relaxed);
             }
-        });
-        drop(g);
-        let mean_us = (total * 1_000_000 / rt::TICKS_PER_SEC as u64 / out.ticks.max(1) as u64) as u32;
-        log!(
-            "simbench {} {}: ticks {} actors {} checksum {:016x} mean {} us/tick worst {} us (load {} ms)",
-            i,
-            s.name,
-            out.ticks,
-            out.actors,
-            out.checksum,
-            mean_us,
-            ticks_to_us(worst),
-            load_ms
-        );
-        let mut line = String::new();
-        for (k, p) in PHASES.iter().enumerate() {
-            let us = (p.load(Relaxed) as u64 * 1_000_000 / rt::TICKS_PER_SEC as u64 / out.ticks.max(1) as u64) as u32;
-            let _ = write!(line, " {} {}", phase::NAMES[k], us);
-        }
-        log!("simbench {} {} phases us/tick:{}", i, s.name, line);
-        #[cfg(feature = "profile")]
-        unsafe {
-            crate::ffi::n64_prof(1);
-            crate::ffi::n64_prof(2);
+            let load_ms = ticks_to_us(ticks().wrapping_sub(t0)) / 1000;
+            let (mut total, mut worst, mut start) = (0u64, 0u32, 0u32);
+            let out = simbench::run(s, &mut g, &mut |begin| {
+                if begin {
+                    #[cfg(feature = "profile")]
+                    unsafe {
+                        crate::ffi::n64_prof(3)
+                    };
+                    start = ticks();
+                    LAST.store(start, Relaxed);
+                } else {
+                    let d = ticks().wrapping_sub(start);
+                    #[cfg(feature = "profile")]
+                    unsafe {
+                        crate::ffi::n64_prof(2)
+                    };
+                    total += d as u64;
+                    worst = worst.max(d);
+                }
+            });
+            drop(g);
+            let mean_us = (total * 1_000_000 / rt::TICKS_PER_SEC as u64 / out.ticks.max(1) as u64) as u32;
+            log!(
+                "simbench {} {}: ticks {} actors {} checksum {:016x} mean {} us/tick worst {} us (load {} ms)",
+                i,
+                s.name,
+                out.ticks,
+                out.actors,
+                out.checksum,
+                mean_us,
+                ticks_to_us(worst),
+                load_ms
+            );
+            let mut line = String::new();
+            for (k, p) in PHASES.iter().enumerate() {
+                let us = (p.load(Relaxed) as u64 * 1_000_000 / rt::TICKS_PER_SEC as u64 / out.ticks.max(1) as u64) as u32;
+                let _ = write!(line, " {} {}", phase::NAMES[k], us);
+            }
+            log!("simbench {} {} phases us/tick:{}", i, s.name, line);
+            #[cfg(feature = "profile")]
+            unsafe {
+                crate::ffi::n64_prof(1);
+                crate::ffi::n64_prof(2);
+            }
         }
     }
     log!("simbench: done");
