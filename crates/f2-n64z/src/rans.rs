@@ -1,8 +1,8 @@
 //! Static rANS: 32-bit state, byte renormalisation, 12-bit probabilities.
 //!
-//! Decode step (per symbol): `slot = x & 4095; s = sym[slot];
+//! Decode step (per symbol): `slot = x & 4095; s = symbol owning slot (see [`Table`]);
 //! x = freq[s] * (x >> 12) + slot - cum[s]; while x < 2^23: x = x << 8 | next_byte`.
-//! One 32×32 multiply, three table loads, usually no refill.
+//! One 32×32 multiply, three or four table loads, usually no refill.
 
 use crate::{Cursor, Error, Result};
 
@@ -101,30 +101,70 @@ pub fn leb(out: &mut Vec<u8>, mut v: u32) {
     }
 }
 
-/// Decoding table: slot → symbol, and per symbol `freq << 16 | cum`.
+/// Slots per lookup bucket (`slot >> BUCKET_SHIFT` indexes [`Table::bucket`]).
+pub const BUCKET_SHIFT: u32 = 4;
+pub const BUCKETS: usize = (PROB_SCALE >> BUCKET_SHIFT) as usize;
+
+/// Decoding table, sized for small data caches (the VR4300 has 8 KiB, direct mapped):
+/// per symbol `freq << 16 | cum` with a sentinel `fc[nsym]` (cum 4096), and per bucket of 16
+/// slots the symbol that owns the bucket's first slot. A slot's symbol is found from its
+/// bucket by scanning `cum` forward (0–1 steps on average). 1.3 KiB, where a slot → symbol
+/// table needs 4 KiB more; decoders keep up to a dozen tables live, so the smaller one
+/// decodes markedly faster on the N64 (research/n64-performance.md).
 #[derive(Clone)]
 pub struct Table {
-    pub sym: [u8; PROB_SCALE as usize],
-    pub fc: [u32; MAX_SYM],
+    pub fc: [u32; MAX_SYM + 1],
+    pub bucket: [u8; BUCKETS],
     pub nsym: u16,
 }
 
 impl Table {
     pub const fn new() -> Table {
-        Table { sym: [0; PROB_SCALE as usize], fc: [0; MAX_SYM], nsym: 0 }
+        Table { fc: [0; MAX_SYM + 1], bucket: [0; BUCKETS], nsym: 0 }
     }
 
     pub fn build(&mut self, f: &Freqs) {
+        let n = f.n as usize;
         let mut cum = 0u32;
-        for s in 0..f.n as usize {
-            let fr = u32::from(f.f[s]);
-            self.fc[s] = (fr << 16) | cum;
-            for slot in cum..cum + fr {
-                self.sym[slot as usize] = s as u8;
+        for (&fr, fc) in f.f[..n].iter().zip(self.fc.iter_mut()) {
+            *fc = (u32::from(fr) << 16) | cum;
+            cum += u32::from(fr);
+        }
+        // sentinel: `Freqs` sums to PROB_SCALE (validated), so every scan stops here
+        self.fc[n] = PROB_SCALE;
+        let mut s = 0usize;
+        for (b, x) in self.bucket.iter_mut().enumerate() {
+            let slot = (b as u32) << BUCKET_SHIFT;
+            while self.fc[s + 1] & 0xffff <= slot {
+                s += 1;
             }
-            cum += fr;
+            *x = s as u8;
         }
         self.nsym = f.n;
+    }
+
+    /// The degenerate table of a single-symbol stream: always yields `sym` and leaves the
+    /// state unchanged (frequency 4096, cumulative 0), so it consumes no payload.
+    pub fn build_single(&mut self, sym: u8) {
+        let s = usize::from(sym);
+        self.fc[s] = PROB_SCALE << 16;
+        self.fc[s + 1] = PROB_SCALE;
+        self.bucket.fill(sym);
+        self.nsym = u16::from(sym) + 1;
+    }
+
+    /// The symbol owning `slot` (< 4096).
+    #[inline(always)]
+    pub fn lookup(&self, slot: u32) -> usize {
+        let mut s = usize::from(self.bucket[(slot >> BUCKET_SHIFT) as usize]);
+        // A built table always stops at the sentinel; `get` keeps an unbuilt one in bounds.
+        while let Some(&f) = self.fc.get(s + 1) {
+            if f & 0xffff > slot {
+                break;
+            }
+            s += 1;
+        }
+        s
     }
 }
 
@@ -149,18 +189,24 @@ impl<'a> RansDec<'a> {
         Ok(RansDec { x, buf, pos: 4 })
     }
 
-    #[inline]
+    /// A payload-less decoder for single-symbol streams ([`Table::build_single`]): the state
+    /// stays at its final value, so [`RansDec::finished`] holds.
+    pub const fn constant() -> RansDec<'static> {
+        RansDec { x: RANS_L, buf: &[], pos: 0 }
+    }
+
+    #[inline(always)]
     pub fn get(&mut self, t: &Table) -> u32 {
         let slot = self.x & (PROB_SCALE - 1);
-        let s = u32::from(t.sym[slot as usize]);
-        let fc = t.fc[s as usize];
+        let s = t.lookup(slot);
+        let fc = t.fc[s];
         self.x = (fc >> 16).wrapping_mul(self.x >> PROB_BITS).wrapping_add(slot).wrapping_sub(fc & 0xffff);
         while self.x < RANS_L {
             let b = self.buf.get(self.pos).copied().unwrap_or(0);
             self.pos += 1;
             self.x = (self.x << 8) | u32::from(b);
         }
-        s
+        s as u32
     }
 
     /// The whole payload was consumed exactly and the state returned to its initial value.

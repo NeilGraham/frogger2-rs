@@ -36,7 +36,7 @@ pub fn encode(v: u32, dlog: u32) -> (u32, u32, u32) {
 }
 
 /// `(base, nbits)` for a code; value = base + extra. `None` for an invalid code.
-#[inline]
+#[inline(always)]
 pub fn decode(code: u32, dlog: u32) -> Option<(u32, u32)> {
     let d = 1u32 << dlog;
     if code < d {

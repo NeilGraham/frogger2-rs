@@ -270,9 +270,21 @@ pub fn fixed_tick(actors: &mut [Actor], rng: &mut Rng) -> u32 {
     sum
 }
 
+/// FNV-1a 32 (decode checks against host-computed values, tools/n64/stage-f2z-probe.py).
+pub fn fnv1a(data: &[u8]) -> u32 {
+    data.iter().fold(0x811c_9dc5u32, |h, &b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fnv1a_reference() {
+        assert_eq!(fnv1a(b""), 0x811c_9dc5);
+        assert_eq!(fnv1a(b"a"), 0xe40c_292c);
+        assert_eq!(fnv1a(b"foobar"), 0xbf9c_f968);
+    }
 
     #[test]
     fn host_reference_values() {

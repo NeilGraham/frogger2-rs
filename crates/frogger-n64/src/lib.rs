@@ -20,6 +20,8 @@ pub mod rt;
 #[cfg(target_vendor = "nintendo64")]
 mod demo;
 #[cfg(target_vendor = "nintendo64")]
+mod f2z_probe;
+#[cfg(target_vendor = "nintendo64")]
 mod probes;
 
 #[cfg(target_vendor = "nintendo64")]
@@ -38,6 +40,7 @@ pub extern "C" fn f2n64_init() {
     }
     probes::cpu_probes();
     probes::dfs_probes();
+    f2z_probe::f2z_probes();
     // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
     unsafe { APP = Some(demo::Demo::new()) };
 }
