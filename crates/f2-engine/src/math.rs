@@ -49,6 +49,7 @@ pub fn acos_fast(x: f32) -> f32 {
 }
 
 /// Port of the `PushMatrix` macro body (mdxMath.h:86): `a · b`, forcing an affine result.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub fn mtx_cat(a: &Mat4, b: &Mat4) -> Mat4 {
     let mut r = [[0f32; 4]; 4];
     for i in 0..3 {

@@ -539,6 +539,7 @@ impl MeshSink {
         self.mats.clear();
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     fn push(&mut self, view: &View, d: MeshDraw, mats: &[Mat4]) {
         if let Some(b) = &mut self.backend {
             b.mesh(view, &d, mats);
@@ -553,6 +554,7 @@ impl MeshSink {
 /// [`draw_actor`] recorded into a [`MeshSink`]: same matrices, same frame selection, no
 /// vertex work. Objects without a mesh are skipped; whether a mesh has drawable faces is
 /// the back end's business. `Glow` (never drawn on retail PC) is dropped.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink: &mut MeshSink) {
     let fade = actor.xlu < 1.0;
     let extra = actor.extra_flags;

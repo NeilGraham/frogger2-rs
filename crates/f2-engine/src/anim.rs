@@ -174,6 +174,7 @@ pub fn object_count(model: &Model) -> usize {
 }
 
 /// Visits every object in pre-order (the order `TransformObject`/`DrawObject` use).
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub fn for_each_object<'a>(model: &'a Model, mut f: impl FnMut(usize, &'a Object)) {
     fn walk<'a>(o: &'a Object, idx: &mut usize, f: &mut dyn FnMut(usize, &'a Object)) {
         f(*idx, o);
@@ -321,6 +322,7 @@ pub fn next_stamp() -> u32 {
 /// The keyframe search hints it skips updating only speed up the search. The second case
 /// associates the products differently from `XformActor` (`L x top` instead of the chain
 /// applied to `top`): equal up to float rounding.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub fn xform_actor_cached<'a>(model: &Model, actor: &'a mut Actor) -> &'a [Mat4] {
     let key = PoseKey { model: model.id, pos: actor.pos, q_rot: actor.q_rot, scale: actor.scale, anim_time: actor.anim_time, animated: actor.animated };
     if actor.pose.key == Some(key) {

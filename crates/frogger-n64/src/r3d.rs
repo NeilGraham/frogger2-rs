@@ -286,14 +286,7 @@ struct SlotEntry {
 /// Bit pattern of a draw's parameters (cache key).
 fn params_key(p: &DrawParams) -> [u32; 6] {
     let g = p.gouraud.map_or([u32::MAX; 3], |g| g.map(f32::to_bits));
-    [
-        p.alpha_mul.to_bits(),
-        g[0],
-        g[1],
-        g[2],
-        p.override_tex.map_or(0, |t| t.0 as u32 + 1),
-        p.no_clip as u32 | (p.object_fog as u32) << 1,
-    ]
+    [p.alpha_mul.to_bits(), g[0], g[1], g[2], p.override_tex.map_or(0, |t| t.0 as u32 + 1), p.no_clip as u32 | (p.object_fog as u32) << 1]
 }
 
 struct DrawRec {
@@ -391,7 +384,8 @@ pub struct R3d {
 ///
 /// Integer-only (exponent / mantissa shifts): on the VR4300 the FPU path (multiply, two
 /// range compares, truncate, move) costs several times more, and a draw converts 16 values.
-#[inline]
+#[cfg_attr(not(target_vendor = "nintendo64"), inline)]
+#[cfg_attr(target_vendor = "nintendo64", inline(never), link_section = ".text.f2hot_q")]
 pub fn to_fixed(v: f32) -> (i16, u16) {
     let b = v.to_bits();
     let e = ((b >> 23) & 0xFF) as i32;
@@ -841,21 +835,10 @@ impl R3d {
             let [x, y, w] = clip(c);
             let r = radius * s;
             let d = [x - a[0] * w, -x - a[1] * w, y - a[2] * w, -y - a[3] * w];
-            if w + r <= near
-                || (!no_clip && w - r >= far)
-                || d[0] >= r * n[0]
-                || d[1] >= r * n[1]
-                || d[2] >= r * n[2]
-                || d[3] >= r * n[3]
-            {
+            if w + r <= near || (!no_clip && w - r >= far) || d[0] >= r * n[0] || d[1] >= r * n[1] || d[2] >= r * n[2] || d[3] >= r * n[3] {
                 return 1;
             }
-            let inside = w - r > near
-                && (no_clip || w + r < far)
-                && d[0] <= -r * n[0]
-                && d[1] <= -r * n[1]
-                && d[2] <= -r * n[2]
-                && d[3] <= -r * n[3];
+            let inside = w - r > near && (no_clip || w + r < far) && d[0] <= -r * n[0] && d[1] <= -r * n[1] && d[2] <= -r * n[2] && d[3] <= -r * n[3];
             if inside {
                 2
             } else {
@@ -974,16 +957,8 @@ impl R3d {
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn push_rec_ptr(&mut self, list: List, mesh: MeshId, p: &DrawParams, uptr: *const R3dDrawUniform, vis_first: u32, vis_count: u32) {
-        let rec = DrawRec {
-            u: u32::MAX,
-            uptr,
-            mesh: mesh.0,
-            tex_override: p.override_tex.map_or(0, |t| t.0),
-            n_bones: 0,
-            no_clip: p.no_clip,
-            vis_first,
-            vis_count,
-        };
+        let rec =
+            DrawRec { u: u32::MAX, uptr, mesh: mesh.0, tex_override: p.override_tex.map_or(0, |t| t.0), n_bones: 0, no_clip: p.no_clip, vis_first, vis_count };
         self.lists[list as usize].push(rec);
     }
 
@@ -1290,7 +1265,27 @@ mod tests {
             ((x >> 16) as i16, x as u16)
         };
         let mut seed = 0x1234_5678u32;
-        let mut vals = vec![0.0f32, -0.0, 1.0, -1.0, 0.5, 1e-6, -1e-6, 1.0 / 65536.0, -1.0 / 65536.0, 32767.99, -32767.99, 32768.0, -32768.0, 1e9, -1e9, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e-40];
+        let mut vals = vec![
+            0.0f32,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            1e-6,
+            -1e-6,
+            1.0 / 65536.0,
+            -1.0 / 65536.0,
+            32767.99,
+            -32767.99,
+            32768.0,
+            -32768.0,
+            1e9,
+            -1e9,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            1e-40,
+        ];
         for _ in 0..200_000 {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let mag = [1.0f32, 0.01, 30.0, 3000.0, 32000.0][(seed >> 29) as usize % 5];
@@ -1309,10 +1304,8 @@ mod tests {
         let model: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [10.0, 0.0, 20.0, 1.0]];
         let bytes = super::cull_tests::terrain();
         let snapshot = |r: &R3d| -> (Vec<u16>, Vec<R3dDrawUniform>, u32) {
-            let us = r.lists[List::Normal as usize]
-                .iter()
-                .map(|d| if d.uptr.is_null() { r.uni[r.uni_frame][d.u as usize] } else { unsafe { *d.uptr } })
-                .collect();
+            let us =
+                r.lists[List::Normal as usize].iter().map(|d| if d.uptr.is_null() { r.uni[r.uni_frame][d.u as usize] } else { unsafe { *d.uptr } }).collect();
             (r.vis.clone(), us, r.sent_tris)
         };
         let mut fresh = R3d::new();

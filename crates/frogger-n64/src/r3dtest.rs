@@ -184,12 +184,8 @@ impl R3dTest {
         r.flush(|_| {});
         rt::present();
         let probe_px = |x: f32, z: f32| {
-            let e = emulate_vertex(
-                &draw_uniform(&model_scaled(&translate(x, 0.0, z), 1.0), &DrawParams::default()),
-                &frame_uniform_vp(&view, false),
-                6,
-                [0, 0, 0],
-            );
+            let e =
+                emulate_vertex(&draw_uniform(&model_scaled(&translate(x, 0.0, z), 1.0), &DrawParams::default()), &frame_uniform_vp(&view, false), 6, [0, 0, 0]);
             let (px, py) = ((e.0[0] / 4) as u32, (e.0[1] / 4) as u32);
             rt::probe_c(5, px << 16 | py)
         };

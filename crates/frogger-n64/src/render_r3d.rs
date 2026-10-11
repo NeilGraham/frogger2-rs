@@ -265,7 +265,15 @@ impl R3dLevel {
             crate::log!("r3d: model {:08x} first drawn ({:?}, {} tris)", d.model, list, self.r.mesh_tris(mesh));
         }
         if self.dump_next {
-            crate::log!("dump r3d {:?} model {:08x} obj {} alpha {} tris {} no_clip {}", list, d.model, d.object, d.alpha_mul, self.r.mesh_tris(mesh), d.no_clip);
+            crate::log!(
+                "dump r3d {:?} model {:08x} obj {} alpha {} tris {} no_clip {}",
+                list,
+                d.model,
+                d.object,
+                d.alpha_mul,
+                self.r.mesh_tris(mesh),
+                d.no_clip
+            );
         }
     }
 

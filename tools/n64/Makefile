@@ -35,7 +35,7 @@ $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 # share cache lines they evict each other on every call, and with the default (link order)
 # placement that changed with every code edit (measured: the r3d flush 2.6 vs 9.6 ms per
 # frame between two otherwise identical builds). Two contiguous regions, each < 16 KiB:
-# `.text.f2hot_q` (r3d queueing, during the draw loop) and `.text.f2hot_f` (flushing the
+# `.text.f2hot_d` + `.text.f2hot_q` (the draw loop's actor path and r3d queueing) and `.text.f2hot_f` (flushing the
 # lists to the RSP and drawing the CPU batches between them), then the libdragon / newlib
 # functions of those loops.
 HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rspq_block_run mg_uniform_load mg_uniform_load_raw \
@@ -48,6 +48,7 @@ $(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld
 	@awk -v hot="$(HOT_C)" 'BEGIN { n = split(hot, h, " ") } \
 		!done && $$0 ~ /^[ \t]*\*\(\.text\)[ \t]*$$/ { \
 			print "        __f2_hot_start = .;"; \
+			print "        *(.text.f2hot_d .text.f2hot_d.*)"; \
 			print "        *(.text.f2hot_q .text.f2hot_q.*)"; \
 			print "        __f2_hot_flush = .;"; \
 			print "        *(.text.f2hot_f .text.f2hot_f.*)"; \
