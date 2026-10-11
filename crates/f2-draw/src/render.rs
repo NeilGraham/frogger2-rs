@@ -81,9 +81,12 @@ fn lerp_snap(prev: Option<&Snap>, cur: Snap, alpha: f32) -> Snap {
     if p.pos == cur.pos && p.q == cur.q {
         return cur;
     }
-    // Teleports (respawn, level reset) are not interpolated.
+    // Teleports (respawn, level reset, a path entity wrapping back to its first node) are not
+    // interpolated: more than 1.5 tiles (90 render units) in one 60 Hz tick is faster than
+    // anything moves in the game. (400 let a mower's lane wrap through: one display frame at
+    // the halfway point on high-refresh screens; the original drew only whole ticks.)
     let d = sub(cur.pos, p.pos);
-    if dot(d, d) > 400.0 * 400.0 {
+    if dot(d, d) > 90.0 * 90.0 {
         return cur;
     }
     Snap { pos: f2_engine::math::linear_interp(&p.pos, &cur.pos, alpha), q: f2_engine::math::quat_slerp(&p.q, &cur.q, alpha) }

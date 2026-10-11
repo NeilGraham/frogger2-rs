@@ -1200,7 +1200,10 @@ impl App {
             self.game.psx_name_entry_frame(self.pad.debounce[0]);
         }
         self.apply_game_options(); // P6-1
-        self.game.tick(TickInput { pads });
+                                   // `tick_frames(.., 1)` = retail `LoopFunc` timing: in the pause menu `gameSpeed` is 0 and
+                                   // `actFrameCount` stays frozen, so path entities (placed from `actFrameCount`) do not run
+                                   // on and jump on resume. Trace-identical to `tick` outside pause (research/n64-performance.md §3T).
+        self.game.tick_frames(TickInput { pads }, 1);
         self.ticks += 1;
         if self.qol() && self.gameplay.speedrun_timer {
             let p = &self.game.frogger.player[0];

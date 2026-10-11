@@ -66,3 +66,35 @@ fn speeds_2_to_4_keep_game_time_and_paths() {
         }
     }
 }
+
+/// Retail `LoopFunc`: in the pause menu `gameSpeed` is 0 and `actFrameCount` stays frozen, so
+/// clock-driven path entities hold still and carry on from the same place after resuming
+/// (owner-reported: with `tick()` they kept running while paused and jumped on resume).
+#[test]
+fn pause_freezes_game_time() {
+    use f2_game::define::mode::PAUSE_MODE;
+    use f2_game::levplay::PAD_START;
+    use f2_game::TickInput;
+    let Some(dir) = game_dir() else { return };
+    let s = Scenario { name: "0-0-pause", start: Start::Arcade(0, 0), ticks: 0 };
+    let mut g = f2_game::simbench::setup(&s, Arc::new(DirData(dir)));
+    let tick = |g: &mut f2_game::Game, pad: u16| g.tick_frames(TickInput { pads: [pad, 0, 0, 0] }, 1);
+    for _ in 0..240 {
+        tick(&mut g, 0);
+    }
+    // Start pauses (a press = one tick down, then released).
+    for i in 0..30 {
+        tick(&mut g, if i == 0 { PAD_START } else { 0 });
+        if g.game_state.mode == PAUSE_MODE {
+            break;
+        }
+    }
+    assert_eq!(g.game_state.mode, PAUSE_MODE, "Start did not pause");
+    let act = g.act_frame_count;
+    for _ in 0..180 {
+        tick(&mut g, 0);
+        assert_eq!(g.game_state.mode, PAUSE_MODE);
+        assert_eq!(g.act_frame_count, act, "actFrameCount advanced while paused");
+        assert_eq!(g.game_speed, 0, "gameSpeed not 0 while paused");
+    }
+}
