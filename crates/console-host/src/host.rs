@@ -514,6 +514,60 @@ impl Drop for Pool {
     }
 }
 
+// ------------------------------------------------------------------ output modes
+
+pub use f2_platform::config::VideoMode;
+
+/// 59.94 Hz and 119.88 Hz, the two rates PS5 VideoOut offers a title
+/// (`sceVideoOutConfigureOutput` selectors 1 and 15) in mHz.
+pub const REFRESH_60_MHZ: u32 = 59_940;
+pub const REFRESH_120_MHZ: u32 = 119_880;
+/// Rates from here up count as high frame rate in [`pick_output_mode`].
+pub const HIGH_REFRESH_MHZ: u32 = 100_000;
+
+/// Scan-out buffer sizes the PS5 host offers, largest first (VideoOut scales each to the
+/// console's video output resolution; PS5_Vulkan measured all three filling the screen).
+pub const PS5_SIZES: [(u32, u32); 3] = [(3840, 2160), (2560, 1440), (1920, 1080)];
+
+/// The output modes the PS5 host can switch between: every size of `sizes` at 59.94 Hz,
+/// and at 119.88 Hz too when `high_rate` (the console said the current output supports
+/// it). Largest first, faster rate first.
+pub fn ps5_output_modes(sizes: &[(u32, u32)], high_rate: bool) -> Vec<VideoMode> {
+    let rates: &[u32] = if high_rate { &[REFRESH_120_MHZ, REFRESH_60_MHZ] } else { &[REFRESH_60_MHZ] };
+    sizes.iter().flat_map(|&(width, height)| rates.iter().map(move |&refresh_mhz| VideoMode { width, height, refresh_mhz })).collect()
+}
+
+/// Chooses the output mode for the Display settings' Resolution (`res`, `None` = Auto) and
+/// Refresh rate (`refresh_mhz`, `None` = Auto) among the `modes` the display takes.
+///
+/// - A fixed resolution keeps that size and takes its highest refresh (4K -> 60 Hz on a
+///   display without 4K at 120 Hz, 1440p -> 120 Hz where 1440p120 exists).
+/// - Auto prefers high frame rate over resolution: the highest resolution that still runs
+///   at 100 Hz or more, else the highest resolution at whatever rate (so 1440p120 wins
+///   over 4K60: the game's interpolated frames are its main visual upgrade, and the CPU
+///   renderer's internal resolution is far below either).
+/// - A fixed refresh rate keeps only modes at that rate.
+/// - A resolution or rate no mode has is treated as Auto (the display changed since it
+///   was saved).
+pub fn pick_output_mode(modes: &[VideoMode], res: Option<[u32; 2]>, refresh_mhz: Option<u32>) -> Option<VideoMode> {
+    let mut cand: Vec<VideoMode> = modes.to_vec();
+    if let Some([w, h]) = res {
+        let same: Vec<VideoMode> = cand.iter().copied().filter(|m| (m.width, m.height) == (w, h)).collect();
+        if !same.is_empty() {
+            cand = same;
+        }
+    }
+    if let Some(r) = refresh_mhz {
+        let same: Vec<VideoMode> = cand.iter().copied().filter(|m| m.refresh_mhz == r).collect();
+        if !same.is_empty() {
+            cand = same;
+        }
+    }
+    cand.into_iter().max_by_key(|m| (m.refresh_mhz >= HIGH_REFRESH_MHZ, m.width as u64 * m.height as u64, m.refresh_mhz))
+}
+
+// ------------------------------------------------------------------ data and saves
+
 /// Where imported game data is looked for, in order: bundled in the package, then the
 /// console's internal storage, then USB drives (and the PS5's extended storage).
 pub const DATA_DIRS: &[&str] = &[
@@ -555,6 +609,55 @@ pub fn writable_dir(dirs: &[&str]) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
+    fn vm(width: u32, height: u32, refresh_mhz: u32) -> VideoMode {
+        VideoMode { width, height, refresh_mhz }
+    }
+
+    /// The owner's monitor: 4K up to 60 Hz, 1440p and 1080p up to 120 Hz.
+    fn owner_display() -> Vec<VideoMode> {
+        vec![vm(3840, 2160, 59_940), vm(2560, 1440, 119_880), vm(2560, 1440, 59_940), vm(1920, 1080, 119_880), vm(1920, 1080, 59_940)]
+    }
+
+    #[test]
+    fn auto_prefers_high_refresh_then_resolution() {
+        let m = owner_display();
+        assert_eq!(pick_output_mode(&m, None, None), Some(vm(2560, 1440, 119_880)));
+        // Without any 120 Hz mode: the highest resolution.
+        let sixty: Vec<VideoMode> = m.iter().copied().filter(|m| m.refresh_mhz < HIGH_REFRESH_MHZ).collect();
+        assert_eq!(pick_output_mode(&sixty, None, None), Some(vm(3840, 2160, 59_940)));
+        // A 4K120 display: 4K at 120 Hz.
+        let mut tv = m.clone();
+        tv.push(vm(3840, 2160, 119_880));
+        assert_eq!(pick_output_mode(&tv, None, None), Some(vm(3840, 2160, 119_880)));
+        assert_eq!(pick_output_mode(&[], None, None), None);
+    }
+
+    #[test]
+    fn fixed_resolution_takes_its_highest_refresh() {
+        let m = owner_display();
+        assert_eq!(pick_output_mode(&m, Some([3840, 2160]), None), Some(vm(3840, 2160, 59_940)));
+        assert_eq!(pick_output_mode(&m, Some([2560, 1440]), None), Some(vm(2560, 1440, 119_880)));
+        assert_eq!(pick_output_mode(&m, Some([1920, 1080]), None), Some(vm(1920, 1080, 119_880)));
+        // Fixed refresh rate.
+        assert_eq!(pick_output_mode(&m, Some([1920, 1080]), Some(59_940)), Some(vm(1920, 1080, 59_940)));
+        assert_eq!(pick_output_mode(&m, None, Some(59_940)), Some(vm(3840, 2160, 59_940)));
+        // Unknown size / rate: Auto.
+        assert_eq!(pick_output_mode(&m, Some([1280, 720]), None), Some(vm(2560, 1440, 119_880)));
+        assert_eq!(pick_output_mode(&m, Some([3840, 2160]), Some(119_880)), Some(vm(3840, 2160, 59_940)));
+    }
+
+    #[test]
+    fn ps5_modes() {
+        let hfr = ps5_output_modes(&PS5_SIZES, true);
+        assert_eq!(hfr.len(), 6);
+        assert_eq!(hfr[0], vm(3840, 2160, REFRESH_120_MHZ));
+        assert_eq!(pick_output_mode(&hfr, None, None), Some(vm(3840, 2160, REFRESH_120_MHZ)));
+        assert_eq!(pick_output_mode(&hfr, Some([2560, 1440]), None), Some(vm(2560, 1440, REFRESH_120_MHZ)));
+        assert_eq!(pick_output_mode(&hfr, None, Some(REFRESH_60_MHZ)), Some(vm(3840, 2160, REFRESH_60_MHZ)));
+        let sdr = ps5_output_modes(&PS5_SIZES[1..], false);
+        assert_eq!(sdr, vec![vm(2560, 1440, REFRESH_60_MHZ), vm(1920, 1080, REFRESH_60_MHZ)]);
+        assert_eq!(pick_output_mode(&sdr, Some([3840, 2160]), Some(REFRESH_120_MHZ)), Some(vm(2560, 1440, REFRESH_60_MHZ)));
+    }
     #[test]
     fn pad_mapping() {
         let p = raw_pad(btn::CROSS | btn::UP | btn::OPTIONS, [128, 0], [255, 128]);

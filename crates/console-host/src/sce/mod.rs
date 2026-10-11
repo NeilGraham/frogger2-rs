@@ -10,10 +10,11 @@
 pub mod alloc;
 pub mod shim;
 
-use crate::host;
+use crate::host::{self, VideoMode};
 use core::ffi::{c_char, c_int, c_void};
 use f2_audio::{AudioEngine, AudioOutput, Mixer};
-use f2_platform::{Config, KeyboardState, Profile, RawPad};
+pub use f2_platform::Config;
+use f2_platform::{KeyboardState, Profile, RawPad};
 use frogger::app::{App, Step};
 use std::ffi::{CStr, CString};
 use std::io::Write;
@@ -129,8 +130,9 @@ pub struct Platform {
     pub name: &'static str,
     /// Shows a system notification toast.
     pub notify: fn(&str),
-    /// Opens the video out; called once, after the system services are up.
-    pub open_present: fn() -> Result<Box<dyn Present>, String>,
+    /// Opens the video out in the output mode `cfg`'s Display settings ask for; called
+    /// once, after the system services are up.
+    pub open_present: fn(cfg: &Config) -> Result<Box<dyn Present>, String>,
 }
 
 /// Draws [`App`] frames and shows them.
@@ -153,6 +155,19 @@ pub trait Present {
     fn stats(&mut self) -> Option<String> {
         None
     }
+    /// Output modes [`Present::set_mode`] can switch to (empty: fixed output).
+    fn modes(&self) -> Vec<VideoMode> {
+        Vec::new()
+    }
+    /// The output mode in use, if known.
+    fn mode(&self) -> Option<VideoMode> {
+        None
+    }
+    /// Switches the output mode (one of [`Present::modes`]); [`Present::render_size`] may
+    /// change.
+    fn set_mode(&mut self, _mode: VideoMode) -> Result<(), String> {
+        Err("this output has one mode".into())
+    }
 }
 
 /// A set of scan-out buffers that RGBA images are scaled into.
@@ -164,6 +179,16 @@ pub trait Screen {
     fn show(&mut self, pixels: &[u32], w: u32, h: u32, exec: host::Exec);
     /// Fills the next buffer with one colour and flips to it.
     fn fill(&mut self, rgba: u32);
+    /// As [`Present::modes`], [`Present::mode`] and [`Present::set_mode`].
+    fn modes(&self) -> Vec<VideoMode> {
+        Vec::new()
+    }
+    fn mode(&self) -> Option<VideoMode> {
+        None
+    }
+    fn set_mode(&mut self, _mode: VideoMode) -> Result<(), String> {
+        Err("this output has one mode".into())
+    }
 }
 
 /// The CPU renderer on a [`Screen`] (not with feature `gpu`).
@@ -210,11 +235,42 @@ impl<S: Screen> Present for SoftPresent<S> {
         self.screen.fill(rgba);
     }
 
+    fn modes(&self) -> Vec<VideoMode> {
+        self.screen.modes()
+    }
+
+    fn mode(&self) -> Option<VideoMode> {
+        self.screen.mode()
+    }
+
+    /// Switches the screen's mode and renders at the new size's [`host::render_lines`].
+    fn set_mode(&mut self, mode: VideoMode) -> Result<(), String> {
+        let r = self.screen.set_mode(mode);
+        let (dw, dh) = self.screen.size();
+        let (w, h) = host::internal_size_at(dw, dh, host::render_lines(dh));
+        if (w, h) != (self.target.width, self.target.height) {
+            self.target = f2_engine::SoftTarget::new(w, h);
+        }
+        r
+    }
+
     fn stats(&mut self) -> Option<String> {
         let (r, s, n) = std::mem::take(&mut self.times);
         let ms = |d: Duration| d.as_secs_f64() * 1000.0 / n.max(1) as f64;
         Some(format!("render {:.1} ms, scale+flip {:.1} ms", ms(r), ms(s)))
     }
+}
+
+/// The Display settings' view of a console output: always fullscreen, its modes, and the
+/// one in use (shown as Auto rather than the render size).
+fn win_info(present: &dyn Present) -> frogger::app::WinInfo {
+    let size = present.render_size();
+    let mode = present.mode().unwrap_or(VideoMode { width: size.0, height: size.1, refresh_mhz: host::REFRESH_60_MHZ });
+    let mut modes = present.modes();
+    if modes.is_empty() {
+        modes.push(mode);
+    }
+    frogger::app::WinInfo { size, mode: f2_platform::WindowMode::Fullscreen, modes, desktop: Some(mode), console: true }
 }
 
 /// Render threads for the CPU renderer: the hardware threads available (`fallback` when
@@ -334,12 +390,12 @@ fn run(platform: &Platform) -> Result<(), String> {
     }
     let pad = Pad { handle: unsafe { scePadOpen(user, 0, 0, core::ptr::null()) } };
     log(&format!("user {user:#x}, pad handle {:#x}", pad.handle));
+    let mut cfg = Config::load_default().unwrap_or_default();
     log("opening video out");
-    let mut present = (platform.open_present)()?;
+    let mut present = (platform.open_present)(&cfg)?;
     unsafe { sceSystemServiceHideSplashScreen() };
     log("video out open, splash screen hidden");
 
-    let mut cfg = Config::load_default().unwrap_or_default();
     // Locate the data; until it is there, show a status screen and keep looking (it can
     // be copied over FTP while this runs).
     let mut warned = false;
@@ -381,13 +437,20 @@ fn run(platform: &Platform) -> Result<(), String> {
     app.set_gameplay(cfg.gameplay.clone(), save_dir.is_some().then_some(save_path));
     app.push_steps([Step::Boot]);
 
-    let (iw, ih) = present.render_size();
-    app.win = frogger::app::WinInfo { size: (iw, ih), ..Default::default() };
+    let (mut iw, mut ih) = present.render_size();
+    app.win = win_info(present.as_ref());
     log(&format!("rendering {iw}x{ih}"));
     let mut edges = host::RawEdges::default();
     let kb = KeyboardState::default();
     let mut last = Instant::now();
     let (mut frames, mut stat_t, mut busy) = (0u32, Instant::now(), Duration::ZERO);
+    // Testing aid (emulators, no pad scripting): `mode-cycle.txt` in the save directory
+    // switches to the next output mode every 5 seconds.
+    let cycle_modes = save_dir.as_ref().is_some_and(|d| d.join("mode-cycle.txt").exists());
+    let mut cycle_t = Instant::now();
+    if cycle_modes {
+        log("mode-cycle.txt: cycling the output modes every 5 s");
+    }
     loop {
         let now = Instant::now();
         let dt = now - last;
@@ -414,6 +477,28 @@ fn run(platform: &Platform) -> Result<(), String> {
         if app.requests.quit || app.idle() {
             log("quit");
             return Ok(());
+        }
+        // Display settings changed: switch the output mode if the choice now picks another.
+        let mut want = None;
+        if std::mem::take(&mut app.requests.apply_window) | std::mem::take(&mut app.requests.apply_vsync) {
+            let v = &app.cfg.video;
+            want = host::pick_output_mode(&present.modes(), v.resolution, v.refresh_mhz);
+            log(&format!("display settings {:?} / {:?} pick {want:?}", v.resolution, v.refresh_mhz));
+        }
+        if cycle_modes && cycle_t.elapsed() >= Duration::from_secs(5) {
+            cycle_t = Instant::now();
+            let modes = present.modes();
+            let i = modes.iter().position(|&m| Some(m) == present.mode()).map_or(0, |i| i + 1);
+            want = modes.get(i % modes.len().max(1)).copied();
+        }
+        if let Some(want) = want.filter(|&m| Some(m) != present.mode()) {
+            log(&format!("output mode: {:?} -> {want:?}", present.mode()));
+            if let Err(e) = present.set_mode(want) {
+                log(&format!("output mode switch failed: {e}"));
+            }
+            (iw, ih) = present.render_size();
+            app.win = win_info(present.as_ref());
+            log(&format!("output mode now {:?}, rendering {iw}x{ih}", present.mode()));
         }
         app.draw(iw, ih);
         present.frame(&mut app);

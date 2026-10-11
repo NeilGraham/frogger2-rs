@@ -1630,6 +1630,16 @@ mod tests {
         assert!(win.contains(&(640, 480)) && win.contains(&(1600, 900)) && !win.contains(&(2560, 1440)));
         assert_eq!(wi.rates(Some([1920, 1080])), vec![144000, 60000]);
         assert_eq!(wi.rates(None), vec![144000, 60000]);
+        // Consoles: only the host's output modes.
+        let con = WinInfo {
+            mode: WindowMode::Fullscreen,
+            size: (960, 540),
+            modes: vec![m(3840, 2160, 119880), m(3840, 2160, 59940), m(2560, 1440, 119880), m(2560, 1440, 59940)],
+            desktop: Some(m(3840, 2160, 119880)),
+            console: true,
+        };
+        assert_eq!(con.resolutions(WindowMode::Windowed), vec![(2560, 1440), (3840, 2160)]);
+        assert_eq!(con.rates(None), vec![119880, 59940]);
     }
 
     #[test]

@@ -121,8 +121,8 @@ MXCSR reset to IEEE (titles start with FTZ/DAZ on), `.init_array`, `main`, `exit
 `sceVideoOutRegisterBuffers2`); the console scales them to the TV's mode itself. The CPU
 renderer draws 960x540 (4K, 1080p) or 852x480 (1440p) and `console_host::host::TiledScaler`
 writes the 64 KiB 128x128 blocks in address order (write-combined memory) on the render
-thread pool. Size: `sceVideoOutGetResolutionStatus` when it reports the output mode, else
-3840x2160, falling back to 2560x1440 and 1920x1080 if registration fails.
+thread pool. Size: the Display settings' Resolution (below; Auto = 3840x2160), falling back
+to 2560x1440 and 1920x1080 if registration fails.
 
 **120 Hz.** As PS5_Vulkan measured on hardware (its `driver/ps5vk_wsi.c`, jobs r51/r92):
 the title must declare high frame rate in `param.json` (`attribute3` `0x80040`, else
@@ -132,6 +132,42 @@ VideoOut refuses with `0x80290016`); on a fresh handle, before the flip rate and
 is measured (`sceVideoOutWaitVblank` x30) and mode 1 restored unless it is ~8.3 ms. Flips
 are at vblank (`sceVideoOutSubmitFlip` mode 1, flip rate 0 = every vblank). The game keeps
 its 60 Hz tick; the extra frames are the front end's interpolated rendering.
+
+**Output mode (Display settings).** What a PS5 title can and cannot control, from
+PS5_Vulkan's hardware measurements (`docs/HARDWARE_FINDINGS.md` 2026-09-26 R92, 2026-10-04,
+2026-10-10) and the public stubs:
+
+| | Controllable by the app? |
+|---|---|
+| Resolution of the HDMI signal (4K / 1440p / 1080p) | **No.** It is the console's setting (Settings > Screen and Video > Video Output > Resolution). `sceVideoOutGetResolutionStatus` reports 3840x2160 whatever the TV receives; VideoOut scales every buffer size to the signal. The `sceVideoOutSys*` / `*OutputMode_` exports that might set it are system-only and undocumented (no known signature). |
+| Refresh rate: 119.88 Hz or 59.94 Hz | **Yes**, `sceVideoOutConfigureOutput` mode 15 or 1 (no other selector is accepted: 0-63 probed), only with `attribute3` 0x80040 in `param.json`, and only when the console's present output has a 120 Hz format: `sceVideoOutIsOutputSupported(15)` = 1. The console then picks the 120 Hz signal itself (it switched a 1440p monitor to `1440P_11988` when set to 1440p; at 1080p on that monitor it answered 0). |
+| Size of the scanned-out buffers (3840x2160, 2560x1440, 1920x1080) | **Yes** (`sceVideoOutRegisterBuffers2`); each fills the screen. |
+
+So the owner's case (a monitor with 1080p120 and 1440p120 but no 4K120, console resolution
+on Automatic/4K) comes up as 1080p at 120 Hz: the console, not the game, drops to 1080p for
+120 Hz. Setting the console's Video Output > Resolution to 1440p gives 1440p at 120 Hz.
+
+The Display page on consoles (`WinInfo::console`) therefore hides Window mode, VSync and
+Frame cap, and its two output rows mean:
+
+- **Resolution**: the scan-out buffer size; Auto (the default) = the largest, shown as
+  `Auto (3840x2160)` — the output in use, no longer the CPU renderer's internal size
+  (which stays separate: `render_lines`, 540 or 480 lines). The description says the
+  console scales it to its own video output resolution, set in its Screen and Video settings.
+- **Refresh rate**: Auto (= 120 Hz when available) / 119.88 Hz / 59.94 Hz, shown with the
+  rate in use.
+
+The choice is `console_host::host::pick_output_mode` (unit-tested on the build machine):
+a fixed resolution takes its highest refresh; Auto prefers a 100 Hz+ mode over resolution
+(1440p120 over 4K60 on a list like the owner's monitor's), then the largest; a resolution or
+rate not offered falls back to Auto. On the PS5 the list is every buffer size at 59.94 Hz,
+plus 119.88 Hz when `IsOutputSupported(15)` said yes, so Auto = 3840x2160 at 120 Hz where
+the output allows 120 Hz. Both rows are saved in `config.toml` (`[video] resolution`,
+`refresh_mhz`), used when VideoOut is opened and applied at once when changed: the output
+is closed (59.94 Hz restored, buffers unregistered, flip event deleted) and reopened in the
+new mode, as PS5_Vulkan's WSI does (R53, ~0.3 s black). The game also restores 59.94 Hz when
+it quits. `mode-cycle.txt` in the save directory cycles through the modes every 5 s
+(testing in emulators).
 
 **Threads.** Rasteriser bands and the scaler run on a persistent pool
 (`console_host::host::Pool`, through `f2_engine`'s new `Renderer::render_soft_with`):
@@ -184,6 +220,12 @@ including thread-local destructors at thread exit (all but `available_parallelis
 Kyty lacks); the game boots from `/app0/data`, plays the intro and frontend at a steady
 60 fps (3840x2160 tiled buffers); the C hello runs its file probes and flips VideoOut
 buffers. shadPS4 runs PS4 titles only (use `tools/ps4/`).
+Output modes, 2026-10-11 (`--vblank-frequency 120`, logs): with `mode-cycle.txt` the game
+switched through all six modes twice (close/reopen each time: unregister, flip-event delete
+and close all return 0, 119.88 Hz re-selected and measured, render size following the
+buffer height: 960x540 for 2160/1080, 852x480 for 1440) while running at 108-120 fps; with
+`resolution = [2560, 1440]` in `config.toml` it opened at 2560x1440, 119.89 Hz. Kyty's vblank
+stays at the emulator's rate after `ConfigureOutput(1)`, so it cannot show the 60 Hz modes.
 
 ## GPU build (`--gpu`, experimental, untested on hardware)
 
@@ -215,6 +257,14 @@ memory`, Kyty's libc HLE), exactly as PS5_Vulkan's own titles do there (VULKAN.m
   match the PS4's (read defensively).
 
 ## Status / next steps (2026-10-11)
+
+- **Second hardware round** (owner's PS5, FW 11.40, kstuff-fpkg 1.13-dr-test6): the game
+  `.pkg` (PPSA99920) **runs well** (came up at 1080p120 on a monitor without 4K120). Its
+  settings showed desktop window options and "Auto (960x540)" and Resolution did nothing:
+  fixed by the console Display page and runtime output-mode switching above, package version
+  01.001.000 (installs over 01.000.000). The PS4 enhanced package still crashes:
+  `tools/ps4/build-pro-bisect.sh` (tools/ps4/README.md). Next: the owner's results for the
+  bisect packages and for switching modes on hardware.
 
 - **Emulated TLS: done** for PS4 and PS5 (custom target from `tools/ps4/console-target.py`,
   `-Zbuild-std`, `crates/console-host/csrc/emutls.c`; the converter TLS patch is gone). No

@@ -99,3 +99,35 @@ Quick reading: 1 fails -> the packaging/loader path on this console (not the por
 1 works but 2 fails before "main entered" -> Rust start-up/TLS; 2 works but 3 fails ->
 the game itself (klog shows the last step); 4 fails -> PS4 packaging/start-up;
 5 works but 6 fails -> the Pro/7-CPU/auth-info settings.
+
+
+Round 3 (after your second report)
+==================================
+
+PS5-3-frogger-v2.pkg   PS5   PPSA99920   the game, version 01.001.000
+  Same title ID as PS5-3-frogger.pkg, higher version: it installs over it (your saves and
+  config.toml in /data/frogger2 stay). What changed: the Settings > Display page.
+
+  - Window mode, VSync and Frame cap are gone (the PS5 is always fullscreen).
+  - Resolution now shows the output in use ("Auto (3840x2160)"), not the internal render
+    size (the old "Auto (960x540)"), and switching it takes effect at once (about half a
+    second of black while VideoOut is reopened).
+  - New: Refresh rate (Auto / 119.88 Hz / 59.94 Hz), also applied at once.
+  Both are saved in config.toml.
+
+  What the PS5 lets a game choose, and what it does not: a game can choose 120 Hz or 60 Hz
+  and the size of the picture it sends; it cannot choose the resolution of the HDMI signal.
+  That is the console's own setting, Settings > Screen and Video > Video Output >
+  Resolution, and the PS5 scales the game's picture to it. With Resolution on Automatic and
+  a monitor that has no 4K at 120 Hz, the console itself drops to 1080p for 120 Hz games,
+  which is the 1080p120 you saw. For 1440p at 120 Hz set that console setting to 1440p.
+  The game's Resolution row picks the picture size it sends (3840x2160 / 2560x1440 /
+  1920x1080; Auto = the largest); matching it to your console setting (2560x1440 for 1440p)
+  saves the console a scaling step but looks nearly the same.
+
+  Please report: does the Display page look right, does switching Resolution and Refresh
+  rate work (picture comes back, monitor OSD shows the expected rate), and what the monitor
+  OSD shows with the console set to 1440p.
+
+PS4-Pro-bisect/   five PS4 packages that each change one thing of the crashing
+  PS4-6-frogger-enhanced.pkg; see PS4-Pro-bisect/README.txt.

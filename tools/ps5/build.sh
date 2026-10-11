@@ -71,8 +71,9 @@ case "$KIND" in
     hello) TITLE="Frogger 2 PS5 test 1: C hello"; TITLE_ID="PPSA99922"; LABEL="FROGGER2HELLOTST" ;;
 esac
 CONTENT_ID="UP9000-${TITLE_ID}_00-${LABEL}"
-# Application version (param.json NN.NNN.NNN); bump for updates over an installed copy.
-VERSION="01.000.000"
+# Application version (param.json NN.NNN.NNN); bump for updates over an installed copy
+# (01.001.000: output-mode settings, installs over the first hardware-test package).
+VERSION="${F2_PS5_VERSION:-01.001.000}"
 # PS5_Vulkan revision whose tooling/native this was written against (libc.prx is checked
 # by hash below, so another revision fails loudly if the runtime changed).
 PS5VK_REV="252bf91"
