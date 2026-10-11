@@ -43,6 +43,20 @@ pub fn util_sqrt(num: u32) -> u32 {
     let n = num as f32;
     let bits = ((n.to_bits() as i32).wrapping_sub(0x3F80_0000) >> 1).wrapping_add(0x3F80_0000);
     let retval = f32::from_bits(bits as u32);
+    // Phase 3S: `retval` is a positive normal float in [2^-63, 65536] for every `num`, so
+    // `retval * 65536` is exact in `f32` and lies in [0, 2^32]: the original's `double`
+    // product and `_ftol` (`ftol`) give the same integer as an `f32` multiply and a
+    // truncating `f32 -> i64` conversion (no `f64` work on the VR4300). Tested against
+    // [`util_sqrt_f64`] on a dense sweep of `u32`.
+    (retval * 65536.0) as i64 as u32
+}
+
+/// [`util_sqrt`] as written in the original (`double` product, `_ftol`), for tests.
+#[inline]
+pub fn util_sqrt_f64(num: u32) -> u32 {
+    let n = num as f32;
+    let bits = ((n.to_bits() as i32).wrapping_sub(0x3F80_0000) >> 1).wrapping_add(0x3F80_0000);
+    let retval = f32::from_bits(bits as u32);
     ftol(retval as f64 * 65536.0) as u32
 }
 
@@ -235,6 +249,18 @@ mod tests {
             assert_eq!(arccos(x), arccos_float(x), "arccos({x})");
         };
         (-40_000..=40_000).for_each(check);
+        // util_sqrt: every u32 below 2^22, near every power of two, and a dense stride.
+        let us = |x: u32| assert_eq!(crate::util_sqrt(x), crate::util_sqrt_f64(x), "util_sqrt({x})");
+        (0..1u32 << 22).for_each(us);
+        for b in 0..32 {
+            let p = 1u64 << b;
+            for d in 0..2048u64 {
+                us((p + d).min(u32::MAX as u64) as u32);
+                us(p.saturating_sub(d) as u32);
+            }
+        }
+        (0..=u32::MAX).step_by(1009).for_each(us);
+        us(u32::MAX);
         let mut x = i32::MIN;
         while let Some(n) = x.checked_add(9_973) {
             check(x);

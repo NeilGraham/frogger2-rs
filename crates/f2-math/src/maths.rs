@@ -380,13 +380,10 @@ fn normalise_components(comps: &mut [i32], num: u32, l: u32, s: u32) {
     if m == 0 {
         return;
     }
-    // find top bit
-    let mut n = num as i32;
-    let mut tb: i32 = 31;
-    while (n as u32) & 0x8000_0000 == 0 {
-        n = n.wrapping_shl(1);
-        tb -= 1;
-    }
+    // find top bit (phase 3S: `leading_zeros` instead of the shift loop; `num != 0` here,
+    // since `num == 0` gives `l == utilSqrt(0) == 0` and returned above)
+    debug_assert!(num != 0);
+    let tb: i32 = 31 - num.leading_zeros() as i32;
     if tb > 18 {
         let s = (30 - tb) as u32;
         let d = (tb - 18) as u32;
