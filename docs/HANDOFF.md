@@ -1,0 +1,54 @@
+# Handoff — console ports in flight (2026-10-11)
+
+Resume point for a new session if work was cut off (e.g. by a rate limit). Read this, then
+`docs/N64-PLAN.md`, `tools/ps4/README.md`, `tools/ps5/README.md`, `tools/n64/README.md`.
+
+## Branches
+| Branch | State |
+|---|---|
+| `dev` | base; nothing from this work merged yet |
+| `feature/ps5-pkg` | PS4 fPKG + native PS5 + GPU paths (`ccdb5bd` = merge-prepped: fmt/clippy/CI fixed). Not merged to `dev` — owner decides. |
+| `feature/n64` | branched from `feature/ps5-pkg`; N64 plan + phases 1A, 1B, 2G merged (head `7087378`) |
+
+Agent worktree branches (`.claude/worktrees/agent-*`, branch `worktree-agent-<id>`); each
+agent was told to commit WIP and keep a "Status / next steps" section in its docs:
+
+| Branch suffix | Task | Status at handoff | Next |
+|---|---|---|---|
+| `adc96df12c4758e62` | N64 1C: asset packer `tools/f2-n64pack`, codec `crates/f2-n64z` (F2Z), `research/n64-compression.md` | 14 commits ahead of `feature/n64`; was measuring F2Z decode speed in ares | **Merge conflicts** with `feature/n64` in `.gitignore`, `Cargo.lock`, `Cargo.toml`, `crates/frogger-n64/{Cargo.toml,src/lib.rs}`, `tools/n64/README.md` — resolve (keep both sides; frogger-n64 is its own workspace) |
+| `a7fca4ab703e18cb9` | N64 2R: RSP renderer (custom rspq ucode / GL RSP pipeline), `crates/f2-n64fmt`, `docs/n64-model-format.md` | in progress | plug into `crates/frogger-n64/src/render_cpu.rs` interface (`reset`/`convert_image`/`upload`/`submit`) |
+| `acca0b3ce23c50ba2` | N64 2G: playable game loop (merged), then fixing **water red splotches** + **empty story book** (user-reported in ares) | fixes in progress | likely causes: RDP additive blend wraps instead of clamping; procedural water texture conversion; book page textures > 4 KB TMEM / 2D path missing |
+| `a90c2347f335f8b21` | N64 3S: f2-game speed on the VR4300 (sim = 10–14 ms/tick, need ≤ ~5) with bit-identical parity | in progress | exact rsin/rcos tables, no per-tick list copies, cached per-level data; parity: 3 demo traces + `f2-parity check --corpus all` identical |
+| `a0d5f7cb14e199305` | PS4/PS5 real-hardware fixes + hardware test ladder | in progress | see below |
+
+## PS4 / PS5 real-hardware failures (owner's PS5: FW 11.40, ShadowMountPlus 1.7beta5-fix1, kstuff-fpkg-1.13-dr-test6)
+- PS4 fPKG: installs, launches, then **CE-108255-1** (app crash); no log found.
+- Native PS5 folder on /mnt/ext1 via ShadowMountPlus: **CE-107694-7** (can't start).
+- Diagnosis: (1) our PS5 build uses native static TLS (patched converter) while every working
+  PS5 title uses **emulated TLS** (`-femulated-tls`, `__emutls_get_address`) → rebuild std with a
+  custom target `tls-model: emulated` (nightly `-Zbuild-std`), drop the TLS converter patch;
+  (2) PS5 titles need **`sce_sys/icon0.dds`** (+ pic DDS) to launch; (3) owner's kstuff supports the
+  new **native PS5 fPKG** format → build `.pkg` with drakmor/LibProsperoPkg (GPL-3, .NET; used by
+  knutwurst/ps5-ultrapack, verified FW 11.60 + kstuff-lite 1.13); (4) PS4: make the CPU renderer
+  the default (Piglet opt-in), revert to conservative param.sfo ATTRIBUTE / default authinfo
+  (enhanced variant separate), emulated TLS too, klog-first logging.
+- Deliverable: `C:\Users\<you>\Desktop\Frogger2-HW-Test\` test ladder (PS5 C hello →
+  PS5 Rust smoke → PS5 game .pkg/folder/.ffpkg/.ffpfsc; PS4 smoke → PS4 game conservative → PS4
+  game enhanced), README with klog capture steps. Reference project: Nazky/UnleashedRecomp-Prospero
+  (clone at `~/opt/ref/UnleashedRecomp-Prospero`).
+
+## N64 facts so far
+- Toolchain: libdragon preview `39d0d60` at `~/opt/libdragon`, installed `N64_INST=~/opt/n64root/opt/libdragon`;
+  Rust targets n32 and objects are relabelled to o64 (`tools/n64/n32-to-o64.py`); emulator ares v148
+  (`C:\Users\<you>\Emulation\emulators\ares-v148`), harness `tools/n64/run-ares.sh`, scratch `C:\f2-n64test\`.
+- Playable in ares (frontend → Garden 1, sfx, music) at 3.5–4 fps; sim 35–45 % real time.
+- Faithful CPU render path ≈ 6100 cycles/tri (≈256 tris/frame at 60); game needs 450–1500 → RSP renderer (2R).
+- RAM: peak 4.2 MiB of 6.1 MiB free heap. Level loads 5–7 s.
+- Not done: FMV, saves, 64 MB pack integration (1C), all-levels pass, perf to 30/60 fps.
+
+## Tool locations outside the repo
+`~/opt/openorbis` (PS4 toolchain), `~/opt/libssl11` (PkgTool's OpenSSL 1.1), `~/opt/ps5-payload-sdk`
+(v0.43), `~/opt/PS5_Vulkan` (+ `.deps`), `~/opt/zlib`, `~/opt/ps5-native-tool`, `~/opt/n64root`,
+`~/opt/libdragon`, `~/opt/ref/*`. Emulator scratch dirs: `C:\f2-ps4test`, `C:\f2-ps5test`,
+`C:\f2-ps5vk`, `C:\f2-ps4gl`, `C:\f2-n64test`. User artwork: `game-data/ps4-art/boxart.png`
+(`F2_ICON_CROP_X=85`).
