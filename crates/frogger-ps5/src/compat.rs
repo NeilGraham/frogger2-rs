@@ -184,8 +184,9 @@ mod unused_posix {
     }
 }
 
-/// Log lines go to the title's stdout (`printf`): on the console that reaches the kernel
-/// log (klogsrv) as PS5 homebrew titles' stdout/stderr do; KytyPS5 prints guest `printf`.
+/// Log lines also go to the title's stdout (`printf`), which KytyPS5 prints; they reach the
+/// console's kernel log through `sceKernelDebugOutText` (console_host::sce::log) in any case,
+/// so on hardware a line may show up twice in klog if the title's stdout is routed there too.
 pub fn log_sink(line: &CStr) {
     unsafe { printf(c"%s".as_ptr(), line.as_ptr()) };
 }

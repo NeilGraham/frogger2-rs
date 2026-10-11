@@ -287,6 +287,7 @@ fn open_present() -> Result<Box<dyn Present>, String> {
 #[cfg(not(feature = "smoke"))]
 #[no_mangle]
 pub extern "C" fn main(_argc: c_int, _argv: *const *const c_char) -> c_int {
+    sce::klog(c"[frogger2] main entered (PS5 game)\n");
     sce::set_log_sink(crate::compat::log_sink);
     sce::main(&Platform { name: "PS5", notify, open_present })
 }
@@ -294,6 +295,7 @@ pub extern "C" fn main(_argc: c_int, _argv: *const *const c_char) -> c_int {
 #[cfg(feature = "smoke")]
 #[no_mangle]
 pub extern "C" fn main(_argc: c_int, _argv: *const *const c_char) -> c_int {
+    sce::klog(c"[frogger2] main entered (PS5 smoke test)\n");
     sce::set_log_sink(crate::compat::log_sink);
     crate::smoke::run()
 }

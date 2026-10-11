@@ -21,6 +21,9 @@ extern int main(int, char **, char **);
 /* libSceLibcInternal: sets up the system libc (environment, program name) from the
  * process parameters; PS5_Vulkan's app_crt.cpp calls it first, as on hardware. */
 extern void _init_env(void *process_parameters);
+/* libkernel: a line to the kernel log (klog). Used before anything else runs, so a start-up
+ * that dies early still shows how far it got. */
+extern int sceKernelDebugOutText(int channel, const char *text);
 
 static void run_forward(init_fn *first, init_fn *last) {
     if (first && last)
@@ -44,13 +47,16 @@ __attribute__((visibility("default"), noreturn)) void _start(void *process_param
      * float maths (and the deterministic simulation) expect IEEE behaviour as on the PC. */
     unsigned int mxcsr = 0x1f80;
     __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
+    sceKernelDebugOutText(0, "[frogger2] _start entered\n");
     _init_env(process_parameters);
+    sceKernelDebugOutText(0, "[frogger2] _init_env done\n");
     int argc = *(int *)process_parameters;
     char **argv = (char **)((char *)process_parameters + 8);
     if (loader_teardown)
         atexit(loader_teardown);
     atexit(_fini);
     _init();
+    sceKernelDebugOutText(0, "[frogger2] constructors done, calling main\n");
     exit(main(argc, argv, 0));
 }
 

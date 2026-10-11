@@ -14,6 +14,11 @@ publish = false
 # The staticlib is linked by `tools/ps4/build-pkg.sh` with the OpenOrbis toolchain.
 crate-type = ["staticlib", "rlib"]
 
+[features]
+# `main` runs a small Rust std smoke test (klog lines, thread locals, threads, files) and
+# shows a colour instead of the game: `tools/ps4/build-pkg.sh --smoke` (title FROG20001).
+smoke = []
+
 [dependencies]
 # Pads, scalers, data dirs, the std runtime shims and heap: shared with the PS5 host.
 console-host = { path = "../console-host" }
