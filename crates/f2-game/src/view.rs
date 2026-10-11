@@ -743,19 +743,26 @@ impl Game {
     /// The root object's `OBJECT_FLAGS_CLIPPED` as `TransformObject` sets it (only the
     /// root's flag is ever read, by `CopyActorList`).
     fn transform_root_object(&mut self, id: ActorId, no_clip: bool) {
-        let Some(view) = self.specfx.view else { return };
+        let Some(view) = self.specfx.view.as_ref() else { return };
         let a = &self.actor2.actors[id].actor.actual_actor;
-        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)).cloned() else { return };
+        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return };
         let Some(root) = model.root_object.as_ref() else { return };
         let animated = a.animation.is_some();
         let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
         let p = a.placement;
         let mut last = p.last_keys;
         let (rotmat, scale) = object_local_k(root, animated, time, &mut last, p.scale, [1.0; 3]);
-        let top = actor_top(p.pos, &p.q_rot);
-        let m1 = mtx_cat(&rotmat, &top);
-        let obj = mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1);
-        let clipped = root.bbox.as_ref().is_some_and(|b| view.check_bounding_box(b, &obj)) && !no_clip;
+        // Phase 3S: the object matrix only feeds the (pure) bounding-box test, whose result
+        // is unused without a box or with `noClip`: computed only when it matters.
+        let clipped = match root.bbox.as_ref() {
+            Some(b) if !no_clip => {
+                let top = actor_top(p.pos, &p.q_rot);
+                let m1 = mtx_cat(&rotmat, &top);
+                let obj = mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1);
+                view.check_bounding_box(b, &obj)
+            }
+            _ => false,
+        };
         let a = &mut self.actor2.actors[id].actor.actual_actor;
         a.placement.last_keys = last;
         if clipped {
