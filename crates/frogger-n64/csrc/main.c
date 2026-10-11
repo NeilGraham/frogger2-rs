@@ -846,14 +846,14 @@ static void prof_cb(int ovfl) {
     if (j < PROF_BUCKETS && prof_ra[j] < 0xffff) prof_ra[j]++;
 }
 
+/* Every non-empty bucket (address order; prof.py aggregates them per function). Buckets with
+ * a single sample are skipped once more than 1500 lines were printed. */
 static void prof_top(const char *what, uint16_t *h) {
-    for (int k = 0; k < 400; k++) {
-        uint32_t best = 0, bi = 0;
-        for (uint32_t i = 0; i < PROF_BUCKETS; i++)
-            if (h[i] > best) { best = h[i]; bi = i; }
-        if (!best) break;
-        debugf("PROF %s %08lx %lu\n", what, (unsigned long)(PROF_BASE + (bi << PROF_SHIFT)), (unsigned long)best);
-        h[bi] = 0;
+    int lines = 0;
+    for (uint32_t i = 0; i < PROF_BUCKETS; i++) {
+        if (!h[i] || (h[i] < 2 && lines > 1500)) continue;
+        debugf("PROF %s %08lx %u\n", what, (unsigned long)(PROF_BASE + (i << PROF_SHIFT)), h[i]);
+        lines++;
     }
 }
 

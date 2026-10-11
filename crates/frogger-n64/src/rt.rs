@@ -71,13 +71,13 @@ static HEAP: LibdragonHeap = LibdragonHeap;
 
 /// Fixed-size formatting buffer (usable without the heap, e.g. in the panic handler).
 pub struct LineBuf {
-    buf: [u8; 512],
+    buf: [u8; 1024],
     len: usize,
 }
 
 impl LineBuf {
     pub const fn new() -> Self {
-        LineBuf { buf: [0; 512], len: 0 }
+        LineBuf { buf: [0; 1024], len: 0 }
     }
     pub fn as_bytes(&self) -> &[u8] {
         &self.buf[..self.len]

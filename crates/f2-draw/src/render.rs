@@ -76,6 +76,11 @@ pub fn snapshot(game: &Game) -> Vec<Option<Snap>> {
 
 fn lerp_snap(prev: Option<&Snap>, cur: Snap, alpha: f32) -> Snap {
     let Some(p) = prev else { return cur };
+    // Not moved since the last tick: `quat_slerp(q, q, alpha)` is `q` up to rounding.
+    #[cfg(feature = "lean")]
+    if p.pos == cur.pos && p.q == cur.q {
+        return cur;
+    }
     // Teleports (respawn, level reset) are not interpolated.
     let d = sub(cur.pos, p.pos);
     if dot(d, d) > 400.0 * 400.0 {

@@ -37,6 +37,10 @@ pub struct R3dFrameStats {
     pub tex_loads: u32,
     /// C0 ticks of the r3d CPU side (draw queueing + flush incl. the CPU segments).
     pub ticks: u32,
+    /// Of which: queueing the recorded draws (matrices, culling) / flushing the lists to
+    /// the RSP queue (without the CPU segments drawn between them).
+    pub queue_ticks: u32,
+    pub flush_ticks: u32,
 }
 
 pub struct R3dLevel {
@@ -209,13 +213,18 @@ impl R3dLevel {
                 cpu.draw_segment(seg);
             }
         } else {
+            let tq = rt::ticks();
             self.r.begin_frame(&view);
             self.queue(&sink, cpu, &mut st);
+            let tf = rt::ticks();
+            st.queue_ticks = tf.wrapping_sub(tq);
+            let seg0 = cpu.stats.submit_ticks;
             self.r.flush(|l| {
                 if l != List::Background {
                     cpu.draw_segment(segment_of(l));
                 }
             });
+            st.flush_ticks = rt::ticks().wrapping_sub(tf).wrapping_sub(cpu.stats.submit_ticks.wrapping_sub(seg0));
             st.queued_tris = self.r.queued_tris;
             st.sent_tris = self.r.sent_tris;
             let c = self.r.stats();

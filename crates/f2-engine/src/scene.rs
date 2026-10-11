@@ -8,7 +8,7 @@
 
 use crate::prelude::*;
 
-use crate::anim::{for_each_object, xform_actor, Actor};
+use crate::anim::{for_each_object, xform_actor, xform_actor_cached, Actor};
 use crate::math::*;
 use crate::textures::{TexHandle, TextureRegistry};
 use f2_formats::objbank::{Mesh, Model, Object};
@@ -508,6 +508,8 @@ pub struct MeshDraw {
 pub struct MeshSink {
     pub draws: Vec<MeshDraw>,
     pub mats: Vec<Mat4>,
+    /// The landscape model's key-0 object matrices (static: computed once per model).
+    landscape: Option<(u32, Vec<Mat4>)>,
 }
 
 impl MeshSink {
@@ -527,9 +529,9 @@ impl MeshSink {
 /// vertex work. Objects without a mesh are skipped; whether a mesh has drawable faces is
 /// the back end's business. `Glow` (never drawn on retail PC) is dropped.
 pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink: &mut MeshSink) {
-    let mats = xform_actor(model, actor);
     let fade = actor.xlu < 1.0;
     let extra = actor.extra_flags;
+    let mats = xform_actor_cached(model, actor);
     let base = MeshDraw {
         model: model.id,
         object: 0,
@@ -548,7 +550,7 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
         }
         let frame = object_frame(extra, fade);
         if frame != Frame::Glow {
-            sink.push(MeshDraw { object: MESH_SKIN, frame, ..base }, &mats);
+            sink.push(MeshDraw { object: MESH_SKIN, frame, ..base }, mats);
         }
     } else {
         for_each_object(model, |i, o| {
@@ -565,8 +567,10 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
 
 /// [`draw_landscape`] recorded into a [`MeshSink`].
 pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink) {
-    let mut actor = Actor { animated: false, ..Default::default() };
-    let mats = xform_actor(model, &mut actor);
+    let (_, mats) = match sink.landscape.take() {
+        Some(l) if l.0 == model.id => l,
+        _ => (model.id, xform_actor(model, &mut Actor { animated: false, ..Default::default() })),
+    };
     for_each_object(model, |i, o| {
         if o.mesh.is_none() {
             return;
@@ -585,6 +589,7 @@ pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink)
         };
         sink.push(d, &mats[i..i + 1]);
     });
+    sink.landscape = Some((model.id, mats));
 }
 
 /// Port of `ConvertObjectToLandscape` + `DrawLandscape` (mdxLandscape.cpp:63,

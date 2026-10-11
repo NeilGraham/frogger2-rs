@@ -106,6 +106,9 @@ struct Window {
     rsp_sent: u32,
     rsp_groups: u32,
     tex_loads: u32,
+    /// r3d: queueing the recorded draws / flushing the lists (CPU).
+    r3d_queue: u32,
+    r3d_flush: u32,
 }
 
 /// The renderer side of the loaded level, outside [`App`] so the data source can free it
@@ -825,6 +828,8 @@ impl App {
             w.rsp_sent += l.r3d.stats.sent_tris;
             w.rsp_groups += l.r3d.stats.groups;
             w.tex_loads += l.r3d.stats.tex_loads;
+            w.r3d_queue += l.r3d.stats.queue_ticks;
+            w.r3d_flush += l.r3d.stats.flush_ticks;
         }
         w.max_frame = w.max_frame.max(t2.wrapping_sub(t0));
         let span = t2.wrapping_sub(self.win_start);
@@ -840,7 +845,7 @@ impl App {
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms), worst frame {} ms; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -858,6 +863,8 @@ impl App {
             ms(w.build / f),
             ms(w.submit / f),
             ms(w.fb_wait / f),
+            ticks_to_us(w.r3d_queue / f),
+            ticks_to_us(w.r3d_flush / f),
             ms(w.max_frame),
             rsp / 10,
             rsp % 10,

@@ -689,10 +689,14 @@ impl R3d {
     pub fn draw_skinned(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         let first = self.bones.len() as u32;
+        // Per-object fog depth: `W` of the root bone's origin (only needed with fog).
+        let w0 = match (self.view.fog, bones.first()) {
+            (Some(_), Some(b0)) if p.object_fog => clip_matrix(b0, &self.view, 1.0, p.no_clip)[3][3],
+            _ => 0.0,
+        };
         for b in bones {
             let m = clip_matrix(b, &self.view, res.pos_scale, p.no_clip);
             let mut u = draw_uniform(&m, p);
-            let w0 = bones.first().map_or(0.0, |b0| clip_matrix(b0, &self.view, 1.0, p.no_clip)[3][3]);
             draw_fog(&mut u, &self.view, p, w0);
             self.bones.push(u);
         }

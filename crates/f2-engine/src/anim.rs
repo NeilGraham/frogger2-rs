@@ -40,6 +40,26 @@ pub struct Actor {
     /// `SetObjectGouraudValues(r, g, b)` (0.0..=1.0): replaces the vertex colours' RGB
     /// (the original writes the mesh's `gouraudColors`).
     pub gouraud: Option<[f32; 3]>,
+    /// The last [`xform_actor`] result and its inputs ([`xform_actor_cached`]: mesh-sink
+    /// back ends skip the hierarchy walk while the pose does not change).
+    pub pose: PoseCache,
+}
+
+/// Inputs and result of the last [`xform_actor`] of an [`Actor`].
+#[derive(Clone, Debug, Default)]
+pub struct PoseCache {
+    key: Option<PoseKey>,
+    pub mats: Vec<Mat4>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PoseKey {
+    model: u32,
+    pos: Vec3,
+    q_rot: Quat,
+    scale: Vec3,
+    anim_time: f32,
+    animated: bool,
 }
 
 impl Default for Actor {
@@ -55,6 +75,7 @@ impl Default for Actor {
             last_keys: Vec::new(),
             override_tex: None,
             gouraud: None,
+            pose: PoseCache::default(),
         }
     }
 }
@@ -237,6 +258,18 @@ pub fn xform_actor(model: &Model, actor: &mut Actor) -> Vec<Mat4> {
         transform_object(s, &top, [1.0; 3], &mut c);
     }
     out
+}
+
+/// [`xform_actor`] into `actor.pose.mats`, recomputed only when an input changed (model,
+/// position, rotation, scale, animation time or animated flag). The result is the same as
+/// [`xform_actor`]'s: the keyframe search hints it skips updating only speed up the search.
+pub fn xform_actor_cached<'a>(model: &Model, actor: &'a mut Actor) -> &'a [Mat4] {
+    let key = PoseKey { model: model.id, pos: actor.pos, q_rot: actor.q_rot, scale: actor.scale, anim_time: actor.anim_time, animated: actor.animated };
+    if actor.pose.key != Some(key) {
+        let mats = xform_actor(model, actor);
+        actor.pose = PoseCache { key: Some(key), mats };
+    }
+    &actor.pose.mats
 }
 
 /// World-space bounding box `(min, max)` of every mesh vertex of a posed actor

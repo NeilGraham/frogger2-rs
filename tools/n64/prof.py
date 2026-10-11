@@ -68,5 +68,5 @@ for name, lst in hist.items():
             print(f"{n * 100 / total:5.1f}% {s}")
     for what, agg in (("enclosing function", outer), ("innermost inlined", inner)):
         print(f"== {name} by {what} (top buckets; % of {total} samples)")
-        for s, n in agg.most_common(25):
+        for s, n in agg.most_common(45):
             print(f"{n * 100 / total:5.1f}% {s}")
