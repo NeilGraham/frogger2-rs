@@ -42,6 +42,12 @@ Use your own `N64TEST` directory and ROM name when other agents run ares at the 
 ## Prerequisites
 - libdragon **preview** (pinned `39d0d60`) + its toolchain at `N64_INST`
   (default `~/opt/n64root/opt/libdragon`: GCC 16 `mips64-elf`, `mkdfs`, `mkasset`, `n64tool`…).
+- Recommended (phase 3P): the libdragon variant with a 2 x 32 KiB rspq ring,
+  `tools/n64/libdragon-3p.sh` (copies the prefix to `~/opt/n64root-3p` and the source to
+  `~/opt/libdragon-3p`, applies `libdragon-3p.patch`, installs; the stock install is left
+  alone). `build.sh` uses `~/opt/n64root-3p/opt/libdragon` when it exists (override with
+  `N64_INST`) and prints a NOTE with the stock ring (the CPU then waits for the RSP: ~7 ms
+  per Garden frame). After switching prefixes, `rm -rf target/n64/build` (C objects).
 - Rust nightly with `rust-src`: `rustup toolchain install nightly --component rust-src`.
 - ares (v148 tested) on the Windows side, reached through WSL interop.
 
@@ -59,7 +65,16 @@ cargo +nightly test --manifest-path crates/frogger-n64/Cargo.toml   # host: port
 # host render of the N64 drawing path (320x240, CPU rasteriser; --n64 = texel round trip):
 cargo +nightly run --release --manifest-path crates/frogger-n64/Cargo.toml --example host_shot -- GAME_DIR out.png garden|book [TICKS] [--n64] [--cmds]
 ```
-Status / next steps: `research/n64-performance.md` §3I (end).
+Status / next steps: `research/n64-performance.md` §3P (end; §3I for the pack/ROM).
+Link: `tools/n64/Makefile` generates `build/f2.ld` = libdragon's `n64.ld` with the per-frame
+hot code placed first in `.text` (`.text.f2hot_d`, `.text.f2hot_q`, `.text.f2hot_f` and the
+listed libdragon functions, `HOT_C`): the VR4300's 16 KiB I-cache is direct-mapped, and
+link-order placement made the same frame cost 2.6 or 9.6 ms after unrelated edits. Rust
+functions join a region with `#[cfg_attr(target_vendor = "nintendo64", link_section =
+".text.f2hot_q")]`; keep each region under 16 KiB (`__f2_hot_*` symbols in the map).
+`build.sh` also localises compiler-builtins' weak `memcpy`/`memset`/… so everything links
+newlib's.
+
 `build.sh` steps: cargo (`--target tools/n64/mips-nintendo64-none.json`, target dir
 `target/n64/cargo`, features from `F2N64_FEATURES`) → `n32-to-o64.py` + `ranlib` → DFS root
 `target/n64/filesystem` → `make -f tools/n64/Makefile` (n64sym, n64elfcompress, n64tool
@@ -101,7 +116,9 @@ Log lines (debugf → `C:\f2-n64test\run.txt`): `perf [W-L] ...` every 5 s (fps,
 dropped ticks, per-frame sim and draw time split into draw loop / textures / CPU batches /
 framebuffer wait, RSP and RDP busy %, `Game::tick` µs, audio poll µs, CPU triangles, r3d
 draws / triangles queued and sent / batches / texture loads, audio voices, music),
-`heap [W-L] ...` (Rust live/peak, libdragon heap used/total, N64 texture bytes; level peak on
+`app: frame pacing N fps` (phase 3P: `display_set_fps_limit` from the running tick/frame
+costs, see `App::pace`; `pacing N fps` in the perf line, 0 = unlimited), the perf line's
+`r3d queue`/`flush` µs and `(N reused)` draws, `heap [W-L] ...` (Rust live/peak, libdragon heap used/total, N64 texture bytes; level peak on
 every level change), `heap step` (per-step memory of a level load), `game: ...` on mode or
 pad changes, `app: level ... loaded in N ms`, `app: video ...`, `app: save game ...`,
 `ALLOC FAILED` (heap state when an allocation fails).

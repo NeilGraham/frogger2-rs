@@ -40,6 +40,41 @@ pub struct Actor {
     /// `SetObjectGouraudValues(r, g, b)` (0.0..=1.0): replaces the vertex colours' RGB
     /// (the original writes the mesh's `gouraudColors`).
     pub gouraud: Option<[f32; 3]>,
+    /// The last [`xform_actor`] result and its inputs ([`xform_actor_cached`]: mesh-sink
+    /// back ends skip the hierarchy walk while the pose does not change).
+    pub pose: PoseCache,
+}
+
+/// Inputs and result of the last [`xform_actor_cached`] of an [`Actor`].
+#[derive(Clone, Debug, Default)]
+pub struct PoseCache {
+    /// Changes whenever `mats` change (unique across actors, never 0 once computed): a back
+    /// end can reuse what it derived from matrices with the same stamp.
+    pub stamp: u32,
+    key: Option<PoseKey>,
+    /// The hierarchy with an identity matrix-stack top (depends on the model, scale and
+    /// animation time only) and its inputs.
+    local_key: Option<LocalKey>,
+    local: Vec<Mat4>,
+    pub mats: Vec<Mat4>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LocalKey {
+    model: u32,
+    scale: Vec3,
+    anim_time: f32,
+    animated: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PoseKey {
+    model: u32,
+    pos: Vec3,
+    q_rot: Quat,
+    scale: Vec3,
+    anim_time: f32,
+    animated: bool,
 }
 
 impl Default for Actor {
@@ -55,6 +90,7 @@ impl Default for Actor {
             last_keys: Vec::new(),
             override_tex: None,
             gouraud: None,
+            pose: PoseCache::default(),
         }
     }
 }
@@ -138,6 +174,7 @@ pub fn object_count(model: &Model) -> usize {
 }
 
 /// Visits every object in pre-order (the order `TransformObject`/`DrawObject` use).
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub fn for_each_object<'a>(model: &'a Model, mut f: impl FnMut(usize, &'a Object)) {
     fn walk<'a>(o: &'a Object, idx: &mut usize, f: &mut dyn FnMut(usize, &'a Object)) {
         f(*idx, o);
@@ -210,8 +247,18 @@ fn transform_object(o: &Object, top: &Mat4, parent_scale: Vec3, c: &mut Ctx) {
     rotmat[3][2] = translation[2] * a[2] * parent_scale[2];
 
     let m1 = mtx_cat(&rotmat, top);
-    let scalemat = gu_scale(scale[0] * a[0], scale[1] * a[1], scale[2] * a[2]);
-    c.out[me] = mtx_cat(&scalemat, &m1);
+    let s = [scale[0] * a[0], scale[1] * a[1], scale[2] * a[2]];
+    // Console fast path: a unit scale matrix leaves `m1` unchanged (up to the sign of zeros).
+    #[cfg(feature = "lean")]
+    if s == [1.0; 3] {
+        c.out[me] = m1;
+    } else {
+        c.out[me] = mtx_cat(&gu_scale(s[0], s[1], s[2]), &m1);
+    }
+    #[cfg(not(feature = "lean"))]
+    {
+        c.out[me] = mtx_cat(&gu_scale(s[0], s[1], s[2]), &m1);
+    }
 
     // Children see the rotate/translate matrix only; the scale reaches them via
     // `parentScaleStack` (applied to their translation).
@@ -222,21 +269,78 @@ fn transform_object(o: &Object, top: &Mat4, parent_scale: Vec3, c: &mut Ctx) {
 
 /// Port of `XformActor` (mdxActor.cpp:547): returns `objMatrix` for every object in pre-order.
 pub fn xform_actor(model: &Model, actor: &mut Actor) -> Vec<Mat4> {
+    let mut out = Vec::new();
+    let top = actor_top(actor);
+    xform_into(model, actor, &top, &mut out);
+    out
+}
+
+/// The matrix-stack top of `XformActor`: rotation, then translation to the position.
+fn actor_top(actor: &Actor) -> Mat4 {
+    let transmat = gu_translate(actor.pos[0], actor.pos[1], actor.pos[2]);
+    mtx_cat(&quaternion_to_matrix(&actor.q_rot), &mtx_cat(&transmat, &IDENTITY))
+}
+
+/// [`xform_actor`] below matrix-stack top `top`, into `out` (resized to the object count).
+fn xform_into(model: &Model, actor: &mut Actor, top: &Mat4, out: &mut Vec<Mat4>) {
     let n = object_count(model);
     if actor.last_keys.len() != n {
         actor.last_keys = vec![[0; 3]; n];
     }
-    let mut out = vec![IDENTITY; n];
-    let transmat = gu_translate(actor.pos[0], actor.pos[1], actor.pos[2]);
-    let top = mtx_cat(&quaternion_to_matrix(&actor.q_rot), &mtx_cat(&transmat, &IDENTITY));
+    out.clear();
+    out.resize(n, IDENTITY);
     let animated = actor.animated && !model.animations.is_empty();
-    let mut c = Ctx { actor_scale: actor.scale, animated, time: actor.anim_time, last: &mut actor.last_keys, out: &mut out, idx: 0 };
-    transform_object(&model.root, &top, [1.0; 3], &mut c);
+    let mut c = Ctx { actor_scale: actor.scale, animated, time: actor.anim_time, last: &mut actor.last_keys, out, idx: 0 };
+    transform_object(&model.root, top, [1.0; 3], &mut c);
     // `TransformObject` recurses on `obj->next` with the same matrix-stack top.
     for s in &model.root_siblings {
-        transform_object(s, &top, [1.0; 3], &mut c);
+        transform_object(s, top, [1.0; 3], &mut c);
     }
-    out
+}
+
+/// A new matrix stamp ([`PoseCache::stamp`], `MeshDraw::stamp`; never 0).
+pub fn next_stamp() -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    let s = NEXT.fetch_add(1, Relaxed);
+    if s == 0 {
+        NEXT.fetch_add(1, Relaxed)
+    } else {
+        s
+    }
+}
+
+/// [`xform_actor`] for back ends that consume matrices only (the mesh sink), into
+/// `actor.pose.mats` and recomputed only when an input changed:
+/// - nothing changed (model, position, rotation, scale, animation time, animated flag):
+///   the last result;
+/// - only the position / rotation changed (moving, not re-animated actors, and every
+///   actor between ticks with interpolation): the cached hierarchy below an identity
+///   matrix-stack top times the new top, one matrix product per object;
+/// - else the whole hierarchy.
+///
+/// The keyframe search hints it skips updating only speed up the search. The second case
+/// associates the products differently from `XformActor` (`L x top` instead of the chain
+/// applied to `top`): equal up to float rounding.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+pub fn xform_actor_cached<'a>(model: &Model, actor: &'a mut Actor) -> &'a [Mat4] {
+    let key = PoseKey { model: model.id, pos: actor.pos, q_rot: actor.q_rot, scale: actor.scale, anim_time: actor.anim_time, animated: actor.animated };
+    if actor.pose.key == Some(key) {
+        return &actor.pose.mats;
+    }
+    let lkey = LocalKey { model: model.id, scale: actor.scale, anim_time: actor.anim_time, animated: actor.animated };
+    let mut pose = core::mem::take(&mut actor.pose);
+    if pose.local_key != Some(lkey) {
+        xform_into(model, actor, &IDENTITY, &mut pose.local);
+        pose.local_key = Some(lkey);
+    }
+    let top = actor_top(actor);
+    pose.mats.clear();
+    pose.mats.extend(pose.local.iter().map(|l| mtx_cat(l, &top)));
+    pose.key = Some(key);
+    pose.stamp = next_stamp();
+    actor.pose = pose;
+    &actor.pose.mats
 }
 
 /// World-space bounding box `(min, max)` of every mesh vertex of a posed actor

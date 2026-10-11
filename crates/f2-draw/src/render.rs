@@ -76,6 +76,11 @@ pub fn snapshot(game: &Game) -> Vec<Option<Snap>> {
 
 fn lerp_snap(prev: Option<&Snap>, cur: Snap, alpha: f32) -> Snap {
     let Some(p) = prev else { return cur };
+    // Not moved since the last tick: `quat_slerp(q, q, alpha)` is `q` up to rounding.
+    #[cfg(feature = "lean")]
+    if p.pos == cur.pos && p.q == cur.q {
+        return cur;
+    }
     // Teleports (respawn, level reset) are not interpolated.
     let d = sub(cur.pos, p.pos);
     if dot(d, d) > 400.0 * 400.0 {
@@ -242,6 +247,9 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
     r.view.near_clip = 10.0;
     r.view.far_clip = ctx.far_clip;
     r.update_animating_textures(game.act_frame_count);
+    // Console front ends refill the procedural textures themselves (straight into their
+    // texture format, without the RGBA8 registry copy).
+    #[cfg(not(feature = "lean"))]
     overlay::upload_proc_textures(r, game);
 
     if let Some(t) = ctx.backdrop {

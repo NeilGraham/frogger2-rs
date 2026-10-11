@@ -14,6 +14,8 @@
 #define SFX_CH0 2
 
 static surface_t zbuf;
+/* Frame pacing (app.rs, n64_set_fps_limit): frames shown at most this often (0 = no limit). */
+static uint32_t fps_limit;
 static surface_t *last_fb;
 
 /* Textures: `full` is the image as uploaded (2D blits split it into TMEM-sized pieces);
@@ -194,9 +196,15 @@ static void fmv_osd(void *ctx, int frame_idx, float time_sec, fmv_control_t *ctr
 
 /* Plays a video over the game's 320x240 16-bit display (no display re-init: the game's
  * framebuffers stay); returns 0 if the file is missing. */
+/* Phase-3P libdragon variant (tools/n64/README.md): the game's rspq ring is 2 x 32 KiB, but
+ * the H.264 decoder recycles its input buffers assuming the stock 2 x 2 KiB (an RSP assert
+ * otherwise): limit the window while a video plays. Weak: absent in stock libdragon. */
+void rspq_set_lowpri_window(int words) __attribute__((weak));
+
 uint32_t n64_fmv_play_impl(const char *path) {
     if (!file_exists(path)) return 0;
     rspq_wait();
+    if (rspq_set_lowpri_window) rspq_set_lowpri_window(0x200);
     if (music) {
         mixer_ch_stop(MUSIC_CH);
         wav64_close(music);
@@ -210,7 +218,9 @@ uint32_t n64_fmv_play_impl(const char *path) {
         .osd_callback = fmv_osd,
     };
     fmv_play(path, &p);
-    display_set_fps_limit(0);
+    rspq_wait();
+    if (rspq_set_lowpri_window) rspq_set_lowpri_window(0);
+    display_set_fps_limit(fps_limit); /* the game's frame pacing */
     mixer_ch_set_limits(FMV_CH, 16, 48000, 0);
     mixer_ch_set_limits(FMV_CH + 1, 16, 48000, 0);
     cur_kind = -1;
@@ -555,6 +565,42 @@ static void make_add_variant(tex_t *t) {
         if (t->has_addv) surface_free(&t->addv);
         t->addv = surface_alloc(FMT_RGBA32, nw, nh);
     }
+    tex_format_t sf = surface_get_format(s);
+    if (sx == 1 && sy == 1 && (sf == FMT_RGBA32 || sf == FMT_RGBA16)) {
+        /* Fast path (procedural textures are refilled every frame, phase 3P): one texel per
+         * output texel, the same integer maths as below with the divisions by the
+         * brightest channel done by reciprocal (exact: numerators < 2^16, divisors < 256). */
+        static uint32_t recip[256];
+        if (!recip[1])
+            for (int m = 1; m < 256; m++) recip[m] = (uint32_t)(0xFFFFFFFFu / m) + 1;
+        for (int y = 0; y < nh; y++) {
+            const uint8_t *row = (const uint8_t *)s->buffer + y * s->stride;
+            /* surface_alloc memory is uncached: one 32-bit store per texel. */
+            uint32_t *dst = (uint32_t *)((uint8_t *)t->addv.buffer + y * t->addv.stride);
+            for (int x = 0; x < nw; x++) {
+                uint32_t r, g, b, a;
+                if (sf == FMT_RGBA32) {
+                    r = row[x * 4]; g = row[x * 4 + 1]; b = row[x * 4 + 2]; a = row[x * 4 + 3];
+                } else {
+                    uint32_t v = (row[x * 2] << 8) | row[x * 2 + 1];
+                    r = ((v >> 11) & 31) * 255 / 31; g = ((v >> 6) & 31) * 255 / 31; b = ((v >> 1) & 31) * 255 / 31;
+                    a = (v & 1) ? 255 : 0;
+                }
+                r = r * a / 255; g = g * a / 255; b = b * a / 255;
+                uint32_t m = r > g ? (r > b ? r : b) : (g > b ? g : b);
+                uint32_t o = m;
+                if (m) {
+                    uint64_t k = recip[m];
+                    o |= (uint32_t)(((uint64_t)(r * 255) * k) >> 32) << 24;
+                    o |= (uint32_t)(((uint64_t)(g * 255) * k) >> 32) << 16;
+                    o |= (uint32_t)(((uint64_t)(b * 255) * k) >> 32) << 8;
+                }
+                dst[x] = o;
+            }
+        }
+        t->has_addv = true;
+        return;
+    }
     for (int y = 0; y < nh; y++) {
         uint8_t *dst = (uint8_t *)t->addv.buffer + y * t->addv.stride;
         for (int x = 0; x < nw; x++) {
@@ -805,6 +851,25 @@ void n64_draw_rects_impl(const n64_rect_t *r, uint32_t n, const n64_state_t *st)
                 }
             continue;
         }
+        /* Minified blits of textures larger than TMEM (HUD clock 128x128 drawn ~30 px wide):
+         * the TMEM-sized box-filtered copy has at least one texel per pixel, so blit it
+         * instead (one texture load instead of one per TMEM-sized piece; phase 3P). */
+        if (tx->nfull == 1 && !tx->per_tile && !fits_tmem_block(s)) {
+            const surface_t *tm = n64_tex_tmem_surface(st->tex);
+            if (tm && tm != s && tm->width > 0 && tm->height > 0) {
+                float kx = (float)tm->width / s->width, ky = (float)tm->height / s->height;
+                int a0 = (int)(is0 * kx), b0 = (int)(it0 * ky), a1 = (int)(is1 * kx + 0.5f), b1 = (int)(it1 * ky + 0.5f);
+                if (a1 > a0 && b1 > b0 && r->x1 - r->x0 <= a1 - a0 && r->y1 - r->y0 <= b1 - b0) {
+                    use_tlut(tx, tm, 0);
+                    rdpq_tex_blit(tm, r->x0, r->y0, &(rdpq_blitparms_t){
+                        .s0 = a0, .t0 = b0, .width = a1 - a0, .height = b1 - b0, .flip_x = fx, .flip_y = fy,
+                        .scale_x = (r->x1 - r->x0) / (a1 - a0), .scale_y = (r->y1 - r->y0) / (b1 - b0),
+                        .filtering = (st->flags & N64_BILINEAR) != 0,
+                    });
+                    continue;
+                }
+            }
+        }
         use_tlut(tx, s, 0);
         rdpq_tex_blit(s, r->x0, r->y0, &(rdpq_blitparms_t){
             .s0 = is0, .t0 = it0, .width = sw, .height = sh, .flip_x = fx, .flip_y = fy,
@@ -821,6 +886,11 @@ void n64_present_impl(void) {
 }
 
 void n64_rdp_wait_impl(void) { rspq_wait(); }
+
+void n64_set_fps_limit_impl(uint32_t fps) {
+    fps_limit = fps;
+    display_set_fps_limit(fps);
+}
 
 /* ---- sampling profiler (feature `profile`): a 2 kHz timer interrupt records the
  * interrupted PC (and $ra) of the main thread in 32-byte buckets; n64_prof(1) prints the
@@ -846,14 +916,14 @@ static void prof_cb(int ovfl) {
     if (j < PROF_BUCKETS && prof_ra[j] < 0xffff) prof_ra[j]++;
 }
 
+/* Every non-empty bucket (address order; prof.py aggregates them per function). Buckets with
+ * a single sample are skipped once more than 1500 lines were printed. */
 static void prof_top(const char *what, uint16_t *h) {
-    for (int k = 0; k < 400; k++) {
-        uint32_t best = 0, bi = 0;
-        for (uint32_t i = 0; i < PROF_BUCKETS; i++)
-            if (h[i] > best) { best = h[i]; bi = i; }
-        if (!best) break;
-        debugf("PROF %s %08lx %lu\n", what, (unsigned long)(PROF_BASE + (bi << PROF_SHIFT)), (unsigned long)best);
-        h[bi] = 0;
+    int lines = 0;
+    for (uint32_t i = 0; i < PROF_BUCKETS; i++) {
+        if (!h[i] || (h[i] < 2 && lines > 1500)) continue;
+        debugf("PROF %s %08lx %u\n", what, (unsigned long)(PROF_BASE + (i << PROF_SHIFT)), h[i]);
+        lines++;
     }
 }
 

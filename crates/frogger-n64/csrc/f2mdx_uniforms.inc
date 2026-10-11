@@ -5,8 +5,8 @@
 ##############################################################################
 MgBeginShaderUniforms
     MgBeginUniform F2_DRAW, 0
-        F2_MTX_I:       .ds.b 32    # rows 0..3 (x, y, z, translation), integer halves
-        F2_MTX_F:       .ds.b 32    # same, fraction halves
+        F2_MTX_I:       .ds.b 32    # model rows 0..3 (x, y, z, translation; lanes x, y, z, -), integer halves
+        F2_MTX_F:       .ds.b 32    # same, fraction halves (pos_scale folded into rows 0..2)
         F2_CMUL:        .ds.b 8     # r g b a multipliers (s0.15)
         F2_CADD:        .ds.b 8     # r g b a addends (<<7 units, + rounding bias)
         F2_FOGC:        .ds.b 8     # 0, constant unfogged fraction (per-object fog, 0..0x7FFF), 0, 0
@@ -24,6 +24,8 @@ MgBeginShaderUniforms
         F2_VHI:         .ds.b 8     # x hi (s13.2), y hi, 0, 0
         F2_WONE:        .ds.b 8     # 1, 0, 1, 0  (W = 1.0, 1/W = 1.0)
         F2_FOGF:        .ds.b 8     # 0, 0, -32767/(end-start), fog end - 10 (in W units)
+        F2_VP_I:        .ds.b 32    # view x projection rows 0..3 (lanes X, Y, Z, W), integer halves
+        F2_VP_F:        .ds.b 32    # same, fraction halves
         F2_CLIP_TEXT:   .ds.b 4     # RDRAM address of the rsp_f2clip overlay text
         F2_CLIP_SIZE:   .ds.b 4     # its size - 1
     MgEndUniform

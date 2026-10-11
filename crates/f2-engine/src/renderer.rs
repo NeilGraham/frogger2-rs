@@ -840,6 +840,7 @@ impl Renderer {
     }
 
     /// Transforms and draws an actor (`XformActor` + `DrawActor`).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     pub fn draw_actor(&mut self, model: &Model, actor: &mut Actor) {
         if let Some(mut sink) = self.mesh_sink.take_if(|_| !self.cpu_models.contains(&model.id)) {
             let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };

@@ -8,7 +8,7 @@
 
 use crate::prelude::*;
 
-use crate::anim::{for_each_object, xform_actor, Actor};
+use crate::anim::{for_each_object, xform_actor, xform_actor_cached, Actor};
 use crate::math::*;
 use crate::textures::{TexHandle, TextureRegistry};
 use f2_formats::objbank::{Mesh, Model, Object};
@@ -501,13 +501,36 @@ pub struct MeshDraw {
     pub no_clip: bool,
     /// Per-object fog (actor path) instead of per vertex (landscape).
     pub object_fog: bool,
+    /// Version of the matrices (`PoseCache::stamp`): a draw of the same object with the
+    /// same stamp has the same matrices. 0 = unknown.
+    pub stamp: u32,
+}
+
+/// Receives each recorded mesh draw as it is made (a [`MeshSink`] with a back end stores
+/// nothing): the matrices are consumed while they are still in the data cache, which on a
+/// console (the N64's 8 KiB D-cache) is much cheaper than storing and re-reading them.
+pub trait MeshBackend {
+    /// `d.mat_first`/`d.mat_count` are 0: `mats` are the draw's matrices (one per bone for
+    /// [`MESH_SKIN`]). `view` is the renderer's view at record time.
+    fn mesh(&mut self, view: &View, d: &MeshDraw, mats: &[Mat4]);
 }
 
 /// Recorded mesh draws of a frame (see [`MeshDraw`]).
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct MeshSink {
     pub draws: Vec<MeshDraw>,
     pub mats: Vec<Mat4>,
+    /// The landscape model's key-0 object matrices (static: computed once per model) and
+    /// their stamp.
+    landscape: Option<(u32, Vec<Mat4>, u32)>,
+    /// When set, draws go straight to it instead of `draws`/`mats`.
+    pub backend: Option<Box<dyn MeshBackend + Send>>,
+}
+
+impl core::fmt::Debug for MeshSink {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MeshSink").field("draws", &self.draws.len()).field("mats", &self.mats.len()).field("backend", &self.backend.is_some()).finish()
+    }
 }
 
 impl MeshSink {
@@ -516,7 +539,12 @@ impl MeshSink {
         self.mats.clear();
     }
 
-    fn push(&mut self, d: MeshDraw, mats: &[Mat4]) {
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    fn push(&mut self, view: &View, d: MeshDraw, mats: &[Mat4]) {
+        if let Some(b) = &mut self.backend {
+            b.mesh(view, &d, mats);
+            return;
+        }
         let mat_first = self.mats.len() as u32;
         self.mats.extend_from_slice(mats);
         self.draws.push(MeshDraw { mat_first, mat_count: mats.len() as u32, ..d });
@@ -526,10 +554,13 @@ impl MeshSink {
 /// [`draw_actor`] recorded into a [`MeshSink`]: same matrices, same frame selection, no
 /// vertex work. Objects without a mesh are skipped; whether a mesh has drawable faces is
 /// the back end's business. `Glow` (never drawn on retail PC) is dropped.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink: &mut MeshSink) {
-    let mats = xform_actor(model, actor);
     let fade = actor.xlu < 1.0;
     let extra = actor.extra_flags;
+    xform_actor_cached(model, actor);
+    let stamp = actor.pose.stamp;
+    let mats = &actor.pose.mats[..];
     let base = MeshDraw {
         model: model.id,
         object: 0,
@@ -541,6 +572,7 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
         override_tex: cx.override_tex,
         no_clip: cx.view.no_clip,
         object_fog: true,
+        stamp,
     };
     if model.is_skinned {
         if model.root.mesh.is_none() {
@@ -548,7 +580,7 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
         }
         let frame = object_frame(extra, fade);
         if frame != Frame::Glow {
-            sink.push(MeshDraw { object: MESH_SKIN, frame, ..base }, &mats);
+            sink.push(cx.view, MeshDraw { object: MESH_SKIN, frame, ..base }, mats);
         }
     } else {
         for_each_object(model, |i, o| {
@@ -557,7 +589,7 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
             }
             let frame = object_frame(o.flags | extra, fade);
             if frame != Frame::Glow {
-                sink.push(MeshDraw { object: i as u16, frame, ..base }, &mats[i..i + 1]);
+                sink.push(cx.view, MeshDraw { object: i as u16, frame, ..base }, &mats[i..i + 1]);
             }
         });
     }
@@ -565,8 +597,10 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
 
 /// [`draw_landscape`] recorded into a [`MeshSink`].
 pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink) {
-    let mut actor = Actor { animated: false, ..Default::default() };
-    let mats = xform_actor(model, &mut actor);
+    let (_, mats, stamp) = match sink.landscape.take() {
+        Some(l) if l.0 == model.id => l,
+        _ => (model.id, xform_actor(model, &mut Actor { animated: false, ..Default::default() }), crate::anim::next_stamp()),
+    };
     for_each_object(model, |i, o| {
         if o.mesh.is_none() {
             return;
@@ -582,9 +616,11 @@ pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink)
             override_tex: None,
             no_clip: cx.view.no_clip,
             object_fog: false,
+            stamp,
         };
-        sink.push(d, &mats[i..i + 1]);
+        sink.push(cx.view, d, &mats[i..i + 1]);
     });
+    sink.landscape = Some((model.id, mats, stamp));
 }
 
 /// Port of `ConvertObjectToLandscape` + `DrawLandscape` (mdxLandscape.cpp:63,

@@ -67,6 +67,8 @@ pub struct RenderCpu {
     /// Depth of scene triangles: RDP z = `sz * zk` (1 = the faithful 0..1 `sz`; r3d maps its
     /// linear depth differently, see `r3d::ViewParams::tl_z`).
     pub zk: f32,
+    /// Texel buffer of `update_argb4444`.
+    scratch: Vec<u8>,
 }
 
 /// Whether a bank texture is read back by the CPU (`f2_draw::book::draw_page_b`).
@@ -101,6 +103,7 @@ impl RenderCpu {
             fcmds: Vec::new(),
             marks: [0; 10],
             zk: 1.0,
+            scratch: Vec::new(),
         }
     }
 
@@ -203,6 +206,35 @@ impl RenderCpu {
         }
     }
 
+    /// Refills registry image `idx`'s texture in place from a procedural texture's
+    /// `side` x `side` ARGB4444 surface: the texels `convert_image_ex` makes from its RGBA8
+    /// expansion (`* 17`), without that copy. `false` if the texture cannot be updated in
+    /// place (none yet, an NTX placeholder, another format): use the registry path.
+    pub fn update_argb4444(&mut self, idx: u32, side: u32, s: &[u16]) -> bool {
+        let h = self.tex.get(idx as usize).copied().unwrap_or(0);
+        if h == 0 || s.len() != (side * side) as usize {
+            return false;
+        }
+        let partial = s.iter().any(|&c| c >> 12 != 0 && c >> 12 != 15);
+        let fmt = if partial && side * side * 4 <= texconv::TMEM { texconv::FMT_RGBA32 } else { texconv::FMT_RGBA16 };
+        if fmt == texconv::FMT_RGBA16 && side * side * 2 > texconv::TMEM {
+            return false;
+        }
+        self.scratch.clear();
+        let x = |c: u16, sh: u32| ((c >> sh) & 15) as u8 * 17;
+        if fmt == texconv::FMT_RGBA32 {
+            for &c in s {
+                self.scratch.extend_from_slice(&[x(c, 8), x(c, 4), x(c, 0), x(c, 12)]);
+            }
+        } else {
+            for &c in s {
+                let v = ((x(c, 8) as u16 >> 3) << 11) | ((x(c, 4) as u16 >> 3) << 6) | ((x(c, 0) as u16 >> 3) << 1) | (x(c, 12) >= 128) as u16;
+                self.scratch.extend_from_slice(&v.to_be_bytes());
+            }
+        }
+        rt::tex_update(h, &TexDesc { width: side, height: side, fmt, pixels: self.scratch.as_ptr() })
+    }
+
     /// Registry image `idx` shows `rgba` (a render-to-texture result: the story book page),
     /// converted straight from the caller's pixels (the registry keeps none).
     pub fn grab_rgba(&mut self, idx: u32, w: u32, h: u32, rgba: &[u8]) {
@@ -282,6 +314,7 @@ impl RenderCpu {
         }
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     fn state(&self, c: &DrawCmd, aref: f32) -> State {
         let mut flags = ffi::BILINEAR | ffi::UVNORM;
         flags |= match c.depth {
@@ -344,6 +377,7 @@ impl RenderCpu {
 
     /// Draws segment `seg` of the built frame (0 = backdrops, 1..=7 = the 3D passes in
     /// `DrawAllFrames` order, 8 = 2D overlays).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     pub fn draw_segment(&mut self, seg: usize) {
         let t0 = ticks();
         let (a, b) = (self.marks[seg] as usize, self.marks[seg + 1] as usize);
@@ -401,6 +435,7 @@ impl RenderCpu {
         self.stats = st;
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     fn tris(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
         self.verts.clear();
         let zk = self.zk;
@@ -417,6 +452,7 @@ impl RenderCpu {
     }
 
     /// 2D batches: screen-aligned quads become blits, anything else triangles.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     fn overlay(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
         self.rects.clear();
         self.verts.clear();

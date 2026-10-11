@@ -148,6 +148,11 @@ with the PC data structures (simulation + parsed object banks + 16-bit textures)
      H.264 FMV); saves in 256 Kbit SRAM. 3.6–9.7 fps in the levels (City 27), level loads
      0.5–0.8 s; simulation-bound (`Game::tick` 10–25 ms). Details, budget, evidence and next
      steps: `research/n64-performance.md` §3I.
+   - **3P status (2026-10-11)**: draw-side CPU time per frame −35…−50 % (Garden 1 54 → 33 ms,
+     City 19 → 13 ms; target ≤ ~10 ms reached only in light scenes): matrix fold on the RSP,
+     pose caches and stamped draw reuse, hot-code linker layout (direct-mapped I-cache), 2 x
+     32 KiB rspq ring (libdragon variant, `tools/n64/libdragon-3p.sh`), frame pacing
+     (60/30/20/15 fps from measured costs). Details: `research/n64-performance.md` §3P.
 4. **Polish**: 60 fps where possible, flashcart testing notes, docs.
 
 ## 5. Rules

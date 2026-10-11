@@ -1,0 +1,45 @@
+--- a/include/rspq_constants.h	2026-10-10 22:10:33.998428853 -0600
++++ b/include/rspq_constants.h	2026-10-11 04:15:18.460352727 -0600
+@@ -10,7 +10,7 @@
+ #define RSPQ_DEBUG                     1       ///< Enable RSPQ debug mode
+ #define RSPQ_PROFILE                   0       ///< Enable RSPQ profiling
+ 
+-#define RSPQ_DRAM_LOWPRI_BUFFER_SIZE   0x200   ///< Size of each RSPQ RDRAM buffer for lowpri queue (in 32-bit words)
++#define RSPQ_DRAM_LOWPRI_BUFFER_SIZE   0x2000  ///< Size of each RSPQ RDRAM buffer for lowpri queue (in 32-bit words)
+ #define RSPQ_DRAM_HIGHPRI_BUFFER_SIZE  0x200   ///< Size of each RSPQ RDRAM buffer for highpri queue (in 32-bit words)
+ 
+ #define RSPQ_DMEM_BUFFER_SIZE          0x100   ///< Size of the RSPQ DMEM buffer (in bytes)
+--- a/src/rspq/rspq.c	2026-10-10 22:10:34.025620825 -0600
++++ b/src/rspq/rspq.c	2026-10-11 06:32:38.470104130 -0600
+@@ -724,6 +724,20 @@
+ }
+ 
+ /** @brief Initialize a rspq_ctx_t structure */
++/* Frogger 2 N64 (phase 3P) variant: the lowpri buffers are 0x2000 words, but some users
++ * (the H.264 decoder) rely on the CPU never running more than the stock 2 x 0x200 words
++ * ahead of the RSP (their input buffers are recycled on that assumption). While a window
++ * is set (words, 0 = none), each lowpri buffer is used only up to that size. */
++static int rspq_lowpri_window;
++void rspq_set_lowpri_window(int words)
++{
++    rspq_lowpri_window = words;
++    if (words > 0 && rspq_ctx == &lowpri) {
++        volatile uint32_t *lim = rspq_cur_pointer + words - RSPQ_MAX_COMMAND_SIZE;
++        if (lim < rspq_cur_sentinel) rspq_cur_sentinel = lim;
++    }
++}
++
+ static void rspq_init_context(rspq_ctx_t *ctx, int buf_size)
+ {
+     memset(ctx, 0, sizeof(rspq_ctx_t));
+@@ -1154,7 +1168,9 @@
+     // Switch current buffer
+     rspq_ctx->buf_idx = 1-rspq_ctx->buf_idx;
+     uint32_t *new = rspq_ctx->buffers[rspq_ctx->buf_idx];
+-    volatile uint32_t *prev = rspq_switch_buffer(new, rspq_ctx->buf_size, true);
++    int size = rspq_ctx->buf_size;
++    if (rspq_ctx == &lowpri && rspq_lowpri_window > 0 && rspq_lowpri_window < size) size = rspq_lowpri_window;
++    volatile uint32_t *prev = rspq_switch_buffer(new, size, true);
+ 
+     if (rspq_ctx == &lowpri) {
+         // Stage the target in call slot 0 (RSPQ_LOWPRI_HANDOFF_SLOT).

@@ -13,6 +13,9 @@ default = ["std", "gpu"]
 # (`Renderer::build`, `DrawCmd`) and the CPU rasteriser (`soft`, single-threaded). `std`
 # adds `load` (file helpers), `RgbaImage::write_png` and threaded `soft` bands.
 std = ["f2-formats/std", "dep:png"]
+# Console fast paths (the N64): skips arithmetic whose result equals its input up to the
+# sign of zeros (e.g. unit scale matrices). Off = the PC's exact maths.
+lean = []
 # wgpu back end. Without it the renderer only draws on the CPU (`Renderer::new_soft`).
 gpu = ["std", "dep:wgpu", "dep:pollster"]
 # wgpu on a Vulkan driver reached through a raw `vkGetInstanceProcAddr` (no loader), presenting
@@ -35,3 +38,7 @@ png = { version = "=0.18.1", optional = true }
 once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
 # Float methods without std (`fmath`); with std the inherent methods are used unchanged.
 libm = "0.2.16"
+
+[lints.rust]
+# `target_vendor = "nintendo64"` (tools/n64/mips-nintendo64-none.json): N64 hot-code sections.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_vendor, values("nintendo64"))'] }

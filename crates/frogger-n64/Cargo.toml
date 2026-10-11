@@ -19,7 +19,7 @@ f2-math = { path = "../f2-math", default-features = false }
 f2-formats = { path = "../f2-formats", default-features = false, features = ["serde"] }
 f2-game = { path = "../f2-game", default-features = false }
 f2-engine = { path = "../f2-engine", default-features = false }
-f2-draw = { path = "../f2-draw", default-features = false }
+f2-draw = { path = "../f2-draw", default-features = false, features = ["lean"] }
 # F2NM render-mesh format of the RSP renderer (r3d).
 f2-n64fmt = { path = "../f2-n64fmt", features = ["objbank"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

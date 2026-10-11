@@ -49,6 +49,22 @@ use f2_game::{Effect, Game, TickInput};
 pub const TICK: u32 = TICKS_PER_SEC / 60;
 /// Most simulation ticks run before one rendered frame (catch-up limit).
 pub const MAX_TICKS_PER_FRAME: u32 = 6;
+/// Frame rates the pacing picks from (frames shown per second, divisors of 60).
+pub const PACED_FPS: [u32; 4] = [60, 30, 20, 15];
+
+/// Frame pacing: the highest of [`PACED_FPS`] at which the simulation keeps real time
+/// (60 ticks/s) and the frames fit into `budget_us` per second, from running averages of the
+/// cost of a tick and of a frame; 0 (no limit: as fast as possible, ticks beyond
+/// [`MAX_TICKS_PER_FRAME`] dropped) if even the lowest does not fit (`App::pace` adds
+/// hysteresis and requires a stable choice before switching).
+pub fn pick_fps(tick_us: u32, draw_us: u32, budget_us: u32) -> u32 {
+    PACED_FPS.iter().copied().find(|&f| 60 * tick_us as u64 + f as u64 * draw_us as u64 <= budget_us as u64).unwrap_or(0)
+}
+
+/// Rank of a pacing choice (0 = 60 fps ... 4 = unlimited / overloaded).
+fn fps_rank(f: u32) -> usize {
+    PACED_FPS.iter().position(|&p| p == f).unwrap_or(PACED_FPS.len())
+}
 /// Render size (the RDP framebuffer).
 pub const WIDTH: u32 = 320;
 pub const HEIGHT: u32 = 240;
@@ -106,6 +122,10 @@ struct Window {
     rsp_sent: u32,
     rsp_groups: u32,
     tex_loads: u32,
+    /// r3d: queueing the recorded draws / flushing the lists (CPU).
+    r3d_queue: u32,
+    r3d_flush: u32,
+    r3d_reused: u32,
 }
 
 /// The renderer side of the loaded level, outside [`App`] so the data source can free it
@@ -184,6 +204,12 @@ pub struct App {
     book_font: Option<Font>,
     last_mode: i32,
     last_pad: u16,
+    /// Frame pacing: running averages (C0 ticks, x16 fixed point) of a simulation tick
+    /// incl. audio polling and of a frame's drawing; the limit in force and a candidate.
+    avg_tick: u32,
+    avg_draw: u32,
+    fps_limit: u32,
+    fps_cand: (u32, u32),
 }
 
 fn load_font(d: &N64Data<Store>, p: &str) -> Option<Font> {
@@ -230,6 +256,10 @@ impl App {
             book_font: None,
             last_mode: -1,
             last_pad: 0,
+            avg_tick: 0,
+            avg_draw: 0,
+            fps_limit: 0,
+            fps_cand: (0, 0),
         };
         app.rebuild_renderer();
         f2_draw::overlay::set_button_prompts(vec![('X', "A".into()), ('C', "B".into()), ('S', "Z".into()), ('T', "C-Up".into())]);
@@ -753,9 +783,39 @@ impl App {
             ctx.cam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);
             ctx.far_clip = render::far_clip(&self.game, scene);
         }
+        // Procedural textures (water, fire): refilled in place from their ARGB4444 surfaces
+        // (f2-draw's `lean` draw loop leaves them to the front end).
+        for pt in &self.game.ptexture.list {
+            let Some(surf) = pt.surface.as_deref() else { continue };
+            let Some(h) = self.r.textures.entry(pt.crc).map(|e| e.image) else { continue };
+            let side = (1..=256u32).find(|s| (s * s) as usize >= surf.len()).unwrap_or(0);
+            if side * side != surf.len() as u32 || l.gfx.update_argb4444(h.0, side, surf) {
+                continue;
+            }
+            if let Some(rgba) = pt.surface_rgba8() {
+                self.r.textures.replace_image(h, side, side, rgba);
+            }
+        }
         let t_loop = ticks();
+        // Meshes go straight to r3d while the loop records them: begin its frame with the
+        // view the loop sets first (camera, near 10, far clip).
+        #[cfg(not(feature = "render-cpu"))]
+        {
+            self.r.set_camera(&ctx.cam);
+            self.r.view.near_clip = 10.0;
+            self.r.view.far_clip = ctx.far_clip;
+            l.r3d.begin_queue(&self.r);
+            if let Some(s) = self.r.mesh_sink.as_mut() {
+                // SAFETY: removed below, before anything else touches `l.r3d` / `l.gfx`.
+                s.backend = Some(alloc::boxed::Box::new(unsafe { crate::render_r3d::R3dBackend::new(&mut l.r3d, &l.gfx) }));
+            }
+        }
         if l.scene.is_some() || backdrop.is_some() {
             render::draw_loop(&mut self.r, l.scene.as_mut(), &self.game, &ctx);
+        }
+        #[cfg(not(feature = "render-cpu"))]
+        if let Some(s) = self.r.mesh_sink.as_mut() {
+            s.backend = None;
         }
         self.win.draw_loop += ticks().wrapping_sub(t_loop);
         if l.scene.is_some() {
@@ -803,6 +863,9 @@ impl App {
         self.draw();
         let t2 = ticks();
         self.frames += 1;
+        if !self.loaded {
+            self.pace(n, t1.wrapping_sub(t0), t2.wrapping_sub(t1));
+        }
         if core::mem::take(&mut self.loaded) {
             self.win = Window::default();
             self.win_start = t2;
@@ -825,11 +888,51 @@ impl App {
             w.rsp_sent += l.r3d.stats.sent_tris;
             w.rsp_groups += l.r3d.stats.groups;
             w.tex_loads += l.r3d.stats.tex_loads;
+            w.r3d_queue += l.r3d.stats.queue_ticks;
+            w.r3d_flush += l.r3d.stats.flush_ticks;
+            w.r3d_reused += l.r3d.stats.reused;
         }
         w.max_frame = w.max_frame.max(t2.wrapping_sub(t0));
         let span = t2.wrapping_sub(self.win_start);
         if span >= 5 * TICKS_PER_SEC {
             self.log_window(span);
+        }
+    }
+
+    /// Frame pacing ([`pick_fps`]): updates the running costs with this frame's `n` ticks
+    /// (`sim` C0 ticks) and its drawing (`draw`; without the wait for a framebuffer, which
+    /// is the pacing itself), and sets the display's frame limit.
+    fn pace(&mut self, n: u32, sim: u32, draw: u32) {
+        let ema = |avg: &mut u32, v: u32| {
+            let v = v.min(u32::MAX / 32) << 4;
+            *avg = if *avg == 0 { v } else { *avg - *avg / 8 + v / 8 };
+        };
+        if n > 0 {
+            ema(&mut self.avg_tick, sim / n);
+        }
+        ema(&mut self.avg_draw, draw.saturating_sub(rt::FB_WAIT.load(core::sync::atomic::Ordering::Relaxed)));
+        let (tick_us, draw_us) = (ticks_to_us(self.avg_tick >> 4), ticks_to_us(self.avg_draw >> 4));
+        // Slower as soon as 90 % of a second is exceeded, faster only below 80 % (no
+        // oscillation between two rates).
+        let down = pick_fps(tick_us, draw_us, 900_000);
+        let up = pick_fps(tick_us, draw_us, 800_000);
+        let cur = fps_rank(self.fps_limit);
+        let want = if fps_rank(down) > cur {
+            down
+        } else if fps_rank(up) < cur {
+            up
+        } else {
+            self.fps_limit
+        };
+        if want == self.fps_limit {
+            self.fps_cand = (want, 0);
+            return;
+        }
+        self.fps_cand = if self.fps_cand.0 == want { (want, self.fps_cand.1 + 1) } else { (want, 1) };
+        if self.fps_cand.1 >= 8 {
+            self.fps_limit = want;
+            rt::set_fps_limit(want);
+            log!("app: frame pacing {} fps (tick {} us, frame {} us)", want, ticks_to_us(self.avg_tick >> 4), ticks_to_us(self.avg_draw >> 4));
         }
     }
 
@@ -840,7 +943,7 @@ impl App {
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms), worst frame {} ms; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws, {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms, pacing {} fps; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws ({} reused), {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -858,7 +961,10 @@ impl App {
             ms(w.build / f),
             ms(w.submit / f),
             ms(w.fb_wait / f),
+            ticks_to_us(w.r3d_queue / f),
+            ticks_to_us(w.r3d_flush / f),
             ms(w.max_frame),
+            self.fps_limit,
             rsp / 10,
             rsp % 10,
             rdp / 10,
@@ -868,6 +974,7 @@ impl App {
             w.tris / f,
             w.rects / f,
             w.draws / f,
+            w.r3d_reused / f,
             w.rsp_tris / f,
             w.rsp_sent / f,
             w.rsp_groups / f,

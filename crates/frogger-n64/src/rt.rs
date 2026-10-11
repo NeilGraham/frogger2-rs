@@ -71,13 +71,13 @@ static HEAP: LibdragonHeap = LibdragonHeap;
 
 /// Fixed-size formatting buffer (usable without the heap, e.g. in the panic handler).
 pub struct LineBuf {
-    buf: [u8; 512],
+    buf: [u8; 1024],
     len: usize,
 }
 
 impl LineBuf {
     pub const fn new() -> Self {
-        LineBuf { buf: [0; 512], len: 0 }
+        LineBuf { buf: [0; 1024], len: 0 }
     }
     pub fn as_bytes(&self) -> &[u8] {
         &self.buf[..self.len]
@@ -274,6 +274,11 @@ pub fn draw_tris(verts: &[Vertex], state: &State) {
 
 pub fn present() {
     unsafe { ffi::n64_present() }
+}
+
+/// Shows frames at most `fps` times a second (`display_set_fps_limit`; 0 = no limit).
+pub fn set_fps_limit(fps: u32) {
+    unsafe { ffi::n64_set_fps_limit(fps) }
 }
 
 pub fn rdp_wait() {

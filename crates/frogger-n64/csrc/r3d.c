@@ -367,20 +367,31 @@ static void draw_inline(const r3d_group_t *g, const n64_r3d_draw_t *d) {
         switch (w >> 28) {
         case 1: mg_load_vertices((w >> 12) & 0xFFFF, w & 63, (w >> 6) & 63); break;
         case 2: mg_draw_triangle((w >> 16) & 0xFF, (w >> 8) & 0xFF, w & 0xFF); break;
-        case 3: if (d->bones) mg_uniform_load_inline(u_draw, &d->bones[w & 0xFF]); break;
+        /* Bone uniforms by DMA from the frame's arena (written back once per draw). */
+        case 3: if (d->bones && (w & 0xFF) < d->n_bones) mg_uniform_load(u_draw, &d->bones[w & 0xFF]); break;
         }
     }
     mg_draw_end();
 }
 
-void n64_r3d_begin_impl(const n64_r3d_frame_t *f) {
+/* The frame uniform currently loaded (the frame's own, or a draw's override: the sky). */
+static const n64_r3d_frame_t *cur_frame;
+static n64_r3d_frame_t frame_default;
+
+static void load_frame(const n64_r3d_frame_t *f) {
     n64_r3d_frame_t fr = *f;
     fr.clip_text = clip_text;
     fr.clip_size = clip_size;
+    mg_uniform_load_inline(u_frame, &fr);
+    cur_frame = f;
+}
+
+void n64_r3d_begin_impl(const n64_r3d_frame_t *f) {
+    frame_default = *f;
     mg_pipeline_bind(pipe);
     mg_set_geometry_flags(MG_GEOMETRY_FLAGS_Z_ENABLED | MG_GEOMETRY_FLAGS_TEX_ENABLED | MG_GEOMETRY_FLAGS_SHADE_ENABLED);
     mg_set_clip_factor(f->guard ? f->guard : 4);
-    mg_uniform_load_inline(u_frame, &fr);
+    load_frame(&frame_default);
     if (f->fog_rgba) rdpq_set_fog_color(color_from_packed32(f->fog_rgba));
     cur_tex = 0;
     memset(&stats, 0, sizeof stats);
@@ -395,10 +406,14 @@ void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draw
     cur_list_flags = st->flags;
     for (uint32_t i = 0; i < n; i++) {
         const n64_r3d_draw_t *d = &draws[i];
+        const n64_r3d_frame_t *want = d->frame ? d->frame : &frame_default;
+        if (want != cur_frame) load_frame(want);
         if (!d->bones) {
             /* Loaded by RSP DMA from the caller's per-frame arena (cheaper than inline). */
             data_cache_hit_writeback(d->u, sizeof *d->u);
             mg_uniform_load(u_draw, d->u);
+        } else {
+            data_cache_hit_writeback(d->bones, d->n_bones * sizeof *d->bones);
         }
         for (uint32_t k = 0; k < d->n_groups; k++) {
             uint32_t gh = d->groups[k], th = d->texs[k];

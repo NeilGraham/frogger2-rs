@@ -154,24 +154,77 @@ _MG_VTX_SHADER:
     addiu out0, out0, %lo(MG_VERTEX_CACHE)
     addiu out1, out0, MG_VTX_SIZE
 
-    # Uniforms (each 4-lane vector duplicated in both halves: two vertices per pass).
+    # M = model x VP (phase 3P: the fold the CPU used to do per draw), s15.16 x s15.16:
+    # row r of M = sum_k model[r][k] * VP row k (+ VP row 3 for the translation row), each
+    # term a 32x32 product (l, m, n, h partial products), VP rows duplicated in both halves
+    # (two vertices per pass) and the model scalars broadcast.
+    #define vpi0 $v09
+    #define vpf0 $v10
+    #define vpi1 $v11
+    #define vpf1 $v12
+    #define vpi2 $v13
+    #define vpf2 $v14
+    #define vpi3 $v15
+    #define vpf3 $v16
+    #define vmri $v17
+    #define vmrf $v18
+    li t0, %lo(F2_VP_I)
+    ldv vpi0.e0, 0x00,t0
+    ldv vpi0.e4, 0x00,t0
+    ldv vpf0.e0, 0x20,t0
+    ldv vpf0.e4, 0x20,t0
+    ldv vpi1.e0, 0x08,t0
+    ldv vpi1.e4, 0x08,t0
+    ldv vpf1.e0, 0x28,t0
+    ldv vpf1.e4, 0x28,t0
+    ldv vpi2.e0, 0x10,t0
+    ldv vpi2.e4, 0x10,t0
+    ldv vpf2.e0, 0x30,t0
+    ldv vpf2.e4, 0x30,t0
+    ldv vpi3.e0, 0x18,t0
+    ldv vpi3.e4, 0x18,t0
+    ldv vpf3.e0, 0x38,t0
+    ldv vpf3.e4, 0x38,t0
     li t0, %lo(F2_MTX_I)
-    ldv vm0i.e0, 0x00,t0
-    ldv vm0i.e4, 0x00,t0
-    ldv vm0f.e0, 0x20,t0
-    ldv vm0f.e4, 0x20,t0
-    ldv vm1i.e0, 0x08,t0
-    ldv vm1i.e4, 0x08,t0
-    ldv vm1f.e0, 0x28,t0
-    ldv vm1f.e4, 0x28,t0
-    ldv vm2i.e0, 0x10,t0
-    ldv vm2i.e4, 0x10,t0
-    ldv vm2f.e0, 0x30,t0
-    ldv vm2f.e4, 0x30,t0
-    ldv vm3i.e0, 0x18,t0
-    ldv vm3i.e4, 0x18,t0
-    ldv vm3f.e0, 0x38,t0
-    ldv vm3f.e4, 0x38,t0
+    .macro F2FoldRow row, outi, outf
+        ldv vmri.e0, (\row * 8),t0
+        ldv vmrf.e0, (0x20 + \row * 8),t0
+        vmudl v___, vpf0, vmrf.e0
+        vmadm v___, vpi0, vmrf.e0
+        vmadn v___, vpf0, vmri.e0
+        vmadh v___, vpi0, vmri.e0
+        vmadl v___, vpf1, vmrf.e1
+        vmadm v___, vpi1, vmrf.e1
+        vmadn v___, vpf1, vmri.e1
+        vmadh v___, vpi1, vmri.e1
+        vmadl v___, vpf2, vmrf.e2
+        vmadm v___, vpi2, vmrf.e2
+    .if \row == 3
+        vmadn v___, vpf2, vmri.e2
+        vmadh v___, vpi2, vmri.e2
+        vmadn \outf, vpf3, K1
+        vmadh \outi, vpi3, K1
+    .else
+        vmadn \outf, vpf2, vmri.e2
+        vmadh \outi, vpi2, vmri.e2
+    .endif
+    .endm
+    F2FoldRow 0, vm0i, vm0f
+    F2FoldRow 1, vm1i, vm1f
+    F2FoldRow 2, vm2i, vm2f
+    F2FoldRow 3, vm3i, vm3f
+    #undef vpi0
+    #undef vpf0
+    #undef vpi1
+    #undef vpf1
+    #undef vpi2
+    #undef vpf2
+    #undef vpi3
+    #undef vpf3
+    #undef vmri
+    #undef vmrf
+
+    # Uniforms (each 4-lane vector duplicated in both halves: two vertices per pass).
     ldv vcmul.e0, 0x40,t0
     ldv vcmul.e4, 0x40,t0
     ldv vcadd.e0, 0x48,t0

@@ -23,7 +23,7 @@ use crate::render_cpu::RenderCpu;
 use crate::rt;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use f2_engine::{Frame, MeshSink, Renderer, TextureRegistry, MESH_SKIN};
+use f2_engine::{Frame, MeshBackend, MeshDraw, Renderer, TextureRegistry, View, MESH_SKIN};
 use f2_formats::objbank::ObjectBank;
 
 /// Per-frame counters.
@@ -37,6 +37,12 @@ pub struct R3dFrameStats {
     pub tex_loads: u32,
     /// C0 ticks of the r3d CPU side (draw queueing + flush incl. the CPU segments).
     pub ticks: u32,
+    /// Of which: queueing the recorded draws (matrices, culling) / flushing the lists to
+    /// the RSP queue (without the CPU segments drawn between them).
+    pub queue_ticks: u32,
+    pub flush_ticks: u32,
+    /// Draws reused from the previous frame (unchanged model matrix and view).
+    pub reused: u32,
 }
 
 pub struct R3dLevel {
@@ -47,11 +53,16 @@ pub struct R3dLevel {
     /// Registry image → (RenderCpu texture generation, r3d alias).
     img: Vec<(u32, Option<TexId>)>,
     pub stats: R3dFrameStats,
-    bones: Vec<[[f32; 4]; 4]>,
+    /// Per sink draw slot: the (model, object) and mesh it had last time (skips the map).
+    slot_mesh: Vec<(u32, u16, MeshId)>,
     /// Recorded draws without an F2NM mesh (logged once each).
     missing: alloc::collections::BTreeSet<(u32, u16)>,
     frame_no: u32,
     dump_next: bool,
+    /// Draw slot of the next recorded mesh (its index in the frame).
+    slot: u32,
+    /// This frame's counters while recording.
+    rec: R3dFrameStats,
     /// Per registry entry: (image, its texture generation, crc) last mapped.
     synced: Vec<(u32, u32, u32)>,
     seen: alloc::collections::BTreeSet<u32>,
@@ -95,10 +106,12 @@ impl R3dLevel {
             meshes: BTreeMap::new(),
             img: Vec::new(),
             stats: R3dFrameStats::default(),
-            bones: Vec::new(),
+            slot_mesh: Vec::new(),
             missing: Default::default(),
             frame_no: 0,
             dump_next: false,
+            slot: 0,
+            rec: R3dFrameStats::default(),
             seen: Default::default(),
             synced: Vec::new(),
         }
@@ -108,6 +121,7 @@ impl R3dLevel {
     pub fn unload(&mut self) {
         self.r.reset_to(self.base);
         self.meshes.clear();
+        self.slot_mesh.clear();
         self.img.clear();
         self.missing.clear();
         self.synced.clear();
@@ -176,113 +190,165 @@ impl R3dLevel {
         }
     }
 
-    /// Draws the frame: CPU segments and the recorded meshes, then presents.
-    pub fn draw(&mut self, r: &mut Renderer, cpu: &mut RenderCpu, clear: [f64; 4]) {
-        cpu.build(r, clear);
+    /// Starts recording a frame's meshes with the renderer's view (call before
+    /// `f2_draw::render::draw_loop` with the camera it will set: the draws arrive through
+    /// [`R3dBackend`] while the loop runs).
+    pub fn begin_queue(&mut self, r: &Renderer) {
         if let Some(n) = option_env!("F2N64_DUMP_FRAME").and_then(|s| s.parse::<u32>().ok()) {
             self.frame_no += 1;
-            if self.frame_no == n {
-                cpu.dump(&r.textures);
-                self.dump_next = true;
+            self.dump_next = self.frame_no == n;
+        }
+        self.r.begin_frame(&view_params(r));
+        self.slot = 0;
+        self.rec = R3dFrameStats::default();
+    }
+
+    /// Queues one recorded mesh draw ([`MeshBackend`] side of the draw loop).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    fn record(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
+        let t0 = rt::ticks();
+
+        let slot = self.slot;
+        self.slot += 1;
+        self.record_inner(cpu, d, mats, slot as usize);
+        self.rec.queue_ticks = self.rec.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
+    }
+
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    fn record_inner(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]], slot: usize) {
+        let Some(mut list) = list_of(d.frame) else { return };
+        if d.no_clip && list == List::Normal {
+            list = List::Background;
+        }
+        if let Some(skip) = option_env!("F2N64_SKIP_MODEL") {
+            if skip.split(',').any(|m| alloc::format!("{:08x}", d.model) == m) {
+                return;
             }
+        }
+        if let Some(only) = option_env!("F2N64_ONLY_MODEL") {
+            if !only.split(',').any(|m| alloc::format!("{:08x}", d.model) == m) {
+                return;
+            }
+        }
+        // The draw order rarely changes between frames: try last frame's mesh of this slot.
+        let mesh = match self.slot_mesh.get(slot) {
+            Some(&(m, o, id)) if m == d.model && o == d.object => id,
+            _ => {
+                let Some(&mesh) = self.meshes.get(&(d.model, d.object)) else {
+                    if self.missing.insert((d.model, d.object)) {
+                        crate::log!("r3d: no mesh for model {:08x} object {} (frame {:?})", d.model, d.object, d.frame);
+                    }
+                    return;
+                };
+                if self.slot_mesh.len() <= slot {
+                    self.slot_mesh.resize(slot + 1, (0, 0, MeshId(u32::MAX)));
+                }
+                self.slot_mesh[slot] = (d.model, d.object, mesh);
+                mesh
+            }
+        };
+        let override_tex = match d.override_tex {
+            Some(h) => match self.tex_for(cpu, h.0) {
+                Some(t) => Some(t),
+                None => return, // PC: no texture, nothing drawn
+            },
+            None => None,
+        };
+        let p = crate::r3d::DrawParams { alpha_mul: d.alpha_mul, gouraud: d.gouraud, override_tex, no_clip: d.no_clip, object_fog: d.object_fog };
+        if d.object == MESH_SKIN {
+            self.r.draw_skinned(list, mesh, mats, &p);
+        } else if let Some(m) = mats.first() {
+            self.r.draw_slot(list, mesh, m, &p, slot as u32, d.stamp);
+        }
+        self.rec.draws += 1;
+        if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {
+            crate::log!("r3d: model {:08x} first drawn ({:?}, {} tris)", d.model, list, self.r.mesh_tris(mesh));
+        }
+        if self.dump_next {
+            crate::log!(
+                "dump r3d {:?} model {:08x} obj {} alpha {} tris {} no_clip {}",
+                list,
+                d.model,
+                d.object,
+                d.alpha_mul,
+                self.r.mesh_tris(mesh),
+                d.no_clip
+            );
+        }
+    }
+
+    /// Draws the frame: CPU segments and the meshes recorded since [`begin_queue`]
+    /// (Self::begin_queue), then presents.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
+    pub fn draw(&mut self, r: &mut Renderer, cpu: &mut RenderCpu, clear: [f64; 4]) {
+        cpu.build(r, clear);
+        if self.dump_next {
+            cpu.dump(&r.textures);
+            self.dump_next = false;
         }
         let t0 = rt::ticks();
         let c = clear.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u32);
         rt::begin_frame((c[0] << 24) | (c[1] << 16) | (c[2] << 8) | 0xff);
         cpu.draw_segment(0);
-        let sink = r.mesh_sink.take().unwrap_or_default();
-        let v = &r.view;
-        let view = ViewParams {
-            view: v.v_matrix,
-            fov: v.fov,
-            viewport: v.vp(),
-            near: v.near_clip,
-            far: v.far_clip,
-            bilinear: r.options.linear_filter,
-            guard: 6,
-            fog: None,
-        };
-        cpu.zk = 4000.0 * view.z_scale() / 32767.0;
-        let mut st = R3dFrameStats::default();
-        if sink.draws.is_empty() {
+        cpu.zk = 4000.0 * view_params(r).z_scale() / 32767.0;
+        let mut st = self.rec;
+        if st.draws == 0 {
+            self.r.discard_frame();
             for seg in 1..=7 {
                 cpu.draw_segment(seg);
             }
         } else {
-            self.r.begin_frame(&view);
-            self.queue(&sink, cpu, &mut st);
+            let tf = rt::ticks();
+            let seg0 = cpu.stats.submit_ticks;
             self.r.flush(|l| {
                 if l != List::Background {
                     cpu.draw_segment(segment_of(l));
                 }
             });
+            st.flush_ticks = rt::ticks().wrapping_sub(tf).wrapping_sub(cpu.stats.submit_ticks.wrapping_sub(seg0));
             st.queued_tris = self.r.queued_tris;
+            st.reused = self.r.cache_hits;
             st.sent_tris = self.r.sent_tris;
             let c = self.r.stats();
             st.groups = c.groups;
             st.tex_loads = c.tex_loads;
         }
-        r.mesh_sink = Some(sink);
         cpu.draw_segment(8);
         rt::present();
         st.ticks = rt::ticks().wrapping_sub(t0);
         self.stats = st;
     }
+}
 
-    fn queue(&mut self, sink: &MeshSink, cpu: &RenderCpu, st: &mut R3dFrameStats) {
-        for d in &sink.draws {
-            let Some(mut list) = list_of(d.frame) else { continue };
-            if d.no_clip && list == List::Normal {
-                list = List::Background;
-            }
-            if let Some(skip) = option_env!("F2N64_SKIP_MODEL") {
-                if skip.split(',').any(|m| alloc::format!("{:08x}", d.model) == m) {
-                    continue;
-                }
-            }
-            if let Some(only) = option_env!("F2N64_ONLY_MODEL") {
-                if !only.split(',').any(|m| alloc::format!("{:08x}", d.model) == m) {
-                    continue;
-                }
-            }
-            let Some(&mesh) = self.meshes.get(&(d.model, d.object)) else {
-                if self.missing.insert((d.model, d.object)) {
-                    crate::log!("r3d: no mesh for model {:08x} object {} (frame {:?})", d.model, d.object, d.frame);
-                }
-                continue;
-            };
-            let override_tex = match d.override_tex {
-                Some(h) => match self.tex_for(cpu, h.0) {
-                    Some(t) => Some(t),
-                    None => continue, // PC: no texture, nothing drawn
-                },
-                None => None,
-            };
-            let p = crate::r3d::DrawParams { alpha_mul: d.alpha_mul, gouraud: d.gouraud, override_tex, no_clip: d.no_clip, object_fog: d.object_fog };
-            let mats = &sink.mats[d.mat_first as usize..(d.mat_first + d.mat_count) as usize];
-            if d.object == MESH_SKIN {
-                self.bones.clear();
-                self.bones.extend_from_slice(mats);
-                self.r.draw_skinned(list, mesh, &self.bones, &p);
-            } else if let Some(m) = mats.first() {
-                self.r.draw(list, mesh, m, &p);
-            }
-            st.draws += 1;
-            if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {
-                crate::log!("r3d: model {:08x} first drawn ({:?}, {} tris)", d.model, list, self.r.mesh_tris(mesh));
-            }
-            if self.dump_next {
-                crate::log!(
-                    "dump r3d {:?} model {:08x} obj {} alpha {} tris {} no_clip {}",
-                    list,
-                    d.model,
-                    d.object,
-                    d.alpha_mul,
-                    self.r.mesh_tris(mesh),
-                    d.no_clip
-                );
-            }
-        }
-        self.dump_next = false;
+/// r3d's view of the renderer's current view (camera, projection, far plane).
+fn view_params(r: &Renderer) -> ViewParams {
+    let v = &r.view;
+    ViewParams { view: v.v_matrix, fov: v.fov, viewport: v.vp(), near: v.near_clip, far: v.far_clip, bilinear: r.options.linear_filter, guard: 6, fog: None }
+}
+
+/// The draw loop's [`MeshBackend`] on the N64: each recorded mesh goes straight to
+/// [`R3dLevel`] (matrix conversion and culling while the matrices are in the D-cache).
+/// Installed in the renderer's mesh sink for the duration of one draw loop.
+pub struct R3dBackend {
+    lvl: *mut R3dLevel,
+    cpu: *const RenderCpu,
+}
+
+// SAFETY: one thread; see `R3dBackend::new`.
+unsafe impl Send for R3dBackend {}
+
+impl R3dBackend {
+    /// SAFETY: `lvl` and `cpu` must stay valid, and not be accessed otherwise, while the
+    /// backend is installed (`App::draw_inner` removes it right after the draw loop).
+    pub unsafe fn new(lvl: *mut R3dLevel, cpu: *const RenderCpu) -> R3dBackend {
+        R3dBackend { lvl, cpu }
+    }
+}
+
+impl MeshBackend for R3dBackend {
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    fn mesh(&mut self, _view: &View, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
+        // SAFETY: see `new`.
+        unsafe { (*self.lvl).record(&*self.cpu, d, mats) }
     }
 }

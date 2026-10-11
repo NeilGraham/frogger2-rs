@@ -23,7 +23,7 @@
 # (streamed from ROM) and the music tracks F2N64_MUSIC into 22 kHz VADPCM wav64; mkasset
 # LZ4-compresses the bigger files (asset_load decompresses them transparently).
 #
-# Env: N64_INST (default ~/opt/n64root/opt/libdragon), RUST_TOOLCHAIN (default nightly),
+# Env: N64_INST (default ~/opt/n64root-3p/opt/libdragon if built, else ~/opt/n64root/opt/libdragon), RUST_TOOLCHAIN (default nightly),
 #      F2_GAME_DIR (rendition game/ dir; default <repo>/game-data/usa/game),
 #      F2_MUSIC_DIR (default $F2_GAME_DIR/../music), F2N64_MUSIC (track numbers, default
 #      "02 09 10 12": Garden, frontend, level complete), F2N64_BOOT (e.g. "level 0 0" to
@@ -32,7 +32,14 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
+# The phase-3P libdragon variant (tools/n64/libdragon-3p.sh: 2 x 32 KiB rspq ring) when
+# installed, else the stock one.
+if [ -z "${N64_INST:-}" ] && [ -f "$HOME/opt/n64root-3p/opt/libdragon/mips64-elf/lib/libdragon.a" ]; then
+    N64_INST="$HOME/opt/n64root-3p/opt/libdragon"
+fi
 export N64_INST="${N64_INST:-$HOME/opt/n64root/opt/libdragon}"
+grep -q "LOWPRI_BUFFER_SIZE   0x2000" "$N64_INST/mips64-elf/include/rspq_constants.h" 2>/dev/null ||
+    echo "NOTE: stock libdragon at $N64_INST (2 x 2 KiB rspq ring: the CPU waits for the RSP; tools/n64/libdragon-3p.sh)" >&2
 toolchain="${RUST_TOOLCHAIN:-nightly}"
 profile=release
 bringup=0
@@ -69,6 +76,10 @@ lib="$out/cargo/mips-nintendo64-none/$pdir/libfrogger_n64.a"
 
 echo "== [2/5] n32 -> o64 relabel"
 python3 -I "$here/n32-to-o64.py" "$lib" "$out/libfrogger_n64_o64.a"
+# compiler_builtins defines memcpy & co. as weak symbols; linked first, they would also
+# replace newlib's optimised MIPS versions for the C side. Localise them so every caller
+# (Rust and libdragon) links newlib's (phase 3P: ~2x faster block copies on the VR4300).
+"$N64_INST/bin/mips64-elf-objcopy" -L memcpy -L memmove -L memset -L memcmp -L bcmp "$out/libfrogger_n64_o64.a"
 "$N64_INST/bin/mips64-elf-ranlib" "$out/libfrogger_n64_o64.a"
 
 echo "== [3/5] DFS filesystem"
