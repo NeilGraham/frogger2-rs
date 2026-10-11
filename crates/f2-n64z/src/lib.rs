@@ -33,7 +33,7 @@
 //! blocks and start as `[1, 4, 8]`. Matches may reach back into the dictionary content,
 //! which logically precedes the output.
 
-#![cfg_attr(not(feature = "encoder"), no_std)]
+#![cfg_attr(not(any(feature = "encoder", test)), no_std)]
 #![forbid(unsafe_code)]
 
 pub mod bits;

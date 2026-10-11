@@ -175,6 +175,7 @@ pub mod enc {
 
     /// Normalises symbol counts to sum 4096 keeping every used symbol ≥ 1, minimising the
     /// coded size (greedy marginal-cost correction).
+    #[allow(clippy::needless_range_loop)]
     pub fn normalize(counts: &[u32]) -> Freqs {
         let n = counts.iter().rposition(|&c| c > 0).map_or(0, |p| p + 1);
         let total: u64 = counts.iter().map(|&c| u64::from(c)).sum();

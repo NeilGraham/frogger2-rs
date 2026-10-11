@@ -566,7 +566,7 @@ impl<'a> R<'a> {
             }
         }
         let normals = if has(3) { to3(&self.floats(Field::Normal, 3 * nv)?) } else { vec![] };
-        let colors = if has(4) { self.floats(Field::Color, 12 * nf)?.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect() } else { vec![] };
+        let colors = if has(4) { self.floats(Field::Color, 12 * nf)?.as_chunks::<4>().0.to_vec() } else { vec![] };
         let face_flags = if has(5) { self.take(S_FFLAG, nf)?.to_vec() } else { vec![] };
         let mut textures = Vec::new();
         if has(6) {
@@ -664,7 +664,7 @@ impl<'a> R<'a> {
 }
 
 fn to3(v: &[f32]) -> Vec<[f32; 3]> {
-    v.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+    v.as_chunks::<3>().0.to_vec()
 }
 
 /// Parses a packed bank back into the exact `ObjectBank`.
@@ -758,7 +758,7 @@ mod tests {
             effected_verts: vec![5, 3, 9, 100_000],
             scale_keys: vec![VKey { v: [1.0, 1.0, 1.0], time: 0 }, VKey { v: [0.892857, 1.5, -0.25], time: 10 }],
             move_keys: vec![VKey { v: [-3045.0, 2575.5, 0.000001], time: 0 }, VKey { v: [1e20, f32::MIN_POSITIVE, -0.0], time: 5 }],
-            rotate_keys: vec![QKey { q: [0.0, -0.707107, 0.0, 0.707107], time: 3 }],
+            rotate_keys: vec![QKey { q: [0.0, -0.6, 0.0, 0.8], time: 3 }],
             bbox: Some([[1.0, -2.0, 3.0]; 8]),
             phong: 0x1234,
             flags: -32768,

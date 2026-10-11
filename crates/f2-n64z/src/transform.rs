@@ -60,7 +60,7 @@ impl Segment {
         match self.kind {
             Kind::Raw => Ok(()),
             Kind::Planes if self.stride >= 1 => Ok(()),
-            Kind::DeltaPlanes if matches!(self.width, 1 | 2 | 4) && self.stride >= 1 && self.stride % u16::from(self.width) == 0 => Ok(()),
+            Kind::DeltaPlanes if matches!(self.width, 1 | 2 | 4) && self.stride >= 1 && self.stride.is_multiple_of(u16::from(self.width)) => Ok(()),
             _ => Err(Error::Corrupt("bad transform parameters")),
         }
     }
