@@ -8,6 +8,8 @@
 //! which runs while drawing). Calls into modules owned by other waves go through the
 //! clearly marked hook functions at the end of this file.
 
+use crate::prelude::*;
+
 use f2_math::{fmul, magnitude_f, make_unit, rcos, rsin, FVector, SVector};
 use serde::{Deserialize, Serialize};
 

@@ -12,7 +12,9 @@
 //! rejects (unknown opcode) runs nothing, where the original would run the commands
 //! before the bad one and then fail (`InitLevelScript` then kills all triggers anyway).
 
-use std::sync::Arc;
+use crate::prelude::*;
+
+use alloc::sync::Arc;
 
 use f2_formats::fev::{Command, EffectParams, Script, Trigger as FevTrigger};
 use f2_math::{add_vector_sss, scale_vector_s, FVector, Fixed};

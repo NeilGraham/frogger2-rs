@@ -2,6 +2,8 @@
 //! map (`LoadSfxMapping`, plus its PC lookup `FindSfxMapping` from `PC/pcaudio.c`).
 //! The `TIMER` macros of `general.h` live in [`crate::timer`].
 
+use crate::prelude::*;
+
 use f2_formats::level::{AmbientSfx, SfxMapping};
 use f2_math::{distance_between_points_ss, fmul, rcos, set_vector_sf, set_vector_sv, FVector, Fixed, SVector, Vector};
 use serde::{Deserialize, Serialize};

@@ -1,0 +1,31 @@
+{
+  "arch": "mips64",
+  "abi": "abin32",
+  "cpu": "mips3",
+  "features": "+mips3,+gp64,+fp64,+noabicalls",
+  "data-layout": "E-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+  "llvm-target": "mips64-unknown-none-gnuabin32",
+  "llvm-abiname": "n32",
+  "llvm-args": ["-mno-check-zero-division", "-mips-ssection-threshold=0"],
+  "target-endian": "big",
+  "target-pointer-width": 32,
+  "target-c-int-width": 32,
+  "max-atomic-width": 64,
+  "os": "none",
+  "vendor": "nintendo64",
+  "panic-strategy": "abort",
+  "relocation-model": "static",
+  "linker-flavor": "gnu-cc",
+  "linker": "mips64-elf-gcc",
+  "executables": true,
+  "singlethread": true,
+  "emit-debug-gdb-scripts": false,
+  "function-sections": true,
+  "eh-frame-header": false,
+  "metadata": {
+    "description": "Nintendo 64 (VR4300, MIPS III, big-endian, n32) for linking into libdragon (o64) ROMs",
+    "std": false,
+    "tier": 3,
+    "host_tools": false
+  }
+}

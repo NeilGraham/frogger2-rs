@@ -6,7 +6,9 @@
 //! ...). The session keeps the [`DataSource`] so [`Game::init_level`] can load levels, and
 //! queues the resulting [`LevelLoad`] for the host (renderer/audio reload).
 
-use std::sync::Arc;
+use crate::prelude::*;
+
+use alloc::sync::Arc;
 
 use crate::assets::DataSource;
 use crate::define::mode::{FRONTEND_MODE, INGAME_MODE, STARTUP_MODE};
@@ -159,7 +161,7 @@ impl Game {
 
     /// Levels `InitLevel` loaded since the last call (the host reloads its scene).
     pub fn take_level_loads(&mut self) -> Vec<LevelLoad> {
-        std::mem::take(&mut self.session.level_loads)
+        core::mem::take(&mut self.session.level_loads)
     }
 
     /// `InitLevel` steps between `FreeAllLists` and the data loads: the story FMV

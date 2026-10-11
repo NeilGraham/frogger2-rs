@@ -23,11 +23,13 @@
 //! * `PickupCollectable` (collect.rs) → [`Game::modscript_pickup`];
 //! * `UpdateEnemies` (enemies.rs) → [`Game::modscript_update_enemy`] for claimed enemies.
 
+use crate::prelude::*;
+
 pub mod api;
 pub mod lang;
 pub mod vm;
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use serde::Serialize;
 
@@ -198,14 +200,14 @@ impl Game {
     /// Runs function `func` of unit `u`. `None` if it failed (the unit is then disabled).
     fn modscript_run(&mut self, u: usize, func: u16, args: &[Value], what: &str) -> Option<Value> {
         let frame = self.act_frame_count;
-        let mut st = std::mem::take(&mut self.modscript);
+        let mut st = core::mem::take(&mut self.modscript);
         let unit = &mut st.units[u];
         if unit.budget_frame != frame {
             unit.budget_frame = frame;
             unit.steps_left = STEPS_PER_TICK;
         }
         let prog = unit.program.clone();
-        let mut globals = std::mem::take(&mut unit.globals);
+        let mut globals = core::mem::take(&mut unit.globals);
         let mut steps = unit.steps_left;
         let r = {
             let mut host = api::ApiHost { g: self, st: &mut st, unit: u };
@@ -214,7 +216,7 @@ impl Game {
         st.units[u].globals = globals;
         st.units[u].steps_left = steps;
         // Anything the simulation queued while the state was out (no hooks fire then).
-        let tmp = std::mem::replace(&mut self.modscript, st);
+        let tmp = core::mem::replace(&mut self.modscript, st);
         self.modscript.queue.extend(tmp.queue);
         match r {
             Ok(v) => Some(v),
@@ -277,7 +279,7 @@ impl Game {
             }
             self.modscript.prev_dead[p] = dead;
         }
-        let q = std::mem::take(&mut self.modscript.queue);
+        let q = core::mem::take(&mut self.modscript.queue);
         for ev in q {
             match ev {
                 ScriptEvent::Land { player, tile, state } => self.modscript_hook(Hook::FrogLand, &[player as i32, tile, state]),

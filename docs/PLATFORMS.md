@@ -7,10 +7,10 @@ Build instructions: [BUILDING.md](BUILDING.md). Packaging: `tools/package/`, `pa
 
 ```
  frogger (bin)         main loop, CLI, settings, menus glue          per platform: thin
-   ├─ f2-game          deterministic simulation (60 Hz fixed tick)   PORTABLE (pure Rust)
-   │    └─ f2-math     20.12 fixed point, PSX trig, RNG, detfloat    PORTABLE, no_std today
-   ├─ f2-formats       pure parsers of the retail data               portable (std today)
-   ├─ f2-engine        wgpu renderer (MDX replacement)               needs a GPU backend
+   ├─ f2-game          deterministic simulation (60 Hz fixed tick)   PORTABLE, no_std + alloc
+   │    └─ f2-math     20.12 fixed point, PSX trig, RNG, detfloat    PORTABLE, no_std
+   ├─ f2-formats       pure parsers of the retail data               PORTABLE, no_std + alloc
+   ├─ f2-engine        CPU scene/draw list (no_std) + wgpu back end  GPU back end per platform
    ├─ f2-audio         mixer (portable) + output (cpal)              output backend per platform
    ├─ f2-bink          Bink 1 video/audio decoder (pure Rust)        portable; CPU-heavy
    ├─ f2-platform      winit window, gilrs pads, config, paths       per platform
@@ -108,9 +108,10 @@ General constraints:
 - **Reusable as-is**: `f2-game` + `f2-math` (simulation), `f2-formats` (parsers), `f2-bink`
   (decoder, if the CPU can afford it), `f2-audio`'s mixer, the trace/parity tooling. Per target:
   renderer, audio output, input, storage, main loop, packaging.
-- **no_std**: `f2-math` already builds `#![no_std]` (no allocator needed; CI checks it on
-  `thumbv7em-none-eabihf`). `f2-game` still needs `std`; the blockers are listed in §5.
-  Targets with a Rust `std` (Android, iOS, Web, Linux-like OSes) do not need this.
+- **no_std**: `f2-math` (no allocator), `f2-formats`, `f2-game` and `f2-engine`'s render core
+  (`alloc`) build `#![no_std]` without their default `std` feature (§5; CI checks
+  `thumbv7em-none-eabihf` and big-endian MIPS). Targets with a Rust `std` (Android, iOS, Web,
+  Linux-like OSes) do not need this.
 
 ### PlayStation 2
 - Hardware: Emotion Engine (MIPS R5900, ~295 MHz), 32 MB RAM, GS with 4 MB embedded VRAM, IOP
@@ -119,7 +120,7 @@ General constraints:
   float render paths will not be bit-identical; gameplay (integer fixed point) is unaffected.
 - Toolchain: PS2SDK (open source homebrew SDK, GCC). Rust has no upstream R5900 target with
   `std`; a custom target spec (MIPS R5900, soft `f64`) with `-Zbuild-std=core,alloc` and a
-  PS2SDK-backed allocator/libc shim is the likely route, so `f2-game` would need no_std (§5).
+  PS2SDK-backed allocator/libc shim is the likely route (`f2-game` is no_std, §5).
 - Data: the PC data (75 MB of game files, plus 256 MB music and 116 MB video) does not fit in
   RAM at once and the textures assume a D3D7 card. The **PSX version's assets** (the original
   `PSX/` platform tree in `frogger2-vss/teamSpirit/FroggerProject/PSX`) were built for 2 MB RAM +
@@ -171,7 +172,7 @@ General constraints:
   on period hardware (flash carts allow more).
 - Toolchain: libdragon (open source, GCC, modern rdpq/OpenGL 1.1-style API) or the 1999-era
   libultra (proprietary). Rust on N64 is done with a custom `mips` target spec plus
-  `-Zbuild-std=core,alloc`; so `f2-game` must be no_std (§5).
+  `-Zbuild-std=core,alloc`; `f2-game` is no_std for this (§5).
 - History: `frogger2-vss/teamSpirit/FroggerII/N64/` is the 1999 N64 platform layer of the
   *early* Frogger 2 codebase (47 files: libultra scheduler `Nnsched.c`, RDP output, `libmus`
   sequenced music, `.ntb` texture banks, built with `ccn64`/`psylink`). The N64 version was not
@@ -215,31 +216,70 @@ General constraints:
   data must never be hosted: the page only ever reads what the visitor imports locally.
   Effort: medium; the most practical "new platform" after the desktops.
 
-## 5. no_std audit (2026-10-10)
+## 5. no_std (done 2026-10-10)
 
-`f2-math`: **done**. `default = ["std"]`; without it the crate is `#![no_std]` with no
-allocator; `serde` is used without its `std` feature; the only std use (`RANDOM_LOG` stderr
-debug output, `maths.rs`) is compiled out. Checked: `cargo check -p f2-math
---no-default-features --target thumbv7em-none-eabihf`.
+The portable core builds `#![no_std]` + `alloc` (N64 phase 1A, `docs/N64-PLAN.md`). Each crate
+has a default `std` feature; without it the crate is `no_std` (`#![cfg_attr(not(feature =
+"std"), no_std)]`, so std builds are unchanged) and uses a crate-private `prelude` module
+(`alloc::{vec::Vec, string::{String, ToString}, boxed::Box, borrow::ToOwned, format, vec}`)
+glob-imported where needed. New code in these crates must use `core::`/`alloc::` paths (CI
+catches `std::`).
 
-`f2-game`: **not converted** (it would touch most files of a crate other agents edit daily).
-Blockers, all mechanical:
-
-| What | Where | Fix |
+| Crate | Without `std` | `std` adds |
 |---|---|---|
-| prelude: `Vec`, `String`, `Box`, `format!`, `vec!`, `ToString` used without imports | 56 of 64 files | `extern crate alloc;` + a crate `prelude` module (`alloc::{vec::Vec, string::String, boxed::Box, format, vec, ...}`) glob-imported per file |
-| `std::sync::Arc` | `assets.rs:8`, `event.rs:14`, `script.rs:15`, `session.rs:9`, `modscript/mod.rs:30` | `alloc::sync::Arc` (targets without atomics: `portable-atomic-util`) |
-| `std::collections::BTreeMap` | `pcaudio.rs:18`, `modscript/lang.rs:8` | `alloc::collections::BTreeMap` |
-| `HashMap` (iteration-order independent, keyed lookups) | `assets.rs:7,52,153` | `BTreeMap` (or `hashbrown`) |
-| filesystem `DirData` | `assets.rs:62-66` | gate behind `std` (tools/tests only) |
-| `std::sync::OnceLock` table cache | `view.rs:58` | `once_cell::race::OnceBox` or compute eagerly into `Game` |
-| `impl std::error::Error` | `netsync.rs:206` | `core::error::Error` (stable since 1.81) |
-| float methods `sqrt`/`sin`/`cos`/`acos` (not in `core`) | `view.rs:120,381`, `specfx.rs:1249-1258`, `actor2.rs:520` (test) | `f2_math::detfloat` / `libm`. Render-side only (no trace fields), and also removes the dependence on the host libm; `sqrt` is correctly rounded either way |
-| `std::mem/iter/fmt/ops` paths | many files | `core::` (same items) |
-| dependency `f2-trace` (serde_json, `std::io`, `std::fs`) | `trace.rs` (whole module), `Cargo.toml` | make `trace` + `f2-trace` optional under `std`, or split the schema types from the I/O |
-| dependency `f2-formats` | `read.rs:23-27` (`std::error::Error`, `From<Error> for std::io::Error`), `level.rs:169` (`std::env` debug switch), `objbank.rs:29,83` (`HashSet`), `fev_write.rs:416-421` (test only) | `core::error::Error`, gate the io/env bits behind `std`, `BTreeSet` |
-| `serde` with default features | `Cargo.toml` (workspace dep) | `default-features = false, features = ["derive", "alloc"]` + `std` feature forwarding |
+| `f2-math` | everything (no allocator needed) | `RANDOM_LOG` stderr debug output |
+| `f2-formats` | **all parsers and types** (pure bytes → owned data), plus serde derives (`serde` feature, serde without std) so the N64 asset packer can serialize parsed structures (e.g. `postcard`) and the N64 deserialize them | `From<Error> for std::io::Error`, the `F2_FORMATS_DEBUG` env switch |
+| `f2-game` | the whole simulation (`Game`, every module except `trace`) | `assets::DirData` (filesystem `DataSource`, tools/tests), `trace` + the `f2-trace` dependency (serde_json) |
+| `f2-engine` | render core: `scene` (CPU transform → TL triangle lists), `anim`, `textures`, `font`, `math`, the draw-list builder (`Renderer::build` → `(Vec<TlVertex>, Vec<DrawCmd>)`, now public with `DrawCmd`/`DepthMode` and `TextureRegistry::take_dirty` for external back ends such as the N64 RDP), `soft` (single-threaded, `serial_exec`) | `load` (file helpers), `RgbaImage::write_png` (png), threaded `soft` bands (`scoped_exec`); `gpu` (wgpu) and `gles2` imply `std` |
 
-Parity guard for that conversion: the three demo traces and `f2-parity check --corpus all`
-must stay identical; replacing the four float calls changes only the special-effect ring
-rendering, so screenshot comparisons of scenes with those effects are the thing to watch.
+What changed, per blocker of the audit:
+
+- `Arc` → `alloc::sync::Arc`, `BTreeMap` → `alloc::collections::BTreeMap`, `std::{mem, iter,
+  fmt, ops, ...}` → `core::`.
+- `HashMap`: `ModelTable.models` (u32 → model facts), `MemData` (tests) and f2-engine's
+  `TextureRegistry.by_crc` are keyed lookups only (never iterated; `Game::checksum` never walks
+  them), now `BTreeMap`. `objbank`'s `HashSet<u32>` (relocation membership) → `BTreeSet`.
+- `OnceLock` (`view.rs` and f2-engine `math.rs` sin/acos tables) → `once_cell::race::OnceBox`
+  (a racing second initialiser builds identical tables). Needs pointer-width atomics, which
+  `Arc` needs anyway; the N64 target spec has `max-atomic-width: 64` + `singlethread`.
+- `std::error::Error` → `core::error::Error` (`HashError`, `f2_formats::Error`,
+  `EngineError`); serde accepts it without std.
+- Float methods: `f2-game` uses `libm::sqrtf` (`view.rs`, `specfx.rs`; correctly rounded, equal
+  to `f32::sqrt` for all 2^31 finite non-negative inputs), `detfloat::acos` (`specfx.rs`; equal
+  bits to glibc for every f32 in [-1, 1]) and, for the `DrawFXRing` rotation's `sinf`/`cosf`,
+  `detfloat::{sin, cos}` in f64 rounded once to f32. `f2-engine` keeps the inherent methods
+  with `std` (bit-identical) and gets them from `libm` through a private `fmath::FloatExt`
+  trait without it.
+- `actor2.rs:520` (test only) is unchanged (tests build with std).
+
+Parity evidence (2026-10-10, USA data):
+
+- Demo traces `demo_trace 0 0 / 1 0 / 6 1` byte-identical before/after (sha1 `b0818758…`,
+  `148391ab…`, `592b9d2a…`, 1556 lines each).
+- `f2-parity check --corpus all`: 102 cases, 0 regressed; the 102 Rust traces it writes are
+  byte-identical (sha1 of every file) to the ones before the conversion.
+- The audit called the ring float calls render-only; they are not: `DrawFXRing` places the
+  `FXTYPE_TWINKLE` trails (trace `specfx` section) and calls `Random` from the transformed
+  ring. The rotation's `sinf`/`cosf` were the host C library's (glibc ≠ UCRT, so not
+  netplay-deterministic either). The retail exe has no `sinf`/`cosf` (MSVC 6 inlines
+  `(float)sin((double)x)` as x87 `fsin`/`fcos`), so the port now evaluates in f64 with
+  `detfloat` and rounds once, which is closest to retail and host-independent. Over the 8193
+  reachable fixed-point normals, glibc's `sinf`/`cosf` and the f64 path differ by 1 ulp for
+  208 `normal.vy` values; 29 of the 23,012 map tiles of all levels have such a normal (ring
+  normal = tile normal). Screenshot check (`frogger --headless --pad-script`, croak rings on
+  0-0, 1-0, 2-1, 4-0, 4-1, 5-1, 6-2; 168 frames): pixel-identical PNGs before/after.
+
+Checks (also in CI, `.github/workflows/ci.yml` jobs `cross-check` and `nostd-mips`):
+
+```bash
+cargo check -p f2-math -p f2-formats -p f2-game -p f2-engine --no-default-features --target thumbv7em-none-eabihf
+cargo check -p f2-formats --no-default-features --features serde --target thumbv7em-none-eabihf
+# big-endian MIPS (N64 stand-in), nightly with rust-src:
+cargo +nightly check -Zbuild-std=core,alloc --target mips-unknown-linux-gnu -p f2-math -p f2-formats -p f2-game -p f2-engine --no-default-features
+# the real N64 target spec (tools/n64/mips-nintendo64-none.json, phase 1B): full codegen
+cargo +nightly build --release -Zbuild-std=core,alloc -Zjson-target-spec --target tools/n64/mips-nintendo64-none.json -p f2-game -p f2-formats -p f2-engine --no-default-features
+```
+
+The last one was run against phase 1B's spec (VR4300, n32, big-endian) and builds the rlibs.
+`size_of::<Game>()` is 28,408 bytes there (30,688 on 64-bit hosts); heap numbers in
+`research/n64-memory.md`.

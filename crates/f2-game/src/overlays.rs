@@ -8,6 +8,8 @@
 //! 4096-wide/high overlay units (`OVERLAY_X/Y`), `angle` is 4096 per turn, `tex` is the
 //! texture CRC (0 = `NULL`).
 
+use crate::prelude::*;
+
 use f2_math::{fabs, fmul, Fixed};
 use serde::{Deserialize, Serialize};
 

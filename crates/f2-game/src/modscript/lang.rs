@@ -5,7 +5,9 @@
 //! floats, no I/O, no clock: a program can only reach the game through the natives of
 //! [`super::api`].
 
-use std::collections::BTreeMap;
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 
 use super::api::{builtin_const, Native};
 use super::vm::Value;
@@ -106,8 +108,8 @@ pub struct CompileError {
     pub msg: String,
 }
 
-impl std::fmt::Display for CompileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "line {}: {}", self.line, self.msg)
     }
 }

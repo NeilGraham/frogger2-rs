@@ -6,12 +6,18 @@ license="MIT OR Apache-2.0"
 publish.workspace=true
 
 [features]
-default = ["serde"]
-# Serialize/Deserialize derives on all public data types (for tools).
+default = ["std", "serde"]
+# Off: `#![no_std]` + `alloc` (every parser is pure bytes -> owned data). `std` only adds
+# `From<Error> for std::io::Error` and the `F2_FORMATS_DEBUG` environment switch.
+# See docs/PLATFORMS.md §5.
+std = ["serde?/std"]
+# Serialize/Deserialize derives on all public data types (for tools and the N64 asset packer;
+# works without `std`).
 serde = ["dep:serde"]
 
 [dependencies]
-serde = { workspace = true, optional = true }
+# Not `workspace = true`: the workspace entry enables serde's default `std` feature.
+serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

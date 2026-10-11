@@ -17,7 +17,7 @@ unchanged (parity-verified `f2-game`), so the N64 build plays exactly like the P
  │ IPL3 + ELF (compressed)  │  boot  │ code + libdragon + Rust core   ~1.5 MB│
  │ DFS asset pack           │ ─────▶ │ framebuffers 3× 320×240×16b  450 KB   │
  │  ├ global (fonts, UI)    │        │ z-buffer                      150 KB  │
- │  ├ per-world banks       │ stream │ game state (f2-game)          ~? KB   │
+ │  ├ per-world banks       │ stream │ game state (f2-game)        ≤ 0.9 MB  │
  │  ├ per-level data        │ ─────▶ │ level working set (models,    ~3.5 MB │
  │  ├ sfx banks (deduped)   │        │   textures, collision, script)        │
  │  ├ music (Opus)          │        │ audio (mixer, music stream)   ~300 KB │
@@ -96,6 +96,12 @@ largest level's decoded working set (models for generic + world + level banks, t
 collision, script), mixer and music buffers, FMV decoder buffers (FMV runs with the game
 unloaded). Levels load from ROM at level start (PI DMA ~5 MB/s + decompression).
 
+Phase 1A measurements (`research/n64-memory.md`, 32-bit pointers): `size_of::<Game>()` =
+28,408 bytes on the N64 target; simulation heap ≤ 887 KiB live in any level; level working set
+with the PC data structures (simulation + parsed object banks + 16-bit textures) 2.0–3.6 MiB
+(max 3,649 KiB, Ancients 3). The PC loader's transient peak (whole `.wus` sample banks, up to
+14 MiB) must not be reproduced: the N64 data source hands the simulation pre-extracted facts.
+
 ## 4. Phases and owners
 1. **Foundations (parallel)**
    - A. `no_std` + `alloc` for `f2-game`, the used parts of `f2-formats`, and a
@@ -106,6 +112,13 @@ unloaded). Levels load from ROM at level start (PI DMA ~5 MB/s + decompression).
      CPU/RSP timing probes; ares screenshot/automation harness.
    - C. Asset pipeline + compression: `tools/f2-n64pack` (host Rust) producing the DFS pack
      from a rendition; codec evaluation incl. F2Z; budget report.
+   - **B status (done, 2026-10-10)**: ROM boots in ares with the Rust core driving
+     rdpq triangles (textured, Gouraud, z-buffered), joypad, mixer audio, DFS and a panic
+     handler on the libdragon crash screen. ABI: Rust targets **n32** (LLVM has no o64);
+     objects are relabelled o64 at build time and calls cross only a ≤4-integer-argument
+     FFI with asm bridges — `tools/n64/README.md`. Measurements and the 60/30 fps analysis:
+     `research/n64-performance.md` (faithful CPU render path ≈ 6100 CPU cycles per
+     triangle → too slow; 30 fps needs a fused N64-specific CPU path, 60 fps RSP T&L).
 2. **Integration**: `crates/frogger-n64` front end (game loop, DataSource over the pack,
    renderer on rdpq, audio, input, FMV, saves); first playable Garden 1 in ares.
 3. **Completeness + performance**: all levels, frontend/menus, multiplayer split-screen,

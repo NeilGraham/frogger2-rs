@@ -3,7 +3,8 @@ resolver = "2"
 # f2fix is a 32-bit Windows DLL with its own workspace (built by tools/run/build_f2fix.sh).
 # frogger-ps4/-ps5 need `frogger` without its `desktop` feature, which workspace feature
 # unification would turn on: their own workspaces (tools/ps4/build-pkg.sh, tools/ps5/build.sh).
-exclude = ["crates/f2fix", "crates/frogger-ps4", "crates/frogger-ps5"]
+# frogger-n64 is a nightly -Zbuild-std staticlib for a custom MIPS target (tools/n64/build.sh).
+exclude = ["crates/f2fix", "crates/frogger-ps4", "crates/frogger-ps5", "crates/frogger-n64"]
 members = [
     "crates/f2-media",
     "crates/f2-formats",

@@ -14,6 +14,8 @@
 
 #![allow(clippy::needless_range_loop, clippy::collapsible_match)] // C loop/switch shapes kept
 
+use crate::prelude::*;
+
 use f2_math::{fmul, rcos, rsin, FVector, SVector};
 use serde::{Deserialize, Serialize};
 

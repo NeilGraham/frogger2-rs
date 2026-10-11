@@ -6,6 +6,8 @@
 //! only has a PSX body and is not ported. `ControlCamera` is `#ifndef FINAL_MASTER`
 //! (debug fly camera) and dropped.
 
+use crate::prelude::*;
+
 use f2_math::{
     add_to_vector_ff, add_vector_fff, distance_between_points_ff, dot_product_ff, fmul, magnitude_s, make_unit, scale_vector, scale_vector_ff, set_vector_fs,
     sub_vector_fff, sub_vector_sss, FVector, Fixed, SVector,

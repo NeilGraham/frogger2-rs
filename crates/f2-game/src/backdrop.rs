@@ -2,6 +2,8 @@
 //! screen) and of the tiled backdrop of `PC/pcsprite.c` (`InitTiledBackdrop`), plus the
 //! `drawGame` / `drawLandscape` switches the frontend flips. The renderer reads these.
 
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 use crate::Game;

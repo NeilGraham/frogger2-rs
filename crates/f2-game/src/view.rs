@@ -14,6 +14,8 @@
 //! translation in row 3, `PushMatrix(a)` = `a · top`). Float maths is `f32` throughout:
 //! the retail exe runs with Direct3D's single-precision x87 control word.
 
+use crate::prelude::*;
+
 use f2_formats::objbank::{Mat4, Model, Object, QKey, Quat, VKey, Vec3};
 use f2_math::{distance_between_points_ss, SVector};
 
@@ -44,7 +46,7 @@ pub const IDENTITY: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.
 
 // ---- mdxMath.cpp -------------------------------------------------------------------
 
-const PI2: f64 = std::f64::consts::PI * 2.0;
+const PI2: f64 = core::f64::consts::PI * 2.0;
 const EPSILON: f32 = 0.00001;
 const HALFPI: f32 = 1.570_796_4;
 
@@ -55,7 +57,8 @@ struct Tables {
 
 /// `InitMaths` (mdxMath.cpp:53): tables behind `sinFast`/`acosFast`.
 fn tables() -> &'static Tables {
-    static T: std::sync::OnceLock<Box<Tables>> = std::sync::OnceLock::new();
+    // A pure function of nothing: a racing second initialiser builds identical tables.
+    static T: once_cell::race::OnceBox<Tables> = once_cell::race::OnceBox::new();
     T.get_or_init(|| {
         let mut t = Box::new(Tables { sin: [0.0; 4096], acos: [0.0; 4096] });
         for i in 0..4096 {
@@ -117,7 +120,7 @@ pub fn mtx_xfm(m: &Mat4, v: Vec3) -> Vec3 {
 }
 
 fn normalise(v: &mut Vec3) {
-    let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let m = libm::sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     if m != 0.0 {
         let r = 1.0 / m;
         v[0] *= r;
@@ -378,7 +381,7 @@ pub fn find_actor_centre(model: &Model, animated: bool) -> (Vec3, f32) {
     }
     let c = [(mn[0] + mx[0]) / 2.0, (mn[1] + mx[1]) / 2.0, (mn[2] + mx[2]) / 2.0];
     let r = [mx[0] - c[0], mx[1] - c[1], mx[2] - c[2]];
-    let mag = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+    let mag = libm::sqrtf(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
     (c, (mag as f64 * 0.95) as f32)
 }
 

@@ -1,6 +1,8 @@
 //! Port of the loading half of `Common/map.c`: collision tiles, camera boxes
 //! and scenics. (Entities are created by `memload`.)
 
+use crate::prelude::*;
+
 use f2_formats::level;
 use f2_math::{FVector, IQuaternion, SVector};
 use serde::{Deserialize, Serialize};

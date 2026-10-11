@@ -2,6 +2,8 @@
 //! Handles are plain integers (tile index, enemy index, player number); every native checks
 //! its arguments, so a script can never index out of range or reach raw memory.
 
+use crate::prelude::*;
+
 use f2_math::{FVector, SVector};
 
 use super::vm::{Host, Value};

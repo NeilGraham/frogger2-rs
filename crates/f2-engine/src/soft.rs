@@ -11,6 +11,10 @@
 //! Rows are split into horizontal bands rasterised in parallel; each band
 //! replays every command in order, so per-pixel draw order is preserved.
 
+#[cfg(not(feature = "std"))]
+use crate::fmath::FloatExt;
+use crate::prelude::*;
+
 use crate::renderer::{Blend, DepthMode, DrawCmd, Renderer};
 use crate::scene::TlVertex;
 use crate::textures::Image;
@@ -232,6 +236,7 @@ fn tri(px: &mut [u32], dp: &mut [f32], width: i32, y0: i32, rows: i32, v: &[TlVe
 pub type SoftExec<'e> = &'e (dyn for<'j> Fn(Vec<Box<dyn FnOnce() + Send + 'j>>) + Sync);
 
 /// [`SoftExec`] with one scoped thread per job (the first job runs on the caller).
+#[cfg(feature = "std")]
 pub fn scoped_exec(jobs: Vec<Box<dyn FnOnce() + Send + '_>>) {
     let mut jobs = jobs.into_iter();
     let first = jobs.next();
@@ -245,11 +250,22 @@ pub fn scoped_exec(jobs: Vec<Box<dyn FnOnce() + Send + '_>>) {
     });
 }
 
+/// [`SoftExec`] running the jobs one after another on the caller (no threads; the bands
+/// are independent, so the image is the same as with [`scoped_exec`]).
+pub fn serial_exec(jobs: Vec<Box<dyn FnOnce() + Send + '_>>) {
+    for j in jobs {
+        j();
+    }
+}
+
 impl Renderer {
     /// Renders the queued frame into `target` on the CPU (resized to the internal view
     /// size). `threads` = number of row bands rasterised in parallel (>= 1).
     pub fn render_soft(&mut self, target: &mut SoftTarget, clear: [f64; 4], threads: usize) {
+        #[cfg(feature = "std")]
         self.render_soft_with(target, clear, threads, &scoped_exec);
+        #[cfg(not(feature = "std"))]
+        self.render_soft_with(target, clear, threads, &serial_exec);
     }
 
     /// [`Renderer::render_soft`] with the row bands run by `exec`.

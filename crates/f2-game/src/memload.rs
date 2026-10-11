@@ -4,6 +4,8 @@
 //! same `>>4` / `>>16` / `>>8` scalings as the loader); this module does the
 //! creation half in the original order.
 
+use crate::prelude::*;
+
 use f2_formats::entity::{ActorKind, Entities, Item, Place};
 use f2_math::{add_vector_ssf, fmul, new_set_vector_fs, scale_vector_ff, FVector, SVector, Vector};
 

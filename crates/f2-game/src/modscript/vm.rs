@@ -2,6 +2,8 @@
 //! (shared by all hook calls of a script within one tick), a value-stack limit, a call-depth
 //! limit and a string-length limit. Nothing persists between runs except the globals.
 
+use crate::prelude::*;
+
 use serde::Serialize;
 
 use super::lang::{Op, Program};
@@ -28,8 +30,8 @@ impl Value {
     }
 }
 
-impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Value {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Value::Int(i) => write!(f, "{i}"),
             Value::Str(s) => f.write_str(s),
@@ -54,8 +56,8 @@ pub enum VmError {
     Runtime(String),
 }
 
-impl std::fmt::Display for VmError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for VmError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             VmError::Budget => write!(f, "instruction budget exceeded ({STEPS_PER_TICK} per tick)"),
             VmError::Runtime(s) => f.write_str(s),

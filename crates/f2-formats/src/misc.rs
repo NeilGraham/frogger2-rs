@@ -1,5 +1,7 @@
 //! Small formats: demo input recordings and the save game.
 
+use crate::prelude::*;
+
 use crate::read::{Reader, Result};
 
 /// One record of `Demos/record-<w>-<l>.key` (`Common/levplay.c`):
@@ -52,6 +54,7 @@ pub struct LevelInfo {
 /// serde support for arrays longer than 32 (serialised as sequences).
 #[cfg(feature = "serde")]
 mod big_array {
+    use crate::prelude::*;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer, T: Serialize, const N: usize>(a: &[T; N], s: S) -> Result<S::Ok, S::Error> {

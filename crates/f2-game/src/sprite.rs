@@ -11,6 +11,8 @@
 //! Renderer API: [`SpriteState::iter_list`] yields the live sprites in list order
 //! (`sprList.head.next` → ...), [`SpriteState::get`] reads one sprite.
 
+use crate::prelude::*;
+
 use f2_math::SVector;
 use serde::{Deserialize, Serialize};
 
@@ -189,7 +191,7 @@ impl SpriteState {
     pub fn iter_list(&self) -> impl Iterator<Item = (SpriteId, &Sprite)> + '_ {
         let head = self.head();
         let mut c = if self.array.is_empty() { head } else { self.next[head as usize] };
-        std::iter::from_fn(move || {
+        core::iter::from_fn(move || {
             if self.array.is_empty() || c == head || c == NIL {
                 return None;
             }

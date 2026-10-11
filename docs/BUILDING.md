@@ -186,7 +186,9 @@ Each archive carries `NOTICE`, the four license texts (`licenses/`) and no game 
   (placeholder art, not from the game).
 
 CI (`.github/workflows/ci.yml`): `lint` (fmt + clippy), `test` (build + test on ubuntu, windows,
-macos-14; no game data), `cross-check` (macOS targets and the no_std `f2-math` from Linux), and a
+macos-14; no game data), `cross-check` (macOS targets and the no_std core — `f2-math`, `f2-formats`, `f2-game`,
+`f2-engine` without default features — from Linux), `nostd-mips` (the same core on big-endian
+MIPS with nightly `-Zbuild-std=core,alloc`, for the N64 port), and a
 manual `release` job that runs these scripts per OS and uploads the archives.
 
 ## WSL2 notes

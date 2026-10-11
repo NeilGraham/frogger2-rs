@@ -11,7 +11,9 @@
 //! front. Triggers that never get an event (the operands of AND/OR/NOT, the trigger
 //! of `EV_IF`) are allocated but not linked, exactly like the C.
 
-use std::sync::Arc;
+use crate::prelude::*;
+
+use alloc::sync::Arc;
 
 use f2_formats::fev::Script;
 use f2_math::{Fixed, SVector, Vector};

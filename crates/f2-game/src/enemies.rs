@@ -9,6 +9,8 @@
 //! [`EnemiesState::load_orig_tables`] (called from `Game::new`) from the contents recovered
 //! from the retail executable ([`crate::enemy_tables`]).
 
+use crate::prelude::*;
+
 use f2_math::{
     add_to_vector_ff, add_to_vector_fs, add_to_vector_sf, add_to_vector_ss, add_vector_sfs, add_vector_ssf, arccos, cross_product_fff,
     distance_between_points_sf, distance_between_points_ss, dot_product_ff, fabs, fdiv, fixed_get_quaternion_from_rotation, fixed_quaternion_multiply, fmul,
