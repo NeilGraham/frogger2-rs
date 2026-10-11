@@ -230,6 +230,13 @@ pub struct DrawCtx<'a> {
     /// The loaded full-screen backdrop (`game.backdrop.backdrop`).
     pub backdrop: Option<TexHandle>,
     pub tile_scroll: TileScroll,
+    /// Game frames (60 Hz ticks, i.e. retail `LoopFunc`s) since the previous `draw_loop`:
+    /// how many times `UpdateAnimatingTextures` runs. The retail game draws once per frame,
+    /// and textures whose frame time is -1 (e.g. the Garden bee's `00bwing.bmp`, which makes
+    /// its wings flutter) step once per such call; with the host drawing at the display rate
+    /// (0, 1 or several draws per tick) one step per draw would tie the flutter to the
+    /// monitor (steady half-transparent wings at 144 Hz) instead of to game frames.
+    pub tex_anim_steps: u32,
 }
 
 /// Port of `DrawLoop` (PC/drawloop.cpp:132): backdrop, sky, landscape, actors, shadows,
@@ -249,7 +256,11 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
     r.set_camera(&ctx.cam);
     r.view.near_clip = 10.0;
     r.view.far_clip = ctx.far_clip;
-    r.update_animating_textures(game.act_frame_count);
+    // `UpdateAnimatingTextures` (end of `DrawLoop`, drawloop.cpp:404): once
+    // per game frame since the last draw (see `DrawCtx::tex_anim_steps`).
+    for _ in 0..ctx.tex_anim_steps {
+        r.update_animating_textures(game.act_frame_count);
+    }
     // Console front ends refill the procedural textures themselves (straight into their
     // texture format, without the RGBA8 registry copy).
     #[cfg(not(feature = "lean"))]
@@ -364,11 +375,86 @@ fn draw_actor_list(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &
         ea.anim_time = mdx.animation.as_ref().map_or(0.0, |an| an.anim_time);
         use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE, OBJECT_FLAGS_WAVE};
         ea.extra_flags = mdx.root_object_flags & (OBJECT_FLAGS_ADDITIVE | OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE);
+        ea.wrap_tc = mdx.flags & f2_game::mdx_actor::mdx_flags::ACTOR_WRAPTC != 0;
+        ea.modge_frame = modge_frame(game);
         // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours).
         ea.override_tex = a2.override_tex.as_deref().and_then(|n| r.textures.by_name(&n.to_ascii_lowercase()));
         // `SetActorGouraudValues` on the multiplayer portraits (options.c:685).
         ea.gouraud = game.options.portrait_actor.iter().position(|&p| p == Some(id)).map(|i| game.options.portrait_gouraud[i].map(|c| c as f32 / 255.0));
         r.draw_actor(&scene.banks[b].models[m], ea);
+    }
+}
+
+/// `timeInfo.frameCount` (60 Hz frames since `InitTiming`, held in the pause menu), which
+/// drives the MODGE/WAVE water wobble; `actFrameCount` under the fixed-step `Game::tick`.
+fn modge_frame(game: &Game) -> u32 {
+    if game.timing.active {
+        game.timing.time_info.frame_count
+    } else {
+        game.act_frame_count
+    }
+}
+
+/// `slideSpeeds[]` of the retail PC exe (`0x47c278`; the PSX table is `{0, 1, 2, 4}`).
+const SLIDE_SPEEDS: [i32; 4] = [0, 16, 32, 64];
+
+/// The texture sliding of `CopyActorList` (PC/Main.cpp:621, retail `0x43cac0`), run once
+/// per game frame after the tick: every actor with `ACTOR_SLIDYTEX`/`ACTOR_SLIDYTEX2`
+/// (`slideSpeeds[(flags>>5)&3]·gameSpeed>>12`) or `ACTOR_SLOWSLIDE` (`gameSpeed>>8`) scrolls
+/// its model's texture v coordinates (`SlideObjectTextures`). The original edits the mesh,
+/// which all actors of a model share (`MakeUniqueObject` copies objects, not meshes), so
+/// each such actor slides it again, in `actList` order. Flowing water / sludge / lava
+/// (`wat_f*`, `slu_f*`, `xx_g_*`) and the scenery strips `spl_*`/`spm_*`/`spf_*` (e.g. the
+/// Subterranean ant columns) move this way. Render state only; the simulation is read.
+pub fn slide_object_textures(scene: &mut LevelScene, game: &Game) {
+    use f2_game::actor2::ACTOR_SLOWSLIDE;
+    let gs = game.game_speed;
+    for id in game.actor2.act_list.ids(&game.actor2.actors) {
+        let a2 = &game.actor2.actors[id];
+        let slide = ((a2.flags >> 5) & 3) as usize;
+        if slide == 0 && a2.flags & ACTOR_SLOWSLIDE == 0 {
+            continue;
+        }
+        let Some(&(b, m)) = a2.actor.actual_actor.object_controller.and_then(|mid| scene.models.get(&mid)) else { continue };
+        let model = &mut scene.banks[b].models[m];
+        if slide != 0 {
+            slide_model(model, SLIDE_SPEEDS[slide].wrapping_mul(gs) >> 12);
+        }
+        if a2.flags & ACTOR_SLOWSLIDE != 0 {
+            slide_model(model, gs >> 8);
+        }
+    }
+}
+
+/// `SlideObjectTextures(objectController->object, speed)` on the root and (`next`) its
+/// siblings, recursing into the children.
+fn slide_model(model: &mut f2_formats::objbank::Model, speed: i32) {
+    slide_object(&mut model.root, speed);
+    for o in &mut model.root_siblings {
+        slide_object(o, speed);
+    }
+}
+
+/// Port of `SlideObjectTextures` (mdxObject.cpp:51, retail `0x44b540`, hardware
+/// thresholds): each face's three `faceTC.v` move by `-speed`; when one drops below 4096
+/// all three go up by 8192 (8 texture repeats, invisible with wrapping coordinates).
+fn slide_object(o: &mut f2_formats::objbank::Object, speed: i32) {
+    const THRESH: i32 = 4096;
+    const ADD: i32 = 8192;
+    if let Some(mesh) = &mut o.mesh {
+        for f in mesh.face_uv.as_chunks_mut::<3>().0 {
+            for t in f.iter_mut() {
+                t[1] = (t[1] as i32).wrapping_sub(speed) as i16;
+            }
+            if f.iter().any(|t| (t[1] as i32) < THRESH) {
+                for t in f.iter_mut() {
+                    t[1] = (t[1] as i32).wrapping_add(ADD) as i16;
+                }
+            }
+        }
+    }
+    for c in &mut o.children {
+        slide_object(c, speed);
     }
 }
 

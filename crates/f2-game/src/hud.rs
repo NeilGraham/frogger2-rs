@@ -385,8 +385,10 @@ impl Game {
 
     fn set_baby_icons_draw(&mut self, v: u8) {
         let nb = self.map.num_babies.max(0) as usize;
-        for ic in self.babyfrog.baby_icons.iter_mut().take(nb).flatten() {
-            ic.draw = v;
+        for i in 0..nb.min(self.babyfrog.baby_icons.len()) {
+            if let Some(o) = self.overlays.get_mut(self.babyfrog.baby_icons[i]) {
+                o.draw = v;
+            }
         }
     }
 

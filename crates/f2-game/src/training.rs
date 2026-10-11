@@ -54,9 +54,7 @@ impl Game {
         for i in 0..nb {
             let bb = self.hud.arcade_hud.babies_back[i];
             self.overlays.enable(bb);
-            if let Some(Some(ic)) = self.babyfrog.baby_icons.get_mut(i) {
-                ic.draw = 1;
-            }
+            self.overlays.enable(self.babyfrog.baby_icons.get(i).copied().flatten());
         }
 
         train.bg = self.overlays.create_and_add_sprite_overlay(0, 4096, Some("SHEEN"), 4096, 900, 180, 0);

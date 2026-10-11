@@ -9,6 +9,8 @@
 use crate::prelude::*;
 
 use crate::anim::{for_each_object, xform_actor, xform_actor_cached, Actor};
+#[cfg(not(feature = "std"))]
+use crate::fmath::FloatExt;
 use crate::math::*;
 use crate::textures::{TexHandle, TextureRegistry};
 use f2_formats::objbank::{Mesh, Model, Object};
@@ -349,6 +351,44 @@ fn prepare_object(view: &View, mesh: &Mesh, m: &Mat4, tv: &mut Vec<Tv>) {
     tv.extend(mesh.vertices.iter().map(|&v| view.project(mtx_xfm(&f, v))));
 }
 
+/// Per-vertex `tMx`, `tMz`, `tMy` of [`calc_modge_values`].
+pub(crate) type ModgeValues = Vec<[f32; 3]>;
+
+/// Port of `PCCalcModgeValues` (mdxRender.cpp:430): per vertex the texture wobble `tMx`,
+/// `tMz` (0..0.2) and the wave height `tMy` (0..10) at `timeInfo.frameCount` = `fc`. The
+/// products are `double` (the `/` constants), each `sinf`/`cosf` takes a `float`.
+fn calc_modge_values(mesh: &Mesh, fc: u32, out: &mut ModgeValues) {
+    let t = fc as f64;
+    // MSVC 6 inlines `sinf`/`cosf` as x87 `fsin`/`fcos` of the float argument.
+    let sinf = |x: f64| ((x as f32) as f64).sin() as f32 as f64;
+    let cosf = |x: f64| ((x as f32) as f64).cos() as f32 as f64;
+    out.clear();
+    out.extend(mesh.vertices.iter().map(|v| {
+        let (x, z) = (v[0] as f64, v[2] as f64);
+        let mx = (sinf(z * (1.5 / 35.0) + sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)) + t * (1.5 / 70.0)) + 1.0) * 0.1;
+        let mz = (cosf(x * (1.5 / 49.0) + cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)) + t * (1.5 / 66.0)) + 1.0) * 0.1;
+        let my = (sinf(z * (1.2 / 26.0) + cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0)) + t * (1.0 / 26.0)) + 1.0) * 5.0;
+        [mx as f32, mz as f32, my as f32]
+    }));
+}
+
+/// Port of `PCPrepareModgyObject` (mdxRender.cpp:455): [`prepare_object`] with each vertex
+/// raised by its wave height `tMy` (`OBJECT_FLAGS_WAVE`).
+fn prepare_modgy_object(view: &View, mesh: &Mesh, m: &Mat4, mv: &ModgeValues, tv: &mut Vec<Tv>) {
+    let f = mtx_cat(m, &view.v_matrix);
+    tv.clear();
+    tv.extend(mesh.vertices.iter().zip(mv).map(|(&v, w)| view.project(mtx_xfm(&f, [v[0], v[1] + w[2], v[2]]))));
+}
+
+/// The `PCRenderModgyObject` / `PCRenderModgyObject2` variant of [`render_mesh`]
+/// (mdxRender.cpp:1573/1850, `OBJECT_FLAGS_MODGE`): texture coordinates wobble by
+/// `0.4·tMx`, `0.4·tMz` and fog is per vertex; with `wave` (`PCRenderModgyObject`, water) the
+/// vertex alpha is `50 + (tMx+tMz)·400` instead of the face colour's.
+pub(crate) struct Modge<'a> {
+    pub values: &'a ModgeValues,
+    pub wave: bool,
+}
+
 /// Port of `PCPrepareSkinnedObject` (mdxRender.cpp:590): transform the root-mesh
 /// vertices this bone moves.
 fn prepare_skinned(view: &View, obj: &Object, mesh: &Mesh, m: &Mat4, tv: &mut [Tv]) {
@@ -382,7 +422,7 @@ pub(crate) struct EmitCtx<'a> {
 /// pushes the visible faces of `mesh` using the transformed vertices `tv`.
 /// `per_object_fog` reproduces the object path (`cFog` from the first face);
 /// the landscape path fogs per vertex.
-pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, per_object_fog: bool, out: &mut Frames) {
+pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, per_object_fog: bool, modge: Option<&Modge>, out: &mut Frames) {
     let view = cx.view;
     let [vx, vy, vw, vh] = view.vp();
     let (clx0, cly0, clx1, cly1) = (vx, vy, vx + vw - 1.0, vy + vh - 1.0);
@@ -417,15 +457,25 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, pe
             }
             let uv = mesh.face_uv.get(fi * 3 + k).copied().unwrap_or([0, 0]);
             let vz = p[k][2];
+            let mut uv = [uv[0] as f32 * UV_SCALE, uv[1] as f32 * UV_SCALE];
+            let mut alpha = col[3] * cx.alpha_mul;
+            if let Some(m) = modge {
+                let [mx, mz, _] = m.values.get(face[k] as usize).copied().unwrap_or_default();
+                uv = [uv[0] + mx * 0.4, uv[1] + mz * 0.4];
+                if m.wave {
+                    // `50+(unsigned long)((m1x+m1z)*400)<<24`
+                    alpha = (50 + ((mx + mz) * 400.0) as u32) as f32 / 255.0;
+                }
+            }
             v[k] = TlVertex {
                 sx: p[k][0],
                 sy: p[k][1],
                 sz: (vz * SZ_SCALE).clamp(0.0, 1.0),
                 rhw: 1.0 / (vz + DIST),
                 // D3DRGBA clamps to bytes.
-                color: [col[0].clamp(0.0, 1.0), col[1].clamp(0.0, 1.0), col[2].clamp(0.0, 1.0), (col[3] * cx.alpha_mul).clamp(0.0, 1.0)],
-                uv: [uv[0] as f32 * UV_SCALE, uv[1] as f32 * UV_SCALE],
-                fog: if per_object_fog { c_fog } else { fog_factor(vz) },
+                color: [col[0].clamp(0.0, 1.0), col[1].clamp(0.0, 1.0), col[2].clamp(0.0, 1.0), alpha.clamp(0.0, 1.0)],
+                uv,
+                fog: if per_object_fog && modge.is_none() { c_fog } else { fog_factor(vz) },
                 alpha_ref: 0.0,
             };
         }
@@ -433,10 +483,10 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, pe
     }
 }
 
-/// Frame selection of `DrawObject` (mdxRender.cpp:1065).
-fn object_frame(flags: i16, xlu_fade: bool) -> Frame {
+/// Frame selection of `DrawObject` (mdxRender.cpp:1065); `wrap` = `wrapCoords`.
+fn object_frame(flags: i16, xlu_fade: bool, wrap: bool) -> Frame {
     let mut f = Frame::Normal;
-    if flags & OBJECT_FLAGS_MODGE != 0 {
+    if flags & OBJECT_FLAGS_MODGE != 0 || wrap {
         f = Frame::Wrap;
     }
     if flags & OBJECT_FLAGS_XLU != 0 || xlu_fade {
@@ -456,6 +506,7 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
     let mats = xform_actor(model, actor);
     let fade = actor.xlu < 1.0;
     let extra = actor.extra_flags;
+    let (wrap, fc) = (actor.wrap_tc, actor.modge_frame);
     if model.is_skinned {
         // All bones transform their share of the root mesh, then the root mesh is drawn once.
         let Some(mesh) = model.root.mesh.as_ref() else { return };
@@ -463,15 +514,29 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
         for_each_object(model, |i, o| prepare_skinned(cx.view, o, mesh, &mats[i], &mut tv));
         // `PCRenderObject(root)` runs after `DrawObject` restored the frame, so the
         // skin always lands in the caller's frame (normal); only run-time flags apply.
-        let frame = object_frame(extra, fade);
-        render_mesh(cx, mesh, &tv, frame, true, out);
+        let frame = object_frame(extra, fade, wrap);
+        render_mesh(cx, mesh, &tv, frame, true, None, out);
     } else {
         let mut tv = Vec::new();
+        let mut mv = ModgeValues::new();
         for_each_object(model, |i, o| {
             let Some(mesh) = o.mesh.as_ref() else { return };
-            prepare_object(cx.view, mesh, &mats[i], &mut tv);
-            let frame = object_frame(o.flags | extra, fade);
-            render_mesh(cx, mesh, &tv, frame, true, out);
+            // DrawObject (mdxRender.cpp:1126): modge values for MODGE or WAVE, the wave
+            // lifts the vertices, MODGE picks the modgy renderers.
+            let flags = o.flags | extra;
+            let (modge, wave) = (flags & OBJECT_FLAGS_MODGE != 0, flags & OBJECT_FLAGS_WAVE != 0);
+            if modge || wave {
+                calc_modge_values(mesh, fc, &mut mv);
+            }
+            if wave {
+                prepare_modgy_object(cx.view, mesh, &mats[i], &mv, &mut tv);
+            } else {
+                prepare_object(cx.view, mesh, &mats[i], &mut tv);
+            }
+            let frame = object_frame(flags, fade, wrap);
+            // PCRenderModgySheenObject (SHEEN as well) is drawn like PCRenderModgyObject.
+            let m = modge.then_some(Modge { values: &mv, wave });
+            render_mesh(cx, mesh, &tv, frame, true, m.as_ref(), out);
         });
     }
 }
@@ -578,7 +643,7 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
         if model.root.mesh.is_none() {
             return;
         }
-        let frame = object_frame(extra, fade);
+        let frame = object_frame(extra, fade, actor.wrap_tc);
         if frame != Frame::Glow {
             sink.push(cx.view, MeshDraw { object: MESH_SKIN, frame, ..base }, mats);
         }
@@ -587,7 +652,7 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
             if o.mesh.is_none() {
                 return;
             }
-            let frame = object_frame(o.flags | extra, fade);
+            let frame = object_frame(o.flags | extra, fade, actor.wrap_tc);
             if frame != Frame::Glow {
                 sink.push(cx.view, MeshDraw { object: i as u16, frame, ..base }, &mats[i..i + 1]);
             }
@@ -633,7 +698,7 @@ pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames) {
     for_each_object(model, |i, o| {
         let Some(mesh) = o.mesh.as_ref() else { return };
         prepare_object(cx.view, mesh, &mats[i], &mut tv);
-        render_mesh(cx, mesh, &tv, Frame::Normal, false, out);
+        render_mesh(cx, mesh, &tv, Frame::Normal, false, None, out);
     });
 }
 

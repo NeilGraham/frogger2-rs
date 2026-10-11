@@ -98,6 +98,7 @@ fn main() {
         authentic: true,
         backdrop: None,
         tile_scroll: Default::default(),
+        tex_anim_steps: 1,
     };
     render::draw_loop(&mut r, Some(s), &g, &ctx);
     if n64 {

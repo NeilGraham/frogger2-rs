@@ -5,6 +5,7 @@
 pub(crate) trait FloatExt {
     fn sqrt(self) -> Self;
     fn sin(self) -> Self;
+    fn cos(self) -> Self;
     fn acos(self) -> Self;
     fn sin_cos(self) -> (Self, Self)
     where
@@ -21,6 +22,9 @@ impl FloatExt for f32 {
     }
     fn sin(self) -> f32 {
         libm::sinf(self)
+    }
+    fn cos(self) -> f32 {
+        libm::cosf(self)
     }
     fn acos(self) -> f32 {
         libm::acosf(self)
@@ -48,6 +52,9 @@ impl FloatExt for f64 {
     }
     fn sin(self) -> f64 {
         libm::sin(self)
+    }
+    fn cos(self) -> f64 {
+        libm::cos(self)
     }
     fn acos(self) -> f64 {
         libm::acos(self)

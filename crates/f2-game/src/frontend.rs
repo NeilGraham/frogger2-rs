@@ -708,13 +708,9 @@ impl Game {
         self.init_tiled_backdrop("LOGO");
 
         for i in 0..self.map.num_babies.clamp(0, crate::babyfrog::NUM_BABIES as i32) as usize {
-            if let Some(o) = self.babyfrog.baby_icons[i].as_mut() {
-                o.draw = 0;
-            }
+            self.overlays.disable(self.babyfrog.baby_icons[i]);
         }
-        if let Some(o) = self.babyfrog.baby_flash.as_mut() {
-            o.draw = 0;
-        }
+        self.overlays.disable(self.babyfrog.baby_flash);
 
         if self.training.train.is_none() {
             self.pc_name_entry_init();

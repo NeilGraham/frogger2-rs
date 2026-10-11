@@ -115,6 +115,9 @@ pub struct App {
     /// Game camera before the last tick (interpolation).
     prev_cam: Option<Camera>,
     pub ticks: u64,
+    /// `ticks` at the last draw: animated textures step once per game frame
+    /// (`DrawCtx::tex_anim_steps`), not once per displayed frame.
+    tex_anim_ticks: u64,
     // view
     free_cam: Option<FlyCam>,
     last_cam: Option<Camera>,
@@ -280,6 +283,7 @@ impl App {
             prev: Vec::new(),
             prev_cam: None,
             ticks: 0,
+            tex_anim_ticks: 0,
             free_cam: None,
             last_cam: None,
             show_tiles: false,
@@ -1214,10 +1218,18 @@ impl App {
         }
         self.dispatch_effects();
         self.process_level_loads();
+        self.slide_textures();
         self.grab_textures();
         self.update_game_view();
         if self.game.backdrop.tiled_backdrop.is_some() {
             self.tile_scroll.step(self.game.game_speed);
+        }
+    }
+
+    /// `CopyActorList`'s texture sliding (once per game frame, render state).
+    fn slide_textures(&mut self) {
+        if let Some(scene) = self.scene.as_mut() {
+            render::slide_object_textures(scene, &self.game);
         }
     }
 
@@ -1365,6 +1377,7 @@ impl App {
             self.ticks += 1;
             self.dispatch_effects();
             self.process_level_loads();
+            self.slide_textures();
             if self.game.backdrop.tiled_backdrop.is_some() {
                 self.tile_scroll.step(self.game.game_speed);
             }
@@ -1534,6 +1547,9 @@ impl App {
             return;
         }
         let alpha = (self.acc.as_secs_f32() / TICK.as_secs_f32()).clamp(0.0, 1.0);
+        // At most 10 s of catch-up (a level load): the -1-time textures only cycle.
+        let tex_anim_steps = self.ticks.saturating_sub(self.tex_anim_ticks).min(600) as u32;
+        self.tex_anim_ticks = self.ticks;
         let backdrop = self.backdrop_image();
         if self.scene.is_some() {
             self.sync_arcade_screen();
@@ -1552,6 +1568,7 @@ impl App {
             authentic,
             backdrop,
             tile_scroll: self.tile_scroll,
+            tex_anim_steps,
         };
         if let Some(scene) = &self.scene {
             let gcam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);
