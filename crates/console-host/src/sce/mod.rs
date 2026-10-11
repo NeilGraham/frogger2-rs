@@ -294,8 +294,15 @@ impl AudioOutput for SceAudio {
     }
 
     fn start(&mut self, mixer: Arc<Mutex<Mixer>>) -> Result<(), String> {
-        // Port type 0 = main, format 1 = S16 stereo.
-        let h = unsafe { sceAudioOutOpen(self.user, 0, 0, AUDIO_GRAIN as u32, AUDIO_RATE, 1) };
+        // Port type 0 = main, format 1 = S16 stereo. The main port is opened as the SYSTEM user
+        // (0xff), as hardware-proven PS5 titles do (UnleashedRecomp's sceAudioOut driver); the
+        // initial user is only a fallback (a user-bound main port was silent on a real PS5).
+        let mut h = unsafe { sceAudioOutOpen(0xff, 0, 0, AUDIO_GRAIN as u32, AUDIO_RATE, 1) };
+        log(&format!("audio: sceAudioOutOpen(system user) = {h:#x}"));
+        if h < 0 {
+            h = unsafe { sceAudioOutOpen(self.user, 0, 0, AUDIO_GRAIN as u32, AUDIO_RATE, 1) };
+            log(&format!("audio: sceAudioOutOpen(user {:#x}) = {h:#x}", self.user));
+        }
         if h < 0 {
             return Err(format!("sceAudioOutOpen: {h:#x}"));
         }
@@ -304,6 +311,7 @@ impl AudioOutput for SceAudio {
             .spawn(move || {
                 let mut f = vec![0f32; AUDIO_GRAIN * 2];
                 let mut s = vec![0i16; AUDIO_GRAIN * 2];
+                let mut reported = false;
                 loop {
                     match mixer.lock() {
                         Ok(mut m) => m.render(&mut f),
@@ -313,7 +321,11 @@ impl AudioOutput for SceAudio {
                         *o = (v.clamp(-1.0, 1.0) * 32767.0) as i16;
                     }
                     // Blocks until the previous grain has been consumed (paces the thread).
-                    unsafe { sceAudioOutOutput(h, s.as_ptr() as *const c_void) };
+                    let r = unsafe { sceAudioOutOutput(h, s.as_ptr() as *const c_void) };
+                    if r < 0 && !reported {
+                        reported = true;
+                        log(&format!("audio: sceAudioOutOutput = {r:#x}"));
+                    }
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -386,7 +398,9 @@ fn run(platform: &Platform) -> Result<(), String> {
         sceUserServiceInitialize(&prio);
         sceUserServiceGetInitialUser(&mut user);
         scePadInit();
-        sceAudioOutInit();
+        // 0x8026000e = already initialised (fine).
+        let r = sceAudioOutInit();
+        log(&format!("audio: sceAudioOutInit = {r:#x}"));
     }
     let pad = Pad { handle: unsafe { scePadOpen(user, 0, 0, core::ptr::null()) } };
     log(&format!("user {user:#x}, pad handle {:#x}", pad.handle));
