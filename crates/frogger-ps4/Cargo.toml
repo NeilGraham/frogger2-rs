@@ -1,6 +1,6 @@
 [package]
 name = "frogger-ps4"
-description = "PlayStation 4/5 homebrew host for the Frogger 2 port (OpenOrbis fPKG, CPU renderer)."
+description = "PlayStation 4/5 homebrew host for the Frogger 2 port (OpenOrbis fPKG, Piglet GLES2 or CPU renderer)."
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
@@ -16,10 +16,14 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 frogger = { path = "../frogger", default-features = false }
-f2-engine = { path = "../f2-engine", default-features = false }
+f2-engine = { path = "../f2-engine", default-features = false, features = ["gles2"] }
 f2-audio = { path = "../f2-audio", default-features = false }
 f2-platform = { path = "../f2-platform", default-features = false }
 f2-game = { path = "../f2-game" }
+
+[dev-dependencies]
+# Host checks (examples/gles_shot.rs) read reference PNGs.
+png = "=0.18.1"
 
 [target.'cfg(target_os = "freebsd")'.dependencies]
 # malloc over libkernel mmap and libm maths, instead of the system libc's (see orbis/alloc.rs).

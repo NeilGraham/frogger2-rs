@@ -69,7 +69,15 @@ echo "== link"
     "$TC/lib/crt1.o" "$BUILD/crt_shim.o" "$LIB" \
     -lkernel -lSceLibcInternal -lSceVideoOut -lScePad -lSceAudioOut -lSceUserService -lSceSysmodule -lSceSystemService \
     -o "$BUILD/frogger2.elf"
-"$BIN/create-fself" -in="$BUILD/frogger2.elf" -out="$BUILD/frogger2.oelf" --eboot "$STAGE/eboot.bin" --paid 0x3800000000000011
+# Capabilities (auth info): the set the OpenOrbis Piglet sample and RetroArch's PS4 build
+# use, which lets the program load and use the system's Piglet (OpenGL ES) library.
+# F2_PS4_AUTHINFO=default keeps create-fself's default (the renderer then stays on the CPU
+# if Piglet cannot be loaded).
+PIGLET_AUTHINFO="000000000000000000000000001C004000FF000000000080000000000000000000000000000000000000008000400040000000000000008000000000000000080040FFFF000000F000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+AUTHINFO="${F2_PS4_AUTHINFO:-$PIGLET_AUTHINFO}"
+AUTH_ARGS=()
+[ "$AUTHINFO" != "default" ] && AUTH_ARGS=(--authinfo "$AUTHINFO")
+"$BIN/create-fself" -in="$BUILD/frogger2.elf" -out="$BUILD/frogger2.oelf" --eboot "$STAGE/eboot.bin" --paid 0x3800000000000011 "${AUTH_ARGS[@]}"
 
 echo "== sce_sys"
 cp "$TC/src/modules/right.sprx" "$STAGE/sce_sys/about/right.sprx"

@@ -16,6 +16,8 @@ ps5-vulkan = ["gpu", "wgpu/vulkan", "dep:ash"]
 # Declares the statically linked PS5 RADV archive's `vk_icdGetInstanceProcAddr`
 # (`GpuContext::new_ps5`). Compiles anywhere; links only against the driver archive.
 ps5-static-driver = ["ps5-vulkan"]
+# OpenGL ES 2 back end (`gles`): no dependencies, GL entry points supplied by the host.
+gles2 = []
 
 [dependencies]
 f2-formats = { path = "../f2-formats" }

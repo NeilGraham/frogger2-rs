@@ -3,6 +3,7 @@
 //! `x86_64-unknown-freebsd` and linked by `tools/ps4/build-pkg.sh`.
 
 pub mod alloc;
+pub mod piglet;
 pub mod shim;
 
 use crate::host::{self, Scaler};
@@ -110,6 +111,7 @@ extern "C" {
     fn sceKernelWaitEqueue(eq: *mut c_void, ev: *mut KEvent, num: c_int, out: *mut c_int, timeout: *mut u32) -> c_int;
 
     fn sceVideoOutOpen(user: c_int, bus: c_int, index: c_int, param: *const c_void) -> c_int;
+    fn sceVideoOutClose(h: c_int) -> c_int;
     fn sceVideoOutSetBufferAttribute(attr: *mut BufferAttribute, format: u32, tmode: u32, aspect: u32, width: u32, height: u32, pitch: u32);
     fn sceVideoOutRegisterBuffers(h: c_int, start: c_int, addrs: *const *mut c_void, n: c_int, attr: *const BufferAttribute) -> c_int;
     fn sceVideoOutSetFlipRate(h: c_int, rate: c_int) -> c_int;
@@ -170,6 +172,39 @@ struct Video {
     queue: *mut c_void,
     buffers: [*mut u32; BUFFERS],
     frame: i64,
+}
+
+/// The output mode VideoOut reports, as a framebuffer size (`host::display_size`). Opens
+/// and closes a VideoOut handle (Piglet opens its own).
+fn query_display_size() -> (u32, u32) {
+    unsafe {
+        let h = sceVideoOutOpen(0xff, 0, 0, core::ptr::null());
+        if h < 0 {
+            log(&format!("sceVideoOutOpen (query): {h:#x}"));
+            return host::display_size((0, 0));
+        }
+        let mut res = ResolutionStatus::default();
+        let r = sceVideoOutGetResolutionStatus(h, &mut res);
+        sceVideoOutClose(h);
+        log(&format!("video out: mode {}x{} ({r:#x})", res.full_width, res.full_height));
+        host::display_size(if r == 0 { (res.full_width, res.full_height) } else { (0, 0) })
+    }
+}
+
+/// What frames are shown with: Piglet (GPU) or VideoOut framebuffers (CPU renderer).
+enum Screen {
+    Gl(Box<piglet::PigletGl>),
+    Cpu(Video),
+}
+
+impl Screen {
+    /// Fills the whole screen with one colour (status screens). `rgba`: R in the low byte.
+    fn fill(&mut self, rgba: u32) {
+        match self {
+            Screen::Gl(g) => g.fill(rgba),
+            Screen::Cpu(v) => v.fill(rgba),
+        }
+    }
 }
 
 impl Video {
@@ -369,7 +404,7 @@ fn run() -> Result<(), String> {
     }
     let pad = Pad { handle: unsafe { scePadOpen(user, 0, 0, core::ptr::null()) } };
     log(&format!("user {user:#x}, pad handle {:#x}", pad.handle));
-    let mut video = Video::open()?;
+    let mut screen = open_screen(save_dir.as_deref())?;
     unsafe { sceSystemServiceHideSplashScreen() };
 
     let mut cfg = Config::load_default().unwrap_or_default();
@@ -387,7 +422,7 @@ fn run() -> Result<(), String> {
             notify(msg);
         }
         for _ in 0..120 {
-            video.fill(0xff40_1010);
+            screen.fill(0xff40_1010);
         }
     };
     log(&format!("data {}", data.rendition.display()));
@@ -420,6 +455,127 @@ fn run() -> Result<(), String> {
     }
     app.push_steps([start.unwrap_or(Step::Boot)]);
 
+    let shot = Shot::from_save_dir(save_dir.as_deref());
+    match screen {
+        Screen::Gl(gl) => run_gl(app, *gl, pad, shot),
+        Screen::Cpu(video) => run_cpu(app, video, pad, shot),
+    }
+}
+
+/// Picks the renderer: Piglet (GPU, rendering at the output resolution) unless
+/// `renderer.txt` in the save dir says `cpu` or Piglet / its shaders are unavailable,
+/// else the CPU renderer on VideoOut framebuffers.
+fn open_screen(save_dir: Option<&std::path::Path>) -> Result<Screen, String> {
+    let pref = save_dir.and_then(|d| std::fs::read_to_string(d.join("renderer.txt")).ok()).unwrap_or_default();
+    if pref.trim().eq_ignore_ascii_case("cpu") {
+        log("renderer: CPU (renderer.txt)");
+    } else {
+        let (dw, dh) = query_display_size();
+        let cache = save_dir.map(|d| d.join("shaders"));
+        let mut dirs: Vec<PathBuf> = cache.iter().cloned().collect();
+        dirs.push(PathBuf::from("/app0/shaders"));
+        match piglet::PigletGl::init(dw, dh, &dirs, cache.as_deref()) {
+            Ok(g) => {
+                log(&format!("renderer: GPU (Piglet GLES2) at {}x{}", g.width, g.height));
+                return Ok(Screen::Gl(Box::new(g)));
+            }
+            Err(e) => log(&format!("renderer: Piglet unavailable ({e}); using the CPU renderer")),
+        }
+    }
+    Ok(Screen::Cpu(Video::open()?))
+}
+
+/// Testing aid: `shot.txt` in the save dir holding a frame number N makes the host write
+/// frame N (as rendered, before scaling) to `shot.png` there, once.
+struct Shot {
+    at: u64,
+    path: PathBuf,
+    frame: u64,
+}
+
+impl Shot {
+    fn from_save_dir(dir: Option<&std::path::Path>) -> Option<Shot> {
+        let dir = dir?;
+        let at = std::fs::read_to_string(dir.join("shot.txt")).ok()?.trim().parse().ok()?;
+        log(&format!("shot: frame {at} to shot.png"));
+        Some(Shot { at, path: dir.join("shot.png"), frame: 0 })
+    }
+
+    /// Counts a frame; true when this one is to be written.
+    fn due(shot: &mut Option<Shot>) -> bool {
+        shot.as_mut().is_some_and(|s| {
+            s.frame += 1;
+            s.frame == s.at
+        })
+    }
+
+    fn write(shot: &Option<Shot>, width: u32, height: u32, rgba: Vec<u8>) {
+        if let Some(s) = shot {
+            let r = f2_engine::RgbaImage { width, height, pixels: rgba }.write_png(&s.path);
+            log(&format!("shot: {}x{} -> {} ({r:?})", width, height, s.path.display()));
+        }
+    }
+}
+
+/// One frame's common work: input, update, config saves. Returns false to quit.
+fn frame_update(app: &mut App, pad: &Pad, edges: &mut host::RawEdges, last: &mut Instant) -> bool {
+    let now = Instant::now();
+    let dt = now - *last;
+    *last = now;
+    let raw = [pad.read(), None, None, None];
+    if let Some(p) = &raw[0] {
+        for ev in edges.events(p) {
+            app.pad_event(ev);
+        }
+    }
+    app.update(dt, &KeyboardState::default(), &raw, true);
+    app.rumble.clear();
+    let rq = &mut app.requests;
+    let save =
+        std::mem::take(&mut rq.save_bindings) | std::mem::take(&mut rq.save_gameplay) | rq.save_volumes.take().is_some() | std::mem::take(&mut rq.save_config);
+    if save {
+        app.sync_cfg();
+        if let Err(e) = app.cfg.save_default() {
+            log(&format!("saving config: {e}"));
+        }
+    }
+    if app.requests.quit || app.idle() {
+        log("quit");
+        return false;
+    }
+    true
+}
+
+/// Main loop on the GPU: the game renders at the output resolution, no scaling.
+fn run_gl(mut app: App, mut gl: piglet::PigletGl, pad: Pad, mut shot: Option<Shot>) -> Result<(), String> {
+    let (w, h) = (gl.width, gl.height);
+    app.win = frogger::app::WinInfo { size: (w, h), ..Default::default() };
+    let mut edges = host::RawEdges::default();
+    let mut last = Instant::now();
+    let (mut frames, mut stat_t, mut busy) = (0u32, Instant::now(), Duration::ZERO);
+    loop {
+        let t0 = Instant::now();
+        if !frame_update(&mut app, &pad, &mut edges, &mut last) {
+            return Ok(());
+        }
+        app.draw(w, h);
+        app.r.render_gles(&mut gl.backend, w, h, app.clear_color());
+        busy += t0.elapsed();
+        if Shot::due(&mut shot) {
+            Shot::write(&shot, w, h, gl.backend.read_pixels(w, h));
+        }
+        gl.swap();
+        frames += 1;
+        if stat_t.elapsed() >= Duration::from_secs(10) {
+            let s = stat_t.elapsed().as_secs_f64();
+            log(&format!("{:.1} fps, {:.1} ms/frame CPU (GPU {w}x{h})", frames as f64 / s, busy.as_secs_f64() * 1000.0 / frames.max(1) as f64));
+            (frames, stat_t, busy) = (0, Instant::now(), Duration::ZERO);
+        }
+    }
+}
+
+/// Main loop on the CPU renderer: dynamic internal resolution scaled to the framebuffer.
+fn run_cpu(mut app: App, mut video: Video, pad: Pad, mut shot: Option<Shot>) -> Result<(), String> {
     let (dw, dh) = (video.width, video.height);
     let mut dynres = host::DynRes::new(dh);
     let (mut iw, mut ih) = host::internal_size_at(dw, dh, dynres.height());
@@ -432,40 +588,20 @@ fn run() -> Result<(), String> {
     let mut target = f2_engine::SoftTarget::new(iw, ih);
     let mut scaler = Scaler::default();
     let mut edges = host::RawEdges::default();
-    let kb = KeyboardState::default();
     let mut last = Instant::now();
     let (mut frames, mut stat_t, mut busy) = (0u32, Instant::now(), Duration::ZERO);
     loop {
         let now = Instant::now();
-        let dt = now - last;
-        last = now;
-        let raw = [pad.read(), None, None, None];
-        if let Some(p) = &raw[0] {
-            for ev in edges.events(p) {
-                app.pad_event(ev);
-            }
-        }
-        app.update(dt, &kb, &raw, true);
-        app.rumble.clear();
-        let rq = &mut app.requests;
-        let save = std::mem::take(&mut rq.save_bindings)
-            | std::mem::take(&mut rq.save_gameplay)
-            | rq.save_volumes.take().is_some()
-            | std::mem::take(&mut rq.save_config);
-        if save {
-            app.sync_cfg();
-            if let Err(e) = app.cfg.save_default() {
-                log(&format!("saving config: {e}"));
-            }
-        }
-        if app.requests.quit || app.idle() {
-            log("quit");
+        if !frame_update(&mut app, &pad, &mut edges, &mut last) {
             return Ok(());
         }
         app.draw(iw, ih);
         let t0 = Instant::now();
         app.r.render_soft(&mut target, app.clear_color(), threads);
         let render_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        if Shot::due(&mut shot) {
+            Shot::write(&shot, target.width, target.height, target.pixels.iter().flat_map(|p| p.to_le_bytes()).collect());
+        }
         let fb = video.back_buffer();
         unsafe { scaler.blit_par(&target.pixels, target.width, target.height, fb, dw, dh, dw, threads) };
         if dynres.update(render_ms) {
