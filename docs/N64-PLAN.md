@@ -62,19 +62,20 @@ Measured inputs (USA PC data): FMV 472 s (Bink 116 MB), music 1520 s (WAV 256 MB
 PCM in 19 banks, objects 19 MB (PE DLLs), textures 7.8 MB (LZSS FLA2), maps+collision+
 scenics 3.6 MB.
 
-| Asset class | Approach | Target |
-|---|---|---|
-| boot + code (ELF, compressed) | n64elfcompress | 2 MB |
-| models | parsed `ObjectBank`s → compact fixed-point vertices, quantised normals/UVs, delta-coded keyframes, deduplicated, then entropy-coded | 5 MB |
-| textures + fonts + backdrops | RDP formats, perceptual palettes, TMEM-aware, deduplicated, then compressed | 6 MB |
-| levels (maps, collision, scenics, scripts, demos, text) | compact binary + compression | 1.5 MB |
-| sound effects | cross-bank dedupe, resample where inaudible, VADPCM / Opus | 8 MB |
-| music | Opus ~40 kbps stereo (25.3 min) | 7.5 MB |
-| FMV | video ~350 kbps + Opus audio (7.9 min) | 25 MB |
-| headroom / higher FMV quality | | 8 MB |
+| Asset class | Approach | Target | Measured (phase 1C) |
+|---|---|---|---|
+| boot + code (ELF, compressed) | n64elfcompress | 2 MB | 2.5 MiB reserve |
+| models | parsed `ObjectBank`s → compact fixed-point vertices, quantised normals/UVs, delta-coded keyframes, deduplicated, then entropy-coded | 5 MB | 1.73 MB (lossless columnar F2MB + F2Z) |
+| textures + fonts + backdrops | RDP formats, perceptual palettes, TMEM-aware, deduplicated, then compressed | 6 MB | 2.53 MB (NTX1 + F2Z) |
+| levels (maps, collision, scenics, scripts, demos, text) | compact binary + compression | 1.5 MB | 0.39 MB (retail bytes + F2Z) |
+| sound effects | cross-bank dedupe, resample where inaudible, VADPCM / Opus | 8 MB | 11.12 MB (all VADPCM) |
+| music | Opus ~40 kbps stereo (25.3 min) | 7.5 MB | 18.50 MB (Opus 99 kbps, the maximum) |
+| FMV | video ~350 kbps + Opus audio (7.9 min) | 25 MB | 19.31 MB (H.264 at the 288 kbps decoder cap) |
+| headroom / higher FMV quality | | 8 MB | 10.4 MiB |
 
 The asset packer (`tools/f2-n64pack`) prints this table from real outputs and fails the build
-if the ROM exceeds 64 MiB; FMV/music bitrates are then tuned to fill the cartridge exactly.
+if the ROM exceeds 64 MiB; music/FMV are filled up to their codec caps and the rest goes to
+quality upgrades. Measurements, codec comparison and formats: `research/n64-compression.md`.
 
 ### Compression ("invent something if necessary")
 Per asset class, pick the best decoder that is fast enough on the VR4300 (93.75 MHz) / RSP:
