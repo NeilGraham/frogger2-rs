@@ -103,7 +103,7 @@ USA data: 36 MiB ROM.
 
 | env | effect |
 |---|---|
-| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L`, `story N` (story mode at `storySequence[N]`, FMV first), `story-finish N` (testing: `story N`, level completed after 4 s, results pressed through), `frontend-start` (testing: Start pressed on the title), `settings-test` (testing: then the settings page open, FPS counter on, 30 fps limit) |
+| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L`, `story N` (story mode at `storySequence[N]`, FMV first), `story-finish N` (testing: `story N`, level completed after 4 s, results pressed through), `frontend-start` (testing: Start pressed on the title), `settings-test` (testing: then the settings page open, FPS counter on, 30 fps limit), `book-test` (testing: then Right, Up: the story book open) |
 | `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` / `profile-draw` (sample inside `Game::tick` / `App::draw` only), `game-log` (the simulation's `Effect::Log`), `render-cpu` (phase-2G CPU renderer), `prep-data` (set by `F2N64_DATA=prep`), `simbench` (no game: runs the `f2_game::simbench` scenarios, logs per-tick times, phases and state checksums; research/n64-performance.md §3S) |
 | `F2N64_DATA` | `pack` (default) or `prep` (phase-2G loose files) |
 | `F2N64_KEEP_DFS=1` | skip the data step (reuse `target/n64/filesystem`) |

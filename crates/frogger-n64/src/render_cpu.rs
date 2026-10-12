@@ -268,6 +268,11 @@ impl RenderCpu {
     }
 
     /// Frees image `i`'s N64 texture (if any), growing the tables to cover `i`.
+    /// Frees image `idx`'s N64 texture now (before a large replacement is converted).
+    pub fn free_image(&mut self, idx: u32) {
+        self.release(idx as usize);
+    }
+
     fn release(&mut self, i: usize) {
         self.grow(i);
         if self.tex[i] != 0 {

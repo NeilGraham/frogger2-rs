@@ -34,8 +34,16 @@ pub fn sim_bank(bank: &ObjectBank) -> ObjectBank {
             strip(c);
         }
     }
+    // Models showing the story book's render-to-texture pages keep their geometry: the N64
+    // draws them on its CPU path (frogger-n64 `App::load_banks` finds them by texture), which
+    // samples the 256x256 page in TMEM tiles; stripped, they fell to r3d's one TMEM load (a
+    // ~45x45 copy of the page: the chapter page was blurry).
+    let pages = [f2_formats::crc("page256a.bmp"), f2_formats::crc("page256b.bmp")];
     let mut b = bank.clone();
     for m in &mut b.models {
+        if f2_n64fmt::bank::uses_texture(m, &pages) {
+            continue;
+        }
         strip(&mut m.root);
         for s in &mut m.root_siblings {
             strip(s);

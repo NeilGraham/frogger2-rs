@@ -99,12 +99,15 @@ pub fn convert(w: u32, h: u32, rgba: &[u8]) -> (N64Tex, Option<N64Tex>) {
         return (full, None);
     }
     let sfmt = if partial { FMT_RGBA32 } else { FMT_RGBA16 };
-    let (mut sw, mut sh, mut px) = (w, h, rgba.to_vec());
+    // The first halving reads `rgba` itself (no whole RGBA8 copy: 256 KiB for a story book
+    // page, which ran the frontend out of memory).
+    let (mut sw, mut sh, mut px) = (w, h, None::<Vec<u8>>);
     while !fits(sw, sh, sfmt) {
         let wide = sw >= sh;
-        (sw, sh, px) = halve(sw, sh, &px, wide, !wide);
+        let (nw, nh, n) = halve(sw, sh, px.as_deref().unwrap_or(rgba), wide, !wide);
+        (sw, sh, px) = (nw, nh, Some(n));
     }
-    (full, Some(encode(sw, sh, &px, sfmt)))
+    (full, Some(encode(sw, sh, px.as_deref().unwrap_or(rgba), sfmt)))
 }
 
 /// RGBA16 version of a large bank-format texture (backdrops), converted 16 rows at a time

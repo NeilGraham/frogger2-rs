@@ -90,7 +90,8 @@ const N64_FONT_BASE: f32 = WIDTH as f32 / 640.0;
 /// screens pressed through, into the next story level) or `frontend-start` (testing: the
 /// frontend with Start pressed on the title screen, into the hub) or `settings-test`
 /// (testing: `frontend-start`, then the settings page open with the FPS counter on and a
-/// 30 fps limit, not saved).
+/// 30 fps limit, not saved) or `book-test` (testing: `frontend-start`, then Right, Up: the
+/// story book open on its chapter page).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Boot {
     Frontend { trained: bool },
@@ -100,6 +101,7 @@ pub enum Boot {
     StoryFinish(u32),
     FrontendStart,
     SettingsTest,
+    BookTest,
 }
 
 impl Boot {
@@ -112,6 +114,7 @@ impl Boot {
             (Some("story-finish"), Some(n), _) => Boot::StoryFinish(n),
             (Some("frontend-start"), _, _) => Boot::FrontendStart,
             (Some("settings-test"), _, _) => Boot::SettingsTest,
+            (Some("book-test"), _, _) => Boot::BookTest,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
             (Some("save-test"), _, _) => Boot::SaveTest,
             _ => Boot::Frontend { trained: false },
@@ -246,6 +249,8 @@ pub struct App {
     menu_release: bool,
     /// `Boot::SettingsTest`: open the page once the hub is up.
     settings_test: bool,
+    /// Test boots: pad presses after the hub is up, as (frames, pad) steps; (frame, steps).
+    pad_script: Option<(u32, &'static [(u32, u16)])>,
     /// FPS counter: frames and start of the current second, the last second's count.
     fps_count: (u32, u32, u32),
     /// Frame pacing: running averages (C0 ticks, x16 fixed point) of a simulation tick
@@ -309,6 +314,7 @@ impl App {
             menu: Default::default(),
             menu_release: false,
             settings_test: false,
+            pad_script: None,
             fps_count: (0, 0, 0),
             avg_tick: 0,
             avg_draw: 0,
@@ -340,6 +346,10 @@ impl App {
                 app.game.save_game();
             }
             Boot::FrontendStart => app.autostart = Some(0),
+            Boot::BookTest => {
+                app.autostart = Some(0);
+                app.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
+            }
             Boot::SettingsTest => {
                 app.autostart = Some(0);
                 app.settings_test = true;
@@ -500,13 +510,6 @@ impl App {
         }
         self.rebuild_renderer();
         self.audio.free_samples();
-        // The story book's page canvas (256 KiB) exists only in the frontend, allocated
-        // first while the heap is emptiest (later a block that size can fail to fit).
-        if world == f2_game::layout::worldid::FRONTEND {
-            if let Some(l) = lv().as_mut() {
-                l.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
-            }
-        }
         rt::reset_peak();
         // Textures first: the NTX bank files are the largest single blocks of a level and
         // need contiguous free memory, which the many small allocations of the object banks
@@ -609,6 +612,7 @@ impl App {
         for b in &mut banks {
             for m in &mut b.models {
                 if f2_n64fmt::bank::uses_texture(m, &targets) {
+                    log!("app: model {:08x} ({}) on the CPU path (book page texture)", m.id, m.name());
                     self.r.cpu_models.push(m.id);
                 } else {
                     f2_n64fmt::bank::strip_model(m);
@@ -713,26 +717,30 @@ impl App {
     /// per grab, RDRAM is tight): the composed page goes straight into the N64 texture.
     fn grab_textures(&mut self) {
         let Some(target) = f2_draw::book::grab_target(&self.game) else { return };
-        // The frontend's page buffer (allocated by load_scene, freed with the level).
-        let mut g = lv();
-        let Some(l) = g.as_mut() else { return };
-        let c = l.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
-        f2_draw::book::draw_page_b_into(&self.r, &self.game, self.book_font.as_ref(), c);
-        self.game.options.grab_to_texture = if self.game.options.grab_to_texture == 1 { 0 } else { 2 };
         let Some(h) = self.r.textures.entry(f2_formats::crc(target)).map(|e| e.image) else {
             log!("app: book page texture {target} not loaded");
             return;
         };
-        // Half size (128x128 RGBA16, 32 KiB instead of 128 per page): the full-size pages
-        // do not fit the frontend's RDRAM next to everything else (measured: out of memory
-        // on the second page). The page shows ~110 pixels tall at 320x240.
-        let (w, h2, half) = crate::texconv::halve_rgba8(c.w, c.h, &c.rgba);
+        let mut g = lv();
+        let Some(l) = g.as_mut() else { return };
+        // Memory: the page's old texture goes first, the 256 KiB canvas (a large-block pool
+        // block) only lives while a page is composed, so the frontend holds two full-size
+        // pages (2 x 128 KiB RGBA16) and no canvas between page turns.
+        l.gfx.free_image(h.0);
+        let c = l.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
+        f2_draw::book::draw_page_b_into(&self.r, &self.game, self.book_font.as_ref(), c);
+        self.game.options.grab_to_texture = if self.game.options.grab_to_texture == 1 { 0 } else { 2 };
+        // Full size (256x256 RGBA16): the chapter page fills most of the screen when the book
+        // is open; half size (128x128) was blurry.
         if let Some(img) = self.r.textures.images.get_mut(h.0 as usize) {
-            img.width = w;
-            img.height = h2;
+            img.width = c.w;
+            img.height = c.h;
             img.rgba = Vec::new();
         }
-        l.gfx.grab_rgba(h.0, w, h2, &half);
+        l.gfx.grab_rgba(h.0, c.w, c.h, &c.rgba);
+        if self.game.options.grab_to_texture == 0 {
+            l.page_canvas = None;
+        }
     }
 
     fn dispatch_effects(&mut self) {
@@ -1052,6 +1060,22 @@ impl App {
             }
             if *c > 1500 {
                 self.autofinish = None;
+            }
+        }
+        if let (None, Some((f, steps))) = (self.autostart, &mut self.pad_script) {
+            *f += 1;
+            let mut t = *f;
+            let mut done = true;
+            for &(n, p) in steps.iter() {
+                if t <= n {
+                    pad |= p;
+                    done = false;
+                    break;
+                }
+                t -= n;
+            }
+            if done {
+                self.pad_script = None;
             }
         }
         if let Some(c) = &mut self.autostart {
