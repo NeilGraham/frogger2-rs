@@ -4,7 +4,7 @@
 #
 #   tools/n64/run-ares.sh [rom] [-- ares-shot.ps1 args...]
 #     rom   default target/n64/frogger2.z64
-#   e.g. tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 10 -shots 3 -gap 2 -keys "Up,X;Return"
+#   e.g. tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 10 -shots 3 -gap 2   (no -keys: the harness never sends input)
 #
 # Outputs in C:\f2-n64test\ (not in the repo): <name>.png (+ _1.png ...), run.txt (stdout = debugf).
 # Env: ARES_DIR (default C:\Users\<you>\Emulation\emulators\ares-v148, as a /mnt path),

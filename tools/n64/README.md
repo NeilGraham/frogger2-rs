@@ -60,7 +60,7 @@ tools/n64/build.sh --small                  # pack without music and FMV (20.5 M
 tools/n64/build.sh --bringup                # phase-1B demo + probes instead of the game
 tools/n64/build.sh --r3d-test               # phase-2R renderer test app (see below)
 tools/n64/run-ares.sh                       # boots target/n64/frogger2.z64, 1 screenshot after 8 s
-tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 28 -shots 8 -gap 5 -hold 900 -keys "Right;;Up;;X"
+tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 28 -shots 8 -gap 5   # 8 shots, 5 s apart (-gap 0: back to back)
 cargo +nightly test --manifest-path crates/frogger-n64/Cargo.toml   # host: portable modules
 # host render of the N64 drawing path (320x240, CPU rasteriser; --n64 = texel round trip):
 cargo +nightly run --release --manifest-path crates/frogger-n64/Cargo.toml --example host_shot -- GAME_DIR out.png garden|book [TICKS] [--n64] [--cmds]
@@ -133,16 +133,16 @@ blocked, and the virtual pad bound to keys (ruby keyboard id `0x1`, rawinput key
 arrows = D-pad, `X` = A, `Z` = B, `Return` = Start, `PageUp`/`PageDown` = L/R, `Home` = Z,
 `I/K/J/L` = stick. ares is started as
 `ares.exe --settings-file <bml> --system "Nintendo 64" --no-file-prompt <rom>`.
-`ares-shot.ps1` (adapted from the PS4/PS5 harnesses) captures the client area
-(`<name>.png`, `<name>_1.png`, …) and holds the keys of step *i* (comma separated
-`System.Windows.Forms.Keys` names, `;` between steps, empty step = no key) for `-hold` ms
-(default 400; the game runs at ~4 fps in ares, use 900) before capture *i*
-(`<name>_<i>held.png` is taken while they are held). At the end ares is closed through its
+`ares-shot.ps1` (adapted from the PS4/PS5 harnesses) captures the client area with
+`PrintWindow` (`<name>.png`, `<name>_1.png`, …) without bringing ares to the foreground: the
+harness runs while the user works on the same desktop. It sends **no keys** (`-keys` is
+refused): `keybd_event` injects system-wide keystrokes into whatever window has focus, which
+typed into the user's windows. Input for tests comes from inside the ROM (`F2N64_BOOT`
+`story-finish N`, `frontend-start`, `level W L`, ...). At the end ares is closed through its
 window first (forced after 8 s), so it writes the cartridge save `<rom>.ram` next to the ROM.
 Pad mapping in the game
 (`src/input.rs`): A = Cross (hop), B = Circle (tongue), Z / C-Left = Square (croak),
-C-Up = Triangle, C-Down = Select, L/R = L1/R1, Start, D-pad and stick = directions; e.g.
-frontend → Garden 1: `-keys "Right;;Up;;X"` (hop to the choice pad, up to the story book, A).
+C-Up = Triangle, C-Down = Select, L/R = L1/R1, Start, D-pad and stick = directions.
 
 ## ABI
 libdragon is compiled with GCC `-march=vr4300 -mabi=o64`: MIPS III, 64-bit GPRs, FR=1
