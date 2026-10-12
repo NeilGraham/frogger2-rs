@@ -87,18 +87,20 @@ typedef struct {
     uint32_t skinned;
 } n64_r3d_group_desc_t;
 
-/* F2_DRAW uniform (96 bytes): s15.16 matrix (rows x, y, z, translation; lanes X Y Z W,
- * see rsp_f2mdx.S) split into integer and fraction halves, colour multiplier/addend. */
+/* F2_DRAW uniform (96 bytes): the model matrix as floats (rows x, y, z, translation; lanes
+ * x y z; the shader converts it to s15.16, see rsp_f2mdx.S F2_Convert), the conversion flag
+ * (0 from the CPU), colour multiplier/addend, fog. */
 typedef struct {
-    int16_t mtx_i[16];
-    uint16_t mtx_f[16];
+    float mtx[12];
+    uint32_t cvt[2];
     int16_t cmul[4];
     int16_t cadd[4];
     int16_t fogc[4];        /* 0, constant unfogged fraction, 0, 0 */
     uint16_t fogm[4];       /* VCC masks: keep colour alpha (else constant), per-vertex fog */
+    uint32_t pad[2];
 } __attribute__((aligned(8))) n64_r3d_draw_uniform_t;
 
-/* F2_FRAME uniform (120 bytes) + host fields. clip_text/clip_size are filled by C. */
+/* F2_FRAME uniform (128 bytes) + host fields. clip_* / modge_* are filled by C. */
 typedef struct n64_r3d_frame_s {
     int16_t vo[4];          /* x, y screen offset (s13.2), Zoff, 0 */
     int16_t vs[4];          /* S, S (-8 * FOV * scale), K integer, 0 */
@@ -109,6 +111,7 @@ typedef struct n64_r3d_frame_s {
     int16_t vp_i[16];       /* view x projection (rows; lanes X, Y, Z, W), s15.16 integer halves */
     uint16_t vp_f[16];      /* fraction halves */
     uint32_t clip_text, clip_size;
+    uint32_t modge_text, modge_size;
     uint32_t guard;         /* guard band in multiples of FOV*scale pixels (0 = 4) */
     uint32_t fog_rgba;      /* fog colour, 0 = leave */
 } __attribute__((aligned(8))) n64_r3d_frame_t;
@@ -134,6 +137,7 @@ typedef struct {
 
 typedef struct {
     uint32_t draws, groups, tex_loads;
+    uint32_t ticks_state, ticks_draws; /* C0 ticks: list render states, draw loop */
 } n64_r3d_stats_t;
 
 /* Rust -> C */
@@ -202,6 +206,8 @@ void n64_r3d_stats(n64_r3d_stats_t *out);
 uint32_t n64_r3d_tex_alias(uint32_t tex);                        /* r3d texture over a main.c texture's TMEM surface */
 void n64_r3d_reset(uint32_t tex_first, uint32_t group_first);    /* free r3d textures/groups from these handles on */
 uint32_t n64_r3d_counts(void);                                   /* next texture handle << 16 | next group handle */
+void n64_r3d_modge(const void *desc, uint32_t size);
+void n64_r3d_cvt_check(const float *vals, uint32_t n, int16_t *out_i, uint16_t *out_f); /* testing */            /* RSP water animation (F2_Modge), after n64_r3d_begin */
 
 /* C -> Rust */
 void f2n64_init(void);

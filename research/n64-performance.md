@@ -1261,3 +1261,169 @@ Draw loop (`f2-draw`/`f2-engine`):
 - Shadows (Space 2.5 ms): the enemy / platform list walks touch every entry; sprites
   (1-2.5 ms): `Tri` (152 bytes) per corner pair; a compact sprite record for the console.
 - `R3dLevel::sync_textures` walks every registry entry each frame (~0.6 ms).
+
+## 3R: r3d CPU cost per frame (2026-10-12)
+Branch `worktree-agent-aef7edadeadb4ae33` (from `ed3e8ce`). Goal: the CPU cost of the RSP
+renderer (`src/r3d.rs`, `src/render_r3d.rs`, `csrc/r3d.c`, the shaders) in Garden 1 hopping from
+~17.5 ms (r3d queue + flush) to ≤ 7 ms, images unchanged.
+
+### Before / after (ares v148, `tools/n64/bench.sh NAME "level-hop W 0" 40`, last 5 s windows, clean builds)
+"r3d queue" in the perf line: before = recording + queueing inside the draw loop (and any
+audio poll that landed in it); after = the batch after the draw loop (`resolve + run_queue`;
+the recording that stays in the draw loop is part of "draw loop"). "draw" = all of `App::draw`.
+
+| level (hopping) | fps | draw | draw loop | r3d queue | flush |
+|---|---|---|---|---|---|
+| Garden 1 (0-0) | 17.0 → **21.3** | 38–39 → **28 ms** | 29 → 15 ms | 14.7 → **4.9 ms** | 2.56 → **1.42 ms** |
+| Space 1 (2-0) | 10.4 → **12.2** | 67–68 → **50 ms** | 49 → 27 ms | 23.1 → **5.8 ms** | 2.40 → **1.51 ms** |
+| Lab 1 (5-0) | 10.6 → **12.2** | 62–66 → **44–49 ms** | 39–43 → 24–26 ms | 17.7–20.7 → **5.7 ms** | 2.0 → **1.2–1.5 ms** |
+
+Recording inside the draw loop now costs ~1.5–2 ms (a build where recording returns at once:
+Garden draw loop 15 → 12 ms); all r3d CPU work together ≈ 8–9 ms in Garden (was ~20).
+Idle boots (`level W 0`): Garden 1 18.2 → 20.5 fps, Space 1 10.3 → 11.7, Lab 1 10.1 → 11.1.
+
+Per phase (Garden 1 hopping, `F2N64_R3D_PROF=1` build; timer calls inflate small phases):
+
+| phase per frame | before | after |
+|---|---|---|
+| 60 full draws (actors whose pose changed) | 5.19 ms | 1.20 ms |
+| 144 camera-only redraws | 4.45 ms | 1.91 ms |
+| of which sphere culling (204 calls, 450 tests) | 3.68 ms | 1.63 ms |
+| skinned frog (17 bones) | 0.30 ms | 0.23 ms |
+| MODGE/WAVE water (4 meshes) | 3.05 ms | 0.07 ms |
+| recording (214 draws, in the draw loop) | – | 1.90 ms |
+| flush: Rust / C list states / C draws | – / – / – (2.5–3.3 in all) | 0.31 / 0.12 / 0.97 ms |
+
+### What changed (commits on the branch, oldest first)
+1. **I-cache budget**: the `.text.f2hot_d`+`f2hot_q` region had grown to 26 KiB (> the 16 KiB
+   direct-mapped I-cache) and the cull test closure was linked outside it. Per-draw code kept
+   small and in the region; MODGE, skinned and cold paths moved out.
+2. **Water on the RSP** (`csrc/rsp_f2modge.S`, its own overlay since IMEM was full): the CPU
+   writes a 56-byte header per mesh and frame (six 16-bit time phases); the RSP computes the
+   per-x/z phase summands, per (x, z, alpha) position the y/s/t offsets and alpha (257-entry Q14
+   sine table in DMEM, `VMUDM`/`VMULF`, 8 lanes) and applies them to the vertices. Bit-exact
+   Rust model (`modge_x16`/`modge_z16`/`modge_pair16`), host test against the f64 PC formula
+   (s/t ≤ 1/1024 texel, y ≤ 0.13 world units, alpha ≤ 1), in-ROM `F2N64_MODGE_CHECK=1` (Garden
+   and Lab meshes: 0 mismatches). The 8-position input chunk sits in the clip cache and the
+   position table is rounded to 8, so Halloween's 424-vertex / 134-position mesh fits too
+   (Halloween 1 queue 8.7 → 7.4 ms, see the sweep below); bigger meshes keep the CPU path (logged
+   "animated on the CPU").
+3. **Batch after the draw loop**: the game's draw loop only records each draw (`queue_raw`:
+   model id/object, parameters, and the matrix only when its (stamp, object) changed); the
+   culling and uniforms run in one batch (`run_queue_with`) where r3d's data and code stay in
+   the caches. Meshes resolve from a per-slot (model, object) memo, the level's lookup only on
+   a miss (~10 per frame). The immediate API (`draw`, `draw_slot`, `draw_skinned`) queues too,
+   so the per-draw path is inlined into the loop (one stack frame).
+4. **Compact per-draw data**: 32-byte draw slots in a dense array (frame, stamp, mesh sphere
+   centre and scale, vis range, interned parameter id, uniform ring state; uniforms in stable
+   chunks, written only when they change); 32-byte `MeshHot` per mesh; dense sphere and part
+   arrays; 16-byte `DrawRec`; parameters interned through a small hash (no 24-byte compare per
+   draw); `R3d` `repr(C)` with the per-draw fields first.
+5. **Culling**: world-space frustum planes; the mesh sphere test returns the planes it straddles
+   and the parts are tested only against those, moved into model space (no per-part centre
+   transforms, no per-slot centre arrays); single-part meshes use the part sphere; meshes with
+   some unbatched groups still get a sphere over the others.
+6. **Flush**: group textures through a dense CRC-id table that remaps in place (animated
+   textures changed the registry every frame, so every drawn mesh re-resolved its groups through
+   BTreeMap lookups into a new Vec: Rust flush 1.34 → 0.31 ms).
+7. **Texture sync** (`R3dLevel::sync_textures`): per frame only the animated entries and the
+   generations of the images the static ones show (~0.7 → ~0.3 ms).
+8. **Matrix conversion on the RSP**: the draw uniform carries floats; the shader converts them
+   once per uniform load (`F2_Convert`, exactly `to_fixed`; `F2N64_CVT_CHECK=1`: 1920 values incl.
+   ±32768, inf, NaN, denormals: 0 mismatches). Marginal on the CPU (full draws were not
+   conversion-bound; skinned −0.05 ms); kept since it is exact and only costs RSP time.
+9. No audio polls inside the batch (a 40 ms poll, ~3.5 ms in Lab, landed in it and counted as
+   r3d time); in the draw loop every 16th recorded draw. Per-level r3d storage freed on unload
+   (it kept its capacity: Lab game over → frontend ran out of the large-block pool). No
+   separate fog-less base uniform per slot.
+
+### Fix: sky spikes and missing far background (pre-existing, also on `ed3e8ce`)
+Reported as "vertex explosions on far geometry / the Space background" (Space 2 start, top
+left): long wedges from the lamp post towards the top-left corner in ~10 % of frames, varying
+with the camera. Bisected with `F2N64_SKIP_MODEL` to the background model `7f3a4793` (scale 5,
+coordinates up to 6610: view-space x/y beyond ±33000, W up to the sky far plane 30000). Two
+s15.16 overflows in sky (`noClip`) draws: X/Y saturated beyond ±32768, and magma's clip codes
+(clip factors (1, 1, G, G): X vs W·G, Z·G vs W·G) saturated beyond W = 32768/G = 5461 at guard
+6, so far faces were far-flagged and dropped, and guard-flagged vertices reached the clipper
+with saturated coordinates. Normal draws end at W = 1200 and never get there. The sky's frame
+(`frame_uniform_vp(_, true)`) now carries X/Y divided by G, the screen scale multiplied by G,
+and guard factor 1 (`r3d.c` sets the clip factor per loaded frame): same projection and
+on-screen guard band, W / Z / near-far unchanged. Host test `sky_vertices_project_like_mdx`
+(`emulate_vertex` now models the saturated clip products; fails without the change). 20
+captures of the Space 2 intro: spikes in 3 of 19 frames before, 0 of 19 after, and the far
+background (a nebula band and a planet ring) now drawn: `C:\f2-n64test-r3d2\evidence\sky-*`.
+A first attempt (X/Y ÷ 4, guard unchanged; then ÷ 2 with guard 3) still showed beams, since
+W·G overflowed: the guard product was the main source. Residual: the clipper's plane dot
+products (W ∓ X) can still saturate for sky triangles spanning the whole band at W > 16384,
+and the sky's far test is approximate within ~1000 units of 30000 (s15.16 `a·W`).
+
+### Visual checks
+- r3d-test ROM with the animation frozen (`F2N64_R3DT_FRAME=777`, synthetic scene, same patch
+  in an `ed3e8ce` worktree): **0 of 307200 pixels differ**, both shots.
+- Idle and hopping captures, `ed3e8ce` vs this branch, Garden 1 / Space 1 / Lab 1:
+  `C:\f2-n64test-r3d2\evidence\{idle,hop}-*-{base,r3d2}.png` (derived from game data, not in
+  the repo): same scenery, water/lava, sky, HUD; differences are actor animation phases, timers.
+- Culling stays conservative (host test `culled_batches_are_fully_rejected`: every face of a
+  culled batch is one MDX rejects), so it never changes the image.
+
+### Measurement notes (for the next round)
+- **Data and code layout move the batch by tens of percent.** With the D-cache 8 KiB direct-
+  mapped, 1 KB of padding before `R3d` took the batch from 7.0 to 5.2 ms in one build;
+  `F2N64_PADX=N` (bytes of padding) samples data layouts: before step 3's inlining 4.8 / 5.1 /
+  8.2 / 7.6 ms at 0 / 256 / 512 / 768, after 4.6 / 4.9 / 4.7 / 4.5. Judge changes over several
+  layouts, and prefer fewer distinct lines per draw (one stack frame, contiguous hot fields).
+- **In ares a 32-bit integer `mult` costs ~25 cycles** (VR4300 manual: 5): an integer (Q14)
+  sphere test took 518 cycles vs 258 for the float one (`classify`, 6 planes), so integer
+  rewrites of float code lose here.
+- `level-hop` runs can end in the pause menu (mode 9) or game over (Lab ~40 s): check the
+  `perf [W-L] mode M` tags of the windows compared.
+- `F2N64_R3D_PROF=1`: per-phase timers (`r3dprof` line every 150 frames).
+
+### Tried and dropped
+- Integer whole-mesh sphere test (above: 2× slower in ares).
+- Per-vertex water arithmetic dedupe on the CPU (per position instead of per vertex): the cost
+  was cache misses on the vertex lines and tables, not the arithmetic (→ RSP).
+
+### All arcade levels (idle boot `level W L`, 14 s, last level window; branch head)
+No assertions, panics or out-of-memory in any level (0-1, 0-2, 3-1, 3-2 boot without a level
+in this harness: no tiles, nothing drawn). fps / r3d queue / flush (ms):
+
+| W \ L | 0 | 1 | 2 |
+|---|---|---|---|
+| 0 Garden | 21.3 / 3.3 / 1.5 | – | – |
+| 1 Ancients | 22.4 / 3.4 / 1.6 | 23.0 / 2.9 / 1.3 | 16.6 / 3.3 / 1.5 |
+| 2 Space | 11.4 / 4.8 / 1.7 | 32.2 / 1.2 / 1.2 | 12.0 / 4.7 / 1.4 |
+| 3 City | 42.2 / 3.4 / 0.8 | – | – |
+| 4 Subterranean | 14.6 / 5.6 / 1.3 | 12.9 / 7.4 / 1.3 | 17.6 / 5.1 / 1.2 |
+| 5 Lab | 11.1 / 5.0 / 1.8 | 14.9 / 8.0 / 2.0 | 17.5 / 3.3 / 1.5 |
+| 6 Halloween | 15.9 / 7.4 / 2.0 | 17.8 / 4.5 / 1.5 | 25.2 / 1.5 / 0.9 |
+| 7 Retro | 33.7 / 2.0 / 0.9 | 39.7 / 1.8 / 0.9 | 32.8 / 2.5 / 1.3 |
+
+Water meshes still animated on the CPU (too big for the DMEM scratch): City 1 (2: 194 and
+144 positions), Subterranean 3 (167 positions, 1272 bytes of terms), Lab 2 (184). Lab 1
+hopping on the head: 11.1–13.1 fps, queue 5.2–5.6 ms, flush 1.3–1.8 ms, no crash
+(`evidence\hop-lv50-r3d2.png`).
+
+### Risks
+- RSP code grew: `F2_Convert` (per uniform load, ~150 scalar instructions: RSP time, not CPU),
+  the water overlay (`rsp_f2modge.S`, overlay swap per water mesh per frame) and a 0-vertex
+  load used as a custom command. Checked by bit-exact models and in-ROM self-checks
+  (`F2N64_MODGE_CHECK`, `F2N64_CVT_CHECK`), not by the r3d-test frame alone.
+- Timing is layout-sensitive (above): a later unrelated change can move the batch by ±20 %.
+- Matrices are copied at record time only when a slot's (stamp, object) changes: a caller
+  that changes a matrix without a new stamp would draw the old one (the game's stamps cover
+  every pose change; host test `queued_draws_match_immediate_ones`).
+- The sky change widens nothing on screen but sends far sky faces that used to be dropped:
+  more sky triangles in Space (fps unchanged within noise: Space 1 idle 11.4 vs 11.7).
+
+### Left / next candidates
+- The four water meshes still on the CPU path (sweep above): process the term list or the
+  position table in chunks too.
+- Camera-only redraws (144 × ~13 µs): reuse the visibility while the camera moved less than
+  the sphere's distance to the planes (temporal coherence) would skip most sphere tests.
+- Recording in the draw loop (~1.5–2 ms): bound by cache misses in the game's draw loop.
+- C flush (~1 ms): per draw a uniform writeback and load, per group a block call; RSP-side TLUT
+  switching (rdpq's mode state is in shared DMEM) would avoid the rdpq mode changes between
+  palette and RGBA textures.
+- Merging the objects of a multi-object actor into one multi-matrix draw (70 of 205 draws in
+  Garden are one 14-object model × 5) needs packer + f2-engine changes.

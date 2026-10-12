@@ -19,18 +19,23 @@ CFLAGS += -I$(CSRC) -I$(BUILD_DIR)
 CFLAGS += $(F2N64_CFLAGS)
 
 # RSP ucodes (rsp_*.S are assembled as RSP code by n64.mk).
-RSP_OBJS = $(BUILD_DIR)/rsp_f2mdx.o $(BUILD_DIR)/rsp_f2clip.o
+RSP_OBJS = $(BUILD_DIR)/rsp_f2mdx.o $(BUILD_DIR)/rsp_f2clip.o $(BUILD_DIR)/rsp_f2modge.o
 
 all: frogger2.z64
 
 # IMEM offset of each ucode's magma overlay text (_MG_OVERLAY), for r3d.c.
 $(BUILD_DIR)/r3d_rsp_syms.h: $(RSP_OBJS)
 	@echo "    [SYMS] $@"
-	@{ for u in rsp_f2mdx rsp_f2clip; do \
+	@{ for u in rsp_f2mdx rsp_f2clip rsp_f2modge; do \
 		a=$$($(N64_NM) $(BUILD_DIR)/$$u.elf | awk '$$3 == "_MG_OVERLAY" { print $$1 }'); \
 		s=$$($(N64_NM) $(BUILD_DIR)/$$u.elf | awk '$$3 == "_start" { print $$1 }'); \
 		echo "#define $$(echo $$u | tr a-z A-Z)_MG_OVERLAY_OFFSET (0x$$a - 0x$$s)"; \
-	done; } > $@
+	done; \
+	a=$$($(N64_NM) $(BUILD_DIR)/rsp_f2modge.elf | awk '$$3 == "_MG_OVERLAY" { print $$1 }'); \
+	e=$$($(N64_NM) $(BUILD_DIR)/rsp_f2modge.elf | awk '$$3 == "F2_ModgeEntry" { print $$1 }'); \
+	echo "#define RSP_F2MODGE_ENTRY_OFFSET (0x$$e - 0x$$a)"; \
+	m=$$($(N64_NM) $(BUILD_DIR)/rsp_f2mdx.elf | awk '$$3 == "F2_MTX_I" { print $$1 }'); \
+	echo "#define RSP_F2MDX_F2_MTX_I_DMEM (0x$$m & 0xFFF)"; } > $@
 
 $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 

@@ -114,6 +114,12 @@ USA data: 36 MiB ROM.
 | `F2N64_DATA` | `pack` (default) or `prep` (phase-2G loose files) |
 | `F2N64_CFLAGS=-DF2N64_NO_TRIS` | measurement: r3d does all its CPU work but sends no triangles (the ceiling of polygon reduction; touch `csrc/r3d.c` to rebuild) |
 | `F2N64_CFLAGS=-DF2N64_NO_MUSIC` | measurement: no music (the `audio:` log line shows the mixer's CPU time per second; ULC music at 32 kHz is most of it) |
+| `F2N64_R3D_PROF=1` | measurement: r3d per-phase timers (full / camera-only draws, culling, water, recording, batch, flush parts), `r3dprof` line every 150 frames |
+| `F2N64_PADX=N` | measurement: N bytes of padding before the `R3d` struct (samples data layouts; research/n64-performance.md §3R) |
+| `F2N64_MODGE_CHECK=1` | testing: every 64 frames, compare the RSP's MODGE/WAVE vertices with the bit-exact CPU model (logged) |
+| `F2N64_MODGE_CPU=1` | testing: animate MODGE/WAVE meshes on the CPU instead of the RSP |
+| `F2N64_CVT_CHECK=1` | testing: at boot, check the shader's float -> s15.16 matrix conversion against `to_fixed` (logged) |
+| `F2N64_R3DT_FRAME=N` | r3d-test ROM: freeze the synthetic scene's animation at frame N (screenshots comparable between builds) |
 | `F2N64_MEASURE_SIZES=1` | measurement: log r3d draws/triangles per on-screen radius class (< 1, 1.5, 3 px) every 300 frames |
 | `F2N64_NO_BACKEND=1` | measurement: the draw loop records meshes into the sink and drops them (no r3d): its own CPU cost alone (`draw phases` line) |
 | `F2N64_KEEP_DFS=1` | skip the data step (reuse `target/n64/filesystem`) |
@@ -133,7 +139,7 @@ framebuffer wait, RSP and RDP busy %, `Game::tick` µs, audio poll µs, CPU tria
 draws / triangles queued and sent / batches / texture loads, audio voices, music),
 `app: frame pacing N fps` (phase 3P: `display_set_fps_limit` from the running tick/frame
 costs, see `App::pace`; `pacing N fps` in the perf line, 0 = unlimited), the perf line's
-`r3d queue`/`flush` µs and `(N reused)` draws, `heap [W-L] ...` (Rust live/peak, libdragon heap used/total, N64 texture bytes; level peak on
+`r3d queue`/`flush` µs (queue = the batch after the draw loop; the per-draw recording is part of the draw loop, §3R) and `(N reused)` draws, `heap [W-L] ...` (Rust live/peak, libdragon heap used/total, N64 texture bytes; level peak on
 every level change), `heap step` (per-step memory of a level load), `game: ...` on mode or
 pad changes, `app: level ... loaded in N ms`, `app: video ...`, `app: save game ...`,
 `ALLOC FAILED` (heap state when an allocation fails).

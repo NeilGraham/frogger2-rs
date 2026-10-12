@@ -17,6 +17,7 @@
 
 DEFINE_RSP_UCODE(rsp_f2mdx);
 DEFINE_RSP_UCODE(rsp_f2clip);
+DEFINE_RSP_UCODE(rsp_f2modge);
 
 #define F2_ATTR_POS 0
 #define F2_ATTR_COLOR 1
@@ -67,6 +68,7 @@ typedef struct {
 static mg_pipeline_t *pipe;
 static const mg_uniform_t *u_draw, *u_tex, *u_frame;
 static uint32_t clip_text, clip_size;
+static uint32_t modge_text, modge_size;
 static r3d_tex_t texs[MAX_R3D_TEX];
 static uint32_t num_texs = 1;  /* 0 = none */
 static r3d_group_t groups[MAX_R3D_GROUPS];
@@ -113,6 +115,9 @@ void n64_r3d_init_impl(void) {
     assertf(u_frame->size == offsetof(n64_r3d_frame_t, guard), "F2_FRAME size %lu", u_frame->size);
     assertf(RSP_F2MDX_MG_OVERLAY_OFFSET == RSP_F2CLIP_MG_OVERLAY_OFFSET, "magma core text differs between ucodes");
     get_overlay_text(&rsp_f2clip, RSP_F2CLIP_MG_OVERLAY_OFFSET, &clip_text, &clip_size);
+    assertf(RSP_F2MDX_MG_OVERLAY_OFFSET == RSP_F2MODGE_MG_OVERLAY_OFFSET, "magma core text differs (modge overlay)");
+    assertf(RSP_F2MODGE_ENTRY_OFFSET == 16, "F2_ModgeEntry at overlay +%d", RSP_F2MODGE_ENTRY_OFFSET);
+    get_overlay_text(&rsp_f2modge, RSP_F2MODGE_MG_OVERLAY_OFFSET, &modge_text, &modge_size);
     debugf("r3d: magma pipeline up (overlay at IMEM +0x%x, shader %lu bytes, clip overlay %lu bytes; F2_DRAW @%lu F2_TEX @%lu F2_FRAME @%lu)\n",
            RSP_F2MDX_MG_OVERLAY_OFFSET, (uint32_t)((uint8_t *)rsp_f2mdx.code_end - rsp_f2mdx.code) - RSP_F2MDX_MG_OVERLAY_OFFSET,
            clip_size + 1, u_draw->offset, u_tex->offset, u_frame->offset);
@@ -214,6 +219,40 @@ void n64_r3d_reset_impl(uint32_t tex_first, uint32_t group_first) {
 
 /* Current counts (next texture handle << 16 | next group handle). */
 uint32_t n64_r3d_counts_impl(void) { return (num_texs << 16) | num_groups; }
+
+void n64_r3d_begin_impl(const n64_r3d_frame_t *f);
+
+/* Testing (F2N64_CVT_CHECK): converts n x 12 floats with the shader's F2_Convert (one vertex
+ * load per 12) and returns the s15.16 halves it left in DMEM (rows of 4 lanes, lane 3 = 0). */
+void n64_r3d_cvt_check_impl(const float *vals, uint32_t n, int16_t *out_i, uint16_t *out_f) {
+    static n64_r3d_draw_uniform_t u __attribute__((aligned(16)));
+    static int16_t vtx[16] __attribute__((aligned(16)));
+    data_cache_hit_writeback(vtx, sizeof vtx);
+    for (uint32_t g = 0; g < n; g++) {
+        memset(&u, 0, sizeof u);
+        memcpy(u.mtx, vals + 12 * g, sizeof u.mtx);
+        data_cache_hit_writeback(&u, sizeof u);
+        n64_r3d_frame_t fr;
+        memset(&fr, 0, sizeof fr);
+        fr.guard = 6;
+        n64_r3d_begin_impl(&fr);
+        mg_uniform_load(u_draw, &u);
+        mg_bind_vertex_buffer(vtx);
+        mg_draw_begin();
+        mg_load_vertices(0, 0, 1);
+        mg_draw_end();
+        rspq_wait();
+        int16_t buf[32] __attribute__((aligned(16)));
+        rsp_read_data(buf, sizeof buf, RSP_F2MDX_F2_MTX_I_DMEM);
+        memcpy(out_i + 16 * g, buf, 32);
+        memcpy(out_f + 16 * g, buf + 16, 32);
+    }
+}
+
+/* Queues F2_Modge (rsp_f2mdx.S): a 0-vertex load whose cache offset holds the descriptor size. */
+void n64_r3d_modge_impl(const void *desc, uint32_t size) {
+    mg_cmd_write(MG_CMD_LOAD_VERTICES, PhysicalAddr(desc), size << 16);
+}
 
 uint32_t n64_r3d_group_create_impl(const n64_r3d_group_desc_t *d) {
     if (num_groups >= MAX_R3D_GROUPS) return 0;
@@ -378,11 +417,22 @@ static void draw_inline(const r3d_group_t *g, const n64_r3d_draw_t *d) {
 static const n64_r3d_frame_t *cur_frame;
 static n64_r3d_frame_t frame_default;
 
+static uint32_t cur_guard;
+
 static void load_frame(const n64_r3d_frame_t *f) {
     n64_r3d_frame_t fr = *f;
     fr.clip_text = clip_text;
     fr.clip_size = clip_size;
+    fr.modge_text = modge_text;
+    fr.modge_size = modge_size;
     mg_uniform_load_inline(u_frame, &fr);
+    /* The sky's frame carries clip-space X/Y divided by the guard factor and guard 1
+     * (r3d.rs frame_uniform_vp: W * guard overflows s15.16 at the sky's depths). */
+    uint32_t guard = f->guard ? f->guard : 4;
+    if (guard != cur_guard) {
+        mg_set_clip_factor(guard);
+        cur_guard = guard;
+    }
     cur_frame = f;
 }
 
@@ -390,7 +440,7 @@ void n64_r3d_begin_impl(const n64_r3d_frame_t *f) {
     frame_default = *f;
     mg_pipeline_bind(pipe);
     mg_set_geometry_flags(MG_GEOMETRY_FLAGS_Z_ENABLED | MG_GEOMETRY_FLAGS_TEX_ENABLED | MG_GEOMETRY_FLAGS_SHADE_ENABLED);
-    mg_set_clip_factor(f->guard ? f->guard : 4);
+    cur_guard = 0;
     load_frame(&frame_default);
     if (f->fog_rgba) rdpq_set_fog_color(color_from_packed32(f->fog_rgba));
     cur_tex = 0;
@@ -400,7 +450,10 @@ void n64_r3d_begin_impl(const n64_r3d_frame_t *f) {
 void n64_state_invalidate(void);
 void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draws, uint32_t n) {
     if (!n) return;
+    uint32_t t0 = TICKS_READ();
     apply_list(st);
+    uint32_t t1 = TICKS_READ();
+    stats.ticks_state += t1 - t0;
     /* CPU batches (main.c) may have loaded TMEM since the last list. */
     cur_tex = 0;
     cur_list_flags = st->flags;
@@ -429,6 +482,7 @@ void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draw
         }
         stats.draws++;
     }
+    stats.ticks_draws += TICKS_READ() - t1;
     n64_state_invalidate();
 }
 

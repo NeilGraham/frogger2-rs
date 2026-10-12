@@ -133,19 +133,21 @@ pub struct R3dGroupDesc {
 }
 
 /// `F2_DRAW` uniform (96 bytes): the model matrix (`r3d::model_scaled`: rows x, y, z,
-/// translation; lanes x, y, z, unused) in s15.16, integer then fraction halves (the RSP folds
-/// it with the frame's view x projection); colour multiplier and addend; fog.
+/// translation; lanes x, y, z) as floats (the RSP converts it to s15.16 exactly like
+/// `r3d::to_fixed`, then folds it with the frame's view x projection); the conversion flag
+/// (0); colour multiplier and addend; fog.
 #[repr(C, align(8))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct R3dDrawUniform {
-    pub mtx_i: [i16; 16],
-    pub mtx_f: [u16; 16],
+    pub mtx: [f32; 12],
+    pub cvt: [u32; 2],
     pub cmul: [i16; 4],
     pub cadd: [i16; 4],
     /// `[0, constant unfogged fraction (0..0x7FFF), 0, 0]`.
     pub fogc: [i16; 4],
     /// VCC masks `[keep colour alpha (0xFF; 0x77 = constant fog), per-vertex fog (0x88), 0, 0]`.
     pub fogm: [u16; 4],
+    pub pad: [u32; 2],
 }
 
 /// `F2_FRAME` uniform (first 120 bytes) + host fields.
@@ -165,6 +167,8 @@ pub struct R3dFrame {
     pub vp_f: [u16; 16],
     pub clip_text: u32,
     pub clip_size: u32,
+    pub modge_text: u32,
+    pub modge_size: u32,
     pub guard: u32,
     pub fog_rgba: u32,
 }
@@ -206,6 +210,9 @@ pub struct R3dStats {
     pub draws: u32,
     pub groups: u32,
     pub tex_loads: u32,
+    /// C0 ticks in the list render states / the per-draw loop.
+    pub ticks_state: u32,
+    pub ticks_draws: u32,
 }
 
 /// Joypad buttons (`joypad_buttons_t.raw`, big-endian bitfield: A is bit 15).
@@ -275,6 +282,11 @@ extern "C" {
     pub fn n64_r3d_tex_alias(tex: u32) -> u32;
     pub fn n64_r3d_reset(tex_first: u32, group_first: u32);
     pub fn n64_r3d_counts() -> u32;
+    /// Queues the RSP water animation (`F2_Modge` in rsp_f2mdx.S) of a descriptor of `size`
+    /// bytes (after `n64_r3d_begin`).
+    pub fn n64_r3d_modge(desc: *const u8, size: u32);
+    /// Testing: the shader's float -> s15.16 conversion of `n` x 12 floats (DMEM read back).
+    pub fn n64_r3d_cvt_check(vals: *const f32, n: u32, out_i: *mut i16, out_f: *mut u16);
     pub fn n64_tex_create_ntx(desc: *const NtxDesc) -> u32;
     pub fn n64_sfx_freq(handle: u32) -> u32;
     pub fn n64_fmv_play(path: *const u8) -> u32;

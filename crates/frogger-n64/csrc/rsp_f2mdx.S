@@ -117,6 +117,11 @@ _MG_VTX_SHADER:
     #define vinvf       $v28
     #define v___        $v29
 
+    # The draw's matrix in s15.16 (once per uniform load: the CPU sends floats, F2_CVT = 0).
+    lw t0, %lo(F2_CVT)
+    beqz t0, F2_Convert
+    nop
+F2_Converted:
     # Command: a0 = id | vertex index (24 bits), a1 = cache slot << 16 | count.
     # Products with MG_VERTEX_SIZE (stride, 40, stride, 0): buffer byte offset, cache byte
     # offset, input byte count (as in libdragon's mgfx).
@@ -225,15 +230,16 @@ _MG_VTX_SHADER:
     #undef vmrf
 
     # Uniforms (each 4-lane vector duplicated in both halves: two vertices per pass).
-    ldv vcmul.e0, 0x40,t0
-    ldv vcmul.e4, 0x40,t0
-    ldv vcadd.e0, 0x48,t0
-    ldv vcadd.e4, 0x48,t0
+    li t0, %lo(F2_CMUL)
+    ldv vcmul.e0, 0x00,t0
+    ldv vcmul.e4, 0x00,t0
+    ldv vcadd.e0, 0x08,t0
+    ldv vcadd.e4, 0x08,t0
     # Fog: lane 1 = constant (draw), lane 2 = -k, lane 3 = end - 10 (frame).
-    ldv vfog.e0, 0x50,t0
-    ldv vfog.e4, 0x50,t0
-    lhu s1, 0x58(t0)
-    lhu s2, 0x5A(t0)
+    ldv vfog.e0, 0x10,t0
+    ldv vfog.e4, 0x10,t0
+    lhu s1, 0x18(t0)
+    lhu s2, 0x1A(t0)
     li s3, 0x10000
     li t0, %lo(MG_CLIP_FACTORS)
     ldv vclipf.e0, 0,t0
@@ -393,6 +399,72 @@ LD_ST1:
     nop
 
 ##############################################################################
+# F2_Convert: F2_MTXF (12 floats) -> F2_MTX_I / F2_MTX_F (s15.16 halves), exactly r3d.rs
+# `to_fixed`: truncated towards zero, |v| >= 32768 saturated, NaN -> 0. a0/a1 kept.
+##############################################################################
+F2_Convert:
+    li t8, %lo(F2_MTXF)
+    li t9, %lo(F2_MTX_I)
+    li t7, 4
+F2_CvtRow:
+    li t6, 3
+F2_CvtCol:
+    lw t0, 0(t8)
+    srl t1, t0, 23
+    andi t1, t1, 0xFF
+    addiu t2, t1, -134
+    sll t3, t0, 9
+    srl t3, t3, 9
+    lui t4, 0x80
+    or t4, t3, t4
+    slti t5, t2, 8
+    beqz t5, F2_CvtSat
+    nop
+    bgez t2, F2_CvtLeft
+    nop
+    slti t5, t2, -23
+    bnez t5, F2_CvtZero
+    nop
+    sub t5, zero, t2
+    j F2_CvtSign
+    srlv t4, t4, t5
+F2_CvtLeft:
+    j F2_CvtSign
+    sllv t4, t4, t2
+F2_CvtSat:
+    li t5, 0xFF
+    bne t1, t5, F2_CvtSatS
+    nop
+    bnez t3, F2_CvtZero
+    nop
+F2_CvtSatS:
+    bltz t0, F2_CvtStore
+    lui t4, 0x8000
+    lui t4, 0x7FFF
+    j F2_CvtStore
+    ori t4, t4, 0xFFFF
+F2_CvtZero:
+    move t4, zero
+F2_CvtSign:
+    bgez t0, F2_CvtStore
+    nop
+    sub t4, zero, t4
+F2_CvtStore:
+    srl t5, t4, 16
+    sh t5, 0(t9)
+    sh t4, 0x20(t9)
+    addiu t8, t8, 4
+    addiu t6, t6, -1
+    bnez t6, F2_CvtCol
+    addiu t9, t9, 2
+    addiu t7, t7, -1
+    bnez t7, F2_CvtRow
+    addiu t9, t9, 2
+    li t0, 1
+    j F2_Converted
+    sw t0, %lo(F2_CVT)
+
+##############################################################################
 # F2_LoadTex: texture change without leaving the magma overlay.
 #
 # a0 (low 24 bits) = RDRAM address of a descriptor built by r3d.c (F2_TEXDESC_SIZE bytes):
@@ -403,6 +475,10 @@ LD_ST1:
 ##############################################################################
 #define F2_TEXDESC_SIZE 144
 F2_LoadTex:
+    # A 0-vertex load with a non-zero cache offset is F2_Modge (a1 >> 16 = its size).
+    srl t0, a1, 16
+    bnez t0, F2_ModgeLoad
+    nop
     # Wait for the previous triangle's output DMA.
 1:  mfc0 t0, COP0_DMA_BUSY
     bnez t0, 1b
@@ -460,6 +536,15 @@ F2_LoadTex_Append:
     addu a0, s0, t5
     j RSPQCmd_RdpAppendBuffer
     li ra, %lo(RSPQ_Loop)
+
+##############################################################################
+# F2_ModgeLoad: the water animation is its own overlay (rsp_f2modge.S, entered right after
+# its shader bootstrapper): load it over this one and enter it (a0/a1 = the command).
+##############################################################################
+F2_ModgeLoad:
+    lw s0, %lo(F2_MODGE_TEXT)
+    lw t0, %lo(F2_MODGE_SIZE)
+    jal_and_j Mg_LoadOverlay, _MG_OVERLAY + 16
 
 F2_Clip:
     # A vertex outside near/far: MDX drops the whole face.

@@ -55,8 +55,6 @@ pub struct R3dLevel {
     /// Registry image → (RenderCpu texture generation, r3d alias).
     img: Vec<(u32, Option<TexId>)>,
     pub stats: R3dFrameStats,
-    /// Per sink draw slot: the (model, object) and mesh it had last time (skips the map).
-    slot_mesh: Vec<(u32, u16, MeshId)>,
     /// Recorded draws without an F2NM mesh (logged once each).
     missing: alloc::collections::BTreeSet<(u32, u16)>,
     frame_no: u32,
@@ -66,7 +64,13 @@ pub struct R3dLevel {
     /// This frame's counters while recording.
     rec: R3dFrameStats,
     /// Per registry entry: (image, its texture generation, crc) last mapped.
-    synced: Vec<(u32, u32, u32)>,
+    synced: Vec<(u32, u32, u32, u16)>,
+    /// Entries whose shown image can change (animated: 2+ frames).
+    dyn_entries: Vec<u32>,
+    /// Images shown by the other entries: (image, its N64 texture generation last seen, first
+    /// and count of its entries in `stat_users`).
+    stat_imgs: Vec<(u32, u32, u32, u32)>,
+    stat_users: Vec<u32>,
     seen: alloc::collections::BTreeSet<u32>,
 }
 
@@ -108,7 +112,6 @@ impl R3dLevel {
             meshes: BTreeMap::new(),
             img: Vec::new(),
             stats: R3dFrameStats::default(),
-            slot_mesh: Vec::new(),
             missing: Default::default(),
             frame_no: 0,
             dump_next: false,
@@ -116,6 +119,9 @@ impl R3dLevel {
             rec: R3dFrameStats::default(),
             seen: Default::default(),
             synced: Vec::new(),
+            dyn_entries: Vec::new(),
+            stat_imgs: Vec::new(),
+            stat_users: Vec::new(),
         }
     }
 
@@ -123,10 +129,12 @@ impl R3dLevel {
     pub fn unload(&mut self) {
         self.r.reset_to(self.base);
         self.meshes.clear();
-        self.slot_mesh.clear();
         self.img.clear();
         self.missing.clear();
         self.synced.clear();
+        self.dyn_entries.clear();
+        self.stat_imgs.clear();
+        self.stat_users.clear();
     }
 
     pub fn num_meshes(&self) -> usize {
@@ -157,6 +165,7 @@ impl R3dLevel {
 
     /// The r3d texture of registry image `h` (aliased on first use, re-aliased when
     /// [`RenderCpu`] replaced the image's texture).
+    #[inline(never)]
     fn tex_for(&mut self, cpu: &RenderCpu, h: u32) -> Option<TexId> {
         let (c, gen) = cpu.texture_of(h);
         if c == 0 {
@@ -174,23 +183,77 @@ impl R3dLevel {
 
     /// Points every texture CRC at the image the registry currently shows for it.
     /// Only entries whose shown image (or that image's N64 texture) changed since the last
-    /// call are looked at again (animated textures, procedural / render-to-texture images).
+    /// call are looked at again (animated textures, procedural / render-to-texture images):
+    /// per frame the animated entries and the generations of the images the others show
+    /// (`TexEntry::current` changes only in `update_animating_textures`, for entries with
+    /// 2+ frames); everything when the registry's size changed.
     pub fn sync_textures(&mut self, reg: &TextureRegistry, cpu: &RenderCpu) {
-        if self.synced.len() > reg.entries.len() {
-            self.synced.clear();
+        if self.synced.len() != reg.entries.len() {
+            self.sync_all(reg, cpu);
+            return;
         }
-        self.synced.resize(reg.entries.len(), (u32::MAX, u32::MAX, 0));
-        for (i, e) in reg.entries.iter().enumerate() {
-            let img = e.current.map_or(u32::MAX, |h| h.0);
-            let gen = if img == u32::MAX { 0 } else { cpu.texture_of(img).1 };
-            if self.synced[i].0 == img && self.synced[i].1 == gen && self.synced[i].2 == e.crc {
-                continue;
+        for k in 0..self.dyn_entries.len() {
+            let i = self.dyn_entries[k] as usize;
+            self.sync_entry(reg, cpu, i);
+        }
+        for k in 0..self.stat_imgs.len() {
+            let (img, gen, first, n) = self.stat_imgs[k];
+            let g = cpu.texture_of(img).1;
+            if g != gen {
+                self.stat_imgs[k].1 = g;
+                for u in first..first + n {
+                    let i = self.stat_users[u as usize] as usize;
+                    self.sync_entry(reg, cpu, i);
+                }
             }
-            self.synced[i] = (img, gen, e.crc);
-            let t = e.current.and_then(|h| self.tex_for(cpu, h.0));
-            self.r.map_texture(e.crc, t);
-            rt::audio_poll_due();
         }
+    }
+
+    /// Every entry, and the lists of the per-frame checks.
+    #[cold]
+    #[inline(never)]
+    fn sync_all(&mut self, reg: &TextureRegistry, cpu: &RenderCpu) {
+        self.synced.clear();
+        for e in &reg.entries {
+            let cid = self.r.crc_id(e.crc);
+            self.synced.push((u32::MAX, u32::MAX, e.crc, cid));
+        }
+        self.dyn_entries.clear();
+        let mut stat: Vec<(u32, u32)> = Vec::new();
+        for (i, e) in reg.entries.iter().enumerate() {
+            self.sync_entry(reg, cpu, i);
+            if e.frames.len() > 1 {
+                self.dyn_entries.push(i as u32);
+            } else if let Some(h) = e.current {
+                stat.push((h.0, i as u32));
+            }
+        }
+        stat.sort_unstable();
+        self.stat_imgs.clear();
+        self.stat_users.clear();
+        for (img, i) in stat {
+            match self.stat_imgs.last_mut() {
+                Some(l) if l.0 == img => l.3 += 1,
+                _ => self.stat_imgs.push((img, cpu.texture_of(img).1, self.stat_users.len() as u32, 1)),
+            }
+            self.stat_users.push(i);
+        }
+    }
+
+    /// Re-points entry `i`'s CRC if its shown image or that image's texture changed.
+    fn sync_entry(&mut self, reg: &TextureRegistry, cpu: &RenderCpu, i: usize) {
+        let e = &reg.entries[i];
+        let img = e.current.map_or(u32::MAX, |h| h.0);
+        let gen = if img == u32::MAX { 0 } else { cpu.texture_of(img).1 };
+        let (simg, sgen, scrc, cid) = self.synced[i];
+        if simg == img && sgen == gen && scrc == e.crc {
+            return;
+        }
+        let cid = if scrc == e.crc { cid } else { self.r.crc_id(e.crc) };
+        self.synced[i] = (img, gen, e.crc, cid);
+        let t = e.current.and_then(|h| self.tex_for(cpu, h.0));
+        self.r.map_texture_id(cid, e.crc, t);
+        rt::audio_poll_due();
     }
 
     /// Starts recording a frame's meshes with the renderer's view (call before
@@ -214,87 +277,75 @@ impl R3dLevel {
     }
 
     /// Queues one recorded mesh draw ([`MeshBackend`] side of the draw loop).
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     fn record(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
-        let t0 = rt::ticks();
-
         let slot = self.slot;
         self.slot += 1;
+        if !crate::r3d::R3D_PROF {
+            // Not timed: the draw loop's time includes recording (`r3d queue` is the batch).
+            return self.record_inner(cpu, d, mats, slot as usize);
+        }
+        let t0 = rt::ticks();
         self.record_inner(cpu, d, mats, slot as usize);
-        self.rec.queue_ticks = self.rec.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
+        self.r.prof.record_ticks = self.r.prof.record_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
+        self.r.prof.records += 1;
     }
 
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    /// Inside the game's draw loop: only records the draw (mesh lookup, textures and the
+    /// debug filters follow in [`resolve_queue`](Self::resolve_queue), after the loop).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     fn record_inner(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]], slot: usize) {
         let Some(mut list) = list_of(d.frame) else { return };
         if d.no_clip && list == List::Normal {
             list = List::Background;
         }
-        if let Some(skip) = option_env!("F2N64_SKIP_MODEL") {
-            if skip.split(',').any(|m| alloc::format!("{:08x}", d.model) == m) {
-                return;
-            }
+        // Every 16th draw (the C call misses the I-cache; 16 draws take ~1 ms).
+        if slot % 16 == 15 {
+            rt::audio_poll_due();
         }
-        if let Some(only) = option_env!("F2N64_ONLY_MODEL") {
-            if !only.split(',').any(|m| alloc::format!("{:08x}", d.model) == m) {
-                return;
-            }
-        }
-        // The draw order rarely changes between frames: try last frame's mesh of this slot.
-        let mesh = match self.slot_mesh.get(slot) {
-            Some(&(m, o, id)) if m == d.model && o == d.object => id,
-            _ => {
-                let Some(&mesh) = self.meshes.get(&(d.model, d.object)) else {
-                    if self.missing.insert((d.model, d.object)) {
-                        crate::log!("r3d: no mesh for model {:08x} object {} (frame {:?})", d.model, d.object, d.frame);
-                    }
-                    return;
-                };
-                if self.slot_mesh.len() <= slot {
-                    self.slot_mesh.resize(slot + 1, (0, 0, MeshId(u32::MAX)));
-                }
-                self.slot_mesh[slot] = (d.model, d.object, mesh);
-                mesh
-            }
-        };
-        let override_tex = match d.override_tex {
+        let flags = (d.no_clip, d.object_fog, d.object == MESH_SKIN);
+        let ovr = match d.override_tex {
+            None => None,
             Some(h) => match self.tex_for(cpu, h.0) {
                 Some(t) => Some(t),
                 None => return, // PC: no texture, nothing drawn
             },
-            None => None,
         };
-        if matches!(list, List::Additive | List::LateAdditive) {
-            self.r.ensure_additive(mesh);
-        }
-        rt::audio_poll_due();
+        self.r.queue_raw(list, d.model, d.object, mats, d.alpha_mul, d.gouraud, ovr, flags, slot as u32, d.stamp, d.modge, d.modge_frame);
+    }
 
-        let p = crate::r3d::DrawParams { alpha_mul: d.alpha_mul, gouraud: d.gouraud, override_tex, no_clip: d.no_clip, object_fog: d.object_fog };
-        if d.object == MESH_SKIN {
-            self.r.draw_skinned(list, mesh, mats, &p);
-        } else if let Some(m) = mats.first() {
-            // World-space landscape meshes (packer-baked key-0 transforms): identity.
-            const IDENTITY: [[f32; 4]; 4] = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
-            let m = if self.r.mesh_is_world(mesh) { &IDENTITY } else { m };
-            let pushed = self.r.pushed;
-            self.r.draw_slot(list, mesh, m, &p, slot as u32, d.stamp);
-            // MODGE/WAVE vertices only for meshes on screen (the RSP reads them at the flush).
-            if d.modge != 0 && self.r.pushed != pushed {
-                self.r.animate_modge(mesh, d.modge_frame, d.modge);
+    /// The mesh of a recorded draw ([`R3d::run_queue_with`]'s resolver: the slot memo had
+    /// another model/object), applying the debug filters and logging missing meshes once.
+    #[cold]
+    #[inline(never)]
+    fn lookup_mesh(meshes: &BTreeMap<(u32, u16), MeshId>, missing: &mut alloc::collections::BTreeSet<(u32, u16)>, d: &crate::r3d::RawDraw) -> Option<MeshId> {
+        let skip = |list: &str| list.split(',').any(|m| alloc::format!("{:08x}", d.model) == m);
+        if option_env!("F2N64_SKIP_MODEL").is_some_and(skip) || option_env!("F2N64_ONLY_MODEL").is_some_and(|l| !skip(l)) {
+            return None;
+        }
+        let Some(&mesh) = meshes.get(&(d.model, d.object)) else {
+            if missing.insert((d.model, d.object)) {
+                crate::log!("r3d: no mesh for model {:08x} object {} (list {:?})", d.model, d.object, d.list);
             }
+            return None;
+        };
+        Some(mesh)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn log_draw(seen: &mut alloc::collections::BTreeSet<u32>, dump: bool, d: &crate::r3d::RawDraw, mesh: MeshId) {
+        if option_env!("F2N64_LOG_MODELS").is_some() && seen.insert(d.model) {
+            crate::log!("r3d: model {:08x} first drawn ({:?}, mesh {})", d.model, d.list, mesh.0);
         }
-        self.rec.draws += 1;
-        if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {
-            crate::log!("r3d: model {:08x} first drawn ({:?}, {} tris)", d.model, list, self.r.mesh_tris(mesh));
-        }
-        if self.dump_next {
+        if dump {
             crate::log!(
-                "dump r3d {:?} model {:08x} obj {} alpha {} tris {} no_clip {}",
-                list,
+                "dump r3d {:?} model {:08x} obj {} alpha {} mesh {} no_clip {}",
+                d.list,
                 d.model,
                 d.object,
-                d.alpha_mul,
-                self.r.mesh_tris(mesh),
+                d.alpha,
+                mesh.0,
                 d.no_clip
             );
         }
@@ -316,12 +367,25 @@ impl R3dLevel {
         rt::begin_frame((c[0] << 24) | (c[1] << 16) | (c[2] << 8) | 0xff);
         cpu.draw_segment(0);
         let mut st = self.rec;
-        if st.draws == 0 {
+        if self.r.queued() == 0 {
             self.r.discard_frame();
             for seg in 1..=7 {
                 cpu.draw_segment(seg);
             }
         } else {
+            let tq = rt::ticks();
+            let log = option_env!("F2N64_LOG_MODELS").is_some() || self.dump_next;
+            self.r.resolve_all(log);
+            let R3dLevel { r: rr, meshes, missing, seen, dump_next, .. } = self;
+            rr.run_queue_with(&mut |d| {
+                let m = Self::lookup_mesh(meshes, missing, d);
+                if let (true, Some(m)) = (log, m) {
+                    Self::log_draw(seen, *dump_next, d, m);
+                }
+                m
+            });
+            st.queue_ticks = st.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(tq));
+            st.draws = self.r.drawn;
             let tf = rt::ticks();
             let seg0 = cpu.stats.submit_ticks;
             self.r.flush(|l| {
@@ -371,7 +435,7 @@ impl R3dBackend {
 }
 
 impl MeshBackend for R3dBackend {
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     fn mesh(&mut self, _view: &View, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
         // SAFETY: see `new`.
         unsafe { (*self.lvl).record(&*self.cpu, d, mats) }

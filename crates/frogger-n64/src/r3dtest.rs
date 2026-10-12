@@ -216,7 +216,7 @@ impl R3dTest {
             for i in 0..1000 {
                 let mut m = cm;
                 m[3][0] += i as f32 * 0.001;
-                acc2 += draw_uniform(&m, &DrawParams::default()).mtx_i[12] as i32;
+                acc2 += draw_uniform(&m, &DrawParams::default()).mtx[9].to_bits() as i32;
             }
             let t2 = ticks();
             r.begin_frame(&view);
@@ -302,9 +302,11 @@ impl R3dTest {
             t0 = ticks();
             let view = self.bench_view;
             self.r.begin_frame(&view);
+            // F2N64_R3DT_FRAME=N: frozen at frame N (screenshots comparable between builds).
+            let f = option_env!("F2N64_R3DT_FRAME").and_then(|v| v.parse::<u32>().ok()).unwrap_or(self.frame);
             for i in 0..20 {
                 let m = MeshId((i % 2) as u32);
-                let mat = rot_y(0.02 * self.frame as f32 + i as f32, translate(((i % 8) as f32 - 3.5) * 95.0, 0.0, 120.0 + (i / 8) as f32 * 120.0));
+                let mat = rot_y(0.02 * f as f32 + i as f32, translate(((i % 8) as f32 - 3.5) * 95.0, 0.0, 120.0 + (i / 8) as f32 * 120.0));
                 self.r.draw(List::Normal, m, &mat, &DrawParams::default());
             }
         } else {
