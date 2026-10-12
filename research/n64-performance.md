@@ -1038,7 +1038,10 @@ Per phase (Garden 1 hopping, `F2N64_R3D_PROF=1` build; timer calls inflate small
    sine table in DMEM, `VMUDM`/`VMULF`, 8 lanes) and applies them to the vertices. Bit-exact
    Rust model (`modge_x16`/`modge_z16`/`modge_pair16`), host test against the f64 PC formula
    (s/t ≤ 1/1024 texel, y ≤ 0.13 world units, alpha ≤ 1), in-ROM `F2N64_MODGE_CHECK=1` (Garden
-   and Lab meshes: 0 mismatches). Meshes too big for the DMEM scratch keep the CPU path.
+   and Lab meshes: 0 mismatches). The 8-position input chunk sits in the clip cache and the
+   position table is rounded to 8, so Halloween's 424-vertex / 134-position mesh fits too
+   (Halloween 1 queue 8.7 → 7.4 ms, see the sweep below); bigger meshes keep the CPU path (logged
+   "animated on the CPU").
 3. **Batch after the draw loop**: the game's draw loop only records each draw (`queue_raw`:
    model id/object, parameters, and the matrix only when its (stamp, object) changed); the
    culling and uniforms run in one batch (`run_queue_with`) where r3d's data and code stay in
@@ -1065,7 +1068,28 @@ Per phase (Garden 1 hopping, `F2N64_R3D_PROF=1` build; timer calls inflate small
    conversion-bound; skinned −0.05 ms); kept since it is exact and only costs RSP time.
 9. No audio polls inside the batch (a 40 ms poll, ~3.5 ms in Lab, landed in it and counted as
    r3d time); in the draw loop every 16th recorded draw. Per-level r3d storage freed on unload
-   (it kept its capacity: Lab game over → frontend ran out of the large-block pool).
+   (it kept its capacity: Lab game over → frontend ran out of the large-block pool). No
+   separate fog-less base uniform per slot.
+
+### Fix: sky spikes and missing far background (pre-existing, also on `ed3e8ce`)
+Reported as "vertex explosions on far geometry / the Space background" (Space 2 start, top
+left): long wedges from the lamp post towards the top-left corner in ~10 % of frames, varying
+with the camera. Bisected with `F2N64_SKIP_MODEL` to the background model `7f3a4793` (scale 5,
+coordinates up to 6610: view-space x/y beyond ±33000, W up to the sky far plane 30000). Two
+s15.16 overflows in sky (`noClip`) draws: X/Y saturated beyond ±32768, and magma's clip codes
+(clip factors (1, 1, G, G): X vs W·G, Z·G vs W·G) saturated beyond W = 32768/G = 5461 at guard
+6, so far faces were far-flagged and dropped, and guard-flagged vertices reached the clipper
+with saturated coordinates. Normal draws end at W = 1200 and never get there. The sky's frame
+(`frame_uniform_vp(_, true)`) now carries X/Y divided by G, the screen scale multiplied by G,
+and guard factor 1 (`r3d.c` sets the clip factor per loaded frame): same projection and
+on-screen guard band, W / Z / near-far unchanged. Host test `sky_vertices_project_like_mdx`
+(`emulate_vertex` now models the saturated clip products; fails without the change). 20
+captures of the Space 2 intro: spikes in 3 of 19 frames before, 0 of 19 after, and the far
+background (a nebula band and a planet ring) now drawn: `C:\f2-n64test-r3d2\evidence\sky-*`.
+A first attempt (X/Y ÷ 4, guard unchanged; then ÷ 2 with guard 3) still showed beams, since
+W·G overflowed: the guard product was the main source. Residual: the clipper's plane dot
+products (W ∓ X) can still saturate for sky triangles spanning the whole band at W > 16384,
+and the sky's far test is approximate within ~1000 units of 30000 (s15.16 `a·W`).
 
 ### Visual checks
 - r3d-test ROM with the animation frozen (`F2N64_R3DT_FRAME=777`, synthetic scene, same patch
@@ -1094,7 +1118,41 @@ Per phase (Garden 1 hopping, `F2N64_R3D_PROF=1` build; timer calls inflate small
 - Per-vertex water arithmetic dedupe on the CPU (per position instead of per vertex): the cost
   was cache misses on the vertex lines and tables, not the arithmetic (→ RSP).
 
+### All arcade levels (idle boot `level W L`, 14 s, last level window; branch head)
+No assertions, panics or out-of-memory in any level (0-1, 0-2, 3-1, 3-2 boot without a level
+in this harness: no tiles, nothing drawn). fps / r3d queue / flush (ms):
+
+| W \ L | 0 | 1 | 2 |
+|---|---|---|---|
+| 0 Garden | 21.3 / 3.3 / 1.5 | – | – |
+| 1 Ancients | 22.4 / 3.4 / 1.6 | 23.0 / 2.9 / 1.3 | 16.6 / 3.3 / 1.5 |
+| 2 Space | 11.4 / 4.8 / 1.7 | 32.2 / 1.2 / 1.2 | 12.0 / 4.7 / 1.4 |
+| 3 City | 42.2 / 3.4 / 0.8 | – | – |
+| 4 Subterranean | 14.6 / 5.6 / 1.3 | 12.9 / 7.4 / 1.3 | 17.6 / 5.1 / 1.2 |
+| 5 Lab | 11.1 / 5.0 / 1.8 | 14.9 / 8.0 / 2.0 | 17.5 / 3.3 / 1.5 |
+| 6 Halloween | 15.9 / 7.4 / 2.0 | 17.8 / 4.5 / 1.5 | 25.2 / 1.5 / 0.9 |
+| 7 Retro | 33.7 / 2.0 / 0.9 | 39.7 / 1.8 / 0.9 | 32.8 / 2.5 / 1.3 |
+
+Water meshes still animated on the CPU (too big for the DMEM scratch): City 1 (2: 194 and
+144 positions), Subterranean 3 (167 positions, 1272 bytes of terms), Lab 2 (184). Lab 1
+hopping on the head: 11.1–13.1 fps, queue 5.2–5.6 ms, flush 1.3–1.8 ms, no crash
+(`evidence\hop-lv50-r3d2.png`).
+
+### Risks
+- RSP code grew: `F2_Convert` (per uniform load, ~150 scalar instructions: RSP time, not CPU),
+  the water overlay (`rsp_f2modge.S`, overlay swap per water mesh per frame) and a 0-vertex
+  load used as a custom command. Checked by bit-exact models and in-ROM self-checks
+  (`F2N64_MODGE_CHECK`, `F2N64_CVT_CHECK`), not by the r3d-test frame alone.
+- Timing is layout-sensitive (above): a later unrelated change can move the batch by ±20 %.
+- Matrices are copied at record time only when a slot's (stamp, object) changes: a caller
+  that changes a matrix without a new stamp would draw the old one (the game's stamps cover
+  every pose change; host test `queued_draws_match_immediate_ones`).
+- The sky change widens nothing on screen but sends far sky faces that used to be dropped:
+  more sky triangles in Space (fps unchanged within noise: Space 1 idle 11.4 vs 11.7).
+
 ### Left / next candidates
+- The four water meshes still on the CPU path (sweep above): process the term list or the
+  position table in chunks too.
 - Camera-only redraws (144 × ~13 µs): reuse the visibility while the camera moved less than
   the sphere's distance to the planes (temporal coherence) would skip most sphere tests.
 - Recording in the draw loop (~1.5–2 ms): bound by cache misses in the game's draw loop.
