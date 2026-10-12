@@ -192,15 +192,15 @@ pub fn fmv_play(path: &str) -> bool {
     unsafe { ffi::n64_fmv_play(z.as_ptr()) != 0 }
 }
 
-/// Reads `len` bytes of cartridge SRAM.
-pub fn save_read(len: usize) -> Option<Vec<u8>> {
+/// Reads `len` bytes of cartridge SRAM at `off`.
+pub fn sram_read(off: usize, len: usize) -> Option<Vec<u8>> {
     let mut b = alloc::vec![0u8; len];
-    (unsafe { ffi::n64_save_read(b.as_mut_ptr(), len as u32) } as usize == len).then_some(b)
+    (unsafe { ffi::n64_save_read(b.as_mut_ptr(), off as u32, len as u32) } as usize == len).then_some(b)
 }
 
-/// Writes cartridge SRAM from offset 0.
-pub fn save_write(data: &[u8]) -> bool {
-    unsafe { ffi::n64_save_write(data.as_ptr(), data.len() as u32) as usize == data.len() }
+/// Writes cartridge SRAM at `off`.
+pub fn sram_write(off: usize, data: &[u8]) -> bool {
+    unsafe { ffi::n64_save_write(data.as_ptr(), off as u32, data.len() as u32) as usize == data.len() }
 }
 
 /// Native playback rate of an opened sample (Hz), 0 if unknown.

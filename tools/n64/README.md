@@ -103,7 +103,7 @@ USA data: 36 MiB ROM.
 
 | env | effect |
 |---|---|
-| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L`, `story N` (story mode at `storySequence[N]`, FMV first), `story-finish N` (testing: `story N`, level completed after 4 s, results pressed through), `frontend-start` (testing: Start pressed on the title) |
+| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L`, `story N` (story mode at `storySequence[N]`, FMV first), `story-finish N` (testing: `story N`, level completed after 4 s, results pressed through), `frontend-start` (testing: Start pressed on the title), `settings-test` (testing: then the settings page open, FPS counter on, 30 fps limit) |
 | `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` / `profile-draw` (sample inside `Game::tick` / `App::draw` only), `game-log` (the simulation's `Effect::Log`), `render-cpu` (phase-2G CPU renderer), `prep-data` (set by `F2N64_DATA=prep`), `simbench` (no game: runs the `f2_game::simbench` scenarios, logs per-tick times, phases and state checksums; research/n64-performance.md §3S) |
 | `F2N64_DATA` | `pack` (default) or `prep` (phase-2G loose files) |
 | `F2N64_KEEP_DFS=1` | skip the data step (reuse `target/n64/filesystem`) |
@@ -143,6 +143,19 @@ window first (forced after 8 s), so it writes the cartridge save `<rom>.ram` nex
 Pad mapping in the game
 (`src/input.rs`): A = Cross (hop), B = Circle (tongue), Z / C-Left = Square (croak),
 C-Up = Triangle, C-Down = Select, L/R = L1/R1, Start, D-pad and stick = directions.
+
+## Settings page (host menu)
+The pause menus (in levels and in the frontend) have a **Settings** item
+(`GameOptions::settings_menu`; the frontend pause menu's quit item reads "Quit" and soft-resets
+to the start-up logos, `GameOptions::console`). The page (`src/settings.rs`) has:
+- **FPS counter** On/Off (bottom right, frames shown in the last second);
+- **Frame limit** Off / 30 / 20 fps (`display_set_fps_limit`; Off = as fast as possible);
+- **Controls** "A hop, B tongue" (standard) or "B hop, A tongue" (A/B swapped for the game; the
+  page itself always uses A = change, B = back).
+
+Up/Down choose, Left/Right/A change, B/Start/C-Up close. Settings are saved on close in SRAM at
+`0x7F00` (`"F2ST"` record with a checksum, after the save game; a blank or corrupt record means
+defaults).
 
 ## ABI
 libdragon is compiled with GCC `-march=vr4300 -mabi=o64`: MIPS III, 64-bit GPRs, FR=1

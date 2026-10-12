@@ -22,6 +22,7 @@ pub mod ntx;
 pub mod pacing; // phase 3T: variable timestep
 pub mod r3d;
 pub mod save;
+pub mod settings;
 pub mod texconv;
 
 #[cfg(target_vendor = "nintendo64")]

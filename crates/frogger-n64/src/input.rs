@@ -60,6 +60,20 @@ pub fn psx_pad(raw: u32) -> u16 {
     out
 }
 
+/// The "B hop, A tongue" controls preset (`settings::Settings::swap_ab`): Cross and Circle
+/// exchanged (A, B and C-Right).
+pub fn swap_ab(p: u16) -> u16 {
+    let (c, o) = (p & PAD_CROSS != 0, p & PAD_CIRCLE != 0);
+    let mut out = p & !(PAD_CROSS | PAD_CIRCLE);
+    if c {
+        out |= PAD_CIRCLE;
+    }
+    if o {
+        out |= PAD_CROSS;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +87,12 @@ mod tests {
         assert_eq!(psx_pad(raw), PAD_RIGHT | PAD_DOWN);
         // small deflections are ignored
         assert_eq!(psx_pad((10u32 << 16) | ((-20i8 as u8 as u32) << 24)), 0);
+    }
+
+    #[test]
+    fn swapped_preset() {
+        assert_eq!(swap_ab(psx_pad(pad::A)), PAD_CIRCLE);
+        assert_eq!(swap_ab(psx_pad(pad::B | pad::UP)), PAD_CROSS | PAD_UP);
+        assert_eq!(swap_ab(PAD_CROSS | PAD_CIRCLE), PAD_CROSS | PAD_CIRCLE);
     }
 }

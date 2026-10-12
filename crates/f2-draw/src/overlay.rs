@@ -96,7 +96,7 @@ pub fn print_sprite_overlays(r: &mut Renderer, game: &Game, num: i16) {
 /// `PrintText` (textover.c:174, PC): `scale = cur->scale/4096 * rXRes/640` (in the
 /// enhanced profile: the 4:3 area's width/640).
 #[allow(clippy::too_many_arguments)]
-fn print_text(r: &mut Renderer, font: FontId, x: i16, y: i16, text: &str, scale: i32, centred: bool, rgba: [u8; 4], dy_px: f32) {
+pub fn print_text(r: &mut Renderer, font: FontId, x: i16, y: i16, text: &str, scale: i32, centred: bool, rgba: [u8; 4], dy_px: f32) {
     let (k, _) = r.overlay_scale(0.0, 0.0);
     let res = k * OVERLAY_SPACE / 640.0;
     let s = scale as f32 / 4096.0 * res;

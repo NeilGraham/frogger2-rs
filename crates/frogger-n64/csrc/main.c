@@ -240,14 +240,14 @@ uint32_t n64_fmv_play_impl(const char *path) {
 /* ---- saves: cartridge SRAM (256 Kbit) ---- */
 static bool sram_ok;
 
-uint32_t n64_save_read_impl(void *dst, uint32_t len) {
-    if (!sram_ok || len > 0x8000) return 0;
-    return sram_read(dst, 0, len) == (int)len ? len : 0;
+uint32_t n64_save_read_impl(void *dst, uint32_t off, uint32_t len) {
+    if (!sram_ok || off > 0x8000 || len > 0x8000 - off) return 0;
+    return sram_read(dst, off, len) == (int)len ? len : 0;
 }
 
-uint32_t n64_save_write_impl(const void *src, uint32_t len) {
-    if (!sram_ok || len > 0x8000) return 0;
-    return sram_write(src, 0, len) == (int)len ? len : 0;
+uint32_t n64_save_write_impl(const void *src, uint32_t off, uint32_t len) {
+    if (!sram_ok || off > 0x8000 || len > 0x8000 - off) return 0;
+    return sram_write(src, off, len) == (int)len ? len : 0;
 }
 
 /* ---- misc ---- */

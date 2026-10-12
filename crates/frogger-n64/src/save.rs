@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 
 pub const MAGIC: [u8; 4] = *b"F2SV";
 pub const HEADER: usize = 16;
-/// Largest block accepted (SRAM is 32 KiB).
-pub const MAX_BLOCK: usize = 0x8000 - HEADER;
+/// Largest block accepted (below the settings record, `settings::OFFSET`).
+pub const MAX_BLOCK: usize = crate::settings::OFFSET - HEADER;
 
 fn fnv1a(d: &[u8]) -> u32 {
     d.iter().fold(0x811c_9dc5u32, |h, &b| (h ^ b as u32).wrapping_mul(0x0100_0193))
@@ -48,16 +48,16 @@ pub fn decode(r: &[u8]) -> Option<&[u8]> {
 /// Reads the save block from SRAM.
 #[cfg(target_vendor = "nintendo64")]
 pub fn load() -> Option<Vec<u8>> {
-    let h = crate::rt::save_read(HEADER)?;
+    let h = crate::rt::sram_read(0, HEADER)?;
     let n = header_len(&h)?;
-    let r = crate::rt::save_read(HEADER + n)?;
+    let r = crate::rt::sram_read(0, HEADER + n)?;
     decode(&r).map(|b| b.to_vec())
 }
 
 /// Writes the save block to SRAM.
 #[cfg(target_vendor = "nintendo64")]
 pub fn store(block: &[u8]) -> bool {
-    block.len() <= MAX_BLOCK && crate::rt::save_write(&encode(block))
+    block.len() <= MAX_BLOCK && crate::rt::sram_write(0, &encode(block))
 }
 
 #[cfg(test)]

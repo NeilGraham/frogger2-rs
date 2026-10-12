@@ -88,7 +88,9 @@ const N64_FONT_BASE: f32 = WIDTH as f32 / 640.0;
 /// an arcade level), `story N` (story mode at `storySequence[N]`, with its FMV) or
 /// `story-finish N` (testing: `story N`, the level completed after 4 s and the results
 /// screens pressed through, into the next story level) or `frontend-start` (testing: the
-/// frontend with Start pressed on the title screen, into the hub).
+/// frontend with Start pressed on the title screen, into the hub) or `settings-test`
+/// (testing: `frontend-start`, then the settings page open with the FPS counter on and a
+/// 30 fps limit, not saved).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Boot {
     Frontend { trained: bool },
@@ -97,6 +99,7 @@ pub enum Boot {
     Story(u32),
     StoryFinish(u32),
     FrontendStart,
+    SettingsTest,
 }
 
 impl Boot {
@@ -108,6 +111,7 @@ impl Boot {
             (Some("story"), Some(n), _) => Boot::Story(n),
             (Some("story-finish"), Some(n), _) => Boot::StoryFinish(n),
             (Some("frontend-start"), _, _) => Boot::FrontendStart,
+            (Some("settings-test"), _, _) => Boot::SettingsTest,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
             (Some("save-test"), _, _) => Boot::SaveTest,
             _ => Boot::Frontend { trained: false },
@@ -235,6 +239,15 @@ pub struct App {
     autofinish: Option<u32>,
     /// `Boot::FrontendStart`: frames spent on the title screen.
     autostart: Option<u32>,
+    /// The settings page (`settings.rs`) and its values (SRAM).
+    settings: crate::settings::Settings,
+    menu: crate::settings::Menu,
+    /// After the page closes: game input stays off until every button is released.
+    menu_release: bool,
+    /// `Boot::SettingsTest`: open the page once the hub is up.
+    settings_test: bool,
+    /// FPS counter: frames and start of the current second, the last second's count.
+    fps_count: (u32, u32, u32),
     /// Frame pacing: running averages (C0 ticks, x16 fixed point) of a simulation tick
     /// incl. audio polling and of a frame's drawing; the limit in force and a candidate.
     avg_tick: u32,
@@ -292,6 +305,11 @@ impl App {
             last_pad: 0,
             autofinish: None,
             autostart: None,
+            settings: Default::default(),
+            menu: Default::default(),
+            menu_release: false,
+            settings_test: false,
+            fps_count: (0, 0, 0),
             avg_tick: 0,
             avg_draw: 0,
             fps_limit: 0,
@@ -304,7 +322,10 @@ impl App {
         log!("app: save game {}", if cfg.save_data.is_some() { "loaded from SRAM" } else { "not found (new player)" });
         let t0 = ticks();
         app.game = Game::new_session(cfg);
-        app.game.set_game_options(f2_game::enhance::GameOptions { console: true, ..f2_game::enhance::GameOptions::AUTHENTIC });
+        app.game.set_game_options(f2_game::enhance::GameOptions { console: true, settings_menu: true, ..f2_game::enhance::GameOptions::AUTHENTIC });
+        app.settings = crate::settings::Settings::load();
+        log!("app: settings {:?}", app.settings);
+        app.apply_settings();
         app.install_game_hooks();
         app.book_font = load_font(&app.data, "textures/font/monofont.bmp").map(|f| font_subset(&f, &book_chars(&app.game)));
         log!("app: session up in {} ms", ticks_to_us(ticks().wrapping_sub(t0)) / 1000);
@@ -319,6 +340,10 @@ impl App {
                 app.game.save_game();
             }
             Boot::FrontendStart => app.autostart = Some(0),
+            Boot::SettingsTest => {
+                app.autostart = Some(0);
+                app.settings_test = true;
+            }
             Boot::Level(w, l) => {
                 log!("app: booting straight into level {w}-{l}");
                 app.game.start_arcade(w, l);
@@ -758,7 +783,7 @@ impl App {
                 log!("app: quit: back to start-up");
                 self.game.common_init();
             }
-            Effect::OpenSettings => {}
+            Effect::OpenSettings => self.menu.show(),
         }
     }
 
@@ -910,6 +935,7 @@ impl App {
             let s = ctx.cam.source;
             self.audio.listener = crate::audio::Listener { cam_source: s.map(|x| (x * 10.0 * 4096.0) as i32), view: self.r.view.v_matrix };
         }
+        self.draw_host_overlays();
         let clear = match &l.scene {
             Some(s) => s.clear,
             None => [0.0, 0.0, 0.0, 1.0],
@@ -928,6 +954,52 @@ impl App {
 
     // ------------------------------------------------------------ frame
 
+    /// Applies the settings that act on the host: the display frame cap.
+    fn apply_settings(&mut self) {
+        if !PACE {
+            self.fps_limit = self.settings.frame_limit as u32;
+            rt::set_fps_limit(self.fps_limit);
+        }
+    }
+
+    /// The settings page and the FPS counter, over everything the game drew (2D overlays).
+    fn draw_host_overlays(&mut self) {
+        let Some(fonts) = self.game_fonts else { return };
+        let now = ticks();
+        let fc = &mut self.fps_count;
+        fc.0 += 1;
+        if ticks_to_us(now.wrapping_sub(fc.1)) >= 1_000_000 {
+            *fc = (0, now, fc.0);
+        }
+        use f2_draw::overlay::print_text;
+        if self.settings.fps_counter {
+            let s = alloc::format!("{} fps", self.fps_count.2);
+            print_text(&mut self.r, fonts.small, 3350, 3780, &s, 4096, false, [255, 255, 0, 255], 0.0);
+        }
+        if self.menu.open {
+            let (w, h) = self.r.output_size();
+            let (w, h) = (w as f32, h as f32);
+            self.r.draw_quad(f2_engine::renderer::Quad2D::rect(
+                w * 0.08,
+                h * 0.22,
+                w * 0.84,
+                h * 0.56,
+                [0.0; 4],
+                None,
+                [0, 0, 40, 200],
+                f2_engine::renderer::Blend::Semi,
+            ));
+            let title = self.game.settings_label();
+            print_text(&mut self.r, fonts.normal, 2048, 1050, &title, 4096, true, [255, 255, 255, 255], 0.0);
+            for i in 0..crate::settings::ROWS {
+                let row = crate::settings::Menu::row(&self.settings, i);
+                let col = if i == self.menu.sel { [255, 255, 0, 255] } else { [160, 220, 160, 255] };
+                print_text(&mut self.r, fonts.normal, 2048, 1550 + i as i16 * 360, &row, 3600, true, col, 0.0);
+            }
+            print_text(&mut self.r, fonts.small, 2048, 2950, "Up/Down: choose   Left/Right/A: change   B: back", 4096, true, [200, 200, 200, 255], 0.0);
+        }
+    }
+
     /// Variable timestep ([`crate::pacing::VARIABLE`]) unless a demo is playing: demos replay
     /// recorded pads frame by frame and only follow the original path in 60 Hz steps.
     fn variable_step(&self) -> bool {
@@ -945,7 +1017,27 @@ impl App {
         let plan = crate::pacing::plan(&mut self.acc, TICK, MAX_TICKS_PER_FRAME, variable);
         self.dropped_ticks += plan.dropped as u64;
         let (n, k) = (plan.ticks, plan.frames);
-        let mut pad = input::psx_pad(rt::pad(0));
+        let std_pad = input::psx_pad(rt::pad(0));
+        let mut pad = if self.settings.swap_ab { input::swap_ab(std_pad) } else { std_pad };
+        if self.menu.open {
+            let before = self.settings;
+            let closed = self.menu.input(&mut self.settings, std_pad);
+            if self.settings != before {
+                self.apply_settings();
+            }
+            if closed {
+                let ok = self.settings.store();
+                log!("app: settings {:?} {}", self.settings, if ok { "saved" } else { "not saved (no SRAM)" });
+                self.menu_release = true;
+            }
+            pad = 0;
+        } else if self.menu_release {
+            // The button that closed the page must not also act in the pause menu.
+            if std_pad == 0 {
+                self.menu_release = false;
+            }
+            pad = 0;
+        }
         if let Some(c) = &mut self.autofinish {
             *c += 1;
             if *c == 240 {
@@ -972,6 +1064,12 @@ impl App {
                 }
             } else if m == FRONTEND_MODE && *c > 0 {
                 self.autostart = None;
+                if self.settings_test {
+                    self.settings.fps_counter = true;
+                    self.settings.frame_limit = 30;
+                    self.apply_settings();
+                    self.menu.show();
+                }
             }
         }
         for i in 0..n {

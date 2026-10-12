@@ -262,6 +262,6 @@ extern "C" {
     pub fn n64_sfx_freq(handle: u32) -> u32;
     pub fn n64_fmv_play(path: *const u8) -> u32;
     pub fn n64_rcp_load() -> u32;
-    pub fn n64_save_read(dst: *mut u8, len: u32) -> u32;
-    pub fn n64_save_write(src: *const u8, len: u32) -> u32;
+    pub fn n64_save_read(dst: *mut u8, off: u32, len: u32) -> u32;
+    pub fn n64_save_write(src: *const u8, off: u32, len: u32) -> u32;
 }
