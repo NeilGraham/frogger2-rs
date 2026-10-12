@@ -66,6 +66,11 @@ pub struct PoseCache {
     /// animation time only) and its inputs.
     local_key: Option<LocalKey>,
     local: Vec<Mat4>,
+    /// `local` times the actor rotation `rot_q` (row 3 without the translation).
+    rot_q: Option<Quat>,
+    /// The rotation of `mats`.
+    last_q: Option<Quat>,
+    rotl: Vec<Mat4>,
     pub mats: Vec<Mat4>,
 }
 
@@ -315,6 +320,18 @@ fn xform_into(model: &Model, actor: &mut Actor, top: &Mat4, out: &mut Vec<Mat4>)
 pub fn next_stamp() -> u32 {
     use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
     static NEXT: AtomicU32 = AtomicU32::new(1);
+    // The N64 has one thread (and no cheap atomic read-modify-write).
+    #[cfg(target_vendor = "nintendo64")]
+    let s = {
+        let s = NEXT.load(Relaxed);
+        NEXT.store(s.wrapping_add(1), Relaxed);
+        if s == 0 {
+            NEXT.store(2, Relaxed);
+            return 1;
+        }
+        s
+    };
+    #[cfg(not(target_vendor = "nintendo64"))]
     let s = NEXT.fetch_add(1, Relaxed);
     if s == 0 {
         NEXT.fetch_add(1, Relaxed)
@@ -327,14 +344,19 @@ pub fn next_stamp() -> u32 {
 /// `actor.pose.mats` and recomputed only when an input changed:
 /// - nothing changed (model, position, rotation, scale, animation time, animated flag):
 ///   the last result;
-/// - only the position / rotation changed (moving, not re-animated actors, and every
-///   actor between ticks with interpolation): the cached hierarchy below an identity
-///   matrix-stack top times the new top, one matrix product per object;
+/// - only the position changed (moving, not turning, not re-animated actors): the cached
+///   `L x R` (hierarchy below an identity matrix-stack top, times the actor rotation) plus
+///   the new translation, three additions per object;
+/// - only the position / rotation changed (and every actor between ticks with
+///   interpolation): the cached hierarchy `L` times the new rotation, one 3x3 product per
+///   object;
 /// - else the whole hierarchy.
 ///
-/// The keyframe search hints it skips updating only speed up the search. The second case
-/// associates the products differently from `XformActor` (`L x top` instead of the chain
-/// applied to `top`): equal up to float rounding.
+/// `XformActor`'s matrix-stack top is the rotation with the translation in row 3, so
+/// `L x top` is `L x R` with the translation added to row 3: the same sums in the same
+/// order. The keyframe search hints it skips updating only speed up the search. The cached
+/// cases associate the products differently from `XformActor` (`L x top` instead of the
+/// chain applied to `top`): equal up to float rounding.
 #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub fn xform_actor_cached<'a>(model: &Model, actor: &'a mut Actor) -> &'a [Mat4] {
     let key = PoseKey { model: model.id, pos: actor.pos, q_rot: actor.q_rot, scale: actor.scale, anim_time: actor.anim_time, animated: actor.animated };
@@ -342,18 +364,75 @@ pub fn xform_actor_cached<'a>(model: &Model, actor: &'a mut Actor) -> &'a [Mat4]
         return &actor.pose.mats;
     }
     let lkey = LocalKey { model: model.id, scale: actor.scale, anim_time: actor.anim_time, animated: actor.animated };
-    let mut pose = core::mem::take(&mut actor.pose);
-    if pose.local_key != Some(lkey) {
-        xform_into(model, actor, &IDENTITY, &mut pose.local);
-        pose.local_key = Some(lkey);
+    let fresh = actor.pose.local_key != Some(lkey);
+    if fresh {
+        xform_local(model, actor, lkey);
     }
-    let top = actor_top(actor);
-    pose.mats.clear();
-    pose.mats.extend(pose.local.iter().map(|l| mtx_cat(l, &top)));
+    let pose = &mut actor.pose;
+    let t = actor.pos;
+    let n = pose.local.len();
+    if pose.mats.len() != n {
+        pose.mats.resize(n, IDENTITY);
+    }
+    let add_t = |m: &mut Mat4| {
+        m[3][0] += t[0];
+        m[3][1] += t[1];
+        m[3][2] += t[2];
+    };
+    if pose.rot_q == Some(actor.q_rot) {
+        for (o, m) in pose.mats.iter_mut().zip(&pose.rotl) {
+            *o = *m;
+            add_t(o);
+        }
+    } else if fresh || pose.last_q != Some(actor.q_rot) {
+        // Re-animated or turning (a new rotation since the last result): `L x R` straight
+        // into the result; cached once hierarchy and rotation hold (moving actors that only
+        // turn now and then).
+        let r = quaternion_to_matrix(&actor.q_rot);
+        for (o, l) in pose.mats.iter_mut().zip(&pose.local) {
+            *o = mtx_cat_rot(l, &r);
+            add_t(o);
+        }
+    } else {
+        let r = quaternion_to_matrix(&actor.q_rot);
+        pose.rotl.resize(n, IDENTITY);
+        for ((o, c), l) in pose.mats.iter_mut().zip(pose.rotl.iter_mut()).zip(&pose.local) {
+            *c = mtx_cat_rot(l, &r);
+            *o = *c;
+            add_t(o);
+        }
+        pose.rot_q = Some(actor.q_rot);
+    }
+    pose.last_q = Some(actor.q_rot);
     pose.key = Some(key);
     pose.stamp = next_stamp();
-    actor.pose = pose;
     &actor.pose.mats
+}
+
+/// The [`PoseCache`] hierarchy below an identity matrix-stack top (out of line: animated
+/// actors only, keeps the per-frame path small in the I-cache).
+#[inline(never)]
+fn xform_local(model: &Model, actor: &mut Actor, lkey: LocalKey) {
+    let mut local = core::mem::take(&mut actor.pose.local);
+    xform_into(model, actor, &IDENTITY, &mut local);
+    actor.pose.local = local;
+    actor.pose.local_key = Some(lkey);
+    actor.pose.rot_q = None;
+}
+
+/// [`mtx_cat`]`(a, b)` for a rotation `b` (row 3 of `b` zero): row 3 of the result is
+/// `a`'s translation rotated, without `b`'s translation added.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+fn mtx_cat_rot(a: &Mat4, b: &Mat4) -> Mat4 {
+    let row = |i: usize| {
+        [
+            a[i][0] * b[0][0] + a[i][1] * b[1][0] + a[i][2] * b[2][0],
+            a[i][0] * b[0][1] + a[i][1] * b[1][1] + a[i][2] * b[2][1],
+            a[i][0] * b[0][2] + a[i][1] * b[1][2] + a[i][2] * b[2][2],
+        ]
+    };
+    let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+    [[r0[0], r0[1], r0[2], 0.0], [r1[0], r1[1], r1[2], 0.0], [r2[0], r2[1], r2[2], 0.0], [r3[0], r3[1], r3[2], 1.0]]
 }
 
 /// World-space bounding box `(min, max)` of every mesh vertex of a posed actor

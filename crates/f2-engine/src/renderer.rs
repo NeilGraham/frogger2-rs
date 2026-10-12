@@ -147,6 +147,15 @@ pub struct Quad2D {
 }
 
 impl Quad2D {
+    /// The two triangles `Renderer::build` makes of the quad (TL TR BR, BR BL TL).
+    pub fn tl_vertices(&self) -> [TlVertex; 6] {
+        let q = self;
+        let col = q.color.map(|c| c as f32 / 255.0);
+        let uvs = [[q.uv[0], q.uv[1]], [q.uv[2], q.uv[1]], [q.uv[2], q.uv[3]], [q.uv[0], q.uv[3]]];
+        let v = |i: usize| TlVertex { sx: q.pos[i][0], sy: q.pos[i][1], sz: 0.0, rhw: 1.0, color: col, uv: uvs[i], fog: 1.0, alpha_ref: ALPHA_NONZERO };
+        [v(0), v(1), v(2), v(2), v(3), v(0)]
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn rect(x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], tex: Option<TexHandle>, color: [u8; 4], blend: Blend) -> Quad2D {
         Quad2D { pos: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]], uv, tex, color, blend }
@@ -168,7 +177,48 @@ pub const OVERLAY_SPACE: f32 = 4096.0;
 
 /// Alpha-test references: `tightAlphaCmpRS` (> 0x64) and `normalAlphaCmpRS` (!= 0).
 const ALPHA_TIGHT: f32 = 100.0;
-const ALPHA_NONZERO: f32 = 0.0;
+pub const ALPHA_NONZERO: f32 = 0.0;
+
+/// The 3D passes of `DrawAllFrames` in order with their states: frame, blend, depth, wrap,
+/// alpha reference, depth-sorted per [`RenderOptions::xlu_sort`].
+const PASSES: [(Frame, Blend, DepthMode, bool, f32, bool); 7] = [
+    (Frame::Normal, Blend::Semi, DepthMode::TestWrite, false, ALPHA_TIGHT, false),
+    (Frame::Wrap, Blend::Semi, DepthMode::TestWrite, true, ALPHA_TIGHT, false),
+    (Frame::Xlu, Blend::Semi, DepthMode::Test, true, ALPHA_NONZERO, true),
+    (Frame::Additive, Blend::Additive, DepthMode::Test, true, ALPHA_NONZERO, true),
+    // DrawLoop's post-DrawAllFrames batches (sprites, special FX): submission order.
+    (Frame::Late, Blend::Semi, DepthMode::Test, false, ALPHA_NONZERO, false),
+    (Frame::LateAdditive, Blend::Additive, DepthMode::Test, false, ALPHA_NONZERO, false),
+    (Frame::Overlay, Blend::Semi, DepthMode::Off, false, ALPHA_NONZERO, false),
+];
+
+impl XluSort {
+    /// Orders a translucent pass's triangles (`build_segments`).
+    fn sort(self, tris: &mut [Tri]) {
+        if self == XluSort::BackToFront {
+            let key = |t: &Tri| t.v[0].sz + t.v[1].sz + t.v[2].sz;
+            tris.sort_by(|a, b| key(b).total_cmp(&key(a)));
+        }
+    }
+}
+
+/// Render state of a 3D pass ([`Renderer::frame_view`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PassState {
+    pub blend: Blend,
+    pub depth: DepthMode,
+    pub wrap: bool,
+    pub alpha_ref: f32,
+}
+
+/// [`Renderer::frame_view`].
+pub struct FrameView<'a> {
+    pub viewport_clear: Option<Quad2D>,
+    pub backdrops: &'a [Quad2D],
+    pub passes: [(PassState, &'a [Tri]); 7],
+    pub overlays: &'a [Quad2D],
+    pub white: TexHandle,
+}
 
 /// One batch of the draw list built by [`Renderer::build`]: `count` vertices (whole
 /// triangles) from `first`, drawn with one render state. Back ends (wgpu, `soft`, `gles`,
@@ -891,12 +941,26 @@ impl Renderer {
     /// Transforms and draws an actor (`XformActor` + `DrawActor`).
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     pub fn draw_actor(&mut self, model: &Model, actor: &mut Actor) {
-        if let Some(mut sink) = self.mesh_sink.take_if(|_| !self.cpu_models.contains(&model.id)) {
-            let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
-            record_actor(&cx, model, actor, &mut sink);
-            self.mesh_sink = Some(sink);
+        if let Some(sink) = self.mesh_sink.as_mut().filter(|_| !self.cpu_models.contains(&model.id)) {
+            // Disjoint borrows of the renderer (no move of the sink out and back).
+            let cx = EmitCtx {
+                view: &self.view,
+                opts: &self.options,
+                textures: &self.textures,
+                alpha_mul: actor.xlu.clamp(0.0, 1.0),
+                override_tex: actor.override_tex,
+                gouraud: actor.gouraud,
+            };
+            record_actor(&cx, model, actor, sink);
             return;
         }
+        self.draw_actor_cpu(model, actor);
+    }
+
+    /// [`draw_actor`](Self::draw_actor) transformed on the CPU into the frames (out of line:
+    /// keeps the mesh-sink path small for a console's instruction cache).
+    #[inline(never)]
+    fn draw_actor_cpu(&mut self, model: &Model, actor: &mut Actor) {
         let mut frames = core::mem::take(&mut self.frames);
         let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
         draw_actor(&cx, model, actor, &mut frames);
@@ -1174,12 +1238,7 @@ impl Renderer {
             }
             cmds.push(DrawCmd { blend, depth, tex, wrap, scene, first, count: tri.len() as u32 });
         };
-        let quad_tris = |q: &Quad2D| -> [TlVertex; 6] {
-            let col = q.color.map(|c| c as f32 / 255.0);
-            let uvs = [[q.uv[0], q.uv[1]], [q.uv[2], q.uv[1]], [q.uv[2], q.uv[3]], [q.uv[0], q.uv[3]]];
-            let v = |i: usize| TlVertex { sx: q.pos[i][0], sy: q.pos[i][1], sz: 0.0, rhw: 1.0, color: col, uv: uvs[i], fog: 1.0, alpha_ref: ALPHA_NONZERO };
-            [v(0), v(1), v(2), v(2), v(3), v(0)]
-        };
+        let quad_tris = Quad2D::tl_vertices;
         if let Some([x, y, w, h]) = self.view.viewport {
             // Ultrawide clamp: the target is cleared black (pillars), the viewport gets the
             // scene's clear colour.
@@ -1190,25 +1249,12 @@ impl Renderer {
         for q in &self.backdrops {
             push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q));
         }
-        let sort = self.options.xlu_sort;
-        // DrawAllFrames order and states.
-        let passes: [(Frame, Blend, DepthMode, bool, f32, bool); 7] = [
-            (Frame::Normal, Blend::Semi, DepthMode::TestWrite, false, ALPHA_TIGHT, false),
-            (Frame::Wrap, Blend::Semi, DepthMode::TestWrite, true, ALPHA_TIGHT, false),
-            (Frame::Xlu, Blend::Semi, DepthMode::Test, true, ALPHA_NONZERO, true),
-            (Frame::Additive, Blend::Additive, DepthMode::Test, true, ALPHA_NONZERO, true),
-            // DrawLoop's post-DrawAllFrames batches (sprites, special FX): submission order.
-            (Frame::Late, Blend::Semi, DepthMode::Test, false, ALPHA_NONZERO, false),
-            (Frame::LateAdditive, Blend::Additive, DepthMode::Test, false, ALPHA_NONZERO, false),
-            (Frame::Overlay, Blend::Semi, DepthMode::Off, false, ALPHA_NONZERO, false),
-        ];
-        for (k, (frame, blend, depth, wrap, aref, sorted)) in passes.into_iter().enumerate() {
+        for (k, (frame, blend, depth, wrap, aref, sorted)) in PASSES.into_iter().enumerate() {
             barrier.set(cmds.len());
             marks[k + 1] = cmds.len() as u32;
             let tris = &mut self.frames.tris[frame as usize];
-            if sorted && sort == XluSort::BackToFront {
-                let key = |t: &Tri| t.v[0].sz + t.v[1].sz + t.v[2].sz;
-                tris.sort_by(|a, b| key(b).total_cmp(&key(a)));
+            if sorted {
+                self.options.xlu_sort.sort(tris);
             }
             for t in tris.iter() {
                 let mut v = t.v;
@@ -1225,6 +1271,33 @@ impl Renderer {
         }
         marks[9] = cmds.len() as u32;
         (verts, cmds, marks)
+    }
+
+    /// The frame's parts in [`build_segments`](Self::build_segments) order without building
+    /// the vertex list (a back end that converts them itself, the N64): segment 0 = the
+    /// viewport clear quad and the backdrops, 1..=7 = the 3D passes (translucent ones
+    /// sorted as `build_segments` sorts them) with their states, 8 = the 2D overlays.
+    /// Untextured geometry uses `white`. The vertices `build_segments` would make are the
+    /// triangles' own with the pass's `alpha_ref`, and [`Quad2D::tl_vertices`] for quads.
+    pub fn frame_view(&mut self, clear: [f64; 4]) -> FrameView<'_> {
+        let viewport_clear = self.view.viewport.map(|[x, y, w, h]| {
+            let c = clear.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+            Quad2D::rect(x, y, w, h, [0.0; 4], None, [c[0], c[1], c[2], 255], Blend::Semi)
+        });
+        let sort = self.options.xlu_sort;
+        for (frame, _, _, _, _, sorted) in PASSES {
+            if sorted {
+                sort.sort(&mut self.frames.tris[frame as usize]);
+            }
+        }
+        let tris = &self.frames.tris;
+        FrameView {
+            viewport_clear,
+            backdrops: &self.backdrops,
+            passes: PASSES.map(|(frame, blend, depth, wrap, alpha_ref, _)| (PassState { blend, depth, wrap, alpha_ref }, &tris[frame as usize][..])),
+            overlays: &self.overlays,
+            white: self.white,
+        }
     }
 
     #[cfg(feature = "gpu")]

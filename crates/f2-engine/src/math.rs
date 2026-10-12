@@ -51,17 +51,10 @@ pub fn acos_fast(x: f32) -> f32 {
 /// Port of the `PushMatrix` macro body (mdxMath.h:86): `a · b`, forcing an affine result.
 #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub fn mtx_cat(a: &Mat4, b: &Mat4) -> Mat4 {
-    let mut r = [[0f32; 4]; 4];
-    for i in 0..3 {
-        for j in 0..3 {
-            r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-        }
-    }
-    for j in 0..3 {
-        r[3][j] = a[3][0] * b[0][j] + a[3][1] * b[1][j] + a[3][2] * b[2][j] + b[3][j];
-    }
-    r[3][3] = 1.0;
-    r
+    // Element by element into a literal (a zeroed array filled in place became a `memset`).
+    let e = |i: usize, j: usize| a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+    let t = |j: usize| a[3][0] * b[0][j] + a[3][1] * b[1][j] + a[3][2] * b[2][j] + b[3][j];
+    [[e(0, 0), e(0, 1), e(0, 2), 0.0], [e(1, 0), e(1, 1), e(1, 2), 0.0], [e(2, 0), e(2, 1), e(2, 2), 0.0], [t(0), t(1), t(2), 1.0]]
 }
 
 /// Port of `guScaleF` (mdxMath.cpp:84).

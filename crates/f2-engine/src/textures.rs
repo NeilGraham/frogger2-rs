@@ -45,6 +45,9 @@ pub struct TextureRegistry {
     pub images: Vec<Image>,
     /// Images not yet uploaded to the GPU (indices into `images`).
     pub(crate) dirty: Vec<u32>,
+    /// Indices of the entries with more than one animation frame, in order (`None`: to be
+    /// rebuilt; entries change through `add_entry` / `add_rgba` / `apply_anims` only).
+    animated: Option<Vec<u32>>,
 }
 
 impl TextureRegistry {
@@ -93,6 +96,7 @@ impl TextureRegistry {
     /// Adds (or replaces, like `LoadTexBankFile`) the entry for `crc` showing `image`.
     pub fn add_entry(&mut self, crc: u32, name: &str, tex_type: TexType, image: TexHandle) {
         let e = TexEntry { crc, name: name.to_string(), tex_type, image, frames: Vec::new(), last_frame: 0, last_game_frame: 0, current: Some(image) };
+        self.animated = None;
         if let Some(&i) = self.by_crc.get(&crc) {
             self.entries[i] = e;
         } else {
@@ -104,6 +108,7 @@ impl TextureRegistry {
     /// The animation table of a bank (`LoadTexBankFile`'s second half): applied against
     /// every entry loaded so far; stops at the first animation whose base is unknown.
     pub fn apply_anims(&mut self, anims: &[f2_formats::texture::TexAnim]) {
+        self.animated = None;
         for a in anims {
             let Some(&ei) = self.by_crc.get(&a.base_crc) else { break };
             let frames: Vec<_> = a.frames.iter().map(|f| (self.by_crc.get(&f.crc).map(|&i| self.entries[i].image), f.time)).collect();
@@ -118,6 +123,7 @@ impl TextureRegistry {
     pub fn add_rgba(&mut self, crc: u32, name: &str, tex_type: TexType, width: u32, height: u32, rgba: Vec<u8>) -> TexHandle {
         let image = self.add_image(width, height, rgba);
         let e = TexEntry { crc, name: name.to_string(), tex_type, image, frames: Vec::new(), last_frame: 0, last_game_frame: 0, current: Some(image) };
+        self.animated = None;
         if let Some(&i) = self.by_crc.get(&crc) {
             self.entries[i] = e;
         } else {
@@ -165,7 +171,10 @@ impl TextureRegistry {
     /// Port of `UpdateAnimatingTextures` (mdxTexture.cpp:768); `frame_count` is
     /// `timeInfo.frameCount` (game frames). Call once per rendered frame.
     pub fn update_animating_textures(&mut self, frame_count: u32) {
-        for me in &mut self.entries {
+        // Only the animated entries (the same ones, in the same order, as a walk over all).
+        let animated = self.animated.take().unwrap_or_else(|| self.entries.iter().enumerate().filter(|(_, e)| e.frames.len() > 1).map(|(i, _)| i as u32).collect());
+        for &i in &animated {
+            let me = &mut self.entries[i as usize];
             let n = me.frames.len();
             if n <= 1 {
                 continue;
@@ -193,6 +202,7 @@ impl TextureRegistry {
             }
             me.current = me.frames[me.last_frame].0;
         }
+        self.animated = Some(animated);
     }
 }
 

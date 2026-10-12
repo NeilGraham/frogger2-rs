@@ -47,6 +47,7 @@ typedef struct {
 } tex_t;
 static int cur_tlut_mode = -1; /* TLUT mode currently set in the SOM (-1 = unknown) */
 static void make_add_variant(tex_t *t);
+static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride);
 static tex_t textures[MAX_TEXTURES]; /* handle 0 = none */
 static uint32_t tex_hint = 1;
 static bool attached;
@@ -176,7 +177,8 @@ void n64_music_vol_impl(uint32_t vol_permille) {
 
 /* Longest time between two polls (C0 ticks) since n64_audio_gap_take: the music buffer
  * holds 300 ms, longer gaps are audible dropouts. */
-static uint32_t audio_last_poll, audio_max_gap;
+uint32_t audio_last_poll; /* read by Rust (rt::audio_poll_due) */
+static uint32_t audio_max_gap;
 
 static uint32_t audio_polls, audio_ticks, audio_t0;
 void n64_audio_poll_impl(void) {
@@ -613,11 +615,30 @@ uint32_t n64_tex_update_impl(uint32_t h, const n64_tex_desc_t *d) {
     uint32_t row = TEX_FORMAT_PIX2BYTES(fmt, d->width);
     for (uint32_t y = 0; y < d->height; y++)
         memcpy((uint8_t *)s->buffer + y * s->stride, (const uint8_t *)d->pixels + y * row, row);
-    /* surface_alloc buffers are uncached; others need a writeback for the RDP. */
+    /* surface_alloc buffers are uncached; others need a writeback for the RDP. (Writing an
+     * uncached one through its cached alias + writeback was slower: write-allocate misses.) */
     if (!((uint32_t)s->buffer & 0x20000000)) data_cache_hit_writeback(s->buffer, s->stride * s->height);
-    if (t->has_addv) make_add_variant(t);
+    if (t->has_addv) make_add_variant_from(t, d->pixels, row);
     if (cur_tex_loaded == h) cur_tex_loaded = 0;
     return 1;
+}
+
+void *n64_tex_update_begin_impl(uint32_t h, const n64_tex_desc_t *d) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return NULL;
+    tex_t *t = &textures[h];
+    tex_format_t fmt = (d->fmt & 0xff) == 1 ? FMT_RGBA32 : FMT_RGBA16;
+    if (!t->small_is_full || t->nfull != 1 || t->tile3d || t->external || t->own_small) return NULL;
+    surface_t *s = &t->full[0];
+    if (s->width != d->width || s->height != d->height || surface_get_format(s) != fmt) return NULL;
+    if (s->stride != TEX_FORMAT_PIX2BYTES(fmt, d->width) || !((uint32_t)s->buffer & 0x20000000)) return NULL;
+    return s->buffer;
+}
+
+void n64_tex_update_end_impl(uint32_t h) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return;
+    tex_t *t = &textures[h];
+    if (t->has_addv) make_add_variant(t);
+    if (cur_tex_loaded == h) cur_tex_loaded = 0;
 }
 
 /* The TMEM-sized surface triangles of texture h sample (r3d aliases it), NULL if none. */
@@ -759,7 +780,12 @@ static surface_t downscale_rgba32(tex_t *t, const surface_t *s) {
     return d;
 }
 
-static void make_add_variant(tex_t *t) {
+static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride);
+static void make_add_variant(tex_t *t) { make_add_variant_from(t, NULL, 0); }
+
+/* `src` (optional): the small surface's texels in cached memory (`src_stride` bytes per
+ * row; the procedural refill's source), read instead of the uncached surface. */
+static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride) {
     const surface_t *s = &t->small;
     int w = s->width, h = s->height;
     int sx = 1, sy = 1;
@@ -780,10 +806,11 @@ static void make_add_variant(tex_t *t) {
         static uint32_t recip[256];
         if (!recip[1])
             for (int m = 1; m < 256; m++) recip[m] = (uint32_t)(0xFFFFFFFFu / m) + 1;
+        /* surface_alloc memory is uncached: one 32-bit store per texel. */
+        uint8_t *dbase = (uint8_t *)t->addv.buffer;
         for (int y = 0; y < nh; y++) {
-            const uint8_t *row = (const uint8_t *)s->buffer + y * s->stride;
-            /* surface_alloc memory is uncached: one 32-bit store per texel. */
-            uint32_t *dst = (uint32_t *)((uint8_t *)t->addv.buffer + y * t->addv.stride);
+            const uint8_t *row = src ? (const uint8_t *)src + y * src_stride : (const uint8_t *)s->buffer + y * s->stride;
+            uint32_t *dst = (uint32_t *)(dbase + y * t->addv.stride);
             for (int x = 0; x < nw; x++) {
                 uint32_t r, g, b, a;
                 if (sf == FMT_RGBA32) {
@@ -793,7 +820,8 @@ static void make_add_variant(tex_t *t) {
                     r = ((v >> 11) & 31) * 255 / 31; g = ((v >> 6) & 31) * 255 / 31; b = ((v >> 1) & 31) * 255 / 31;
                     a = (v & 1) ? 255 : 0;
                 }
-                r = r * a / 255; g = g * a / 255; b = b * a / 255;
+                /* x / 255 for x <= 255 * 255: (x * 0x8081) >> 23 (exact over that range). */
+                r = (r * a * 0x8081) >> 23; g = (g * a * 0x8081) >> 23; b = (b * a * 0x8081) >> 23;
                 uint32_t m = r > g ? (r > b ? r : b) : (g > b ? g : b);
                 uint32_t o = m;
                 if (m) {
@@ -864,18 +892,119 @@ static void use_tlut(const tex_t *t, const surface_t *s, int tile) {
     }
 }
 
+/* ---- texture uploads recorded once (phase 3E) ----
+ * rdpq_tex_upload / _sub cost ~50 us of CPU each (tex_loader set-up, autosync, ~6 RDP
+ * commands); replaying the same commands from a recorded rspq block costs a few us. The
+ * commands depend only on the surface (address, format, size, stride), the sub-rectangle,
+ * the tile and the repeat flag, which form the key: a stale entry whose buffer was freed
+ * and reused for an identical surface records exactly the commands needed. Evicted blocks
+ * are freed UPC_GRACE presented frames later (the RSP may still be running them). */
+#define UPC_N 128
+#define UPC_GRACE 4
+typedef struct {
+    const void *buf;
+    uint32_t key; /* fmt | wrap | tile */
+    uint16_t w, h, stride, x0, y0, x1, y1;
+    rspq_block_t *blk;
+} upc_entry_t;
+static upc_entry_t upc[UPC_N];
+#define UPC_RETIRE 64
+static struct { rspq_block_t *blk; uint32_t frame; } upc_retired[UPC_RETIRE];
+static uint32_t upc_nretired, upc_frame, st_upc_hits, st_upc_misses;
+
+static void upc_collect(void) {
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < upc_nretired; i++) {
+        if (upc_frame - upc_retired[i].frame >= UPC_GRACE) rspq_block_free(upc_retired[i].blk);
+        else upc_retired[k++] = upc_retired[i];
+    }
+    upc_nretired = k;
+}
+
+/* rdpq_tex_upload_sub(tile, s, wrap ? repeat : NULL, x0, y0, x1, y1) through the cache. */
+static void tex_upload_cached(rdpq_tile_t tile, const surface_t *s, bool wrap, int x0, int y0, int x1, int y1) {
+    uint32_t key = (uint32_t)surface_get_format(s) | (wrap ? 0x10000 : 0) | ((uint32_t)tile << 20);
+    uint32_t hsh = ((uint32_t)s->buffer >> 3) ^ (uint32_t)(x0 * 7 + y0 * 131 + x1 * 17 + y1 * 257) ^ key;
+    hsh ^= hsh >> 11;
+    /* 4-way set associative (UPC_N / 4 sets), round-robin replacement. */
+    upc_entry_t *set = &upc[((hsh * 2654435761u) >> 27) * 4];
+    for (int w = 0; w < 4; w++) {
+        upc_entry_t *e = &set[w];
+        if (e->blk && e->buf == s->buffer && e->key == key && e->w == s->width && e->h == s->height && e->stride == s->stride &&
+            e->x0 == x0 && e->y0 == y0 && e->x1 == x1 && e->y1 == y1) {
+            st_upc_hits++;
+            rspq_block_run(e->blk);
+            return;
+        }
+    }
+    static uint8_t rr;
+    upc_entry_t *e = &set[rr++ & 3];
+    st_upc_misses++;
+    if (e->blk) {
+        if (upc_nretired == UPC_RETIRE) {
+            rspq_wait(); /* everything recorded so far has run: free all */
+            upc_frame += UPC_GRACE;
+            upc_collect();
+        }
+        upc_retired[upc_nretired].blk = e->blk;
+        upc_retired[upc_nretired++].frame = upc_frame;
+        e->blk = NULL;
+    }
+    rdpq_texparms_t parms = {0};
+    if (wrap) parms.s.repeats = parms.t.repeats = REPEAT_INFINITE;
+    rspq_block_begin();
+    rdpq_tex_upload_sub(tile, s, &parms, x0, y0, x1, y1);
+    e->blk = rspq_block_end();
+    e->buf = s->buffer;
+    e->key = key;
+    e->w = s->width;
+    e->h = s->height;
+    e->stride = s->stride;
+    e->x0 = x0;
+    e->y0 = y0;
+    e->x1 = x1;
+    e->y1 = y1;
+    rspq_block_run(e->blk);
+}
+
+static void set_mode(const n64_state_t *st, int kind, bool tex);
+static void set_mode_cached(const n64_state_t *st, int kind, bool tex);
 static void apply_state(const n64_state_t *st, int kind) {
     bool tex = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used;
     uint32_t mt0 = TICKS_READ();
     if (cur_kind != kind || st->flags != cur_state.flags || st->blend != cur_state.blend ||
         st->alpha_ref != cur_state.alpha_ref || (st->tex == 0) != (cur_state.tex == 0)) {
         st_modes++;
+        set_mode_cached(st, kind, tex);
+        cur_tex_loaded = 0;
+        cur_tlut_mode = 0; /* rdpq_set_mode_standard: no TLUT */
+        rect_tmem = NULL;
+    }
+    if (kind == 0 && tex && (st->tex != cur_tex_loaded || ((st->flags ^ cur_state.flags) & N64_WRAP))) {
+        const surface_t *s = tri_surface(st);
+        use_tlut(&textures[st->tex], s, 0);
+        uint32_t tt0 = TICKS_READ();
+        tex_upload_cached(TILE0, s, (st->flags & N64_WRAP) != 0, 0, 0, s->width, s->height);
+        st_tex_ticks += TICKS_READ() - tt0;
+        cur_tex_loaded = st->tex;
+    }
+    if (kind == 1) cur_tex_loaded = 0; /* blits reload TMEM */
+    cur_state = *st;
+    cur_kind = kind;
+    st_mode_ticks += TICKS_READ() - mt0;
+}
+
+/* The render mode of a CPU batch (apply_state). */
+static void set_mode(const n64_state_t *st, int kind, bool tex) {
         rdpq_set_mode_standard();
         if (kind == 0)
             rdpq_mode_combiner(tex ? RDPQ_COMBINER_TEX_SHADE : RDPQ_COMBINER_SHADE);
         else
             rdpq_mode_combiner(tex ? RDPQ_COMBINER_TEX_FLAT : RDPQ_COMBINER_FLAT);
         rdpq_mode_zbuf(st->flags & N64_ZTEST, st->flags & N64_ZWRITE);
+        /* Rectangles have no per-pixel depth: a Z-tested one uses the primitive depth
+         * (set per rect, draw_rects_inner). */
+        if (kind == 1 && (st->flags & N64_ZTEST)) rdpq_mode_zoverride(true, 0.0f, 0);
         rdpq_mode_filter(st->flags & N64_BILINEAR ? FILTER_BILINEAR : FILTER_POINT);
         rdpq_mode_persp(kind == 0 && (st->flags & N64_PERSP));
         rdpq_mode_alphacompare((int)st->alpha_ref);
@@ -889,24 +1018,32 @@ static void apply_state(const n64_state_t *st, int kind) {
         case N64_BLEND_SUB: rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY); break;
         default: rdpq_mode_blender(0); break;
         }
-        cur_tex_loaded = 0;
-        cur_tlut_mode = 0; /* rdpq_set_mode_standard: no TLUT */
-        rect_tmem = NULL;
+}
+
+/* set_mode recorded once per distinct mode into an rspq block and replayed (~100 us of
+ * rdpq mode API calls per reset otherwise; 6-7 resets a frame, after each r3d list).
+ * The key holds everything set_mode reads. */
+#define MODE_CACHE_N 48
+static struct { uint32_t key; rspq_block_t *blk; } mode_cache[MODE_CACHE_N];
+static uint32_t mode_cache_n;
+static void set_mode_cached(const n64_state_t *st, int kind, bool tex) {
+    uint32_t key = (uint32_t)kind | (tex ? 2 : 0) | ((st->blend & 7) << 2) |
+                   ((st->flags & (N64_ZTEST | N64_ZWRITE | N64_BILINEAR | N64_PERSP)) << 8) | ((st->alpha_ref & 0xff) << 24);
+    for (uint32_t i = 0; i < mode_cache_n; i++)
+        if (mode_cache[i].key == key) {
+            rspq_block_run(mode_cache[i].blk);
+            return;
+        }
+    if (mode_cache_n == MODE_CACHE_N) {
+        set_mode(st, kind, tex);
+        return;
     }
-    if (kind == 0 && tex && (st->tex != cur_tex_loaded || ((st->flags ^ cur_state.flags) & N64_WRAP))) {
-        rdpq_texparms_t parms = {0};
-        if (st->flags & N64_WRAP) parms.s.repeats = parms.t.repeats = REPEAT_INFINITE;
-        const surface_t *s = tri_surface(st);
-        use_tlut(&textures[st->tex], s, 0);
-        uint32_t tt0 = TICKS_READ();
-        rdpq_tex_upload(TILE0, s, &parms);
-        st_tex_ticks += TICKS_READ() - tt0;
-        cur_tex_loaded = st->tex;
-    }
-    if (kind == 1) cur_tex_loaded = 0; /* blits reload TMEM */
-    cur_state = *st;
-    cur_kind = kind;
-    st_mode_ticks += TICKS_READ() - mt0;
+    rspq_block_begin();
+    set_mode(st, kind, tex);
+    rspq_block_t *b = rspq_block_end();
+    mode_cache[mode_cache_n].key = key;
+    mode_cache[mode_cache_n++].blk = b;
+    rspq_block_run(b);
 }
 
 /* ---- large textures on triangles: TMEM tiles ----
@@ -989,15 +1126,11 @@ static void draw_tri_tiled(const rdpq_trifmt_t *f, const tex_t *tx, const n64_ve
     cur_tex_loaded = 0;
 }
 
-static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st);
-void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
-    uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
-    draw_tris_inner(v, ntris, st);
-    st_tri_ticks += TICKS_READ() - t0;
-    st_tri_wait += rspq_wait_ticks - w0;
-}
-static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
-    if (!attached || !ntris) return;
+/* Per-batch triangle set-up of draw_tris_inner: the rdpq format and how the vertices are
+ * sampled (0 = as given, 1 = UVs scaled to the TMEM-sized surface, 2 = TMEM tiles). */
+typedef struct { const rdpq_trifmt_t *f; int mode; float sw, sh; const tex_t *tx; uint32_t flags; } tri_setup_t;
+
+static tri_setup_t tri_begin(uint32_t ntris, const n64_state_t *st) {
     st_calls++;
     st_src_tris += ntris;
     rect_tmem = NULL;
@@ -1011,30 +1144,173 @@ static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_sta
         .pos_offset = 0, .z_offset = (i & 2) ? 2 : -1, .shade_offset = 3,
         .tex_offset = (i & 1) ? 7 : -1, .tex_tile = TILE0,
     };
+    tri_setup_t su = {f, 0, 1.0f, 1.0f, tex ? &textures[st->tex] : NULL, st->flags};
     if (tex && (st->flags & N64_UVNORM) && textures[st->tex].tile3d && (!textures[st->tex].own_small || textures[st->tex].tiled) && !(st->flags & N64_WRAP) && st->blend != N64_BLEND_ADD) {
+        su.mode = 2;
         st_tiled_src += ntris;
-        for (uint32_t k = 0; k < ntris; k++, v += 3) draw_tri_tiled(f, &textures[st->tex], v, st->flags);
-        return;
-    }
-    if (tex && (st->flags & N64_UVNORM)) {
+    } else if (tex && (st->flags & N64_UVNORM)) {
         /* Normalised UVs: scale to the TMEM-sized surface. */
         const surface_t *s = tri_surface(st);
-        float sw = s->width, sh = s->height;
-        n64_vertex_t t[3];
-        for (uint32_t k = 0; k < ntris; k++, v += 3) {
-            for (int j = 0; j < 3; j++) {
-                t[j] = v[j];
-                t[j].s *= sw;
-                t[j].t *= sh;
-            }
-            rdpq_triangle(f, (const float *)&t[0], (const float *)&t[1], (const float *)&t[2]);
-        }
-        st_rdpq_tris += ntris;
+        su.mode = 1;
+        su.sw = s->width;
+        su.sh = s->height;
+    }
+    return su;
+}
+
+/* One triangle (vertices may be modified: UV scaling). */
+static inline void tri_one(const tri_setup_t *su, n64_vertex_t *t) {
+    if (su->mode == 2) {
+        draw_tri_tiled(su->f, su->tx, t, su->flags);
         return;
     }
-    st_rdpq_tris += ntris;
-    for (uint32_t k = 0; k < ntris; k++, v += 3)
-        rdpq_triangle(f, (const float *)&v[0], (const float *)&v[1], (const float *)&v[2]);
+    if (su->mode == 1) {
+        for (int j = 0; j < 3; j++) {
+            t[j].s *= su->sw;
+            t[j].t *= su->sh;
+        }
+    }
+    st_rdpq_tris++;
+    rdpq_triangle(su->f, (const float *)&t[0], (const float *)&t[1], (const float *)&t[2]);
+}
+
+static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st);
+void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
+    uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
+    draw_tris_inner(v, ntris, st);
+    st_tri_ticks += TICKS_READ() - t0;
+    st_tri_wait += rspq_wait_ticks - w0;
+}
+static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
+    if (!attached || !ntris) return;
+    tri_setup_t su = tri_begin(ntris, st);
+    n64_vertex_t t[3];
+    for (uint32_t k = 0; k < ntris; k++, v += 3) {
+        memcpy(t, v, sizeof t);
+        tri_one(&su, t);
+    }
+}
+
+static inline float clamp01(float x) { return x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x; }
+
+/* render_cpu.rs `vertex` + the depth and colour split of `RenderCpu::tris`. */
+static inline void tl_vertex(n64_vertex_t *o, const float *v, float zk, uint32_t blend) {
+    o->x = v[0];
+    o->y = v[1];
+    o->z = clamp01(v[2] * zk);
+    o->r = clamp01(v[4]);
+    o->g = clamp01(v[5]);
+    o->b = clamp01(v[6]);
+    o->a = clamp01(v[7]);
+    o->s = v[8];
+    o->t = v[9];
+    o->inv_w = v[3] > 0.0f ? (v[3] < 1.0f ? v[3] : 1.0f) : 1.0f;
+    if (blend == N64_BLEND_ADD) {
+        float m = o->r > o->g ? o->r : o->g;
+        if (o->b > m) m = o->b;
+        if (m > 0.0f) {
+            o->r /= m;
+            o->g /= m;
+            o->b /= m;
+            o->a *= m;
+        } else {
+            o->a = 0.0f;
+        }
+    } else if (blend == N64_BLEND_SUB) {
+        float m = o->r > o->g ? o->r : o->g;
+        if (o->b > m) m = o->b;
+        o->a = m;
+        o->r = o->g = o->b = 0.0f;
+    }
+}
+
+/* rdpq_triangle_rsp (libdragon rdpq_tri.c) for an affine triangle (inv_w = 1) straight from
+ * TlVertex floats: the same fixed-point vertex words and commands, without the
+ * intermediate float vertex, the 1/w division and the s16.16 conversions of w (both are
+ * 1.0 = 0x10000 here). Vertex conversion as tl_vertex + tri_one. */
+void __rdpq_autosync_use(uint32_t res);
+#define F2_TRI_DATA_LEN 32 /* ROUND_UP((2+1+1+3)*4, 16) */
+static inline void fast_vtx(int i, const float *v, const tri_setup_t *su, float zk, uint32_t blend, bool zb, bool tex) {
+    int16_t x = floorf(v[0] * 4.0f);
+    int16_t y = floorf(v[1] * 4.0f);
+    int16_t z = zb ? (int16_t)(clamp01(v[2] * zk) * 0x7FFF) : 0;
+    float r = clamp01(v[4]), g = clamp01(v[5]), b = clamp01(v[6]), a = clamp01(v[7]);
+    if (blend == N64_BLEND_ADD) {
+        float m = r > g ? r : g;
+        if (b > m) m = b;
+        if (m > 0.0f) {
+            r /= m;
+            g /= m;
+            b /= m;
+            a *= m;
+        } else {
+            a = 0.0f;
+        }
+    } else if (blend == N64_BLEND_SUB) {
+        float m = r > g ? r : g;
+        if (b > m) m = b;
+        a = m;
+        r = g = b = 0.0f;
+    }
+    uint32_t rgba = ((uint32_t)(r * 255.0f) << 24) | ((uint32_t)(g * 255.0f) << 16) | ((uint32_t)(b * 255.0f) << 8) | (uint32_t)(a * 255.0f);
+    int16_t s = 0, t = 0;
+    int32_t w = 0;
+    if (tex) {
+        float fs = v[8], ft = v[9];
+        if (su->mode == 1) {
+            fs *= su->sw;
+            ft *= su->sh;
+        }
+        s = fs * 32.0f;
+        t = ft * 32.0f;
+        w = 0x10000;
+    }
+    rspq_write(RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE_DATA, F2_TRI_DATA_LEN * i, (x << 16) | (y & 0xFFFF), (z << 16), rgba, (s << 16) | (t & 0xFFFF), w, w);
+}
+
+static void fast_tri(const tri_setup_t *su, const float *v, float zk, uint32_t blend) {
+    const rdpq_trifmt_t *fmt = su->f;
+    bool tex = fmt->tex_offset >= 0, zb = fmt->z_offset >= 0;
+    uint32_t res = AUTOSYNC_PIPE;
+    if (tex) res |= AUTOSYNC_TILE(fmt->tex_tile) | AUTOSYNC_TMEM(0);
+    __rdpq_autosync_use(res);
+    uint32_t cmd_id = RDPQ_CMD_TRI | 0x4, rdp_words = 4 + 8;
+    if (tex) {
+        cmd_id |= 0x2;
+        rdp_words += 8;
+    }
+    if (zb) {
+        cmd_id |= 0x1;
+        rdp_words += 2;
+    }
+    fast_vtx(0, v, su, zk, blend, zb, tex);
+    fast_vtx(1, v + 12, su, zk, blend, zb, tex);
+    fast_vtx(2, v + 24, su, zk, blend, zb, tex);
+    rdpq_write(rdp_words, RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE, 0xC000 | (cmd_id << 8) | (fmt->tex_tile & 7));
+    st_rdpq_tris++;
+}
+
+void n64_draw_tl_tris_impl(const n64_tl_batch_t *b, const n64_state_t *st) {
+    uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
+    if (attached && b->ntris) {
+        tri_setup_t su = tri_begin(b->ntris, st);
+        const uint8_t *p = b->tris;
+        n64_vertex_t t[3];
+        for (uint32_t k = 0; k < b->ntris; k++, p += b->stride) {
+            const float *v = (const float *)p;
+            /* rhw = 1 (the sprites, shadows and effects): straight to the RSP command. */
+            if (su.mode != 2 && v[3] == 1.0f && v[15] == 1.0f && v[27] == 1.0f) {
+                fast_tri(&su, v, b->zk, st->blend);
+                continue;
+            }
+            tl_vertex(&t[0], v, b->zk, st->blend);
+            tl_vertex(&t[1], v + 12, b->zk, st->blend);
+            tl_vertex(&t[2], v + 24, b->zk, st->blend);
+            tri_one(&su, t);
+        }
+    }
+    st_tri_ticks += TICKS_READ() - t0;
+    st_tri_wait += rspq_wait_ticks - w0;
 }
 
 static void draw_rects_inner(const n64_rect_t *r, uint32_t n, const n64_state_t *st);
@@ -1046,13 +1322,14 @@ void n64_draw_rects_impl(const n64_rect_t *r, uint32_t n, const n64_state_t *st)
     st_rect_wait += rspq_wait_ticks - w0;
 }
 
+static uint32_t st_rect_path[16];
 /* Draws [x0,x1)x[y0,y1) from texels s0..s1 / t0..t1 of `s` (s1 < s0 / t1 < t0 = flipped)
  * when `s` fits TMEM; false = use the blit path. */
 static bool rect_fast(const tex_t *tx, const surface_t *s, float x0, float y0, float x1, float y1, float s0, float t0, float s1, float t1) {
     if (!fits_tmem_block(s)) return false;
     if (rect_tmem != s) {
         use_tlut(tx, s, 0);
-        rdpq_tex_upload(TILE0, s, NULL);
+        tex_upload_cached(TILE0, s, false, 0, 0, s->width, s->height);
         rect_tmem = s;
     }
     rdpq_texture_rectangle_scaled(TILE0, x0, y0, x1, y1, s0, t0, s1, t1);
@@ -1072,7 +1349,7 @@ static bool rect_sub(const tex_t *tx, const surface_t *s, const n64_rect_t *r, i
     int row = (TEX_FORMAT_PIX2BYTES(f, u1 - u0) + 7) & ~7;
     if (row * (v1 - v0) > 4096) return false;
     use_tlut(tx, s, 0); /* switches palette lookup off (a CI rect may have turned it on) */
-    rdpq_tex_upload_sub(TILE0, s, NULL, u0, v0, u1, v1);
+    tex_upload_cached(TILE0, s, false, u0, v0, u1, v1);
     rdpq_texture_rectangle_scaled(TILE0, r->x0, r->y0, r->x1, r->y1, fx ? is1 : is0, fy ? it1 : it0, fx ? is0 : is1, fy ? it0 : it1);
     return true;
 }
@@ -1184,15 +1461,28 @@ static void draw_rects_inner(const n64_rect_t *r, uint32_t n, const n64_state_t 
     rect_tmem = NULL;
     bool tex = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used;
     const tex_t *tx = tex ? &textures[st->tex] : NULL;
+    bool zt = (st->flags & N64_ZTEST) != 0;
     for (uint32_t k = 0; k < n; k++, r++) {
-        draw_one_rect(r, st, tex, tx);
+        if (zt) {
+            float z = r->z < 0.0f ? 0.0f : r->z > 1.0f ? 1.0f : r->z;
+            rdpq_set_prim_depth_raw((uint16_t)(z * 0x7FFF), 0);
+        }
+        int path = draw_one_rect(r, st, tex, tx);
+        st_rect_path[path & 15]++;
     }
 }
 
 
 void n64_present_impl(void) {
+    upc_frame++;
+    if (upc_nretired) upc_collect();
     if (++st_frames == 300) {
         debugf("cputri: per frame %lu calls, %lu source tris (%lu tiled), %lu rdpq triangles, %lu tile uploads, tris %lu us (wait %lu); %lu rects %lu us (wait %lu); all rspq waits %lu us; apply_state %lu us (%lu mode resets, tri tex uploads %lu us)\n", st_calls / 300, st_src_tris / 300, st_tiled_src / 300, st_rdpq_tris / 300, st_tiled_uploads / 300, TICKS_TO_US(st_tri_ticks) / 300, TICKS_TO_US(st_tri_wait) / 300, st_rects / 300, TICKS_TO_US(st_rect_ticks) / 300, TICKS_TO_US(st_rect_wait) / 300, TICKS_TO_US(rspq_wait_ticks - st_wait0) / 300, TICKS_TO_US(st_mode_ticks) / 300, st_modes / 300, TICKS_TO_US(st_tex_ticks) / 300);
+        debugf("cputri: rect paths (sum over 300 frames; draw_one_rect return codes):");
+        for (int i = 0; i < 16; i++) if (st_rect_path[i]) debugf(" %d:%lu", i, (unsigned long)st_rect_path[i]);
+        debugf("; texture upload cache per frame: %lu hits, %lu misses\n", st_upc_hits / 300, st_upc_misses / 300);
+        st_upc_hits = st_upc_misses = 0;
+        memset(st_rect_path, 0, sizeof st_rect_path);
         st_mode_ticks = st_modes = st_tex_ticks = 0;
         st_tri_wait = st_rect_wait = 0; st_wait0 = rspq_wait_ticks;
         st_tri_ticks = st_rect_ticks = st_rects = 0;

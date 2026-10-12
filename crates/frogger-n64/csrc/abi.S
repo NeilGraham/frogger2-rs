@@ -40,6 +40,7 @@
     RUST_TO_C n64_tex_create
     RUST_TO_C n64_begin_frame
     RUST_TO_C n64_draw_tris
+    RUST_TO_C n64_draw_tl_tris
     RUST_TO_C n64_present
     RUST_TO_C n64_rdp_wait
     RUST_TO_C n64_set_fps_limit
@@ -70,6 +71,8 @@
     RUST_TO_C n64_r3d_draw_list
     RUST_TO_C n64_r3d_stats
     RUST_TO_C n64_tex_update
+    RUST_TO_C n64_tex_update_begin
+    RUST_TO_C n64_tex_update_end
     RUST_TO_C n64_r3d_tex_alias
     RUST_TO_C n64_r3d_reset
     RUST_TO_C n64_r3d_counts

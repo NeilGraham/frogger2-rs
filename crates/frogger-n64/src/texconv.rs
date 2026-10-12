@@ -217,9 +217,41 @@ pub fn convert_strips(t: &f2_formats::texture::Texture) -> N64Tex {
     N64Tex { w, h, fmt: FMT_RGBA16, data }
 }
 
+/// An ARGB4444 texel as RGBA8888 (each 4-bit channel `* 17`, i.e. the nibble repeated).
+#[inline]
+pub fn argb4444_to_rgba32(c: u16) -> u32 {
+    let t = ((c as u32) << 4 | (c as u32) >> 12) & 0xffff; // RGBA4444
+    let x = (t & 0xf000) << 12 | (t & 0x0f00) << 8 | (t & 0x00f0) << 4 | (t & 0x000f);
+    x | x << 4
+}
+
+/// An ARGB4444 texel as RGBA5551: `convert_image_ex` of its RGBA8 expansion (`* 17 >> 3`
+/// per colour channel, alpha bit = alpha8 >= 128).
+#[inline]
+pub fn argb4444_to_rgba16(c: u16) -> u16 {
+    let n = |sh: u32| {
+        let x = (c >> sh) & 15;
+        x << 1 | x >> 3
+    };
+    n(8) << 11 | n(4) << 6 | n(0) << 1 | (c >> 15)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The procedural-texture refill's texel conversions equal `convert` of the RGBA8
+    /// expansion (`* 17`) they replace.
+    #[test]
+    fn argb4444_conversions_match_rgba8_path() {
+        for c in 0..=u16::MAX {
+            let x = |sh: u32| ((c >> sh) & 15) as u8 * 17;
+            let (r, g, b, a) = (x(8), x(4), x(0), x(12));
+            assert_eq!(argb4444_to_rgba32(c), u32::from_be_bytes([r, g, b, a]), "{c:04x}");
+            let v = ((r as u16 >> 3) << 11) | ((g as u16 >> 3) << 6) | ((b as u16 >> 3) << 1) | (a >= 128) as u16;
+            assert_eq!(argb4444_to_rgba16(c), v, "{c:04x}");
+        }
+    }
 
     /// One box pass is within 1 of successive halvings.
     #[test]

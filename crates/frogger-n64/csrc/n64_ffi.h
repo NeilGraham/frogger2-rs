@@ -49,9 +49,10 @@ typedef struct {
 } n64_tex_desc_t;
 
 /* A screen-aligned textured (or flat) rectangle: x/y pixels, s/t normalised 0..1 (s1 < s0
- * or t1 < t0 flips), rgba = 0xRRGGBBAA modulating the texture. Drawn with rdpq_tex_blit,
- * which splits textures larger than TMEM. */
-typedef struct { float x0, y0, x1, y1, s0, t0, s1, t1; uint32_t rgba; } n64_rect_t;
+ * or t1 < t0 flips), rgba = 0xRRGGBBAA modulating the texture, z = depth 0..1 (primitive
+ * depth, used when the state has N64_ZTEST: scene sprites). Drawn with texture rectangles
+ * (rdpq_tex_blit splits textures larger than TMEM). */
+typedef struct { float x0, y0, x1, y1, s0, t0, s1, t1; uint32_t rgba; float z; } n64_rect_t;
 
 /* An NTX1 image (1C pack) as a texture: texels/tlut stay in the caller's buffer. fmt: NTX
  * format (0 RGBA16, 1 RGBA32, 2 CI4, 3 CI8, 4 IA4, 5 IA8, 6 I4, 7 I8, 8 IA16). */
@@ -148,10 +149,21 @@ uint32_t n64_tex_create(const n64_tex_desc_t *desc);
 uint32_t n64_tex_create2(const n64_tex_desc_t *full, const n64_tex_desc_t *small);
 void n64_tex_free(uint32_t handle);
 uint32_t n64_tex_update(uint32_t handle, const n64_tex_desc_t *desc); /* in-place texel update; 0 = not possible */
+/* In-place update written by the caller (desc->pixels unused): the texture's texel buffer
+ * (rows of width * bpp bytes, tightly packed; uncached memory) or NULL if it cannot be
+ * updated in place; then n64_tex_update_end. */
+void *n64_tex_update_begin(uint32_t handle, const n64_tex_desc_t *desc);
+void n64_tex_update_end(uint32_t handle);
 uint32_t n64_tex_create_ntx(const n64_ntx_desc_t *desc);         /* texture over an NTX1 image (no copy) */
 void n64_begin_frame(uint32_t clear_rgba);         /* attach next framebuffer + z-buffer, clear both */
 void n64_draw_tris(const n64_vertex_t *verts, uint32_t ntris, const n64_state_t *state);
 void n64_draw_rects(const n64_rect_t *rects, uint32_t n, const n64_state_t *state);
+/* Scene triangles straight from f2-engine's frame lists (phase 3E: no Rust-side vertex
+ * conversion): `ntris` triangles of three TlVertex (12 floats: sx sy sz rhw r g b a u v fog
+ * aref) each, `stride` bytes apart from `tris`; z = clamp(sz * zk); the colour split of the
+ * state's blend (additive / subtractive) as render_cpu.rs applies it. */
+typedef struct { const void *tris; uint32_t stride, ntris; float zk; } n64_tl_batch_t;
+void n64_draw_tl_tris(const n64_tl_batch_t *batch, const n64_state_t *state);
 void n64_cache_writeback(const void *p, uint32_t len);
 void n64_present(void);                            /* detach + show */
 void n64_set_fps_limit(uint32_t fps);                /* display_set_fps_limit (0 = none) */

@@ -115,6 +115,7 @@ USA data: 36 MiB ROM.
 | `F2N64_CFLAGS=-DF2N64_NO_TRIS` | measurement: r3d does all its CPU work but sends no triangles (the ceiling of polygon reduction; touch `csrc/r3d.c` to rebuild) |
 | `F2N64_CFLAGS=-DF2N64_NO_MUSIC` | measurement: no music (the `audio:` log line shows the mixer's CPU time per second; ULC music at 32 kHz is most of it) |
 | `F2N64_MEASURE_SIZES=1` | measurement: log r3d draws/triangles per on-screen radius class (< 1, 1.5, 3 px) every 300 frames |
+| `F2N64_NO_BACKEND=1` | measurement: the draw loop records meshes into the sink and drops them (no r3d): its own CPU cost alone (`draw phases` line) |
 | `F2N64_KEEP_DFS=1` | skip the data step (reuse `target/n64/filesystem`) |
 | `F2N64_DUMP_FRAME=N` or `A-B` | log frame N's (or frames A..=B's) CPU draw commands and r3d draws (frames counted per level) |
 | `F2N64_LOG_MODELS=1` | log each model the first time r3d draws it |
@@ -122,7 +123,11 @@ USA data: 36 MiB ROM.
 | `F2N64_TUNE` | with `simbench`: experiment masks run one after another in the same ROM (`f2_game::simbench::tune`), e.g. `"0 1"` |
 | `F2N64_TUNE_AB` | in the game: `f2_game::simbench::TUNE` alternates between 0 and this mask every 5 s perf window (A/B of experiment code in one ROM, so both sides have the same code layout); the `sim phases` line prints `tune` and the phase `sum`. With `tools/n64/bench.sh`, `BENCH_PHASE_LINES=N` prints the last N `sim phases` lines |
 
-Log lines (debugf → `C:\f2-n64test\run.txt`): `perf [W-L] ...` every 5 s (fps, sim ticks/s,
+Log lines (debugf → `C:\f2-n64test\run.txt`): `draw phases [W-L] us/frame` every 5 s (phase 3E:
+the draw loop's parts — setup, world, actors0, shadows, actors1, sprites, specfx, overlays; the
+actor phases include r3d queueing — plus the procedural texture refill, `render::snapshot` and
+host overlays), `cputri:` every 300 frames (CPU batches: triangles, rects, mode resets, rect
+paths, texture upload cache), `perf [W-L] ...` every 5 s (fps, sim ticks/s,
 dropped ticks, per-frame sim and draw time split into draw loop / textures / CPU batches /
 framebuffer wait, RSP and RDP busy %, `Game::tick` µs, audio poll µs, CPU triangles, r3d
 draws / triangles queued and sent / batches / texture loads, audio voices, music),

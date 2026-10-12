@@ -1156,3 +1156,108 @@ places) before sim savings show up as fps.
   (`process_attached_effects`' effect creation) out would bring it under 16 KiB.
 - Once per tick code (frogs, loop-rest, events ~1.3 ms) is mostly I-cache misses of
   straight-line code; only less code helps.
+
+## 3E: draw-loop and 2D CPU cost (2026-10-12)
+
+Scope: the CPU work of the draw loop outside r3d (`f2-draw`, `f2-engine`), the CPU batches
+(`render_cpu.rs`, the 2D half of `csrc/main.c`), the procedural texture refill and
+`render::snapshot`. Branch `worktree-agent-a1cb1a2f375241a0b` (from `ed3e8ce`).
+
+### Before / after (ares v148, `tools/n64/bench.sh`, 5 s windows, frog hopping)
+"mine" = (draw loop − r3d queue) + CPU-side submit + build, the target metric.
+
+| scene | fps | draw / frame | draw loop (r3d queue) | CPU-side submit | build | CPU tris + rects | mine |
+|---|---|---|---|---|---|---|---|
+| Garden 1, before | 16.7 | 39 ms | 29 (15.0) ms | 4 ms | 1 ms | 37 + 22 | ~19 ms |
+| Garden 1, after | **18.8** | 34 ms | 28 (14.9) ms | 1 ms | 0 ms | 14 + 31 | **~14 ms** |
+| Space 1, before | 10.4 | 67 ms | 48 (22.4) ms | 10 ms | 3 ms | 156 + 24 | ~39 ms |
+| Space 1, after | **11.85** | 57.5 ms | 46.5 (21.9) ms | 3 ms | 1 ms | 92 + 58 | **~29 ms** |
+| Lab 1, before (1st window) | 10.6 | 65 ms | 43 (20.6) ms | 9 ms | 3 ms | 121 + 41 | ~34 ms |
+| Lab 1, after (1st window) | **12.9** | 51 ms | 37 (18.2) ms | 2 ms | 0 ms | 111 + 42 | ~21 ms |
+
+(Lab's hopping frog dies after ~15 s and the later windows are the game-over / frontend,
+so only the first window compares.) Idle (`level W 0`): Garden 18.4 -> 20.2 fps, Space
+10.3 -> 11.7, Lab 10.3 -> 11.6. Procedural refill 0.9 -> 0.48 ms (Garden), snapshot 0.75 ->
+0.49 ms. Garden's per-phase split after (`draw phases` log line, µs/frame; the actor phases
+include r3d queueing): setup 355, world 1660, actors0 20350, shadows 860, actors1 2610,
+sprites 1060, specfx 150, overlays 1160, refill 480, snapshot 490. With
+`F2N64_NO_BACKEND=1` (no r3d) Garden's actor phases are ~9 ms, Space's ~16 ms: the
+per-actor work, not the 2D, is now the bulk of "mine".
+
+The ≤ 8 ms target is not reached: what is left is ~90 µs per drawn actor in Garden
+(87 actors: list walk, interpolation, the pose cache test, one `MeshDraw` per object), plus
+~1 ms each of shadows, sprites and overlays. Calibration in ares (boot-time loop, removed
+again): a D-cache line miss costs ~40 cycles over a hit, a dependent f32 multiply-add ~22
+cycles, an f32 -> i32 cast ~41 cycles; a warm second call of the per-actor code still took
+~19 µs + ~39 µs, so it is instruction-bound as much as miss-bound.
+
+### What changed (commits 68e23fa .. 784c95b)
+CPU batches (Space/Lab: 9-10 -> 2-3 ms submit):
+- `RenderCpu::build` reads the new `Renderer::frame_view` (frames, backdrops, overlays,
+  pass states; shares its pass table with `build_segments`) instead of `build_segments`:
+  no intermediate `TlVertex` list. Scene triangles go to C by address
+  (`n64_draw_tl_tris`, converted there); affine ones are written straight as the rdpq
+  `TRIANGLE_DATA`/`TRIANGLE` commands (`fast_tri`: the fixed-point words
+  `rdpq_triangle_rsp` makes, without its float vertex, 1/w and s16.16 conversions).
+- Sprite quads (screen-aligned, one depth) of Z-tested, non-writing, clamped passes
+  (coins, pickups, flashes) are texture rectangles with primitive depth
+  (`rdpq_mode_zoverride` + `rdpq_set_prim_depth_raw` per rect), not two triangles.
+  Garden: 37 -> 14 triangles a frame. 2D quads / sprite pairs are tested in place.
+- Texture uploads (`rdpq_tex_upload` / `_sub`, ~50 µs of CPU each) are recorded once into
+  rspq blocks (4-way cache keyed by surface, sub-rect, tile, repeat; evicted blocks freed
+  4 frames later) and replayed. The direct-mapped first version thrashed (4 misses a
+  frame from glyph sub-rects).
+- CPU-batch render modes (`apply_state`) are recorded per distinct mode into rspq blocks
+  and replayed (0.55 -> 0.35 ms for 7 resets in Space).
+- Procedural textures: refilled only when the game blitted (`ProcTexture::timer`), converted
+  straight into the texture's texels (`n64_tex_update_begin/_end`), nibble expansion by
+  bit operations (host-tested against the RGBA8 path).
+Draw loop (`f2-draw`/`f2-engine`):
+- `render::Snap` keeps the simulation's integers (`snapshot_into` reuses its buffer; float
+  conversion only for drawn actors; lean: an unmoved actor reuses its converted pose and
+  scale; no slerp when only the position changed).
+- Both draw lists come from one `actList` walk (list 1 kept while drawing list 0);
+  per-frame invariants hoisted; `overrideTex` CRC kept per actor (was a lowercase `String`
+  allocation per actor and frame).
+- `xform_actor_cached`: matrices written in place; moving-not-turning actors add the
+  translation to a cached `L x R` (exact: the same sums); turning / re-animated actors write
+  `L x R` straight into the result; `next_stamp` without an atomic RMW on the N64;
+  `mtx_cat` without its `memset`; `Renderer::draw_actor` borrows the sink in place and keeps
+  the CPU fallback out of line.
+- `update_animating_textures` walks only animated entries; shadows / decals / rings memoise
+  `quaternion_to_matrix(rotation_to_normal(n))` per normal (acos / sin_cos / normalise).
+- `rt::ticks` reads COP0 Count inline, `rt::audio_poll_due` tests in Rust (no C call per
+  draw); `build/f2.ld` now regenerates when the Makefile changes; hot-region order
+  q / `cull_world` closure / d.
+- Measurement: `draw phases` log line (`f2_draw::render::set_phase_hook`), `cputri:` rect
+  paths and upload-cache hits, `F2N64_NO_BACKEND=1`.
+
+### Evidence
+- PC pixel identity: `frogger --headless --frames {90,300} --level W 0 --profile
+  {authentic,enhanced} --size 320x240` for W = 0,1,2,3,5,8 (24 frames): byte-identical PNGs
+  before (`ed3e8ce`) and after every shared-crate commit. N64-only behaviour sits behind
+  `lean` or in `frogger-n64`.
+- N64 visuals: idle ares captures of Garden 1 / Space 1 / Lab 1 before and after (coins,
+  shadows, water refill, HUD, lightning): same content; differences are animation phase
+  and the clock. Sprite rectangles vs the triangle pairs: same texels (bilinear), the tint
+  rounds instead of truncating (≤ 1/255).
+- Tests: `cargo test -p f2-engine -p f2-draw`, `cargo +nightly test --manifest-path
+  crates/frogger-n64/Cargo.toml` (new: ARGB4444 conversions vs the RGBA8 path).
+
+### Tried and reverted
+- Writing procedural texels / additive variants through the cached alias + writeback: 50 %
+  slower than uncached stores (write-allocate misses).
+- Hot-region orders d/q, q/d (+ `draw_listed_actor` tagged): the r3d queue timer moved
+  14.1 - 17.3 ms between builds with identical r3d code. Unlisted functions
+  (`cull_world::{closure#1}`, `memcpy`, ...) shift with every edit; their aliasing with
+  `draw_slot` dominates. Tagging r3d's remaining per-draw helpers (and keeping
+  `.text.f2hot_d` ≤ ~6 KiB) is the robust fix.
+
+### Next (draw side)
+- Per-actor cost (~90 µs Garden, more in Space): a compact per-actor draw record (model,
+  mesh-object list, last stamp, last raw inputs) so unchanged actors replay their
+  `MeshDraw`s without touching `Actor2`, the engine `Actor` and the model; actors whose
+  bounding sphere is under a pixel skipped before any work.
+- Shadows (Space 2.5 ms): the enemy / platform list walks touch every entry; sprites
+  (1-2.5 ms): `Tri` (152 bytes) per corner pair; a compact sprite record for the console.
+- `R3dLevel::sync_textures` walks every registry entry each frame (~0.6 ms).
