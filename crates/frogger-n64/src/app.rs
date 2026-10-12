@@ -104,6 +104,7 @@ pub enum Boot {
     SettingsTest,
     BookTest,
     LevelBookTest,
+    GameOverBookTest,
 }
 
 impl Boot {
@@ -118,6 +119,7 @@ impl Boot {
             (Some("settings-test"), _, _) => Boot::SettingsTest,
             (Some("book-test"), _, _) => Boot::BookTest,
             (Some("level-book-test"), _, _) => Boot::LevelBookTest,
+            (Some("gameover-book-test"), _, _) => Boot::GameOverBookTest,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
             (Some("save-test"), _, _) => Boot::SaveTest,
             _ => Boot::Frontend { trained: false },
@@ -258,6 +260,8 @@ pub struct App {
     pad_script: Option<(u32, &'static [(u32, u16)])>,
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
+    /// `Boot::GameOverBookTest`: leave the level by a game over instead of Quit.
+    game_over_test: bool,
     /// Start of the level load in progress (load step timing).
     load_t0: u32,
     /// FPS counter: frames and start of the current second, the last second's count.
@@ -326,6 +330,7 @@ impl App {
             pad_script: None,
             level_quit: None,
             load_t0: 0,
+            game_over_test: false,
             fps_count: (0, 0, 0),
             avg_tick: 0,
             avg_draw: 0,
@@ -360,6 +365,12 @@ impl App {
             Boot::LevelBookTest => {
                 app.game.start_story(1);
                 app.level_quit = Some(0);
+            }
+            Boot::GameOverBookTest => {
+                // Story Subterranean 1 (The Gold Mine), game over after 300 frames.
+                app.game.start_story(3);
+                app.level_quit = Some(0);
+                app.game_over_test = true;
             }
             Boot::BookTest => {
                 app.autostart = Some(0);
@@ -763,12 +774,21 @@ impl App {
         self.game.options.grab_to_texture = if self.game.options.grab_to_texture == 1 { 0 } else { 2 };
         // Full size (256x256 RGBA16): the chapter page fills most of the screen when the book
         // is open; half size (128x128) was blurry.
+        let mut size = (c.w, c.h);
+        if !l.gfx.grab_rgba(h.0, c.w, c.h, &c.rgba) {
+            // No memory for a full-size page (the frontend after a game over was full: the
+            // texture's allocation failed): the half-size page, 4x less.
+            let (w, h2, half) = crate::texconv::halve_rgba8(c.w, c.h, &c.rgba);
+            l.page_canvas = None;
+            let ok = l.gfx.grab_rgba(h.0, w, h2, &half);
+            log!("app: book page {target}: no memory for 256x256, {}", if ok { "128x128 instead" } else { "none (page blank)" });
+            size = (w, h2);
+        }
         if let Some(img) = self.r.textures.images.get_mut(h.0 as usize) {
-            img.width = c.w;
-            img.height = c.h;
+            img.width = size.0;
+            img.height = size.1;
             img.rgba = Vec::new();
         }
-        l.gfx.grab_rgba(h.0, c.w, c.h, &c.rgba);
         l.page_canvas = None;
         rt::audio_poll();
         let ms = |a: u32, b: u32| ticks_to_us(b.wrapping_sub(a)) / 1000;
@@ -1100,12 +1120,19 @@ impl App {
                 // The pause menu's Quit from a level (menus.rs, quitting_level 2).
                 log!("app: level-book-test: quitting to the frontend");
                 self.level_quit = None;
-                let g = &mut self.game;
-                g.frogger.player[0].character = f2_game::frogger::FROG_FROGGER;
-                g.frogger.num_frogs = 1;
-                g.game_state.mode = f2_game::define::mode::FRONTEND_MODE;
-                g.init_level(f2_game::layout::worldid::FRONTEND, f2_game::layout::LEVELID_FRONTEND1);
-                self.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
+                if self.game_over_test {
+                    log!("app: gameover-book-test: game over");
+                    self.game.start_game_over();
+                    // The book after the game over screen and the frontend load.
+                    self.pad_script = Some((0, &[(400, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
+                } else {
+                    let g = &mut self.game;
+                    g.frogger.player[0].character = f2_game::frogger::FROG_FROGGER;
+                    g.frogger.num_frogs = 1;
+                    g.game_state.mode = f2_game::define::mode::FRONTEND_MODE;
+                    g.init_level(f2_game::layout::worldid::FRONTEND, f2_game::layout::LEVELID_FRONTEND1);
+                    self.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
+                }
             }
         }
         if let (None, Some((f, steps))) = (self.autostart, &mut self.pad_script) {

@@ -462,6 +462,7 @@ uint32_t n64_bigpool_peak_kib(void) { return big_peak / 1024; }
 static surface_t make_surface_cols(const n64_tex_desc_t *d, uint32_t x0, uint32_t w) {
     tex_format_t fmt = (d->fmt & 0xff) == 1 ? FMT_RGBA32 : FMT_RGBA16;
     surface_t s = surface_alloc(fmt, w, d->height);
+    if (!s.buffer) return s; /* out of memory: the caller frees and fails */
     uint32_t row = TEX_FORMAT_PIX2BYTES(fmt, d->width), off = TEX_FORMAT_PIX2BYTES(fmt, x0);
     uint32_t n = TEX_FORMAT_PIX2BYTES(fmt, w);
     for (uint32_t y = 0; y < d->height; y++)
@@ -504,6 +505,22 @@ uint32_t n64_tex_create2_impl(const n64_tex_desc_t *full, const n64_tex_desc_t *
         }
         t->small_is_full = small == NULL && t->nfull == 1;
         t->small = small ? make_surface(small) : t->full[0];
+        /* Out of memory (a story book page grabbed in a full frontend crashed in memcpy to
+         * NULL): undo and fail; the caller decides (texture missing, or a smaller one). */
+        bool ok = t->full != NULL && t->nfull > 0 && t->small.buffer != NULL;
+        for (int k = 0; ok && k < t->nfull; k++) ok = t->full[k].buffer != NULL;
+        if (!ok) {
+            debugf("tex: out of memory creating a %lux%lu texture\n", (unsigned long)full->width, (unsigned long)full->height);
+            if (small && t->small.buffer) surface_free(&t->small);
+            if (t->full) {
+                for (int k = 0; k < t->nfull; k++)
+                    if (t->full[k].buffer) surface_free(&t->full[k]);
+                if (t->full != &t->full1) free(t->full);
+            }
+            t->full = NULL;
+            t->nfull = 0;
+            return 0;
+        }
         t->tile3d = (full->fmt & N64_TEX_TILE3D) && t->nfull == 1 && small != NULL;
         t->used = true;
         tex_hint = h + 1;

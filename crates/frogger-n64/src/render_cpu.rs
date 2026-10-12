@@ -237,7 +237,9 @@ impl RenderCpu {
 
     /// Registry image `idx` shows `rgba` (a render-to-texture result: the story book page),
     /// converted straight from the caller's pixels (the registry keeps none).
-    pub fn grab_rgba(&mut self, idx: u32, w: u32, h: u32, rgba: &[u8]) {
+    /// Replaces image `idx` with `rgba`; false if there was no memory for the N64 texture
+    /// (the image then has none).
+    pub fn grab_rgba(&mut self, idx: u32, w: u32, h: u32, rgba: &[u8]) -> bool {
         let i = idx as usize;
         let (mut full, small) = texconv::convert(w, h, rgba);
         if small.is_some() {
@@ -247,8 +249,12 @@ impl RenderCpu {
         let sd = small.as_ref().map(desc);
         self.tex[i] = rt::tex_create2(&desc(&full), sd.as_ref());
         self.gen[i] = self.gen[i].wrapping_add(1);
+        if self.tex[i] == 0 {
+            return false;
+        }
         self.bytes[i] = (full.data.len() + small.as_ref().map_or(0, |s| s.data.len())) as u32;
         self.tex_bytes += self.bytes[i];
+        true
     }
 
     /// Registry image `idx` shows an NTX1 image of the pack (`desc` points into `owner`).
