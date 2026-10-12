@@ -106,8 +106,9 @@ pub struct LevelScene {
     /// `farClip = fog.max * 0.1` (drawloop.cpp:198), render units.
     pub far_clip: f32,
     pub clear: [f64; 4],
-    /// Engine actor per game actor slot (keyframe search hints persist across frames).
-    pub actors: Vec<Option<(u32, Actor)>>,
+    /// Engine actor per game actor slot (keyframe search hints persist across frames), with
+    /// its model id and that model's `models` entry (looked up once, not every frame).
+    pub actors: Vec<Option<(u32, (usize, usize), Actor)>>,
     /// Stand-in frog while `CreateFrogger` is not ported (drawn on the player start tile).
     pub placeholder_frog: Option<((usize, usize), Actor)>,
 }
@@ -359,14 +360,15 @@ fn draw_actor_list(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &
         }
         let mdx = &a2.actor.actual_actor;
         let Some(model_id) = mdx.object_controller else { continue };
-        let Some(&(b, m)) = scene.models.get(&model_id) else { continue };
+        let slot = &mut scene.actors[id.idx()];
+        if slot.as_ref().is_none_or(|(mid, _, _)| *mid != model_id) {
+            let Some(&bm) = scene.models.get(&model_id) else { continue };
+            *slot = Some((model_id, bm, Actor::default()));
+        }
+        let (_, (b, m), ea) = slot.as_mut().unwrap();
+        let (b, m) = (*b, *m);
         let cur = Snap { pos: sv_to_render(&a2.actor.position), q: iq_to_quat(&a2.actor.q_rot) };
         let s = lerp_snap(ctx.prev.get(id.idx()).and_then(|p| p.as_ref()), cur, ctx.alpha);
-        let slot = &mut scene.actors[id.idx()];
-        if slot.as_ref().is_none_or(|(mid, _)| *mid != model_id) {
-            *slot = Some((model_id, Actor::default()));
-        }
-        let (_, ea) = slot.as_mut().unwrap();
         ea.pos = s.pos;
         ea.q_rot = s.q;
         let sz = a2.actor.size;

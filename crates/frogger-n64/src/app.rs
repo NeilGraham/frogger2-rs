@@ -129,6 +129,7 @@ struct Window {
     r3d_queue: u32,
     r3d_flush: u32,
     r3d_reused: u32,
+    r3d_view_reused: u32,
 }
 
 /// The renderer side of the loaded level, outside [`App`] so the data source can free it
@@ -939,6 +940,7 @@ impl App {
             w.r3d_queue += l.r3d.stats.queue_ticks;
             w.r3d_flush += l.r3d.stats.flush_ticks;
             w.r3d_reused += l.r3d.stats.reused;
+            w.r3d_view_reused += l.r3d.stats.view_reused;
         }
         w.max_frame = w.max_frame.max(t2.wrapping_sub(t0));
         let span = t2.wrapping_sub(self.win_start);
@@ -991,7 +993,7 @@ impl App {
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms, pacing {} fps; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws ({} reused), {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms, pacing {} fps; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws ({} reused, {} view-only), {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -1023,6 +1025,7 @@ impl App {
             w.rects / f,
             w.draws / f,
             w.r3d_reused / f,
+            w.r3d_view_reused / f,
             w.rsp_tris / f,
             w.rsp_sent / f,
             w.rsp_groups / f,

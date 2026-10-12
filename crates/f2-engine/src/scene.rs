@@ -648,15 +648,23 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
             sink.push(cx.view, MeshDraw { object: MESH_SKIN, frame, ..base }, mats);
         }
     } else {
-        for_each_object(model, |i, o| {
-            if o.mesh.is_none() {
-                return;
-            }
-            let frame = object_frame(o.flags | extra, fade, actor.wrap_tc);
+        if actor.mesh_objects.as_ref().is_none_or(|(id, _)| *id != model.id) {
+            let mut objs = Vec::new();
+            for_each_object(model, |i, o| {
+                if o.mesh.is_some() {
+                    objs.push((i as u16, o.flags));
+                }
+            });
+            actor.mesh_objects = Some((model.id, objs));
+        }
+        let objs = &actor.mesh_objects.as_ref().unwrap().1;
+        for &(i, flags) in objs {
+            let frame = object_frame(flags | extra, fade, actor.wrap_tc);
             if frame != Frame::Glow {
+                let i = i as usize;
                 sink.push(cx.view, MeshDraw { object: i as u16, frame, ..base }, &mats[i..i + 1]);
             }
-        });
+        }
     }
 }
 

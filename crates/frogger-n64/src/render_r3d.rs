@@ -43,6 +43,8 @@ pub struct R3dFrameStats {
     pub flush_ticks: u32,
     /// Draws reused from the previous frame (unchanged model matrix and view).
     pub reused: u32,
+    /// Draws that kept their model-side work with a new view (camera moved).
+    pub view_reused: u32,
 }
 
 pub struct R3dLevel {
@@ -308,6 +310,7 @@ impl R3dLevel {
             st.flush_ticks = rt::ticks().wrapping_sub(tf).wrapping_sub(cpu.stats.submit_ticks.wrapping_sub(seg0));
             st.queued_tris = self.r.queued_tris;
             st.reused = self.r.cache_hits;
+            st.view_reused = self.r.view_hits;
             st.sent_tris = self.r.sent_tris;
             let c = self.r.stats();
             st.groups = c.groups;

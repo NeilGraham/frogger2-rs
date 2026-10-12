@@ -281,6 +281,12 @@ struct SlotEntry {
     /// before waiting for a framebuffer, i.e. while N-2 and N-1 can still be in flight).
     cur: usize,
     u: [R3dDrawUniform; 3],
+    /// Camera-independent part, valid for `stamp`/`mesh`/`params`: the uniform without fog,
+    /// the scale bound and the world-space sphere centres ([`world_spheres`]). A frame with
+    /// only a new view (the camera moved) re-culls from these and refreshes the fog.
+    base_u: R3dDrawUniform,
+    s: f32,
+    wc: Vec<[f32; 3]>,
 }
 
 /// Bit pattern of a draw's parameters (cache key).
@@ -377,6 +383,9 @@ pub struct R3d {
     frame_no: u32,
     /// Draws reused from the previous frame (statistics).
     pub cache_hits: u32,
+    /// Draws that reused their model-side work with a new view (see `draw_slot`).
+    pub view_hits: u32,
+    wc_tmp: Vec<[f32; 3]>,
 }
 
 /// f32 → s15.16 split into (integer, fraction) halves (saturating; truncated towards zero
@@ -457,6 +466,22 @@ pub fn model_scaled(model: &Mat4, pos_scale: f32) -> Mat4 {
         [model[2][0] * s, model[2][1] * s, model[2][2] * s, 0.0],
         [model[3][0], model[3][1], model[3][2], 1.0],
     ]
+}
+
+/// The camera-independent half of culling a rigid mesh drawn with scaled model matrix `mp`
+/// ([`model_scaled`]): the radius scale bound (the X, Y, W columns of the view x projection
+/// are the orthonormal view rotation for the direction rows, so transformed spheres grow by
+/// at most the longest scaled model row) and, into `out`, the world-space centres of the
+/// whole-mesh sphere and of each part's.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+fn world_spheres(res: &MeshRes, mp: &Mat4, out: &mut Vec<[f32; 3]>) -> f32 {
+    let rn = |r: usize| mp[r][0] * mp[r][0] + mp[r][1] * mp[r][1] + mp[r][2] * mp[r][2];
+    let s = fast_sqrt(rn(0).max(rn(1)).max(rn(2))) * 1.0001;
+    let xf = |c: [f32; 3]| -> [f32; 3] { core::array::from_fn(|k| c[0] * mp[0][k] + c[1] * mp[1][k] + c[2] * mp[2][k] + mp[3][k]) };
+    out.clear();
+    out.push(xf(res.center));
+    out.extend(res.parts.iter().map(|p| xf(p.center)));
+    s
 }
 
 /// Packs a scaled model matrix ([`model_scaled`]; lanes x, y, z of each row) and the draw's
@@ -600,6 +625,8 @@ impl R3d {
             prev_vis: Vec::with_capacity(2048),
             frame_no: 1,
             cache_hits: 0,
+            view_hits: 0,
+            wc_tmp: Vec::new(),
         }
     }
 
@@ -785,6 +812,7 @@ impl R3d {
         core::mem::swap(&mut self.vis, &mut self.prev_vis);
         self.vis.clear();
         self.cache_hits = 0;
+        self.view_hits = 0;
         self.frame = frame_uniform_vp(view, false);
         self.frame_noclip = frame_uniform_vp(view, true);
         self.vp = view_proj(view, false);
@@ -800,35 +828,20 @@ impl R3d {
     }
 
     /// Culls a rigid mesh's batches against the screen and near/far with their bounding
-    /// spheres, pushing the visible part indices to `vis`. Conservative: a culled batch is
-    /// one whose every face MDX would reject (all vertices off-screen past one edge, or
-    /// beyond near/far), so the image is unchanged.
+    /// spheres (world-space centres `wc` from [`world_spheres`], radius scale bound `s`),
+    /// pushing the visible part indices to `vis`. Conservative: a culled batch is one whose
+    /// every face MDX would reject (all vertices off-screen past one edge, or beyond
+    /// near/far), so the image is unchanged.
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
-    fn cull_parts(&mut self, mesh: usize, mp: &Mat4, no_clip: bool) -> u32 {
+    fn cull_world(&mut self, mesh: usize, wc: &[[f32; 3]], s: f32, no_clip: bool) -> u32 {
         let res = &self.meshes[mesh];
         let first = self.vis.len();
         let vp = &self.vp;
-        // Scale bound: the X, Y, W columns of the view x projection are the (orthonormal)
-        // view rotation for the direction rows, so the folded rows are as long as the
-        // scaled model rows.
-        let rn = |r: usize| mp[r][0] * mp[r][0] + mp[r][1] * mp[r][1] + mp[r][2] * mp[r][2];
-        let s = fast_sqrt(rn(0).max(rn(1)).max(rn(2))) * 1.0001;
         let (near, far) = (self.view.near, self.view.far);
         let CullPlanes { a, n } = self.cull;
-        // X, Y, W columns of the folded matrix (model x view x projection): computed once
-        // for meshes with several spheres, else each centre goes through both matrices.
-        let tests = (res.radius >= 0.0 && res.parts.len() > 1) as usize + res.parts.iter().filter(|p| p.radius >= 0.0).count();
-        let fold = |r: usize, c: usize| mp[r][0] * vp[0][c] + mp[r][1] * vp[1][c] + mp[r][2] * vp[2][c] + if r == 3 { vp[3][c] } else { 0.0 };
-        let f: Option<[[f32; 3]; 4]> = (tests > 2).then(|| core::array::from_fn(|r| [fold(r, 0), fold(r, 1), fold(r, 3)]));
-        let clip = |c: [f32; 3]| -> [f32; 3] {
-            match &f {
-                Some(f) => core::array::from_fn(|k| c[0] * f[0][k] + c[1] * f[1][k] + c[2] * f[2][k] + f[3][k]),
-                None => {
-                    let p: [f32; 3] = core::array::from_fn(|k| c[0] * mp[0][k] + c[1] * mp[1][k] + c[2] * mp[2][k] + mp[3][k]);
-                    let col = |k: usize| p[0] * vp[0][k] + p[1] * vp[1][k] + p[2] * vp[2][k] + vp[3][k];
-                    [col(0), col(1), col(3)]
-                }
-            }
+        let clip = |p: [f32; 3]| -> [f32; 3] {
+            let col = |k: usize| p[0] * vp[0][k] + p[1] * vp[1][k] + p[2] * vp[2][k] + vp[3][k];
+            [col(0), col(1), col(3)]
         };
         // Sphere test: 1 = wholly outside a plane (culled), 2 = wholly inside all, 0 = both.
         let test = |c: [f32; 3], radius: f32| -> u32 {
@@ -845,13 +858,13 @@ impl R3d {
                 0
             }
         };
-        let whole = if res.radius >= 0.0 && res.parts.len() > 1 { test(res.center, res.radius) } else { 0 };
+        let whole = if res.radius >= 0.0 && res.parts.len() > 1 { test(wc[0], res.radius) } else { 0 };
         if whole == 1 {
             return 0;
         }
         let mut sent = 0;
         for (i, p) in res.parts.iter().enumerate() {
-            if whole == 0 && p.radius >= 0.0 && test(p.center, p.radius) == 1 {
+            if whole == 0 && p.radius >= 0.0 && test(wc[i + 1], p.radius) == 1 {
                 continue;
             }
             self.vis.push(i as u16);
@@ -885,38 +898,68 @@ impl R3d {
     pub fn draw_slot(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams, slot: u32, stamp: u32) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         self.queued_tris += res.tris;
+        let pos_scale = res.pos_scale;
         let cached = slot != u32::MAX && stamp != 0;
         let pk = if cached { params_key(p) } else { [0; 6] };
+        let prev = self.frame_no.wrapping_sub(1);
         if cached {
             let i = slot as usize;
             if self.slots.len() <= i {
                 self.slots.resize_with(i + 1, || None);
             }
             if let Some(e) = &mut self.slots[i] {
-                if e.frame == self.frame_no.wrapping_sub(1) && e.stamp == stamp && e.mesh == mesh.0 && e.view_gen == self.view_gen && e.params == pk {
-                    self.cache_hits += 1;
-                    self.sent_tris += e.sent;
-                    e.frame = self.frame_no;
-                    if e.vis_count == 0 {
+                if e.frame == prev && e.stamp == stamp && e.mesh == mesh.0 && e.params == pk {
+                    if e.view_gen == self.view_gen {
+                        // Nothing changed: last frame's uniform and visible parts.
+                        self.cache_hits += 1;
+                        self.sent_tris += e.sent;
+                        e.frame = self.frame_no;
+                        if e.vis_count == 0 {
+                            return;
+                        }
+                        let vis_first = self.vis.len() as u32;
+                        self.vis.extend_from_slice(&self.prev_vis[e.vis_first as usize..(e.vis_first + e.vis_count) as usize]);
+                        e.vis_first = vis_first;
+                        let uptr: *const R3dDrawUniform = &e.u[e.cur];
+                        let n = e.vis_count;
+                        self.push_rec_ptr(list, mesh, p, uptr, vis_first, n);
                         return;
                     }
+                    // Only the view changed (the camera moved): re-cull from the cached
+                    // world-space spheres and refresh the fog; no matrix work.
+                    let mut e = self.slots[i].take().unwrap();
+                    self.view_hits += 1;
                     let vis_first = self.vis.len() as u32;
-                    self.vis.extend_from_slice(&self.prev_vis[e.vis_first as usize..(e.vis_first + e.vis_count) as usize]);
+                    let sent0 = self.sent_tris;
+                    let vis_count = self.cull_world(mesh.0 as usize, &e.wc, e.s, p.no_clip);
+                    e.frame = self.frame_no;
+                    e.view_gen = self.view_gen;
+                    e.sent = self.sent_tris - sent0;
                     e.vis_first = vis_first;
-                    let uptr: *const R3dDrawUniform = &e.u[e.cur];
-                    let n = e.vis_count;
-                    self.push_rec_ptr(list, mesh, p, uptr, vis_first, n);
+                    e.vis_count = vis_count;
+                    if vis_count != 0 {
+                        let mut u = e.base_u;
+                        let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(model) } else { 0.0 };
+                        draw_fog(&mut u, &self.view, p, w0);
+                        e.cur = (e.cur + 1) % 3;
+                        e.u[e.cur] = u;
+                        let uptr: *const R3dDrawUniform = &e.u[e.cur];
+                        self.push_rec_ptr(list, mesh, p, uptr, vis_first, vis_count);
+                    }
+                    self.slots[i] = Some(e);
                     return;
                 }
             }
         }
-        let mp = model_scaled(model, res.pos_scale);
+        let mp = model_scaled(model, pos_scale);
+        let mut wc = core::mem::take(&mut self.wc_tmp);
+        let s = world_spheres(&self.meshes[mesh.0 as usize], &mp, &mut wc);
         let vis_first = self.vis.len() as u32;
         let sent0 = self.sent_tris;
-        let vis_count = self.cull_parts(mesh.0 as usize, &mp, p.no_clip);
-        let mut u = R3dDrawUniform::default();
+        let vis_count = self.cull_world(mesh.0 as usize, &wc, s, p.no_clip);
+        let base_u = if vis_count != 0 || cached { draw_uniform(&mp, p) } else { R3dDrawUniform::default() };
+        let mut u = base_u;
         if vis_count != 0 {
-            u = draw_uniform(&mp, p);
             let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(model) } else { 0.0 };
             draw_fog(&mut u, &self.view, p, w0);
         }
@@ -934,6 +977,9 @@ impl R3d {
                     vis_count: 0,
                     cur: 0,
                     u: [R3dDrawUniform::default(); 3],
+                    base_u: R3dDrawUniform::default(),
+                    s: 0.0,
+                    wc: Vec::new(),
                 })
             });
             e.frame = frame;
@@ -944,6 +990,10 @@ impl R3d {
             e.sent = sent;
             e.vis_first = vis_first;
             e.vis_count = vis_count;
+            e.base_u = base_u;
+            e.s = s;
+            e.wc.clear();
+            e.wc.extend_from_slice(&wc);
             if vis_count != 0 {
                 e.cur = (e.cur + 1) % 3;
                 e.u[e.cur] = u;
@@ -953,6 +1003,7 @@ impl R3d {
         } else if vis_count != 0 {
             self.push_rec(list, mesh, p, u, vis_first, vis_count);
         }
+        self.wc_tmp = wc;
     }
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]

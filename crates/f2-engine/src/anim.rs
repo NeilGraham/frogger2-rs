@@ -49,6 +49,10 @@ pub struct Actor {
     /// The last [`xform_actor`] result and its inputs ([`xform_actor_cached`]: mesh-sink
     /// back ends skip the hierarchy walk while the pose does not change).
     pub pose: PoseCache,
+    /// The model's objects that have a mesh, in pre-order, with their flags
+    /// (`(model id, [(object index, flags)])`): the recorded path walks this instead of the
+    /// object tree every frame (same objects, same order).
+    pub mesh_objects: Option<(u32, Vec<(u16, i16)>)>,
 }
 
 /// Inputs and result of the last [`xform_actor_cached`] of an [`Actor`].
@@ -99,6 +103,7 @@ impl Default for Actor {
             wrap_tc: false,
             modge_frame: 0,
             pose: PoseCache::default(),
+            mesh_objects: None,
         }
     }
 }
