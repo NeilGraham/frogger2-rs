@@ -24,21 +24,26 @@ Mg_Clipping:
     jal_and_j Mg_LoadShader, _MG_CLIPPING
 
 ##############################################################################
-# F2_Modge: the MODGE/WAVE water animation (r3d.rs `animate_modge`) on the RSP: per position
-# the offsets from the x and z phase summands the CPU computed (phase A), then per vertex
-# (phase B). Bit-exact model: r3d.rs `modge_pair16` / `modge_apply`.
+# F2_Modge: the MODGE/WAVE water animation (r3d.rs `animate_modge`) on the RSP: the per-x/z
+# phase summands, then per position the offsets (phase A), then per vertex (phase B).
+# Bit-exact model: r3d.rs `modge_x16` / `modge_z16` / `modge_pair16` / `modge_apply`.
 #
-# a0 (low 24 bits) = RDRAM address of a descriptor built by r3d.rs, a1 >> 16 = its size:
+# a0 (low 24 bits) = RDRAM address of the frame's descriptor built by r3d.rs, a1 >> 16 = its
+# size (MODGE_HEAD):
 #   +0  u32 base vertices (the mesh's stored vertices, 16 bytes each)
 #   +4  u32 output (the mesh's vertex buffer, which the vertex loads read)
 #   +8  u32 per-vertex u16 position index (readable up to 8 bytes past the end)
 #   +12 u16 vertex count, +14 u16 position count, +16 u16 flags (bit 2: write alpha)
 #   +18 s16 y multiplier, +20 s16 s/t multiplier (VMULF, Q15), +22 u16 DMEM offset of the
 #       position table (8 bytes per position, room for a multiple of 16)
-#   +24 u32 position list: per position u16 offsets (in this descriptor) of its x and z
-#       terms, u16 stored alpha << 7, pad
+#   +24 u32 position list: per position u16 offsets (in DMEM, from the descriptor) of its x
+#       and z terms, u16 stored alpha << 7, pad
 #   +28 u32 sine table (Q14, 257 entries over one turn, padded to 520 bytes)
-#   +32 x terms, then z terms: 3 x u16 phase summands (2^16 = one turn) + pad each
+#   +32 u32 term list: per distinct x [B, P, S], then per distinct z [A, Q, R]: u16 static
+#       phases (2^16 = one turn) + pad; DMAed after the header, the terms replace them
+#   +36 u16 x count, +38 u16 z count, +40 u16 time phases tB tP tS tA tQ tR
+# Terms (8 per pass): x: [sinph(B + tB), P + tP, sinph(S + tS + 1/4)], z: [A + tA,
+#   sinph(Q + tQ + 1/4) + 1/4, R + tR], sinph(p) = sin(p) as a phase (VMUDM by 41722).
 # Phase A per position: S = (sin + 1) Q10 of each summed phase (table, 8-bit interpolation),
 #   dy = S_y*ky, ds = S_x*kst, dt = S_z*kst (VMULF), alpha = a0*(1280 + S_x + S_z)/3328.
 # Phase B per vertex: y += dy, s += ds, t += dt (saturating to s16), alpha = its position's
@@ -46,14 +51,16 @@ Mg_Clipping:
 # Runs between draws: the vertex cache (and the clip cache, for staging) are scratch.
 ##############################################################################
 #define MODGE_DESC   MG_VERTEX_CACHE
+#define MODGE_HEAD   56
 #define MODGE_TAB_BYTES 520
 #define MODGE_VBUF   (MG_VERTEX_CACHE + 0)
 #define MODGE_IBUF   (MG_VERTEX_CACHE + 512)
 #define MODGE_CHUNK  32
-    # Staging for 8 positions (16-byte aligned): per sine j at 48*j: table value, slope,
-    # fraction << 8; stored alpha << 7 at 144; constants at 160; results at 176..239.
+    # Staging for 8 lanes (16-byte aligned): per sine j at 48*j: table value, slope,
+    # fraction << 8; stored alpha << 7 at 144; constants at 160 and 240; results at 176..239.
 #define MODGE_ST     MG_CLIP_CACHE
 #define vK           $v20
+#define vK2          $v21
 
     # r = clamp(r, -32768, 32767) (r holds a sum of two s16 values).
     .macro F2SatS16 r
@@ -68,13 +75,35 @@ Mg_Clipping:
 1:
     .endm
 
-    # (sin + 1) Q10 of staged sine j into vector register vd.
-    .macro F2ModgeSin j, vd
+    # Stage sine slot j of the current lane (t8) for the phase in register r (any width:
+    # wraps at 16 bits). Clobbers t4, t5.
+    .macro F2Gather r, j
+    srl t4, \r, 8
+    andi t4, t4, 0xFF
+    sll t4, t4, 1
+    addu t4, t4, s7
+    lh t5, 0(t4)
+    lh t4, 2(t4)
+    subu t4, t4, t5
+    sh t5, (48*\j)(t8)
+    sh t4, (48*\j + 16)(t8)
+    andi t4, \r, 0xFF
+    sll t4, t4, 8
+    sh t4, (48*\j + 32)(t8)
+    .endm
+
+    # Q14 sine of staged slot j into vector register vd.
+    .macro F2ModgeSinRaw j, vd
     lqv $v01, (48*\j),t8
     lqv $v02, (48*\j + 16),t8
     lqv $v03, (48*\j + 32),t8
     vmudm $v02, $v02, $v03
-    vadd $v01, $v01, $v02
+    vadd \vd, $v01, $v02
+    .endm
+
+    # (sin + 1) Q10 of staged slot j into vector register vd.
+    .macro F2ModgeSin j, vd
+    F2ModgeSinRaw \j, $v01
     vadd $v01, $v01, vK.e0
     vmudm $v01, $v01, vK.e1
     vadd \vd, $v01, vK.e2
@@ -83,23 +112,24 @@ Mg_Clipping:
 F2_Modge:
     jal DMAWaitIdle
     nop
-    # Descriptor (header + terms).
+    # Header.
     sll s0, a0, 8
     srl s0, s0, 8
     srl v1, a1, 16
     addiu t0, v1, -1
     jal DMAIn
     li s4, %lo(MODGE_DESC)
-    lw s1, %lo(MODGE_DESC + 0)
-    lw s2, %lo(MODGE_DESC + 4)
-    lw s3, %lo(MODGE_DESC + 8)
-    lhu s5, %lo(MODGE_DESC + 12)
-    lhu a3, %lo(MODGE_DESC + 14)
-    lhu k0, %lo(MODGE_DESC + 16)
-    lhu s6, %lo(MODGE_DESC + 22)
-    addiu s6, s6, %lo(MODGE_DESC)
-    lw a2, %lo(MODGE_DESC + 24)
-    # Constants: 8, 4096, 1024, ky, kst, 5041, 1280, 255.
+    # The static term list after it (x then z).
+    lhu t5, %lo(MODGE_DESC + 36)
+    lhu t6, %lo(MODGE_DESC + 38)
+    addu t4, t5, t6
+    sll t4, t4, 3
+    addu v1, v1, t4
+    lw s0, %lo(MODGE_DESC + 32)
+    li s4, %lo(MODGE_DESC) + MODGE_HEAD
+    jal DMAIn
+    addiu t0, t4, -1
+    # Constants: 8, 4096, 1024, ky, kst, 5041, 1280, 255; 41722, 16384.
     li t8, %lo(MODGE_ST)
     li t4, 8
     sh t4, 160(t8)
@@ -117,17 +147,134 @@ F2_Modge:
     sh t4, 172(t8)
     li t4, 255
     sh t4, 174(t8)
+    li t4, 41722
+    sh t4, 240(t8)
+    li t4, 16384
+    sh t4, 242(t8)
     lqv vK, 160,t8
-    # Sine table after the descriptor, then the position input chunk.
+    lqv vK2, 240,t8
+    # Time phases.
+    lhu s1, %lo(MODGE_DESC + 40)
+    lhu s2, %lo(MODGE_DESC + 42)
+    lhu s3, %lo(MODGE_DESC + 44)
+    lhu s5, %lo(MODGE_DESC + 46)
+    lhu s6, %lo(MODGE_DESC + 48)
+    lhu k0, %lo(MODGE_DESC + 50)
+    # Sine table after the terms.
     lw s0, %lo(MODGE_DESC + 28)
     addiu s7, v1, %lo(MODGE_DESC)
     move s4, s7
     jal DMAIn
     li t0, MODGE_TAB_BYTES - 1
+    # Terms in place: x, then z.
+    li t7, %lo(MODGE_DESC) + MODGE_HEAD
+    lhu a3, %lo(MODGE_DESC + 36)
+F2_ModgeXLoop:
+    blez a3, F2_ModgeZ
+    nop
+    jal F2_ModgeXEight
+    nop
+    j F2_ModgeXLoop
+    addiu a3, a3, -8
+F2_ModgeZ:
+    lhu a3, %lo(MODGE_DESC + 38)
+F2_ModgeZLoop:
+    blez a3, F2_ModgePositions
+    nop
+    jal F2_ModgeZEight
+    nop
+    j F2_ModgeZLoop
+    addiu a3, a3, -8
+
+    # min(a3, 8) lanes into k1 (and t6), t9 = t7 (group start), t8 = staging.
+    .macro F2LaneCount
+    move k1, a3
+    slti t4, a3, 8
+    bnez t4, 1f
+    nop
+    li k1, 8
+1:  move t6, k1
+    move t9, t7
+    li t8, %lo(MODGE_ST)
+    .endm
+
+F2_ModgeXEight:
+    F2LaneCount
+1:  lhu t0, 0(t7)
+    addu t0, t0, s1
+    lhu t1, 2(t7)
+    addu t1, t1, s2
+    sh t1, 2(t7)
+    lhu t3, 4(t7)
+    addu t3, t3, s3
+    addiu t3, t3, 0x4000
+    F2Gather t0, 0
+    F2Gather t3, 1
+    addiu t8, t8, 2
+    addiu t6, t6, -1
+    bnez t6, 1b
+    addiu t7, t7, 8
+    li t8, %lo(MODGE_ST)
+    ctc2 zero, COP2_CTRL_VCO
+    F2ModgeSinRaw 0, $v04
+    F2ModgeSinRaw 1, $v05
+    vmudm $v04, $v04, vK2.e0
+    vmudm $v05, $v05, vK2.e0
+    sqv $v04, 176,t8
+    sqv $v05, 192,t8
+    move t6, k1
+2:  lh t4, 176(t8)
+    sh t4, 0(t9)
+    lh t4, 192(t8)
+    sh t4, 4(t9)
+    addiu t8, t8, 2
+    addiu t6, t6, -1
+    bnez t6, 2b
+    addiu t9, t9, 8
+    jr ra
+    nop
+
+F2_ModgeZEight:
+    F2LaneCount
+1:  lhu t0, 0(t7)
+    addu t0, t0, s5
+    sh t0, 0(t7)
+    lhu t1, 2(t7)
+    addu t1, t1, s6
+    addiu t1, t1, 0x4000
+    lhu t3, 4(t7)
+    addu t3, t3, k0
+    sh t3, 4(t7)
+    F2Gather t1, 0
+    addiu t8, t8, 2
+    addiu t6, t6, -1
+    bnez t6, 1b
+    addiu t7, t7, 8
+    li t8, %lo(MODGE_ST)
+    ctc2 zero, COP2_CTRL_VCO
+    F2ModgeSinRaw 0, $v04
+    vmudm $v04, $v04, vK2.e0
+    vadd $v04, $v04, vK2.e1
+    sqv $v04, 176,t8
+    move t6, k1
+2:  lh t4, 176(t8)
+    sh t4, 2(t9)
+    addiu t8, t8, 2
+    addiu t6, t6, -1
+    bnez t6, 2b
+    addiu t9, t9, 8
+    jr ra
+    nop
+
+F2_ModgePositions:
+    lhu a3, %lo(MODGE_DESC + 14)
+    lhu s6, %lo(MODGE_DESC + 22)
+    addiu s6, s6, %lo(MODGE_DESC)
+    lw a2, %lo(MODGE_DESC + 24)
     addiu v1, s7, MODGE_TAB_BYTES
     move v0, s6
 F2_ModgePosChunk:
-    blez a3, F2_ModgeVerts
+    blez a3, F2_ModgeVertsInit
     move t9, a3
     slti t4, a3, 16
     bnez t4, F2_ModgePosCount
@@ -223,8 +370,14 @@ F2_ModgeLane:
     jr ra
     nop
 
-F2_ModgeVerts:
+F2_ModgeVertsInit:
     # Phase B (the vertex buffers overlay the descriptor area; the table is at s6).
+    lw s1, %lo(MODGE_DESC + 0)
+    lw s2, %lo(MODGE_DESC + 4)
+    lw s3, %lo(MODGE_DESC + 8)
+    lhu s5, %lo(MODGE_DESC + 12)
+    lhu k0, %lo(MODGE_DESC + 16)
+F2_ModgeVerts:
     blez s5, F2_ModgeDone
     move t3, s5
     slti t9, s5, MODGE_CHUNK

@@ -304,25 +304,25 @@ struct ModgeMesh {
     rsp: Option<ModgeRsp>,
 }
 
-/// `F2_Modge` descriptor header bytes (the x and z terms follow, 8 bytes each).
-const MODGE_DESC_HEAD: usize = 32;
+/// `F2_Modge` descriptor bytes (the frame's header; in DMEM the x and z terms follow, 8
+/// bytes each).
+const MODGE_DESC_HEAD: usize = 56;
 /// DMEM scratch of `F2_Modge` (magma's vertex cache + padding, rsp_f2mdx.S).
 const MODGE_DMEM: usize = 1960;
 /// The sine table as `F2_Modge` DMAs it (bytes; [`SinTab`] padded to 8).
 const MODGE_TAB_BYTES: usize = 520;
 
-/// RDRAM buffers of a mesh whose positions and vertices `F2_Modge` (rsp_f2mdx.S) animates:
-/// the stored vertices, the per-vertex position index, the position list (byte offsets of
-/// its x and z terms in the descriptor, stored alpha << 7) and a ring of three descriptors
-/// (header + this frame's x/z terms: the RSP may still read the two previous frames' while
-/// the CPU writes the next).
+/// RDRAM buffers of a mesh `F2_Modge` (rsp_f2modge.S) animates: the stored vertices, the
+/// per-vertex position index, the position list (DMEM offsets of its x and z terms, stored
+/// alpha << 7), the static x/z phases and a ring of three descriptors (the frame's header:
+/// the RSP may still read the two previous frames' while the CPU writes the next).
 struct ModgeRsp {
     buf: Vec<u64>,
     idx_off: usize,
     pos_off: usize,
+    term_off: usize,
     desc_off: usize,
-    /// Descriptor bytes (`F2_Modge`'s DMA size) and the ring's stride.
-    desc_size: usize,
+    /// The ring's stride.
     desc_stride: usize,
     /// DMEM offset of the position table (`MODGE_DMEM` - 8 x positions rounded up to 16).
     pt_off: u16,
@@ -558,15 +558,43 @@ fn modge_pair16(t: &SinTab, x: &[u16; 3], z: &[u16; 3], a0: u8, k: ModgeK16) -> 
     }
 }
 
-/// The 16-bit phase summands `F2_Modge` reads ([`modge_x_terms`] / [`modge_z_terms`]).
-fn modge_terms16(t: &[u32; 3]) -> [u16; 3] {
-    t.map(|v| (v >> 16) as u16)
+/// Q14 sine of a 16-bit phase as `F2_Modge` computes it.
+#[inline(always)]
+fn rsp_isin(t: &SinTab, ph: u16) -> i32 {
+    let i = (ph >> 8) as usize;
+    let (a, d) = (t[i] as i32, t[i + 1] as i32 - t[i] as i32);
+    (a + rsp_vmudm(d, ((ph & 0xFF) as u32) << 8)).clamp(-32768, 32767)
 }
 
-/// One vertex of `F2_Modge` (MODGE and WAVE): (y, s, t, alpha).
+/// A Q14 value taken as radians, as a 16-bit phase (`VMUDM` by 41722 = 2^32/2π/2^14/2^16·2^16).
+#[inline(always)]
+fn rsp_q14ph(v: i32) -> u16 {
+    rsp_vmudm(v, 41722) as u16
+}
+
+/// `F2_Modge`'s x summands [B, P, S] from the static 16-bit x phases and the time phases
+/// (`modge_x_terms` in 16 bits).
+fn modge_x16(t: &SinTab, b: &[u16; 3], tp: &[u16; 6]) -> [u16; 3] {
+    [rsp_q14ph(rsp_isin(t, b[0].wrapping_add(tp[0]))), b[1].wrapping_add(tp[1]), rsp_q14ph(rsp_isin(t, b[2].wrapping_add(tp[2]).wrapping_add(0x4000)))]
+}
+
+/// `F2_Modge`'s z summands [A, Q + π/2, R] (`modge_z_terms` in 16 bits).
+fn modge_z16(t: &SinTab, b: &[u16; 3], tp: &[u16; 6]) -> [u16; 3] {
+    let q = (rsp_vmudm(rsp_isin(t, b[1].wrapping_add(tp[4]).wrapping_add(0x4000)), 41722) + 16384) as u16;
+    [b[0].wrapping_add(tp[3]), q, b[2].wrapping_add(tp[5])]
+}
+
+/// Static or time phases in the 16 bits `F2_Modge` uses.
+fn ph16<const N: usize>(p: &[u32; N]) -> [u16; N] {
+    p.map(|v| (v >> 16) as u16)
+}
+
+/// One vertex of `F2_Modge` (MODGE and WAVE) at coordinate (x, z) and frame `fc`.
 #[cfg(test)]
-fn modge_vertex16(px: &[u32; 3], pz: &[u32; 3], y0: i16, s0: i16, t0: i16, a0: u8, k: ModgeK16) -> (i16, i16, i16, u8) {
-    let q = modge_pair16(sin_q14(), &modge_terms16(px), &modge_terms16(pz), a0, k);
+fn modge_vertex16(x: f32, z: f32, fc: u32, y0: i16, s0: i16, t0: i16, a0: u8, k: ModgeK16) -> (i16, i16, i16, u8) {
+    let (t, tp) = (sin_q14(), ph16(&modge_time_phases(fc)));
+    let (px, pz) = (modge_x16(t, &ph16(&modge_x_phases(x)), &tp), modge_z16(t, &ph16(&modge_z_phases(z)), &tp));
+    let q = modge_pair16(t, &px, &pz, a0, k);
     let (y, s, t) = modge_apply(&q, y0, s0, t0);
     (y, s, t, q.a)
 }
@@ -1638,16 +1666,17 @@ impl R3d {
         let tb = sin_q14();
         let tp = modge_time_phases(fc);
         let (modge, wave) = (flags & 1 != 0, flags & 2 != 0);
-        let _ = modge;
-        for (ph, o) in st.xph.iter().zip(st.xt.iter_mut()) {
-            *o = modge_x_terms(tb, ph, &tp, wave);
-        }
-        for (ph, o) in st.zph.iter().zip(st.zt.iter_mut()) {
-            *o = modge_z_terms(tb, ph, &tp, wave);
+        let alpha = modge_writes_alpha(flags);
+        if st.rsp.is_none() {
+            for (ph, o) in st.xph.iter().zip(st.xt.iter_mut()) {
+                *o = modge_x_terms(tb, ph, &tp, wave);
+            }
+            for (ph, o) in st.zph.iter().zip(st.zt.iter_mut()) {
+                *o = modge_z_terms(tb, ph, &tp, wave);
+            }
         }
         let (ky, ky_sh) = (st.ky, st.ky_sh);
         let (xt, zt) = (&st.xt[..], &st.zt[..]);
-        let alpha = modge_writes_alpha(flags);
         if st.rsp.is_none() {
             for (&(xi, zi, a0), q) in st.pairs.iter().zip(st.pt.iter_mut()) {
                 if let (Some(px), Some(pz)) = (xt.get(xi as usize), zt.get(zi as usize)) {
@@ -1656,16 +1685,16 @@ impl R3d {
             }
         }
         if let Some(r) = &mut st.rsp {
-            // Positions and vertices on the RSP: this frame's descriptor (header + x/z terms).
+            // Everything on the RSP: this frame's descriptor (header + time phases).
             r.cur = (r.cur + 1) % 3;
             let off = r.desc_off + r.cur * r.desc_stride;
-            let (size, idx_off, pos_off, pt_off, k) = (r.desc_size, r.idx_off, r.pos_off, r.pt_off, r.k);
-            let (n, np) = (st.base.len() as u16, st.pairs.len() as u16);
+            let (idx_off, pos_off, term_off, pt_off, k) = (r.idx_off, r.pos_off, r.term_off, r.pt_off, r.k);
+            let (n, np, nx, nz) = (st.base.len() as u16, st.pairs.len() as u16, st.xph.len() as u16, st.zph.len() as u16);
             let out = res.verts as *const u8;
             let b = r.bytes();
             let bp = b.as_ptr();
-            let (base, idx, pos) = (phys(bp), phys(bp.wrapping_add(idx_off)), phys(bp.wrapping_add(pos_off)));
-            let d = &mut b[off..off + size];
+            let (base, idx, pos, terms) = (phys(bp), phys(bp.wrapping_add(idx_off)), phys(bp.wrapping_add(pos_off)), phys(bp.wrapping_add(term_off)));
+            let d = &mut b[off..off + MODGE_DESC_HEAD];
             let mut w = |o: usize, v: &[u8]| d[o..o + v.len()].copy_from_slice(v);
             w(0, &base.to_be_bytes());
             w(4, &phys(out).to_be_bytes());
@@ -1678,15 +1707,14 @@ impl R3d {
             w(22, &pt_off.to_be_bytes());
             w(24, &pos.to_be_bytes());
             w(28, &phys(modge_rsp_table()).to_be_bytes());
-            // The terms (one 8-byte store each).
-            for (e, t) in d[MODGE_DESC_HEAD..].chunks_exact_mut(8).zip(xt.iter().chain(zt.iter())) {
-                let [a, b, c] = modge_terms16(t);
-                let v = (a as u64) << 48 | (b as u64) << 32 | (c as u64) << 16;
-                let e: &mut [u8; 8] = e.try_into().unwrap();
-                *e = v.to_be_bytes();
+            w(32, &terms.to_be_bytes());
+            w(36, &nx.to_be_bytes());
+            w(38, &nz.to_be_bytes());
+            for (i, t) in ph16(&tp).iter().enumerate() {
+                w(40 + 2 * i, &t.to_be_bytes());
             }
             Self::c_writeback(d);
-            self.modge_cmds.push((mesh.0, d.as_ptr(), size as u32));
+            self.modge_cmds.push((mesh.0, d.as_ptr(), MODGE_DESC_HEAD as u32));
         } else {
             // SAFETY: `verts` points into a file kept in `self.files` for as long as the mesh.
             let v = unsafe { core::slice::from_raw_parts_mut(res.verts as *mut u8, res.n_verts as usize * 16) };
@@ -1753,12 +1781,12 @@ impl R3d {
         }
         let ky = libm::round(k * (1u64 << ky_sh) as f64) as i32;
         let (xt, zt) = (alloc::vec![[0; 3]; xs.len()], alloc::vec![[0; 3]; zs.len()]);
-        let (xph, zph) = (xs.iter().map(|&x| modge_x_phases(x)).collect(), zs.iter().map(|&z| modge_z_phases(z)).collect());
         let pt = alloc::vec![ModgePair::default(); pairs.len()];
         // F2_Modge's DMEM: descriptor (header + terms), sine table, a 16-position input chunk,
         // then the position table at the end (8 bytes each, rounded up to 16 positions).
         let desc_size = MODGE_DESC_HEAD + 8 * (xs.len() + zs.len());
         let pt_off = MODGE_DMEM - 8 * pairs.len().next_multiple_of(16);
+        let (xph, zph): (Vec<[u32; 3]>, Vec<[u32; 3]>) = (xs.iter().map(|&x| modge_x_phases(x)).collect(), zs.iter().map(|&z| modge_z_phases(z)).collect());
         // (and a wave height multiplier within s16: stored-unit scales above 1/200)
         let fits = desc_size + MODGE_TAB_BYTES + 128 <= pt_off && 5.0 / (1024.0 * scale) * 32768.0 < 32767.0;
         let rsp = (cfg!(target_vendor = "nintendo64") && fits && option_env!("F2N64_MODGE_CPU").is_none()).then(|| {
@@ -1766,15 +1794,16 @@ impl R3d {
             // 8-byte words), the position list, 3 descriptors (16-byte multiples).
             let idx_off = n * 16;
             let pos_off = (idx_off + n * 2 + 8 + 7) & !7;
-            let desc_off = (pos_off + pairs.len() * 8 + 15) & !15;
-            let desc_stride = (desc_size + 15) & !15;
+            let term_off = pos_off + pairs.len() * 8;
+            let desc_off = (term_off + (xph.len() + zph.len()) * 8 + 15) & !15;
+            let desc_stride = (MODGE_DESC_HEAD + 15) & !15;
             let total = desc_off + 3 * desc_stride;
             let mut r = ModgeRsp {
                 buf: alloc::vec![0u64; total.div_ceil(8) + 2],
                 idx_off,
                 pos_off,
+                term_off,
                 desc_off,
-                desc_size,
                 desc_stride,
                 pt_off: pt_off as u16,
                 cur: 0,
@@ -1790,6 +1819,11 @@ impl R3d {
                 let (xo, zo) = (MODGE_DESC_HEAD + 8 * xi as usize, MODGE_DESC_HEAD + 8 * (nx + zi as usize));
                 let e = (xo as u64) << 48 | (zo as u64) << 32 | ((a0 as u64) << 7) << 16;
                 b[pos_off + 8 * i..pos_off + 8 * i + 8].copy_from_slice(&e.to_be_bytes());
+            }
+            for (i, p) in xph.iter().chain(zph.iter()).enumerate() {
+                let [a, c, d] = ph16(p);
+                let e = (a as u64) << 48 | (c as u64) << 32 | (d as u64) << 16;
+                b[term_off + 8 * i..term_off + 8 * i + 8].copy_from_slice(&e.to_be_bytes());
             }
             Self::c_writeback(&b[..desc_off]);
             r
@@ -2336,14 +2370,13 @@ impl R3d {
             // The RSP wrote RDRAM behind the cache: read through the uncached segment.
             let v = (res.verts as usize & 0x1FFF_FFFF) | 0xA000_0000;
             let base = r.buf.as_ptr() as *const u8;
-            let desc = r.desc_off + r.cur * r.desc_stride + MODGE_DESC_HEAD;
-            // SAFETY: inside `buf` (the descriptor's terms).
-            let term = |k: usize| -> [u16; 3] {
-                let e = unsafe { *(base.add(desc + 8 * k) as *const [u8; 8]) };
-                [0, 2, 4].map(|o| u16::from_be_bytes([e[o], e[o + 1]]))
-            };
-            let nx = st.xt.len();
-            let pt: Vec<ModgePair> = st.pairs.iter().map(|&(xi, zi, a0)| modge_pair16(sin_q14(), &term(xi as usize), &term(nx + zi as usize), a0, r.k)).collect();
+            let desc = r.desc_off + r.cur * r.desc_stride;
+            // SAFETY: inside `buf` (the descriptor's time phases).
+            let tp: [u16; 6] = core::array::from_fn(|i| unsafe { u16::from_be_bytes(*(base.add(desc + 40 + 2 * i) as *const [u8; 2])) });
+            let t = sin_q14();
+            let xt: Vec<[u16; 3]> = st.xph.iter().map(|p| modge_x16(t, &ph16(p), &tp)).collect();
+            let zt: Vec<[u16; 3]> = st.zph.iter().map(|p| modge_z16(t, &ph16(p), &tp)).collect();
+            let pt: Vec<ModgePair> = st.pairs.iter().map(|&(xi, zi, a0)| modge_pair16(t, &xt[xi as usize], &zt[zi as usize], a0, r.k)).collect();
             let (mut bad, mut first) = (0u32, None);
             for (i, b) in st.base.iter().enumerate() {
                 // SAFETY: both point to `n_verts * 16` bytes.
@@ -2524,7 +2557,8 @@ mod tests {
             let tp = modge_time_phases(fc);
             let px = modge_x_terms(tb, &modge_x_phases(x), &tp, true);
             let pz = modge_z_terms(tb, &modge_z_phases(z), &tp, true);
-            let (y, s, tt, a) = modge_vertex16(&px, &pz, y0, s0, t0, a0, modge_k16(scale, 3));
+            let _ = (&px, &pz);
+            let (y, s, tt, a) = modge_vertex16(x, z, fc, y0, s0, t0, a0, modge_k16(scale, 3));
             let ey = y0 as f64 + my / scale as f64;
             let (es, et) = ((s0 as f64 + mx * 0.4 * 1024.0).round() as i32, (t0 as f64 + mz * 0.4 * 1024.0).round() as i32);
             let ea = (a0 as f64 * (50.0 + (mx + mz) * 400.0) / 130.0).round().min(255.0) as i32;
