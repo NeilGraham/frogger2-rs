@@ -233,6 +233,9 @@ fn build_mips(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
     out
 }
 
+/// Per-byte atlas texture coordinates of a high-resolution font.
+type GlyphUvs = Vec<Option<[f32; 4]>>;
+
 /// An RGBA8 frame read back from the GPU.
 #[derive(Clone, Debug)]
 pub struct RgbaImage {
@@ -292,7 +295,8 @@ pub struct Renderer {
     frames: Frames,
     backdrops: Vec<Quad2D>,
     overlays: Vec<Quad2D>,
-    fonts: Vec<(Font, TexHandle)>,
+    /// Fonts: metrics, image, and for a high-resolution font the per-byte atlas UVs.
+    fonts: Vec<(Font, TexHandle, Option<GlyphUvs>)>,
     white: TexHandle,
     #[cfg(feature = "gpu")]
     gpu_images: Vec<GpuImage>,
@@ -533,7 +537,19 @@ impl Renderer {
     pub fn add_font(&mut self, mut font: Font) -> FontId {
         let rgba = core::mem::take(&mut font.rgba);
         let h = self.textures.add_image(font.width, font.height, rgba);
-        self.fonts.push((font, h));
+        self.fonts.push((font, h, None));
+        FontId(self.fonts.len() - 1)
+    }
+
+    /// Registers a font drawn from a high-resolution atlas ([`HiRes`], the modern fonts)
+    /// with `font`'s metrics. The atlas is first resampled to `scale` atlas pixels per
+    /// strip pixel (pick about the strip's on-screen magnification so it is sampled ~1:1).
+    pub fn add_font_hires(&mut self, mut font: Font, hires: &crate::HiRes, scale: f32) -> FontId {
+        font.rgba = Vec::new();
+        let hr = hires.resampled(scale);
+        let uvs = (0..=255u8).map(|c| hr.uv(c)).collect();
+        let h = self.textures.add_image(hr.width, hr.height, hr.rgba);
+        self.fonts.push((font, h, Some(uvs)));
         FontId(self.fonts.len() - 1)
     }
 
@@ -542,7 +558,7 @@ impl Renderer {
     pub fn add_font_placeholder(&mut self, mut font: Font) -> FontId {
         font.rgba = Vec::new();
         let h = self.textures.add_placeholder(font.width, font.height);
-        self.fonts.push((font, h));
+        self.fonts.push((font, h, None));
         FontId(self.fonts.len() - 1)
     }
 
@@ -1005,7 +1021,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn draw_text_px(&mut self, font: FontId, x: f32, y: f32, text: &str, color: [u8; 4], scale: f32, centred_x: Option<f32>) -> f32 {
         let bytes = Self::text_bytes(text);
-        let (f, tex) = (&self.fonts[font.0].0, self.fonts[font.0].1);
+        let (f, tex, hires) = (&self.fonts[font.0].0, self.fonts[font.0].1, self.fonts[font.0].2.as_ref());
         let mut cx = match centred_x {
             Some(c) => c - (f.string_width(&bytes, scale) / 2) as f32,
             None => x,
@@ -1015,7 +1031,11 @@ impl Renderer {
         for &b in &bytes {
             let Some(g) = f.glyphs[b as usize] else { continue };
             let w = (g.width as f32 * scale).trunc();
-            if g.left < f.width {
+            if let Some(uvs) = hires {
+                if let Some(uv) = uvs[b as usize] {
+                    quads.push(Quad2D::rect(cx.trunc(), y.trunc(), w, (fh * scale).trunc(), uv, Some(tex), color, Blend::Semi));
+                }
+            } else if g.left < f.width {
                 let u1 = g.left as f32 / fw;
                 let u2 = (g.left + g.width).min(f.width) as f32 / fw;
                 quads.push(Quad2D::rect(cx.trunc(), y.trunc(), w, (fh * scale).trunc(), [u1, 0.0, u2, 1.0], Some(tex), color, Blend::Semi));

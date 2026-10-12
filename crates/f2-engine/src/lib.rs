@@ -43,7 +43,7 @@ pub mod textures;
 pub mod vkraw;
 
 pub use anim::{actor_bounds, xform_actor, Actor};
-pub use font::Font;
+pub use font::{Font, HiRes};
 pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, Quad2D, Renderer, RgbaImage, OVERLAY_SPACE};
 #[cfg(feature = "gpu")]
 pub use renderer::{GpuContext, WindowSurface};

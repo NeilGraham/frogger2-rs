@@ -13,7 +13,7 @@ use crate::overlay::{GameFonts, TileScroll};
 use crate::render::{self, FlyCam, LevelScene, Snap};
 use crate::video::VideoPlayer;
 use f2_audio::{AudioEngine, Listener, Play, VoiceId};
-use f2_engine::{Camera, Font, FontId, Renderer, TexHandle};
+use f2_engine::{Camera, Font, FontId, HiRes, Renderer, TexHandle};
 use f2_game::define::{mode, SINGLEPLAYER};
 use f2_game::ids::ActorId;
 use f2_game::{Effect, Game, TickInput};
@@ -82,6 +82,11 @@ pub struct App {
     /// `monofont.bmp` (`fontWhite`, PC/Main.cpp `InitFont`s): the story book page text.
     book_font: Option<Font>,
     game_fonts: Option<GameFonts>,
+    /// The modern versions of `game_font_files` (`textures/font/{bigfont,smallfont}.f2mf`,
+    /// built by `f2-fontgen` from the typeface the pixel fonts came from).
+    modern_font_files: Option<(HiRes, HiRes)>,
+    /// (modern, atlas scale) `game_fonts` were registered with.
+    game_fonts_key: (bool, u32),
     /// Full-screen backdrop (`mdxLoadBackdrop`): file and image.
     backdrop: Option<(String, Option<TexHandle>)>,
     tile_scroll: TileScroll,
@@ -251,6 +256,26 @@ impl App {
                 None
             }
         };
+        // Modern fonts: built on first run from the system typeface (desktop), else whatever
+        // was generated into the data (consoles get them with the bundled data).
+        #[cfg(feature = "desktop")]
+        match f2_fontgen::ensure(&data.rendition) {
+            Ok(Some(log)) => log.iter().for_each(|l| eprintln!("frogger: modern font: {l}")),
+            Ok(None) => {}
+            Err(e) => eprintln!("frogger: modern font: {e}"),
+        }
+        let load_hires = |p: &str| match data.read(p).map(|b| HiRes::decode(&b)) {
+            Ok(Ok(h)) => Some(h),
+            Ok(Err(e)) => {
+                eprintln!("frogger: {p}: {e}");
+                None
+            }
+            Err(_) => None,
+        };
+        let modern_font_files = match (load_hires("textures/font/bigfont.f2mf"), load_hires("textures/font/smallfont.f2mf")) {
+            (Some(b), Some(s)) => Some((b, s)),
+            _ => None,
+        };
         audio.set_music_dir(data.rendition.join("music"));
         let mut app = App {
             data,
@@ -261,6 +286,8 @@ impl App {
             game_font_files,
             book_font,
             game_fonts: None,
+            modern_font_files,
+            game_fonts_key: (false, 0),
             backdrop: None,
             tile_scroll: TileScroll::default(),
             audio,
@@ -447,6 +474,25 @@ impl App {
         self.osd = Some((msg, 2.5));
     }
 
+    /// (Re-)registers the game fonts when the font setting or the output size changed: the
+    /// modern atlases are resampled to about their on-screen size (sampled ~1:1, no mipmaps).
+    fn sync_game_fonts(&mut self) {
+        let Some((big, small)) = &self.game_font_files else { return };
+        let modern = self.modern_font_files.as_ref().filter(|_| self.display().modern_font);
+        // Atlas pixels per original pixel: the 480-line magnification, with headroom for
+        // zoomed text.
+        let k = modern.map_or(0, |(b, _)| ((self.r.view.height / 480.0 * 1.5).ceil() as u32).clamp(2, b.scale as u32));
+        let key = (modern.is_some(), k);
+        if self.game_fonts.is_some() && self.game_fonts_key == key {
+            return;
+        }
+        self.game_fonts_key = key;
+        self.game_fonts = Some(match modern {
+            Some((hb, hs)) => GameFonts { normal: self.r.add_font_hires(big.clone(), hb, k as f32), small: self.r.add_font_hires(small.clone(), hs, k as f32) },
+            None => GameFonts { normal: self.r.add_font(big.clone()), small: self.r.add_font(small.clone()) },
+        });
+    }
+
     /// Queues the startup / dev sequence.
     pub fn push_steps(&mut self, steps: impl IntoIterator<Item = Step>) {
         self.steps.extend(steps);
@@ -458,7 +504,8 @@ impl App {
         self.r = self.gfx.renderer();
         self.apply_display();
         self.font_id = self.font.clone().map(|f| self.r.add_font(f));
-        self.game_fonts = self.game_font_files.clone().map(|(b, s)| GameFonts { normal: self.r.add_font(b), small: self.r.add_font(s) });
+        self.game_fonts = None;
+        self.sync_game_fonts();
         self.backdrop = None;
         self.arcade_copied = None;
         if let Some(v) = &mut self.video {
@@ -1541,6 +1588,7 @@ impl App {
         self.width = w;
         self.height = h;
         self.r.begin_frame(w, h);
+        self.sync_game_fonts();
         if let Some(v) = &mut self.video {
             v.draw(&mut self.r, w as f32, h as f32);
             self.draw_fps();

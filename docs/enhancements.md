@@ -82,7 +82,8 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
 - [x] MSAA (`display.msaa`, 4×), supersampling (`display.render_scale`), anisotropic/trilinear
   filtering with generated mipmaps (`display.filter`, `display.anisotropy`), nearest-neighbour
   "PSX look" (`filter = "nearest"`), perspective-correct texturing (`display.perspective_correct`)
-- [ ] Integer-scaled or high-res UI fonts
+- [x] High-res UI fonts (`display.modern_font`): `bigfont`/`smallfont` re-rendered from their
+  typeface, Gill Sans Ultra Bold, read from the user's system fonts (`crates/f2-fontgen`)
 - [x] Draw distance (`display.draw_distance`, far-clip multiplier) / fog (`display.fog`, linear
   to the clear colour ending at the far clip; never on the sky backdrop)
 - [ ] HUD anchoring of the real game HUD/menus: the ported overlays/text go through

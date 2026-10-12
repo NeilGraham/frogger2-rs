@@ -30,6 +30,7 @@ members = [
     "tools/f2-n64prep",
     "tools/f2-n64pack",
     "crates/f2-n64z",
+    "crates/f2-fontgen",
 ]
 
 [workspace.package]

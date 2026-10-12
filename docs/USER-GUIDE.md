@@ -143,8 +143,16 @@ with a hint.
   exclusive video mode, or sets the render size in borderless), VSync, frame cap
   (Off/30/60/120/144/240 or a custom value from the file), profile, and in the enhanced profile
   widescreen, render scale, anti-aliasing, texture filter, perspective-correct textures, draw
-  distance and fog; brightness (a final multiply) and the FPS counter (corner of your choice;
+  distance, fog and font (*Modern* / *Original*, see below); brightness (a final multiply) and the FPS counter (corner of your choice;
   rendered FPS, frame time and the 60 Hz simulation rate; works in menus, levels and videos).
+- **Modern font**: the game's pixel fonts were made from Monotype's *Gill Sans Ultra Bold*.
+  If that typeface is installed (`GILSANUB.TTF`, which comes with Windows / Microsoft Office),
+  or copied into `<data>/fonts/` (or named by `F2_MODERN_FONT=<file>`), the game builds
+  high-resolution versions of `bigfont` and `smallfont` on start
+  (`game/textures/font/*.f2mf`, beside the bitmaps; `f2-fontgen [RENDITION]` does the same by
+  hand), with the same layout and the original outline / shadow style, sharp at any
+  resolution. The typeface is never shipped with the port. Console packages built with
+  `--data` include the generated files. The story-book typewriter font stays original.
 - **Audio**: master, music and effects volume (music/effects are the same values as the game's
   Sound Options), mute while the window is in the background.
 - **Controls**: *Keyboard mapping* and *Controller mapping* pages (below), stick dead zone,
@@ -229,6 +237,7 @@ anisotropy = 16             # 1..16
 perspective_correct = true
 draw_distance = 1.0         # 0.25..16
 fog = false
+modern_font = true          # false = the original pixel fonts
 
 [audio]
 master = 100                # 0..100

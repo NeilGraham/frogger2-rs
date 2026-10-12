@@ -150,6 +150,7 @@ pub enum Id {
     Perspective,
     DrawDistance,
     Fog,
+    ModernFont,
     Brightness,
     ShowFps,
     ResetDisplay,
@@ -736,6 +737,18 @@ impl App {
                 );
                 add(Id::DrawDistance, "Draw distance", format!("{}x", d.draw_distance), &gate(enh, "Far clip multiplier."), enh, true);
                 add(Id::Fog, "Fog", on_off(d.fog), &gate(enh, "Distance fog so far geometry fades in instead of popping."), enh, true);
+                let have_modern = self.modern_font_files.is_some();
+                let font_val = match (d.modern_font, have_modern) {
+                    (true, true) => "Modern",
+                    (true, false) => "Original (no typeface)",
+                    _ => "Original",
+                };
+                let font_desc = if have_modern {
+                    "Modern = the game's typeface (Gill Sans Ultra Bold) sharp at any resolution; Original = the pixel fonts."
+                } else {
+                    "Needs Gill Sans Ultra Bold (GILSANUB.TTF, with Windows/Office) installed or in <data>/fonts/; built on next start."
+                };
+                add(Id::ModernFont, "Font", font_val.into(), &gate(enh, font_desc), enh, true);
                 add(Id::Brightness, "Brightness", format!("{}%", v.brightness), "Final brightness multiply.", true, true);
                 add(Id::ShowFps, "FPS counter", v.show_fps.name().into(), "Shows rendered frames per second and frame time.", true, true);
                 add(
@@ -904,7 +917,7 @@ impl App {
                 self.requests.apply_window = true;
                 self.requests.apply_vsync = true;
             }
-            Id::Widescreen | Id::RenderScale | Id::Msaa | Id::Filter | Id::Perspective | Id::DrawDistance | Id::Fog => {
+            Id::Widescreen | Id::RenderScale | Id::Msaa | Id::Filter | Id::Perspective | Id::DrawDistance | Id::Fog | Id::ModernFont => {
                 let e = &mut self.enhanced;
                 let o = &mut self.cfg.display;
                 match id {
@@ -935,6 +948,10 @@ impl App {
                     Id::DrawDistance => {
                         e.draw_distance = step(&DRAW_DISTANCES, e.draw_distance, dir);
                         o.draw_distance = Some(e.draw_distance);
+                    }
+                    Id::ModernFont => {
+                        e.modern_font = !e.modern_font;
+                        o.modern_font = Some(e.modern_font);
                     }
                     _ => {
                         e.fog = !e.fog;

@@ -272,6 +272,7 @@ pub struct Display {
     pub perspective_correct: Option<bool>,
     pub draw_distance: Option<f32>,
     pub fog: Option<bool>,
+    pub modern_font: Option<bool>,
 }
 
 /// Concrete display settings of a profile (what the host applies to the renderer).
@@ -297,6 +298,9 @@ pub struct DisplaySettings {
     /// Linear distance fog to the level's clear colour ending at the far clip (retail
     /// leaves fog disabled).
     pub fog: bool,
+    /// Draw the game fonts from the high-resolution atlases built from their typeface
+    /// (`f2-fontgen`) when present; off = the original pixel fonts.
+    pub modern_font: bool,
 }
 
 impl DisplaySettings {
@@ -312,6 +316,7 @@ impl DisplaySettings {
         perspective_correct: false,
         draw_distance: 1.0,
         fog: false,
+        modern_font: false,
     };
 
     /// Enhanced defaults.
@@ -326,6 +331,7 @@ impl DisplaySettings {
         perspective_correct: true,
         draw_distance: 1.0,
         fog: false,
+        modern_font: true,
     };
 
     /// The enhanced defaults with `d`'s overrides applied.
@@ -342,6 +348,7 @@ impl DisplaySettings {
             perspective_correct: d.perspective_correct.unwrap_or(e.perspective_correct),
             draw_distance: d.draw_distance.unwrap_or(e.draw_distance).clamp(0.25, 16.0),
             fog: d.fog.unwrap_or(e.fog),
+            modern_font: d.modern_font.unwrap_or(e.modern_font),
         }
     }
 }

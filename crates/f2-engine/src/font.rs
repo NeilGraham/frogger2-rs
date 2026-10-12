@@ -7,6 +7,9 @@
 
 use crate::prelude::*;
 
+#[cfg(not(feature = "std"))]
+use crate::fmath::FloatExt;
+
 use f2_formats::texture::Texture;
 
 /// `alphabet[]` (mdxFont.cpp:66-68), Latin-1 bytes. The source file's final
@@ -145,6 +148,155 @@ impl Font {
     }
 }
 
+/// High-resolution replacement image of a font (the "modern" fonts, built by `f2-fontgen` from
+/// the typeface the pixel fonts were drawn from): an RGBA atlas holding each glyph's cell at
+/// `scale`× the strip's pixel size. Metrics (glyph widths, height) stay the strip's, so text
+/// layout is unchanged; only the image differs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HiRes {
+    /// Atlas pixels per strip pixel.
+    pub scale: f32,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// Per byte: the glyph cell `[x, y, w, h]` in atlas pixels (`w == 0`: no image).
+    pub rects: Vec<[f32; 4]>,
+}
+
+impl HiRes {
+    /// File magic of [`encode`](Self::encode).
+    pub const MAGIC: &'static [u8; 4] = b"F2MF";
+
+    /// Texture coordinates `[u1, v1, u2, v2]` of byte `c`'s cell.
+    pub fn uv(&self, c: u8) -> Option<[f32; 4]> {
+        let r = self.rects.get(c as usize)?;
+        (r[2] > 0.0).then(|| {
+            let (w, h) = (self.width as f32, self.height as f32);
+            [r[0] / w, r[1] / h, (r[0] + r[2]) / w, (r[1] + r[3]) / h]
+        })
+    }
+
+    /// The atlas resampled to `scale` atlas pixels per strip pixel (area average over
+    /// premultiplied alpha), so it is drawn near 1:1 at the output resolution (no mipmaps
+    /// needed on any back end). Never enlarges.
+    pub fn resampled(&self, scale: f32) -> HiRes {
+        let f = (scale / self.scale).min(1.0);
+        if f >= 0.999 {
+            return self.clone();
+        }
+        let (sw, sh) = (self.width as usize, self.height as usize);
+        let dw = ((sw as f32 * f).ceil() as usize).max(1);
+        let dh = ((sh as f32 * f).ceil() as usize).max(1);
+        // premultiplied float copy
+        let mut pre = vec![0f32; sw * sh * 4];
+        for i in 0..sw * sh {
+            let a = self.rgba[i * 4 + 3] as f32 / 255.0;
+            for c in 0..3 {
+                pre[i * 4 + c] = self.rgba[i * 4 + c] as f32 / 255.0 * a;
+            }
+            pre[i * 4 + 3] = a;
+        }
+        // 1D box-filter weights: destination pixel d covers source [d/f, (d+1)/f)
+        let taps = |n_src: usize, n_dst: usize| -> Vec<Vec<(usize, f32)>> {
+            (0..n_dst)
+                .map(|d| {
+                    let (a, b) = (d as f32 / f, ((d + 1) as f32 / f).min(n_src as f32));
+                    let mut v = Vec::new();
+                    let mut x = a.floor() as usize;
+                    while (x as f32) < b && x < n_src {
+                        let w = (b.min(x as f32 + 1.0) - a.max(x as f32)).max(0.0);
+                        if w > 0.0 {
+                            v.push((x, w));
+                        }
+                        x += 1;
+                    }
+                    let t: f32 = v.iter().map(|p| p.1).sum();
+                    v.iter_mut().for_each(|p| p.1 /= t.max(1e-6));
+                    v
+                })
+                .collect()
+        };
+        let (tx, ty) = (taps(sw, dw), taps(sh, dh));
+        let mut mid = vec![0f32; dw * sh * 4];
+        for y in 0..sh {
+            for (dx, t) in tx.iter().enumerate() {
+                for &(sx, w) in t {
+                    for c in 0..4 {
+                        mid[(y * dw + dx) * 4 + c] += pre[(y * sw + sx) * 4 + c] * w;
+                    }
+                }
+            }
+        }
+        let mut rgba = vec![0u8; dw * dh * 4];
+        for (dy, t) in ty.iter().enumerate() {
+            for dx in 0..dw {
+                let mut acc = [0f32; 4];
+                for &(sy, w) in t {
+                    for (c, a) in acc.iter_mut().enumerate() {
+                        *a += mid[(sy * dw + dx) * 4 + c] * w;
+                    }
+                }
+                let o = (dy * dw + dx) * 4;
+                let a = acc[3];
+                for c in 0..3 {
+                    rgba[o + c] = if a > 0.0 { (acc[c] / a * 255.0 + 0.5).min(255.0) as u8 } else { 0 };
+                }
+                rgba[o + 3] = (a * 255.0 + 0.5).min(255.0) as u8;
+            }
+        }
+        let rects = self.rects.iter().map(|r| r.map(|v| v * f)).collect();
+        HiRes { scale: self.scale * f, width: dw as u32, height: dh as u32, rgba, rects }
+    }
+
+    /// `F2MF` file: magic, version (1), scale, atlas size, 256 cells (f32 x/y/w/h), then the
+    /// atlas as PNG.
+    #[cfg(feature = "std")]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(Self::MAGIC);
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&self.scale.to_le_bytes());
+        out.extend_from_slice(&self.width.to_le_bytes());
+        out.extend_from_slice(&self.height.to_le_bytes());
+        for i in 0..256 {
+            let r = self.rects.get(i).copied().unwrap_or_default();
+            r.iter().for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
+        }
+        let mut enc = png::Encoder::new(&mut out, self.width, self.height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(png::Compression::High);
+        let mut w = enc.write_header().expect("png header");
+        w.write_image_data(&self.rgba).expect("png data");
+        w.finish().expect("png finish");
+        out
+    }
+
+    #[cfg(feature = "std")]
+    pub fn decode(data: &[u8]) -> Result<HiRes, String> {
+        let hdr = 20 + 256 * 16;
+        if data.len() < hdr || &data[0..4] != Self::MAGIC {
+            return Err("not an F2MF font".into());
+        }
+        let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
+        let f32_at = |o: usize| f32::from_le_bytes(data[o..o + 4].try_into().unwrap());
+        if u32_at(4) != 1 {
+            return Err(format!("F2MF version {} unsupported", u32_at(4)));
+        }
+        let (scale, width, height) = (f32_at(8), u32_at(12), u32_at(16));
+        let rects = (0..256).map(|i| core::array::from_fn(|k| f32_at(20 + i * 16 + k * 4))).collect();
+        let dec = png::Decoder::new(std::io::Cursor::new(&data[hdr..]));
+        let mut rd = dec.read_info().map_err(|e| e.to_string())?;
+        let mut rgba = vec![0u8; rd.output_buffer_size().ok_or("png too large")?];
+        let info = rd.next_frame(&mut rgba).map_err(|e| e.to_string())?;
+        if (info.width, info.height) != (width, height) || info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+            return Err("F2MF atlas format mismatch".into());
+        }
+        rgba.truncate(info.buffer_size());
+        Ok(HiRes { scale, width, height, rgba, rects })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +313,30 @@ mod tests {
         assert_eq!(f.glyphs[b'A' as usize], Some(Glyph { left: 1, width: 2 }));
         assert_eq!(f.glyphs[b'B' as usize], Some(Glyph { left: 4, width: 1 }));
         assert_eq!(f.string_width(b"AB", 1.0), 3);
+    }
+
+    fn hires_2x2() -> HiRes {
+        let mut rects = vec![[0.0; 4]; 256];
+        rects[b'A' as usize] = [0.0, 0.0, 4.0, 4.0];
+        HiRes { scale: 4.0, width: 4, height: 4, rgba: [255u8, 255, 255, 255].repeat(8).into_iter().chain([0u8; 32]).collect(), rects }
+    }
+
+    #[test]
+    fn hires_resample_halves_and_keeps_uv() {
+        let h = hires_2x2();
+        let r = h.resampled(2.0);
+        assert_eq!((r.width, r.height, r.scale), (2, 2, 2.0));
+        // top half opaque white, bottom half transparent
+        assert_eq!(&r.rgba[0..4], &[255, 255, 255, 255]);
+        assert_eq!(r.rgba[2 * 4 + 3], 0);
+        assert_eq!(r.uv(b'A'), h.uv(b'A'));
+        assert_eq!(r.uv(b'B'), None);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn hires_roundtrip() {
+        let h = hires_2x2();
+        assert_eq!(HiRes::decode(&h.encode()).unwrap(), h);
     }
 }

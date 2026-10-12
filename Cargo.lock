@@ -724,6 +724,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "f2-fontgen"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "f2-engine",
+]
+
+[[package]]
 name = "f2-formats"
 version = "0.1.0"
 dependencies = [
@@ -962,6 +970,7 @@ dependencies = [
  "f2-draw",
  "f2-engine",
  "f2-etc",
+ "f2-fontgen",
  "f2-formats",
  "f2-game",
  "f2-import",
