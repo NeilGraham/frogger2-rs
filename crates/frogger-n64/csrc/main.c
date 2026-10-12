@@ -47,6 +47,7 @@ typedef struct {
 } tex_t;
 static int cur_tlut_mode = -1; /* TLUT mode currently set in the SOM (-1 = unknown) */
 static void make_add_variant(tex_t *t);
+static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride);
 static tex_t textures[MAX_TEXTURES]; /* handle 0 = none */
 static uint32_t tex_hint = 1;
 static bool attached;
@@ -600,9 +601,10 @@ uint32_t n64_tex_update_impl(uint32_t h, const n64_tex_desc_t *d) {
     uint32_t row = TEX_FORMAT_PIX2BYTES(fmt, d->width);
     for (uint32_t y = 0; y < d->height; y++)
         memcpy((uint8_t *)s->buffer + y * s->stride, (const uint8_t *)d->pixels + y * row, row);
-    /* surface_alloc buffers are uncached; others need a writeback for the RDP. */
+    /* surface_alloc buffers are uncached; others need a writeback for the RDP. (Writing an
+     * uncached one through its cached alias + writeback was slower: write-allocate misses.) */
     if (!((uint32_t)s->buffer & 0x20000000)) data_cache_hit_writeback(s->buffer, s->stride * s->height);
-    if (t->has_addv) make_add_variant(t);
+    if (t->has_addv) make_add_variant_from(t, d->pixels, row);
     if (cur_tex_loaded == h) cur_tex_loaded = 0;
     return 1;
 }
@@ -746,7 +748,12 @@ static surface_t downscale_rgba32(tex_t *t, const surface_t *s) {
     return d;
 }
 
-static void make_add_variant(tex_t *t) {
+static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride);
+static void make_add_variant(tex_t *t) { make_add_variant_from(t, NULL, 0); }
+
+/* `src` (optional): the small surface's texels in cached memory (`src_stride` bytes per
+ * row; the procedural refill's source), read instead of the uncached surface. */
+static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride) {
     const surface_t *s = &t->small;
     int w = s->width, h = s->height;
     int sx = 1, sy = 1;
@@ -767,10 +774,11 @@ static void make_add_variant(tex_t *t) {
         static uint32_t recip[256];
         if (!recip[1])
             for (int m = 1; m < 256; m++) recip[m] = (uint32_t)(0xFFFFFFFFu / m) + 1;
+        /* surface_alloc memory is uncached: one 32-bit store per texel. */
+        uint8_t *dbase = (uint8_t *)t->addv.buffer;
         for (int y = 0; y < nh; y++) {
-            const uint8_t *row = (const uint8_t *)s->buffer + y * s->stride;
-            /* surface_alloc memory is uncached: one 32-bit store per texel. */
-            uint32_t *dst = (uint32_t *)((uint8_t *)t->addv.buffer + y * t->addv.stride);
+            const uint8_t *row = src ? (const uint8_t *)src + y * src_stride : (const uint8_t *)s->buffer + y * s->stride;
+            uint32_t *dst = (uint32_t *)(dbase + y * t->addv.stride);
             for (int x = 0; x < nw; x++) {
                 uint32_t r, g, b, a;
                 if (sf == FMT_RGBA32) {
@@ -780,7 +788,8 @@ static void make_add_variant(tex_t *t) {
                     r = ((v >> 11) & 31) * 255 / 31; g = ((v >> 6) & 31) * 255 / 31; b = ((v >> 1) & 31) * 255 / 31;
                     a = (v & 1) ? 255 : 0;
                 }
-                r = r * a / 255; g = g * a / 255; b = b * a / 255;
+                /* x / 255 for x <= 255 * 255: (x * 0x8081) >> 23 (exact over that range). */
+                r = (r * a * 0x8081) >> 23; g = (g * a * 0x8081) >> 23; b = (b * a * 0x8081) >> 23;
                 uint32_t m = r > g ? (r > b ? r : b) : (g > b ? g : b);
                 uint32_t o = m;
                 if (m) {

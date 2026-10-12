@@ -68,6 +68,8 @@ pub struct PoseCache {
     local: Vec<Mat4>,
     /// `local` times the actor rotation `rot_q` (row 3 without the translation).
     rot_q: Option<Quat>,
+    /// The rotation of `mats`.
+    last_q: Option<Quat>,
     rotl: Vec<Mat4>,
     pub mats: Vec<Mat4>,
 }
@@ -362,25 +364,46 @@ pub fn xform_actor_cached<'a>(model: &Model, actor: &'a mut Actor) -> &'a [Mat4]
         return &actor.pose.mats;
     }
     let lkey = LocalKey { model: model.id, scale: actor.scale, anim_time: actor.anim_time, animated: actor.animated };
-    if actor.pose.local_key != Some(lkey) {
+    let fresh = actor.pose.local_key != Some(lkey);
+    if fresh {
         xform_local(model, actor, lkey);
     }
     let pose = &mut actor.pose;
-    if pose.rot_q != Some(actor.q_rot) {
-        let r = quaternion_to_matrix(&actor.q_rot);
-        pose.rotl.clear();
-        pose.rotl.extend(pose.local.iter().map(|l| mtx_cat_rot(l, &r)));
-        pose.rot_q = Some(actor.q_rot);
-    }
     let t = actor.pos;
-    pose.mats.clear();
-    pose.mats.extend(pose.rotl.iter().map(|m| {
-        let mut m = *m;
+    let n = pose.local.len();
+    if pose.mats.len() != n {
+        pose.mats.resize(n, IDENTITY);
+    }
+    let add_t = |m: &mut Mat4| {
         m[3][0] += t[0];
         m[3][1] += t[1];
         m[3][2] += t[2];
-        m
-    }));
+    };
+    if pose.rot_q == Some(actor.q_rot) {
+        for (o, m) in pose.mats.iter_mut().zip(&pose.rotl) {
+            *o = *m;
+            add_t(o);
+        }
+    } else if fresh || pose.last_q != Some(actor.q_rot) {
+        // Re-animated or turning (a new rotation since the last result): `L x R` straight
+        // into the result; cached once hierarchy and rotation hold (moving actors that only
+        // turn now and then).
+        let r = quaternion_to_matrix(&actor.q_rot);
+        for (o, l) in pose.mats.iter_mut().zip(&pose.local) {
+            *o = mtx_cat_rot(l, &r);
+            add_t(o);
+        }
+    } else {
+        let r = quaternion_to_matrix(&actor.q_rot);
+        pose.rotl.resize(n, IDENTITY);
+        for ((o, c), l) in pose.mats.iter_mut().zip(pose.rotl.iter_mut()).zip(&pose.local) {
+            *c = mtx_cat_rot(l, &r);
+            *o = *c;
+            add_t(o);
+        }
+        pose.rot_q = Some(actor.q_rot);
+    }
+    pose.last_q = Some(actor.q_rot);
     pose.key = Some(key);
     pose.stamp = next_stamp();
     &actor.pose.mats

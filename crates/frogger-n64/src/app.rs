@@ -1061,7 +1061,11 @@ impl App {
             l.r3d.begin_queue(&self.r);
             if let Some(s) = self.r.mesh_sink.as_mut() {
                 // SAFETY: removed below, before anything else touches `l.r3d` / `l.gfx`.
-                s.backend = Some(alloc::boxed::Box::new(unsafe { crate::render_r3d::R3dBackend::new(&mut l.r3d, &l.gfx) }));
+                // F2N64_NO_BACKEND=1 (measurement): no r3d backend, the meshes are recorded
+                // into the sink and dropped: the draw loop's own CPU cost without r3d.
+                if option_env!("F2N64_NO_BACKEND").is_none() {
+                    s.backend = Some(alloc::boxed::Box::new(unsafe { crate::render_r3d::R3dBackend::new(&mut l.r3d, &l.gfx) }));
+                }
             }
         }
         if l.scene.is_some() || backdrop.is_some() {

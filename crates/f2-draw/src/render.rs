@@ -126,7 +126,14 @@ fn lerp_snap(prev: Option<&Snap>, cur: &Snap, alpha: f32) -> (V3, [f32; 4]) {
 // ------------------------------------------------------------------ level scene
 
 /// An engine actor with its model id and that model's `LevelScene::models` entry.
-pub type ActorSlot = (u32, (usize, usize), Actor);
+pub struct ActorSlot {
+    pub model_id: u32,
+    pub bm: (usize, usize),
+    pub actor: Actor,
+    /// The simulation's position / rotation / size the actor's `pos`, `q_rot` and `scale`
+    /// were last converted from (skips the conversions while they stay the same).
+    last: Option<(Snap, [i32; 3])>,
+}
 
 /// Renderer-side data of the loaded level (`LevelAssets`).
 pub struct LevelScene {
@@ -145,6 +152,8 @@ pub struct LevelScene {
     pub actors: Vec<Option<ActorSlot>>,
     /// Stand-in frog while `CreateFrogger` is not ported (drawn on the player start tile).
     pub placeholder_frog: Option<((usize, usize), Actor)>,
+    /// Draw list 1's actors, collected while drawing list 0 (one pass over `actList`).
+    list1: Vec<ActorId>,
 }
 
 impl LevelScene {
@@ -166,7 +175,7 @@ impl LevelScene {
         let far_clip = if lvd.far_clip > 0 { lvd.far_clip as f32 * 0.1 } else { 1200.0 };
         let fog = lvd.fog.map(|c| c as u8 as f64 / 255.0);
         let clear = [fog[0], fog[1], fog[2], 1.0];
-        let mut s = LevelScene { world, level, banks, models, tex_files, world_model, far_clip, clear, actors: Vec::new(), placeholder_frog: None };
+        let mut s = LevelScene { world, level, banks, models, tex_files, world_model, far_clip, clear, actors: Vec::new(), placeholder_frog: None, list1: Vec::new() };
         // TODO(port): remove once f2-game creates the frogs (CreateFrogger, frogger.c).
         if !game_has_frog(game) {
             if let (Some(&bm), Some(t)) = (s.models.get(&f2_formats::crc("frogger.obe")), game.map.g_t_start[0]) {
@@ -417,44 +426,100 @@ fn draw_background(r: &mut Renderer, scene: &LevelScene, game: &Game, cam: &Came
 }
 
 /// `ActorListDraw(list)`: the actors of draw list `list`, interpolated between ticks.
+/// List 0 walks `actList` once and keeps list 1's actors (in list order) for the list-1 call
+/// that follows it in `draw_loop`.
 fn draw_actor_list(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &DrawCtx, list: u32) {
     if scene.actors.len() < game.actor2.actors.slots.len() {
         scene.actors.resize_with(game.actor2.actors.slots.len(), || None);
     }
-    for id in game.actor_draw_list(list) {
-        if Some(id) == game.actor2.back_gnd {
-            continue;
+    let pc = PerList {
+        modge_frame: modge_frame(game),
+        portraits: game.options.portrait_actor.iter().any(Option::is_some),
+        back_gnd: game.actor2.back_gnd,
+    };
+    if list == 0 {
+        let mut list1 = core::mem::take(&mut scene.list1);
+        list1.clear();
+        let actors = &game.actor2.actors;
+        let mut c = game.actor2.act_list.first;
+        while let Some(id) = c {
+            let a2 = &actors[id];
+            c = a2.links.next;
+            match a2.actor.actual_actor.list_num {
+                0 => draw_listed_actor(r, scene, game, ctx, &pc, id),
+                1 => list1.push(id),
+                _ => {}
+            }
         }
-        let a2 = &game.actor2.actors[id];
-        if a2.draw == 0 || a2.flags & f2_game::actor2::ACTOR_DRAW_NEVER != 0 {
-            continue;
+        scene.list1 = list1;
+    } else {
+        let list1 = core::mem::take(&mut scene.list1);
+        for &id in &list1 {
+            draw_listed_actor(r, scene, game, ctx, &pc, id);
         }
-        let mdx = &a2.actor.actual_actor;
-        let Some(model_id) = mdx.object_controller else { continue };
-        let slot = &mut scene.actors[id.idx()];
-        if slot.as_ref().is_none_or(|(mid, _, _)| *mid != model_id) {
-            let Some(&bm) = scene.models.get(&model_id) else { continue };
-            *slot = Some((model_id, bm, Actor::default()));
-        }
-        let (_, (b, m), ea) = slot.as_mut().unwrap();
-        let (b, m) = (*b, *m);
-        let (pos, q) = lerp_snap(ctx.prev.get(id.idx()).and_then(|p| p.as_ref()), &Snap::of(a2), ctx.alpha);
+        scene.list1 = list1;
+    }
+}
+
+/// Per-frame inputs of [`draw_listed_actor`].
+struct PerList {
+    modge_frame: u32,
+    /// Any multiplayer portrait actor set (else no actor has Gouraud values).
+    portraits: bool,
+    back_gnd: Option<ActorId>,
+}
+
+/// One actor of `ActorListDraw`.
+fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &DrawCtx, pc: &PerList, id: ActorId) {
+    if Some(id) == pc.back_gnd {
+        return;
+    }
+    let a2 = &game.actor2.actors[id];
+    if a2.draw == 0 || a2.flags & f2_game::actor2::ACTOR_DRAW_NEVER != 0 {
+        return;
+    }
+    let mdx = &a2.actor.actual_actor;
+    let Some(model_id) = mdx.object_controller else { return };
+    let slot = &mut scene.actors[id.idx()];
+    if slot.as_ref().is_none_or(|s| s.model_id != model_id) {
+        let Some(&bm) = scene.models.get(&model_id) else { return };
+        *slot = Some(ActorSlot { model_id, bm, actor: Actor::default(), last: None });
+    }
+    let sl = slot.as_mut().unwrap();
+    let (b, m) = sl.bm;
+    let ea = &mut sl.actor;
+    let cur = Snap::of(a2);
+    let sz = a2.actor.size;
+    let size = [sz.vx, sz.vy, sz.vz];
+    let prev = ctx.prev.get(id.idx()).and_then(|p| p.as_ref());
+    // Console fast path: not moved since the last tick and the same as at the last draw:
+    // position, rotation and scale as converted then.
+    let same = cfg!(feature = "lean") && prev == Some(&cur) && sl.last == Some((cur, size));
+    if !same {
+        let (pos, q) = lerp_snap(prev, &cur, ctx.alpha);
         ea.pos = pos;
         ea.q_rot = q;
-        let sz = a2.actor.size;
         ea.scale = [sz.vx as f32 / 4096.0, sz.vy as f32 / 4096.0, sz.vz as f32 / 4096.0];
-        ea.animated = mdx.animation.is_some();
-        ea.anim_time = mdx.animation.as_ref().map_or(0.0, |an| an.anim_time);
-        use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE, OBJECT_FLAGS_WAVE};
-        ea.extra_flags = mdx.root_object_flags & (OBJECT_FLAGS_ADDITIVE | OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE);
-        ea.wrap_tc = mdx.flags & f2_game::mdx_actor::mdx_flags::ACTOR_WRAPTC != 0;
-        ea.modge_frame = modge_frame(game);
-        // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours).
-        ea.override_tex = a2.override_tex.as_deref().and_then(|n| r.textures.by_name(&n.to_ascii_lowercase()));
-        // `SetActorGouraudValues` on the multiplayer portraits (options.c:685).
-        ea.gouraud = game.options.portrait_actor.iter().position(|&p| p == Some(id)).map(|i| game.options.portrait_gouraud[i].map(|c| c as f32 / 255.0));
-        r.draw_actor(&scene.banks[b].models[m], ea);
+        // Only an unmoved actor's conversion is reusable (an interpolated one depends on
+        // alpha).
+        sl.last = (prev == Some(&cur)).then_some((cur, size));
     }
+    let anim = mdx.animation.as_ref();
+    ea.animated = anim.is_some();
+    ea.anim_time = anim.map_or(0.0, |an| an.anim_time);
+    use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE, OBJECT_FLAGS_WAVE};
+    ea.extra_flags = mdx.root_object_flags & (OBJECT_FLAGS_ADDITIVE | OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE);
+    ea.wrap_tc = mdx.flags & f2_game::mdx_actor::mdx_flags::ACTOR_WRAPTC != 0;
+    ea.modge_frame = pc.modge_frame;
+    // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours).
+    ea.override_tex = a2.override_tex.as_deref().and_then(|n| r.textures.by_name(&n.to_ascii_lowercase()));
+    // `SetActorGouraudValues` on the multiplayer portraits (options.c:685).
+    ea.gouraud = if pc.portraits {
+        game.options.portrait_actor.iter().position(|&p| p == Some(id)).map(|i| game.options.portrait_gouraud[i].map(|c| c as f32 / 255.0))
+    } else {
+        None
+    };
+    r.draw_actor(&scene.banks[b].models[m], ea);
 }
 
 /// `timeInfo.frameCount` (60 Hz frames since `InitTiming`, held in the pause menu), which
