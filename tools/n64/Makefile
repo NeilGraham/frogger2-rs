@@ -39,7 +39,10 @@ $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 # frame between two otherwise identical builds). Two contiguous regions, each < 16 KiB:
 # `.text.f2hot_d` + `.text.f2hot_q` (the draw loop's actor path and r3d queueing) and `.text.f2hot_f` (flushing the
 # lists to the RSP and drawing the CPU batches between them), then the libdragon / newlib
-# functions of those loops.
+# functions of those loops. Order of the first region (phase 3E): r3d queueing first, then
+# cull_world's closure (its own section, per draw), then the actor path, so the per-actor
+# code falls on the I-cache lines of `animate_modge` (a few water draws per frame) rather
+# than on `draw_slot` (every draw); keep `.text.f2hot_d` under ~6 KiB for that.
 HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rspq_block_run mg_uniform_load mg_uniform_load_raw \
 	mg_uniform_load_inline mg_uniform_load_inline_raw mg_draw_begin mg_draw_end \
 	mg_bind_vertex_buffer data_cache_hit_writeback rspq_flush_internal __rspq_deferred_poll \
@@ -50,8 +53,9 @@ $(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld $(firstword $(MAKEFILE_LIST))
 	@awk -v hot="$(HOT_C)" 'BEGIN { n = split(hot, h, " ") } \
 		!done && $$0 ~ /^[ \t]*\*\(\.text\)[ \t]*$$/ { \
 			print "        __f2_hot_start = .;"; \
-			print "        *(.text.f2hot_d .text.f2hot_d.*)"; \
 			print "        *(.text.f2hot_q .text.f2hot_q.*)"; \
+			print "        *(.text.*R3d*cull_world*)"; \
+			print "        *(.text.f2hot_d .text.f2hot_d.*)"; \
 			print "        __f2_hot_flush = .;"; \
 			print "        *(.text.f2hot_f .text.f2hot_f.*)"; \
 			for (i = 1; i <= n; i++) print "        *(.text." h[i] ")"; \
