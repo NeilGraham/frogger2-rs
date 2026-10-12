@@ -1167,6 +1167,9 @@ impl App {
         if let Some(c) = &mut self.hop_bench {
             // Counted in game frames (whatever the frame rate), held for 8 of every 32.
             *c += n * k;
+            // The scripted pad only: a stray host key (ares' keyboard pad) must not pause
+            // the benchmark.
+            pad = 0;
             if *c > 180 && *c % 32 < 8 {
                 use f2_game::levplay::{PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_UP};
                 pad |= [PAD_UP, PAD_RIGHT, PAD_DOWN, PAD_LEFT][(*c / 32 % 4) as usize];

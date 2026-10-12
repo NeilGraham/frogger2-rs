@@ -225,6 +225,7 @@ pub fn actor_model_name(name: &str) -> String {
 
 /// Port of `Orientate` (Common/actor2.c:1038): builds a quaternion that points the
 /// actor's z axis along `fd` with `up` as the up vector.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
 pub fn orientate(me: &mut IQuaternion, fd: &FVector, up: &FVector) {
     let mut r1 = IQuaternion::default();
     let mut q1 = IQuaternion::default();

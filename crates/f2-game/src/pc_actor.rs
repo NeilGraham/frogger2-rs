@@ -25,6 +25,7 @@ impl Game {
     /// `timeInfo.speed` for the current tick: 1.0 under the fixed 60 Hz [`Game::tick`]
     /// (`gameSpeed / 4096`), the measured float under the variable timestep (`timing.rs`).
     #[inline]
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn time_info_speed(&self) -> f32 {
         if self.timing.active {
             self.timing.time_info.speed
@@ -112,6 +113,7 @@ impl Game {
     }
 
     /// `UpdateAnims` (`mdxActor.cpp:375`) for one actor, as `XformActor` does.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn update_actor_anim(&mut self, id: ActorId) {
         let speed = self.time_info_speed();
         let a = &mut self.actor2.actors[id].actor.actual_actor;

@@ -24,3 +24,8 @@ f2-trace = { path = "../../tools/f2-trace", optional = true }
 once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
 # Float maths without std (sqrt/sin/cos on the render-only paths).
 libm = "0.2.16"
+
+[lints.rust]
+# `target_vendor = "nintendo64"` (tools/n64/mips-nintendo64-none.json): N64 hot-code sections
+# (`.text.f2hot_s`, tools/n64/Makefile). Placement only; no behaviour depends on it.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_vendor, values("nintendo64"))'] }

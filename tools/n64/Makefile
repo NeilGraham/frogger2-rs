@@ -40,6 +40,8 @@ $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 # `.text.f2hot_d` + `.text.f2hot_q` (the draw loop's actor path and r3d queueing) and `.text.f2hot_f` (flushing the
 # lists to the RSP and drawing the CPU batches between them), then the libdragon / newlib
 # functions of those loops.
+# Then `.text.f2hot_s` (< 16 KiB): the simulation's per-actor pass (`Game::copy_and_draw_actors`
+# and what it calls per actor), contiguous so its functions never evict each other.
 HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rspq_block_run mg_uniform_load mg_uniform_load_raw \
 	mg_uniform_load_inline mg_uniform_load_inline_raw mg_draw_begin mg_draw_end \
 	mg_bind_vertex_buffer data_cache_hit_writeback rspq_flush_internal __rspq_deferred_poll \
@@ -55,7 +57,13 @@ $(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld
 			print "        __f2_hot_flush = .;"; \
 			print "        *(.text.f2hot_f .text.f2hot_f.*)"; \
 			for (i = 1; i <= n; i++) print "        *(.text." h[i] ")"; \
-			print "        __f2_hot_end = .;"; done = 1 } { print }' $< > $@
+			print "        __f2_hot_end = .;"; \
+			print "        *(.text.f2hot_s .text.f2hot_s.*)"; \
+			print "        __f2_hot_sim_e = .;"; \
+			print "        *(.text.f2hot_e .text.f2hot_e.*)"; \
+			print "        __f2_hot_sim_p = .;"; \
+			print "        *(.text.f2hot_p .text.f2hot_p.*)"; \
+			print "        __f2_hot_sim_end = .;"; done = 1 } { print }' $< > $@
 N64_LDFLAGS := $(subst -Tn64.ld,-T$(CURDIR)/$(BUILD_DIR)/f2.ld,$(N64_LDFLAGS))
 # Large-block pool (csrc/main.c): every malloc in the program, libdragon included.
 N64_LDFLAGS += --wrap malloc --wrap free --wrap memalign --wrap calloc --wrap realloc

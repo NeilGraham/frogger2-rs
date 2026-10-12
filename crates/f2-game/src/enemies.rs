@@ -339,6 +339,7 @@ impl Game {
     }
 
     /// Port of `DoEnemyCollision` (Common/enemies.c:192).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn do_enemy_collision(&mut self, cur: EnemyId) {
         let e = self.nme(cur).clone();
         let act = self.nact(cur);
@@ -500,6 +501,7 @@ impl Game {
     }
 
     /// Port of `UpdateEnemies` (Common/enemies.c:355).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn update_enemies(&mut self) {
         if self.enemies.enemy_list.count == 0 {
             return;
@@ -513,6 +515,7 @@ impl Game {
     }
 
     /// Loop body of `UpdateEnemies` (`continue` = return).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     fn update_enemy(&mut self, id: EnemyId) {
         let Some(act2) = self.nme(id).nme_actor else { return };
         // If enemy has an actor2 and it's active and not miles away
@@ -541,6 +544,7 @@ impl Game {
     /// The movement part of `UpdateEnemies`' loop body (waiting at a node, then the
     /// enemy's update functions). `false` where the original `continue`s (skipping the
     /// attached effects). Split out for P7b (`enemy_run_default`).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub(crate) fn update_enemy_motion(&mut self, id: EnemyId) -> bool {
         // check if this enemy is currently 'waiting' at a node
         if self.nme(id).is_waiting != 0 {
@@ -612,6 +616,7 @@ impl Game {
     }
 
     /// `(*update)(cur)`.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn call_enemy_update(&mut self, u: EnemyUpdate, id: EnemyId) {
         match u {
             EnemyUpdate::SlerpPath => self.update_slerp_path_nme(id),
@@ -639,6 +644,7 @@ impl Game {
     }
 
     /// Port of `RotateWaitingNME` (Common/enemies.c:494).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn rotate_waiting_nme(&mut self, cur: EnemyId) {
         let e = self.nme(cur).clone();
         let end_t = e.path.start_frame as i32;
@@ -805,6 +811,7 @@ impl Game {
     }
 
     /// Port of `UpdatePathNME` (Common/enemies.c:781).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn update_path_nme(&mut self, cur: EnemyId) {
         let afc = self.act_frame_count;
         let ws = self.frogger.wait_scale;
@@ -1714,6 +1721,7 @@ impl Game {
     }
 
     /// Port of `UpdateFlappyThing` (Common/enemies.c:1856).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn update_flappy_thing(&mut self, nme: EnemyId) {
         let path = self.nme(nme).path;
         let afc = self.act_frame_count;

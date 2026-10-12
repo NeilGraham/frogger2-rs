@@ -208,6 +208,7 @@ fn bound(x: f32, lo: f32, hi: f32) -> f32 {
 
 /// Port of `UpdateAnims` (`MDX Library/mdxActor.cpp:375`). `time_speed` is
 /// `timeInfo.speed` (1.0 at the fixed 60 Hz step).
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn update_anims(anim: &mut MdxActorAnimation, time_speed: f32) -> AnimEvent {
     if !anim.has_anims() {
         return AnimEvent::None;

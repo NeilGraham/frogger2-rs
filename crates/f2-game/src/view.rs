@@ -74,6 +74,7 @@ fn acos_fast(x: f32) -> f32 {
 }
 
 /// The `PushMatrix` macro body (mdxMath.h:86) / `guMtxCatF`: `a · b`, affine.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn mtx_cat(a: &Mat4, b: &Mat4) -> Mat4 {
     // Built as one array literal (phase 3S: no zeroing `memset` call first); every entry is
     // the same expression as before.
@@ -99,6 +100,7 @@ fn gu_translate(dx: f32, dy: f32, dz: f32) -> Mat4 {
 }
 
 /// Port of `guMtxXFMF` (mdxMath.cpp:127).
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn mtx_xfm(m: &Mat4, v: Vec3) -> Vec3 {
     [
         m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2] + m[3][0],
@@ -151,6 +153,7 @@ pub fn gu_look_at(eye: Vec3, at: Vec3, up: Vec3) -> Mat4 {
 }
 
 /// Port of `QuaternionToMatrix` (mdxMath.cpp:237); quaternions are `[x, y, z, w]`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn quaternion_to_matrix(q: &Quat) -> Mat4 {
     let [x, y, z, w] = *q;
     let s = 2.0 / (x * x + y * y + z * z + w * w);
@@ -162,6 +165,7 @@ pub fn quaternion_to_matrix(q: &Quat) -> Mat4 {
 }
 
 /// Port of `QuatSlerp` (mdxMath.cpp:304).
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn quat_slerp(s1: &Quat, sp2: &Quat, t: f32) -> Quat {
     let (x, y, z, w) = (s1[0] - sp2[0], s1[1] - sp2[1], s1[2] - sp2[2], s1[3] - sp2[3]);
     let pdist = x * x + y * y + z * z + w * w;
@@ -254,6 +258,7 @@ fn fallback<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: &KeyChannel) -> (
 /// returns the unique `i` with `t(i) == time`, else the last `i` with `t(i) < time`, so a
 /// short scan from any start finds the same keys; the scan starts at the channel's last
 /// answer and falls back to the original search when it would be long.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn find_to_from_ch<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: Option<&KeyChannel>) -> (usize, usize, f32) {
     use core::sync::atomic::Ordering::Relaxed;
     let n = keys.len();
@@ -388,6 +393,7 @@ fn object_local_k(k: &RootObject, animated: bool, time: f32, last: &mut [i16; 3]
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn object_local_r(
     mk: &[VKey],
     sk: &[VKey],
@@ -440,6 +446,7 @@ fn object_local_r(
 
 /// The matrix-stack top `XformActor` (mdxActor.cpp:547) pushes before the root object:
 /// `qRot · translate(pos)`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn actor_top(pos: Vec3, q_rot: &Quat) -> Mat4 {
     let top = mtx_cat(&gu_translate(pos[0], pos[1], pos[2]), &IDENTITY);
     mtx_cat(&quaternion_to_matrix(q_rot), &top)
@@ -530,6 +537,7 @@ impl XNode {
 /// (`scalemat . rotmat . top`). Calls `f(sprite index, world pos ×10, scaleX, scaleY, xlu)`
 /// in `AddObjectsSpritesToSpriteList` order.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn transform_object_sprites(
     chain: &[XNode],
     top: &Mat4,
@@ -587,6 +595,7 @@ fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) {
 /// The sphere test of `ActorListDraw` (mdxActor.cpp:139) for an actor without
 /// `ACTOR_ALWAYSDRAW`: whether its bounding sphere is on screen.
 #[inline]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn sphere_visible(model: &crate::assets::ModelInfo, p: &MdxPlacement, view: &ViewXform) -> bool {
     let tc = model.true_centre;
     let t_pos = [tc[0] * p.scale[0], tc[1] * p.scale[1], tc[2] * p.scale[2]];
@@ -701,6 +710,7 @@ impl ViewXform {
     }
 
     /// Port of `XfmPoint` (mdxRender.cpp:331) for an MDX-space point, `d == NULL`.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn xfm_point_f(&self, p: Vec3) -> Vec3 {
         let [x, y, z] = mtx_xfm(&self.matrix, p);
         let zd = z + self.dist as f32;
@@ -713,6 +723,7 @@ impl ViewXform {
     }
 
     /// Port of `CheckBoundingBox` (mdxActor.cpp:465): 1 when the box is off screen.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn check_bounding_box(&self, bbox: &[Vec3; 8], m: &Mat4) -> bool {
         const TOP: u32 = 0x1;
         const BOTTOM: u32 = 0x2;
@@ -833,6 +844,7 @@ impl Game {
 
     /// The root object's `OBJECT_FLAGS_CLIPPED` as `TransformObject` sets it (only the
     /// root's flag is ever read, by `CopyActorList`).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn transform_root_object(&mut self, id: ActorId, no_clip: bool) {
         let Some(view) = self.specfx.view.as_ref() else { return };
         let a = &self.actor2.actors[id].actor.actual_actor;
@@ -1008,6 +1020,7 @@ impl Game {
     }
 
     /// Port of `XformActor` (mdxActor.cpp:547): `UpdateAnims`, then the object transform.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn xform_actor(&mut self, id: ActorId, no_clip: bool) {
         if self.actor2.actors[id].actor.actual_actor.object_controller.is_none() {
             return;
@@ -1031,6 +1044,7 @@ impl Game {
 
     /// The object sprites of `TransformObject` (mdxObject.cpp:461) for actor `id`: the sprites
     /// the model's objects point at follow the actor (position, size, `xlu`, `draw`).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn transform_actor_sprites(&mut self, id: ActorId) {
         let a2 = &self.actor2.actors[id];
         let a = &a2.actor.actual_actor;
@@ -1100,6 +1114,7 @@ impl Game {
 
     /// Port of `KillObjectSprites` (mdxActor.cpp:115): an actor culled by `ActorListDraw`
     /// hides its object sprites.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     fn kill_object_sprites(&mut self, id: ActorId) {
         let a2 = &self.actor2.actors[id];
         let Some(mid) = a2.actor.actual_actor.object_controller else { return };
@@ -1175,6 +1190,7 @@ impl Game {
     }
 
     /// The loop body of `CopyActorList` for actor `id`.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn copy_actor(&mut self, id: ActorId, frog0: Option<SVector>) {
         let c = &mut self.actor2.actors[id];
         // Phase 3S: fields are only stored when their bits change, so unchanged actors
@@ -1239,6 +1255,7 @@ impl Game {
 
     /// The loop body of `ActorListDraw` for actor `id` (`view` = the current
     /// `specfx.view`; without one nothing is culled).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn actor_list_draw_one(&mut self, id: ActorId, view: Option<&ViewXform>) {
         let Some(view) = view else {
             self.view.draw_this_objects_sprites = self.actor2.actors[id].actor.actual_actor.placement.draw as u32;
