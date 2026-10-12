@@ -70,6 +70,7 @@ struct Args {
     msaa: Option<u32>,
     render_scale: Option<f32>,
     hud_probe: bool,
+    prompts_ps: bool,
     screenshot_rebind: bool,
     pad_script: Option<PathBuf>,
     video: Option<String>,
@@ -130,6 +131,7 @@ fn parse_args() -> Args {
         msaa: None,
         render_scale: None,
         hud_probe: false,
+        prompts_ps: false,
         screenshot_rebind: false,
         pad_script: None,
         video: None,
@@ -222,6 +224,12 @@ fn parse_args() -> Args {
             "--msaa" => a.msaa = Some(num(it.next())),
             "--render-scale" => a.render_scale = Some(it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
             "--hud-probe" => a.hud_probe = true,
+            "--prompts" => {
+                a.prompts_ps = match it.next().as_deref() {
+                    Some("ps") => true,
+                    _ => usage(),
+                }
+            }
             "--screenshot-rebind" => a.screenshot_rebind = true,
             "--pad-script" => a.pad_script = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "-h" | "--help" => usage(),
@@ -370,6 +378,10 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.set_display(cfg.profile, cfg.display_settings(Profile::Enhanced));
     app.set_input(cfg.bindings(), cfg.input.deadzone, cfg.hop_buffer_frames(Profile::Enhanced));
     app.hud_probe = args.hud_probe;
+    if args.prompts_ps {
+        app.families[0] = f2_platform::ControllerFamily::PlayStation;
+        app.force_pad_prompts = true;
+    }
     app.set_gameplay(cfg.gameplay.clone(), None);
     let mut hcfg = cfg.clone();
     if args.show_fps {

@@ -148,6 +148,92 @@ impl Font {
     }
 }
 
+/// Button-icon glyphs (PlayStation face buttons) in game text: bytes the game's strings never
+/// use. Fonts give them a width ([`Font::add_icon_glyphs`]); the renderer draws them from
+/// [`button_icons`] (`Renderer::set_button_icons`).
+pub const ICON_CROSS: u8 = 0x01;
+pub const ICON_CIRCLE: u8 = 0x02;
+pub const ICON_SQUARE: u8 = 0x03;
+pub const ICON_TRIANGLE: u8 = 0x04;
+/// Icon order in the [`button_icons`] image.
+pub const ICONS: [u8; 4] = [ICON_CROSS, ICON_CIRCLE, ICON_SQUARE, ICON_TRIANGLE];
+
+impl Font {
+    /// Gives the [`ICONS`] bytes an advance (no image: the renderer draws them), about the
+    /// font's cap height square plus a little spacing.
+    pub fn add_icon_glyphs(&mut self) {
+        let w = (self.height * 3).div_ceil(4) + 2;
+        for b in ICONS {
+            self.glyphs[b as usize] = Some(Glyph { left: u32::MAX, width: w });
+        }
+    }
+}
+
+/// The four PlayStation face-button icons (✕ ○ □ △ in their colours on a dark disc with a
+/// light rim), each `px` square, side by side: `(width, height, rgba)`.
+pub fn button_icons(px: u32) -> (u32, u32, Vec<u8>) {
+    let px = px.max(4) as usize;
+    let w = px * 4;
+    let mut rgba = vec![0u8; w * px * 4];
+    // Shapes in a unit square centred on 0: distances in units of the icon size.
+    let seg = |p: (f32, f32), a: (f32, f32), b: (f32, f32)| -> f32 {
+        let (pa, ba) = ((p.0 - a.0, p.1 - a.1), (b.0 - a.0, b.1 - a.1));
+        let h = ((pa.0 * ba.0 + pa.1 * ba.1) / (ba.0 * ba.0 + ba.1 * ba.1)).clamp(0.0, 1.0);
+        let (dx, dy) = (pa.0 - ba.0 * h, pa.1 - ba.1 * h);
+        (dx * dx + dy * dy).sqrt()
+    };
+    let len = |x: f32, y: f32| (x * x + y * y).sqrt();
+    let (stroke, r_disc, rim) = (0.055f32, 0.47f32, 0.03f32);
+    let colors: [[f32; 3]; 4] = [[0.49, 0.70, 0.96], [1.0, 0.42, 0.42], [0.93, 0.52, 0.80], [0.30, 0.86, 0.72]];
+    let tri: [(f32, f32); 3] = [(0.0, -0.24), (0.215, 0.135), (-0.215, 0.135)];
+    for (k, col) in colors.iter().enumerate() {
+        for y in 0..px {
+            for x in 0..px {
+                // 4x4 supersampling
+                let mut acc = [0f32; 4];
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let p = ((x as f32 + (sx as f32 + 0.5) / 4.0) / px as f32 - 0.5, (y as f32 + (sy as f32 + 0.5) / 4.0) / px as f32 - 0.5);
+                        let r = len(p.0, p.1);
+                        if r > r_disc {
+                            continue;
+                        }
+                        let sym = match k {
+                            0 => seg(p, (-0.17, -0.17), (0.17, 0.17)).min(seg(p, (-0.17, 0.17), (0.17, -0.17))) - stroke,
+                            1 => (r - 0.18).abs() - stroke,
+                            2 => {
+                                let (qx, qy) = (p.0.abs() - 0.16, p.1.abs() - 0.16);
+                                let outside = len(qx.max(0.0), qy.max(0.0));
+                                (outside + qx.max(qy).min(0.0)).abs() - stroke
+                            }
+                            _ => seg(p, tri[0], tri[1]).min(seg(p, tri[1], tri[2])).min(seg(p, tri[2], tri[0])) - stroke,
+                        };
+                        let c = if sym <= 0.0 {
+                            *col
+                        } else if r > r_disc - rim {
+                            [0.82, 0.82, 0.82]
+                        } else {
+                            [0.11, 0.11, 0.12]
+                        };
+                        acc[0] += c[0];
+                        acc[1] += c[1];
+                        acc[2] += c[2];
+                        acc[3] += 1.0;
+                    }
+                }
+                let o = (y * w + k * px + x) * 4;
+                if acc[3] > 0.0 {
+                    for c in 0..3 {
+                        rgba[o + c] = (acc[c] / acc[3] * 255.0 + 0.5) as u8;
+                    }
+                    rgba[o + 3] = (acc[3] / 16.0 * 255.0 + 0.5) as u8;
+                }
+            }
+        }
+    }
+    (w as u32, px as u32, rgba)
+}
+
 /// High-resolution replacement image of a font (the "modern" fonts, built by `f2-fontgen` from
 /// the typeface the pixel fonts were drawn from): an RGBA atlas holding each glyph's cell at
 /// `scale`× the strip's pixel size. Metrics (glyph widths, height) stay the strip's, so text
@@ -373,6 +459,17 @@ mod tests {
         let h = hires_2x2();
         assert_eq!(HiRes::decode_raw(&h.encode_raw(), true).unwrap(), h);
         assert!(HiRes::decode_raw(&h.encode_raw(), false).unwrap().rgba.is_empty());
+    }
+
+    #[test]
+    fn button_icons_shape() {
+        let (w, h, px) = button_icons(32);
+        assert_eq!((w, h, px.len()), (128, 32, 128 * 32 * 4));
+        // corners transparent, centre of the circle icon dark (inside the ring), cross centre blue
+        assert_eq!(px[3], 0);
+        let at = |x: usize, y: usize| &px[(y * 128 + x) * 4..(y * 128 + x) * 4 + 4];
+        assert!(at(16, 16)[2] > 200 && at(16, 16)[3] == 255);
+        assert!(at(48, 16)[0] < 60);
     }
 
     #[cfg(feature = "std")]

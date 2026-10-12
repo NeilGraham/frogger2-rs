@@ -296,6 +296,8 @@ pub struct Renderer {
     backdrops: Vec<Quad2D>,
     overlays: Vec<Quad2D>,
     /// Fonts: metrics, image, and for a high-resolution font the per-byte atlas UVs.
+    /// [`set_button_icons`](Self::set_button_icons): the icon image and its size.
+    icons: Option<(TexHandle, u32)>,
     /// (metrics, image, atlas UVs of a high-resolution font, size multiplier)
     fonts: Vec<(Font, TexHandle, Option<GlyphUvs>, f32)>,
     white: TexHandle,
@@ -464,6 +466,7 @@ impl Renderer {
             backdrops: Vec::new(),
             overlays: Vec::new(),
             fonts: Vec::new(),
+            icons: None,
             white: TexHandle(0),
             gpu_images: Vec::new(),
             bind_groups: HashMap::new(),
@@ -501,6 +504,7 @@ impl Renderer {
             backdrops: Vec::new(),
             overlays: Vec::new(),
             fonts: Vec::new(),
+            icons: None,
             white: TexHandle(0),
             output: (640, 480),
             sprite_clip: None,
@@ -562,6 +566,18 @@ impl Renderer {
         let h = self.textures.add_placeholder(hires.width, hires.height);
         self.fonts.push((font, h, Some(uvs), 1.0));
         FontId(self.fonts.len() - 1)
+    }
+
+    /// Makes the button-icon glyphs ([`font::ICONS`](crate::font::ICONS)) drawable, `px`
+    /// pixels square (pick about the largest on-screen text height). Rebuilds the image only
+    /// when the size changes.
+    pub fn set_button_icons(&mut self, px: u32) {
+        if self.icons.is_some_and(|(_, p)| p == px) {
+            return;
+        }
+        let (w, h, rgba) = crate::font::button_icons(px);
+        let t = self.textures.add_image(w, h, rgba);
+        self.icons = Some((t, px));
     }
 
     /// Draws `font` `mul` times larger than the game asks (centred on the same spot; for
@@ -1056,7 +1072,17 @@ impl Renderer {
         for &b in &bytes {
             let Some(g) = f.glyphs[b as usize] else { continue };
             let w = (g.width as f32 * scale).trunc();
-            if let Some(uvs) = hires {
+            if let Some(i) = crate::font::ICONS.iter().position(|&c| c == b) {
+                // Button icon, centred in its advance and the line; not tinted (the drop
+                // shadow pass, drawn in black, stays black).
+                if let Some((itex, _)) = self.icons {
+                    let side = (w - 2.0 * scale).min(fh * scale * 0.8).max(1.0).trunc();
+                    let col = if color[..3] == [0, 0, 0] { color } else { [255, 255, 255, color[3]] };
+                    let (u1, u2) = (i as f32 / 4.0, (i + 1) as f32 / 4.0);
+                    let (ix, iy) = ((cx + (w - side) / 2.0).trunc(), (y + (fh * scale - side) / 2.0).trunc());
+                    quads.push(Quad2D::rect(ix, iy, side, side, [u1, 0.0, u2, 1.0], Some(itex), col, Blend::Semi));
+                }
+            } else if let Some(uvs) = hires {
                 if let Some(uv) = uvs[b as usize] {
                     quads.push(Quad2D::rect(cx.trunc(), y.trunc(), w, (fh * scale).trunc(), uv, Some(tex), color, Blend::Semi));
                 }

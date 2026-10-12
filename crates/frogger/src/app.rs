@@ -144,6 +144,8 @@ pub struct App {
     osd: Option<(String, f32)>,
     /// Draw sample overlays in the 4096 space to check anchoring (`--hud-probe`).
     pub hud_probe: bool,
+    /// Prompts as if player 1 used a pad (screenshots of console prompts: `--prompts ps`).
+    pub force_pad_prompts: bool,
     /// Scripted pad 0 buttons (`--pad-script`): replaces player 1's input when set.
     pub pad_override: Option<u16>,
     /// `savegame.dat` read at session start and written by `SaveGame` (None: no saves,
@@ -250,7 +252,12 @@ impl App {
         let load_font = |p: &str| data.read(p).ok().and_then(|b| Font::from_bmp(&b));
         let book_font = load_font("textures/font/monofont.bmp");
         let game_font_files = match (load_font("textures/font/bigfont.bmp"), load_font("textures/font/smallfont.bmp")) {
-            (Some(b), Some(s)) => Some((b, s)),
+            (Some(mut b), Some(mut s)) => {
+                // Advances for the button-icon glyphs (`button_prompts` on PlayStation pads).
+                b.add_icon_glyphs();
+                s.add_icon_glyphs();
+                Some((b, s))
+            }
             _ => {
                 eprintln!("frogger: game fonts (bigfont.bmp/smallfont.bmp) missing");
                 None
@@ -325,6 +332,7 @@ impl App {
             enhanced: DisplaySettings::ENHANCED,
             osd: None,
             hud_probe: false,
+            force_pad_prompts: false,
             pad_override: None,
             save_path: None,
             save_data: None,
@@ -478,6 +486,8 @@ impl App {
     /// modern atlases are resampled to about their on-screen size (sampled ~1:1, no mipmaps).
     fn sync_game_fonts(&mut self) {
         let Some((big, small)) = &self.game_font_files else { return };
+        // Button icons about as tall as the big font's capitals on screen.
+        self.r.set_button_icons(((big.height as f32 * 0.8 * self.r.view.height / 480.0).ceil() as u32).clamp(12, 256));
         let modern = self.modern_font_files.as_ref().filter(|_| self.display().modern_font);
         // Atlas pixels per original pixel: the 480-line magnification, with headroom for
         // zoomed text.
@@ -885,12 +895,29 @@ impl App {
     /// key binding on the keyboard, the first pad binding on a joypad.
     fn button_prompts(&self) -> Vec<(char, String)> {
         use f2_game::levplay::{PAD_CIRCLE, PAD_CROSS, PAD_SQUARE, PAD_TRIANGLE};
-        let pad = !matches!(self.mapper.controllers[0], f2_platform::Controller::Keyboard);
+        let pad = self.force_pad_prompts || !matches!(self.mapper.controllers[0], f2_platform::Controller::Keyboard);
         [('X', PAD_CROSS), ('T', PAD_TRIANGLE), ('S', PAD_SQUARE), ('C', PAD_CIRCLE)]
             .into_iter()
             .filter_map(|(c, a)| {
                 let b = self.bindings.get(0, a);
                 let pick = b.iter().find(|x| matches!(x, f2_platform::Binding::Key(_)) != pad).or(b.first())?;
+                // PlayStation face buttons draw as their icons (✕ ○ □ △).
+                use f2_engine::font::{ICON_CIRCLE, ICON_CROSS, ICON_SQUARE, ICON_TRIANGLE};
+                use f2_platform::PadButton;
+                if self.families[0] == f2_platform::ControllerFamily::PlayStation {
+                    if let f2_platform::Binding::Pad(btn) = pick {
+                        let icon = match btn {
+                            PadButton::South => Some(ICON_CROSS),
+                            PadButton::East => Some(ICON_CIRCLE),
+                            PadButton::West => Some(ICON_SQUARE),
+                            PadButton::North => Some(ICON_TRIANGLE),
+                            _ => None,
+                        };
+                        if let Some(i) = icon {
+                            return Some((c, (i as char).to_string()));
+                        }
+                    }
+                }
                 Some((c, pick.label(self.families[0])))
             })
             .collect()
