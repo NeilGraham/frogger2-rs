@@ -107,6 +107,7 @@ USA data: 36 MiB ROM.
 | `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` / `profile-draw` (sample inside `Game::tick` / `App::draw` only), `game-log` (the simulation's `Effect::Log`), `render-cpu` (phase-2G CPU renderer), `prep-data` (set by `F2N64_DATA=prep`), `simbench` (no game: runs the `f2_game::simbench` scenarios, logs per-tick times, phases and state checksums; research/n64-performance.md §3S) |
 | `F2N64_DATA` | `pack` (default) or `prep` (phase-2G loose files) |
 | `F2N64_CFLAGS=-DF2N64_NO_TRIS` | measurement: r3d does all its CPU work but sends no triangles (the ceiling of polygon reduction; touch `csrc/r3d.c` to rebuild) |
+| `F2N64_CFLAGS=-DF2N64_NO_MUSIC` | measurement: no music (the `audio:` log line shows the mixer's CPU time per second; ULC music at 32 kHz is most of it) |
 | `F2N64_MEASURE_SIZES=1` | measurement: log r3d draws/triangles per on-screen radius class (< 1, 1.5, 3 px) every 300 frames |
 | `F2N64_KEEP_DFS=1` | skip the data step (reuse `target/n64/filesystem`) |
 | `F2N64_DUMP_FRAME=N` or `A-B` | log frame N's (or frames A..=B's) CPU draw commands and r3d draws (frames counted per level) |

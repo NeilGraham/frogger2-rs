@@ -158,6 +158,9 @@ uint32_t n64_music_play_impl(const char *path, uint32_t looped) {
         wav64_close(music);
         music = NULL;
     }
+#ifdef F2N64_NO_MUSIC
+    return 0;
+#endif
     if (!path || !file_exists(path)) return 0;
     music = wav64_load(path, &(wav64_loadparms_t){.streaming_mode = WAV64_STREAMING_FULL});
     if (!music) return 0;
@@ -175,11 +178,21 @@ void n64_music_vol_impl(uint32_t vol_permille) {
  * holds 300 ms, longer gaps are audible dropouts. */
 static uint32_t audio_last_poll, audio_max_gap;
 
+static uint32_t audio_polls, audio_ticks, audio_t0;
 void n64_audio_poll_impl(void) {
     uint32_t now = TICKS_READ();
     if (audio_last_poll && now - audio_last_poll > audio_max_gap) audio_max_gap = now - audio_last_poll;
     audio_last_poll = now;
+    if (!audio_t0) audio_t0 = now;
+    audio_polls++;
     if (audio_can_write()) mixer_try_play();
+    audio_ticks += TICKS_READ() - now;
+    if (now - audio_t0 > TICKS_FROM_MS(5000)) {
+        /* CPU time of the mixer (incl. music decoding) per second of real time. */
+        debugf("audio: %lu polls/s, %lu us/s in polls\n", audio_polls * 1000 / TICKS_TO_MS(now - audio_t0), TICKS_TO_US(audio_ticks) * 1000 / TICKS_TO_MS(now - audio_t0));
+        audio_polls = audio_ticks = 0;
+        audio_t0 = now;
+    }
 }
 
 /* n64_audio_poll_impl if 40 ms have passed since the last poll: cheap enough for loops that

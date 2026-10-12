@@ -413,6 +413,11 @@ pub fn predict_music_bytes(ctx: &Ctx, kbps: u32) -> u64 {
 
 /// Approximate wav64 header + Opus decoder-state bytes per file.
 pub const MUSIC_FILE_OVERHEAD: u64 = 64;
+/// Music sample rate: the N64 mixer's output rate (`audio_init(32000, ..)` in main.c). The
+/// 44.1 kHz sources would lose everything above 16 kHz at playback anyway; decoding ULC at
+/// 32 kHz costs the VR4300 ~27 % less (no samples the mixer only throws away) and spends the
+/// bitrate on audible content.
+pub const MUSIC_RATE: u32 = 32000;
 
 /// Encodes the music tracks as ULC stereo at `kbps` (average bitrate mode), looping flag set
 /// (the runtime clears it for tracks the game plays once, `PrepareSong(.., FALSE)`).
@@ -423,14 +428,15 @@ pub fn pack_music(ctx: &Ctx, kbps: u32) -> Result<ClassReport> {
     }
     let cache = ctx.cache_dir("music").map_err(|e| e.to_string())?;
     let results: Vec<Result<Vec<u8>>> = par_map(&tracks, ctx.jobs, |(n, p)| {
-        let key = file_key(p, &format!("ulc-abr{kbps}-stereo-loop"));
+        let key = file_key(p, &format!("ulc-abr{kbps}-{MUSIC_RATE}hz-stereo-loop"));
         let cached = cache.join(format!("track{n:02}-{key}.wav64"));
         if let Ok(b) = std::fs::read(&cached) {
             return Ok(b);
         }
         let tmp = cache.join(format!("tmp-{n:02}-{key}"));
         let codec = format!("ulc,mode=abr,bitrate={kbps}");
-        let flags: Vec<String> = ["--wav-compress", &codec, "--wav-loop", "true"].iter().map(|s| s.to_string()).collect();
+        let rate = MUSIC_RATE.to_string();
+        let flags: Vec<String> = ["--wav-compress", &codec, "--wav-resample", &rate, "--wav-loop", "true"].iter().map(|s| s.to_string()).collect();
         let out = audioconv(ctx, p, &tmp, &flags)?;
         let b = std::fs::read(&out).map_err(|e| e.to_string())?;
         std::fs::write(&cached, &b).map_err(|e| e.to_string())?;
@@ -450,11 +456,11 @@ pub fn pack_music(ctx: &Ctx, kbps: u32) -> Result<ClassReport> {
             class: Class::Music,
             bytes: bytes.len() as u64,
             source_bytes: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
-            format: format!("ulc abr {kbps}kbps stereo loop"),
+            format: format!("ulc abr {kbps}kbps {MUSIC_RATE} Hz stereo loop"),
             notes: vec![format!("{:.1}s {rate}Hz x{ch}", frames as f64 / f64::from(rate.max(1)))],
         });
     }
-    rep.notes.push(format!("music: {} tracks, {:.1}s, ULC stereo ABR {kbps} kbps: {total} bytes", tracks.len(), music_seconds(ctx)));
+    rep.notes.push(format!("music: {} tracks, {:.1}s, ULC stereo ABR {kbps} kbps at {MUSIC_RATE} Hz: {total} bytes", tracks.len(), music_seconds(ctx)));
     Ok(rep)
 }
 

@@ -23,9 +23,11 @@ idx = starts[int(sys.argv[3])] if len(sys.argv) > 3 else starts[-1]
 total = int(lines[idx].split()[2])
 hist = {"pc": [], "ra": [], "rm": []}
 for l in lines[idx + 1:]:
+    if l.startswith("PROF samples"):
+        break
     m = re.match(r"PROF (pc|ra|rm) ([0-9a-f]+) (\d+)", l)
     if not m:
-        break
+        continue  # other log lines printed while the window was being dumped
     hist[m.group(1)].append((m.group(2), int(m.group(3))))
 
 
@@ -68,5 +70,5 @@ for name, lst in hist.items():
             print(f"{n * 100 / total:5.1f}% {s}")
     for what, agg in (("enclosing function", outer), ("innermost inlined", inner)):
         print(f"== {name} by {what} (top buckets; % of {total} samples)")
-        for s, n in agg.most_common(45):
+        for s, n in agg.most_common(int(os.environ.get("PROF_TOP", "45"))):
             print(f"{n * 100 / total:5.1f}% {s}")
