@@ -1133,6 +1133,8 @@ uint32_t n64_probe_c_impl(uint32_t kind, uint32_t n) {
     return 0;
 }
 
+static void floor_selftest(void);
+
 int main(void) {
     debug_init_isviewer();
     debug_init_usblog();
@@ -1167,6 +1169,7 @@ int main(void) {
     /* After the boot-time allocations (framebuffers, z-buffer, audio, RSP queues), which live
      * for the whole run, so the pool holds only per-level and transient large blocks. */
     big_init();
+    floor_selftest();
     debugf("large-block pool %d KiB\n", big_base ? BIG_POOL / 1024 : 0);
     f2n64_call(f2n64_init);
     for (;;) {
@@ -1175,4 +1178,118 @@ int main(void) {
         f2n64_call(f2n64_frame);
         n64_audio_poll_impl();
     }
+}
+
+/* libdragon builds with -ffast-math (no signed zeros, no NaNs): the floor code must not be. */
+#define F2_NO_FAST_MATH __attribute__((optimize("no-fast-math")))
+#define F2_EXACT_FP __attribute__((optimize("no-fast-math"), noinline))
+
+/* ---- floor / floorf on the FPU --------------------------------------------------------
+ * compiler_builtins' generic floor/floorf (weak symbols) run ~100+ integer instructions;
+ * libdragon's CPU triangle setup calls floor() ~10x and floorf() 6x per triangle
+ * (float_to_s16_16, edge Y snapping) and the Rust code calls them too. The VR4300 rounds
+ * toward -inf in one instruction (floor.w.s / floor.w.d) for results that fit 32 bits; the
+ * rest (|x| >= 2^31, inf, NaN) are integral for float and take musl's exact bit-level
+ * floor (on 32-bit halves) for double. floor is exact, so the
+ * results are bit-identical (including -0.0, which the integer path would lose). */
+F2_NO_FAST_MATH static float floorf_bits(float x) {
+    union { float f; uint32_t i; } u = { x };
+    int e = (int)(u.i >> 23 & 0xff) - 0x7f;
+    uint32_t m;
+    if (e >= 23) return x;
+    if (e >= 0) {
+        m = 0x007fffff >> e;
+        if ((u.i & m) == 0) return x;
+        if (u.i >> 31) u.i += m;
+        u.i &= ~m;
+    } else {
+        if (u.i >> 31 == 0) u.i = 0;
+        else if (u.i << 1) u.f = -1.0f;
+    }
+    return u.f;
+}
+
+/* musl's floor on the two 32-bit halves of the double (w[FW_HI] = sign, exponent,
+ * high mantissa); no 64-bit integer operations (GCC's handling of a double in a 64-bit
+ * integer went wrong here: floor_bits-style code gave -0.0 for 0.9 on the N64). */
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define FW_HI 0
+#define FW_LO 1
+#else
+#define FW_HI 1
+#define FW_LO 0
+#endif
+F2_NO_FAST_MATH static double floor_words(double x) {
+    uint32_t w[2];
+    memcpy(w, &x, 8);
+    int e = (int)((w[FW_HI] >> 20) & 0x7ff) - 0x3ff;
+    if (e >= 52) return x;  /* integral, inf or NaN */
+    if (e < 0) {            /* |x| < 1 */
+        if ((w[FW_HI] >> 31) == 0) return 0.0;
+        if ((w[FW_HI] << 1) | w[FW_LO]) return -1.0;
+        return x;           /* -0.0 */
+    }
+    int fb = 52 - e;        /* fractional bits, 1..52 */
+    uint32_t mlo = fb >= 32 ? 0xffffffffu : (1u << fb) - 1;
+    uint32_t mhi = fb >= 32 ? (1u << (fb - 32)) - 1 : 0;
+    if (((w[FW_HI] & mhi) | (w[FW_LO] & mlo)) == 0) return x;
+    if (w[FW_HI] >> 31) {
+        uint32_t lo = w[FW_LO] + mlo;
+        w[FW_HI] += mhi + (lo < w[FW_LO]);
+        w[FW_LO] = lo;
+    }
+    w[FW_HI] &= ~mhi;
+    w[FW_LO] &= ~mlo;
+    memcpy(&x, w, 8);
+    return x;
+}
+
+F2_EXACT_FP float floorf(float x) {
+    if (__builtin_fabsf(x) < 2147483648.0f) {
+        int32_t r;
+        float t;
+        __asm__("floor.w.s %1, %2\n\tmfc1 %0, %1" : "=r"(r), "=&f"(t) : "f"(x));
+        if (r == 0) return x == 0.0f ? x : 0.0f;
+        return (float)r;
+    }
+    return x; /* |x| >= 2^31 (always integral for float), inf or NaN */
+}
+
+F2_EXACT_FP double floor(double x) {
+    if (__builtin_fabs(x) < 2147483648.0) {
+        int32_t r;
+        float t;
+        __asm__("floor.w.d %1, %2\n\tmfc1 %0, %1" : "=r"(r), "=&f"(t) : "f"(x));
+        if (r == 0) return x == 0.0 ? x : 0.0;
+        return (double)r;
+    }
+    return floor_words(x);
+}
+
+/* Boot check of the FPU floor paths against the exact bit-level ones (debug log). */
+F2_NO_FAST_MATH static void floor_selftest(void) {
+    uint32_t r = 0x12345678u;
+    int bad = 0;
+    for (int k = 0; k < 20000; k++) {
+        r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+        float f = (float)(int32_t)r / (float)(1u << (r % 24));
+        float (*volatile ff)(float) = floorf;
+        double (*volatile fd)(double) = floor;
+        float a = ff(f), b = floorf_bits(f);
+        double d = (double)(int32_t)r / (double)(1u << (r % 30)) - 0.5;
+        double c = fd(d), e = floor_words(d);
+        if (memcmp(&a, &b, 4) || memcmp(&c, &e, 8)) {
+            if (bad < 6) {
+                uint32_t fi, ai, bi; uint64_t di, ci, ei;
+                memcpy(&fi, &f, 4); memcpy(&ai, &a, 4); memcpy(&bi, &b, 4);
+                memcpy(&di, &d, 8); memcpy(&ci, &c, 8); memcpy(&ei, &e, 8);
+                debugf("floor mismatch f=%08lx hw=%08lx ref=%08lx | d=%016llx hw=%016llx ref=%016llx\n", fi, ai, bi, di, ci, ei);
+            }
+            bad++;
+        }
+    }
+    float (*volatile fz)(float) = floorf;
+    float z = fz(-0.0f);
+    if (!__builtin_signbit(z)) bad++;
+    debugf("floor selftest: %d mismatches\n", bad);
 }

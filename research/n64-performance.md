@@ -925,3 +925,29 @@ the repo). "real time" = game frames simulated per wall-clock second / 60.
   `worktree-agent-adfb9e878e97eca51`.
 - Next: the render-side `timeInfo.frameCount` users in `f2-draw` (texture animation) when
   `timing.active`; owner decision on the cap; real-hardware check.
+
+## 3D: draw-side caches + FPU floor (2026-10-11)
+ares v148, Garden 1 (`level 0 0`), frog hopping (camera moving), 5 s `perf` windows:
+
+| | before | after |
+|---|---|---|
+| fps | 13.8–14.6 | 15.6–16.6 (~16.2) |
+| draw / frame | 46–50 ms | 39–43 ms |
+| CPU-side submit | 9–10 ms | 7–8 ms |
+| `Game::tick` | 11.3–11.8 ms | 11.2–11.6 ms |
+
+- Shared, exact (PC frames pixel-identical before/after, 6 levels x 2 frames): per-actor
+  `models` lookup cached in `LevelScene::actors`; `record_actor` walks a cached per-model
+  list of mesh objects (`Actor::mesh_objects`).
+- r3d: draws with unchanged matrices/parameters but a new view (camera moving; ~140 of
+  208 draws while hopping) re-cull from cached world-space spheres and keep their converted
+  uniform (`view-only` in the perf log); culling always uses the world-sphere path.
+- `floor`/`floorf` (weak in compiler_builtins, generic soft code) replaced in `main.c` by
+  `floor.w.s`/`floor.w.d` with exact fallbacks; libdragon's CPU triangle setup calls them
+  ~16x per triangle. Compiled without fast-math (libdragon's `-ffast-math` dropped signed
+  zeros); boot self-test (`floor selftest: 0 mismatches` in the log) against the bit-level
+  versions, which match glibc on 30M+ host values.
+- Profile after (draw only): draw loop + per-actor engine work ~27 %, r3d per-draw ~15 %,
+  CPU triangle path (sprites, shadows, effects, HUD) ~15 %, memcpy/memset ~7 %.
+  Next: batch CPU sprites/effects; reduce per-actor work for animated actors; merge
+  static scenery draws.
