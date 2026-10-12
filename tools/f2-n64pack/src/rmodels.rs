@@ -93,6 +93,10 @@ fn convert_one(p: &Path) -> Result<(RawAsset, RawAsset, u32)> {
     ))
 }
 
+/// Text size on the N64 relative to the PC layout: 240 lines make the original sizes hard to
+/// read on a TV, so the modern fonts are drawn this much larger (centred on the same spot).
+pub const N64_FONT_MUL: f32 = 1.25;
+
 /// The `InitFont` strips the N64 front end draws text with (`textures/font/*.bmp`, the BMPs
 /// unchanged: the runtime scans the glyphs like the PC and blits RGBA16), stored next to the
 /// NTX1 textures. Only the three fonts the game uses: big/small (`GameFonts`) and mono (the
@@ -110,6 +114,34 @@ pub fn fonts(ctx: &Ctx) -> Result<(Vec<RawAsset>, Vec<String>)> {
             notes: Vec::new(),
             segments: Vec::new(),
         });
+    }
+    // Modern fonts (`f2-fontgen`, built from the user's Gill Sans Ultra Bold when installed):
+    // the 6x atlases resampled to the N64's on-screen size (320 px = half the PC's 640-wide
+    // font scale) times `N64_FONT_MUL`, raw RGBA8 (the pack compresses it).
+    let mut modern = String::from("modern fonts: none (typeface not found)");
+    match f2_fontgen::ensure(&ctx.rendition) {
+        Ok(Some(log)) => log.iter().for_each(|l| eprintln!("f2-n64pack: {l}")),
+        Ok(None) => {}
+        Err(e) => eprintln!("f2-n64pack: modern fonts: {e}"),
+    }
+    if f2_fontgen::present(&ctx.rendition) {
+        let mut sizes = Vec::new();
+        for (_, f2mf, _) in f2_fontgen::FONTS {
+            let p = ctx.game().join("textures/font").join(f2mf);
+            let src = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let hr = f2_engine::HiRes::decode(&src).map_err(|e| format!("{}: {e}", p.display()))?.resampled(0.5 * N64_FONT_MUL);
+            sizes.push(format!("{}x{}", hr.width, hr.height));
+            let stem = f2mf.trim_end_matches(".f2mf");
+            out.push(RawAsset {
+                path: format!("textures/font/{stem}.f2mr"),
+                class: Class::Textures,
+                source_bytes: src.len() as u64,
+                data: hr.encode_raw(),
+                notes: Vec::new(),
+                segments: Vec::new(),
+            });
+        }
+        modern = format!("modern fonts {} at {N64_FONT_MUL}x size", sizes.join(" + "));
     }
     // The procedural-texture sources of each texture bank (`pt_texture_load` reads only the
     // `prc*` textures of the banks a level loads): a few KiB instead of the whole NTX bank.
@@ -134,7 +166,12 @@ pub fn fonts(ctx: &Ctx) -> Result<(Vec<RawAsset>, Vec<String>)> {
         let stem = p.file_stem().unwrap().to_string_lossy().to_lowercase();
         out.push(RawAsset { path: format!("textures/{stem}.prc"), class: Class::Textures, source_bytes: 0, data, notes: Vec::new(), segments: Vec::new() });
     }
-    Ok((out, vec![format!("fonts: bigfont/smallfont/monofont BMPs for the runtime's glyph scan; {nprc} procedural-texture sources in textures/<bank>.prc")]))
+    Ok((
+        out,
+        vec![format!(
+            "fonts: bigfont/smallfont/monofont BMPs for the runtime's glyph scan; {modern}; {nprc} procedural-texture sources in textures/<bank>.prc"
+        )],
+    ))
 }
 
 #[cfg(test)]

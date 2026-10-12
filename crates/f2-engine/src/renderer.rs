@@ -296,7 +296,8 @@ pub struct Renderer {
     backdrops: Vec<Quad2D>,
     overlays: Vec<Quad2D>,
     /// Fonts: metrics, image, and for a high-resolution font the per-byte atlas UVs.
-    fonts: Vec<(Font, TexHandle, Option<GlyphUvs>)>,
+    /// (metrics, image, atlas UVs of a high-resolution font, size multiplier)
+    fonts: Vec<(Font, TexHandle, Option<GlyphUvs>, f32)>,
     white: TexHandle,
     #[cfg(feature = "gpu")]
     gpu_images: Vec<GpuImage>,
@@ -537,7 +538,7 @@ impl Renderer {
     pub fn add_font(&mut self, mut font: Font) -> FontId {
         let rgba = core::mem::take(&mut font.rgba);
         let h = self.textures.add_image(font.width, font.height, rgba);
-        self.fonts.push((font, h, None));
+        self.fonts.push((font, h, None, 1.0));
         FontId(self.fonts.len() - 1)
     }
 
@@ -549,8 +550,24 @@ impl Renderer {
         let hr = hires.resampled(scale);
         let uvs = (0..=255u8).map(|c| hr.uv(c)).collect();
         let h = self.textures.add_image(hr.width, hr.height, hr.rgba);
-        self.fonts.push((font, h, Some(uvs)));
+        self.fonts.push((font, h, Some(uvs), 1.0));
         FontId(self.fonts.len() - 1)
+    }
+
+    /// [`add_font_hires`](Self::add_font_hires) for an atlas a back end already holds
+    /// (`hires.rgba` is ignored; no resampling): a placeholder image of the atlas size.
+    pub fn add_font_hires_placeholder(&mut self, mut font: Font, hires: &crate::HiRes) -> FontId {
+        font.rgba = Vec::new();
+        let uvs = (0..=255u8).map(|c| hires.uv(c)).collect();
+        let h = self.textures.add_placeholder(hires.width, hires.height);
+        self.fonts.push((font, h, Some(uvs), 1.0));
+        FontId(self.fonts.len() - 1)
+    }
+
+    /// Draws `font` `mul` times larger than the game asks (centred on the same spot; for
+    /// low-resolution outputs, e.g. the N64's 240 lines). Layout metrics are unchanged.
+    pub fn set_font_size_mul(&mut self, font: FontId, mul: f32) {
+        self.fonts[font.0].3 = mul;
     }
 
     /// Adds a font whose image a back end already holds (no pixels: a placeholder image of
@@ -558,7 +575,7 @@ impl Renderer {
     pub fn add_font_placeholder(&mut self, mut font: Font) -> FontId {
         font.rgba = Vec::new();
         let h = self.textures.add_placeholder(font.width, font.height);
-        self.fonts.push((font, h, None));
+        self.fonts.push((font, h, None, 1.0));
         FontId(self.fonts.len() - 1)
     }
 
@@ -1021,7 +1038,15 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn draw_text_px(&mut self, font: FontId, x: f32, y: f32, text: &str, color: [u8; 4], scale: f32, centred_x: Option<f32>) -> f32 {
         let bytes = Self::text_bytes(text);
-        let (f, tex, hires) = (&self.fonts[font.0].0, self.fonts[font.0].1, self.fonts[font.0].2.as_ref());
+        let (f, tex, hires, mul) = (&self.fonts[font.0].0, self.fonts[font.0].1, self.fonts[font.0].2.as_ref(), self.fonts[font.0].3);
+        // Enlarged fonts grow around the string's centre (left-aligned text would run into
+        // what sits to its right, e.g. the timer's clock).
+        let (x, y, scale) = if mul != 1.0 {
+            let grow_x = if centred_x.is_none() { (mul - 1.0) * f.string_width(&bytes, scale) as f32 / 2.0 } else { 0.0 };
+            (x - grow_x, y - (mul - 1.0) * f.height as f32 * scale / 2.0, scale * mul)
+        } else {
+            (x, y, scale)
+        };
         let mut cx = match centred_x {
             Some(c) => c - (f.string_width(&bytes, scale) / 2) as f32,
             None => x,

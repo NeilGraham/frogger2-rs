@@ -40,7 +40,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use f2_draw::overlay::{GameFonts, TileScroll};
 use f2_draw::render::{self, DrawCtx, LevelScene, Snap};
-use f2_engine::{Camera, Font, Renderer, TexHandle};
+use f2_engine::{Camera, Font, HiRes, Renderer, TexHandle};
 use f2_game::assets::DataSource;
 use f2_game::session::SessionConfig;
 use f2_game::{Effect, Game, TickInput};
@@ -68,6 +68,9 @@ fn fps_rank(f: u32) -> usize {
 /// Render size (the RDP framebuffer).
 pub const WIDTH: u32 = 320;
 pub const HEIGHT: u32 = 240;
+/// Strip pixels -> screen pixels of the game fonts at 320 wide (`PrintText`: x/640); a modern
+/// atlas packed at a larger scale is drawn that much larger.
+const N64_FONT_BASE: f32 = WIDTH as f32 / 640.0;
 
 /// How the ROM starts (build-time `F2N64_BOOT`): `frontend` (default: logos → title →
 /// frontend like the PC executable, progress from the SRAM save: a new player's story book
@@ -182,6 +185,8 @@ pub struct App {
     game_fonts: Option<GameFonts>,
     /// The game fonts' metrics after the first load (their N64 textures stay loaded).
     fonts_cache: Option<(Font, Font)>,
+    /// The modern font atlases' layout (pixels dropped) when the game fonts are modern.
+    modern_cache: Option<(HiRes, HiRes)>,
     backdrop: Option<(String, Option<TexHandle>)>,
     tile_scroll: TileScroll,
     prev: Vec<Option<Snap>>,
@@ -242,6 +247,7 @@ impl App {
             have_fonts: true,
             game_fonts: None,
             fonts_cache: None,
+            modern_cache: None,
             backdrop: None,
             tile_scroll: TileScroll::default(),
             prev: Vec::new(),
@@ -315,6 +321,18 @@ impl App {
         }
     }
 
+    /// The game fonts' metrics (pixels dropped) with their modern atlases, when the pack has
+    /// them.
+    fn load_modern_fonts(&self) -> Option<((Font, HiRes), (Font, HiRes))> {
+        let one = |bmp: &str, raw: &str| -> Option<(Font, HiRes)> {
+            let hr = HiRes::decode_raw(&self.data.store.load(raw)?, true)?;
+            let mut f = load_font(&self.data, bmp)?;
+            f.rgba = Vec::new();
+            Some((f, hr))
+        };
+        Some((one("textures/font/bigfont.bmp", "textures/font/bigfont.f2mr")?, one("textures/font/smallfont.bmp", "textures/font/smallfont.f2mr")?))
+    }
+
     /// A fresh `Renderer` (its texture registry cannot free images) with the fonts.
     ///
     /// The game fonts' N64 textures survive (registry images 1 and 2 again): reloading
@@ -334,10 +352,30 @@ impl App {
         }
         self.backdrop = None;
         self.game_fonts = None;
-        if let Some((b, s)) = &self.fonts_cache {
+        if let (Some((b, s)), Some((hb, hs))) = (&self.fonts_cache, &self.modern_cache) {
+            let normal = self.r.add_font_hires_placeholder(b.clone(), hb);
+            let small = self.r.add_font_hires_placeholder(s.clone(), hs);
+            self.r.set_font_size_mul(normal, hb.scale / N64_FONT_BASE);
+            self.r.set_font_size_mul(small, hs.scale / N64_FONT_BASE);
+            self.game_fonts = Some(GameFonts { normal, small });
+        } else if let Some((b, s)) = &self.fonts_cache {
             let normal = self.r.add_font_placeholder(b.clone());
             let small = self.r.add_font_placeholder(s.clone());
             self.game_fonts = Some(GameFonts { normal, small });
+        } else if let Some(((b, hb), (s, hs))) = self.have_fonts.then(|| self.load_modern_fonts()).flatten() {
+            // Modern fonts (f2-n64pack `textures/font/*.f2mr`): atlases already at the N64's
+            // on-screen size; metrics from the bitmaps.
+            let normal = self.r.add_font_hires(b.clone(), &hb, hb.scale);
+            l.gfx.upload(&mut self.r.textures);
+            let small = self.r.add_font_hires(s.clone(), &hs, hs.scale);
+            l.gfx.upload(&mut self.r.textures);
+            self.r.set_font_size_mul(normal, hb.scale / N64_FONT_BASE);
+            self.r.set_font_size_mul(small, hs.scale / N64_FONT_BASE);
+            self.game_fonts = Some(GameFonts { normal, small });
+            let meta = |h: &HiRes| HiRes { rgba: Vec::new(), ..h.clone() };
+            self.modern_cache = Some((meta(&hb), meta(&hs)));
+            self.fonts_cache = Some((b, s));
+            log!("app: modern fonts {}x{} + {}x{}", hb.width, hb.height, hs.width, hs.height);
         } else if self.have_fonts {
             let b = load_font(&self.data, "textures/font/bigfont.bmp").map(|f| self.r.add_font(f));
             l.gfx.upload(&mut self.r.textures);

@@ -248,6 +248,41 @@ impl HiRes {
         HiRes { scale: self.scale * f, width: dw as u32, height: dh as u32, rgba, rects }
     }
 
+    /// Raw form for `no_std` loaders (the N64 pack compresses it): magic `F2MR`, then the
+    /// [`encode`](Self::encode) header, then the RGBA8 atlas uncompressed.
+    pub fn encode_raw(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(20 + 256 * 16 + self.rgba.len());
+        out.extend_from_slice(b"F2MR");
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&self.scale.to_le_bytes());
+        out.extend_from_slice(&self.width.to_le_bytes());
+        out.extend_from_slice(&self.height.to_le_bytes());
+        for i in 0..256 {
+            let r = self.rects.get(i).copied().unwrap_or_default();
+            r.iter().for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
+        }
+        out.extend_from_slice(&self.rgba);
+        out
+    }
+
+    /// Reads [`encode_raw`](Self::encode_raw); `with_pixels: false` keeps only the metrics.
+    pub fn decode_raw(data: &[u8], with_pixels: bool) -> Option<HiRes> {
+        let hdr = 20 + 256 * 16;
+        if data.len() < hdr || &data[0..4] != b"F2MR" {
+            return None;
+        }
+        let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
+        let f32_at = |o: usize| f32::from_le_bytes(data[o..o + 4].try_into().unwrap());
+        let (scale, width, height) = (f32_at(8), u32_at(12), u32_at(16));
+        let n = width as usize * height as usize * 4;
+        if u32_at(4) != 1 || data.len() < hdr + n {
+            return None;
+        }
+        let rects = (0..256).map(|i| core::array::from_fn(|k| f32_at(20 + i * 16 + k * 4))).collect();
+        let rgba = if with_pixels { data[hdr..hdr + n].to_vec() } else { Vec::new() };
+        Some(HiRes { scale, width, height, rgba, rects })
+    }
+
     /// `F2MF` file: magic, version (1), scale, atlas size, 256 cells (f32 x/y/w/h), then the
     /// atlas as PNG.
     #[cfg(feature = "std")]
@@ -331,6 +366,13 @@ mod tests {
         assert_eq!(r.rgba[2 * 4 + 3], 0);
         assert_eq!(r.uv(b'A'), h.uv(b'A'));
         assert_eq!(r.uv(b'B'), None);
+    }
+
+    #[test]
+    fn hires_raw_roundtrip() {
+        let h = hires_2x2();
+        assert_eq!(HiRes::decode_raw(&h.encode_raw(), true).unwrap(), h);
+        assert!(HiRes::decode_raw(&h.encode_raw(), false).unwrap().rgba.is_empty());
     }
 
     #[cfg(feature = "std")]

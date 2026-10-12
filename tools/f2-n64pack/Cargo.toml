@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 f2-formats = { path = "../../crates/f2-formats" }
+f2-engine = { path = "../../crates/f2-engine", default-features = false, features = ["std"] }
+f2-fontgen = { path = "../../crates/f2-fontgen" }
 f2-n64z = { path = "../../crates/f2-n64z", features = ["encoder"] }
 f2-n64fmt = { path = "../../crates/f2-n64fmt", features = ["objbank"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
