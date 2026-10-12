@@ -270,11 +270,36 @@ struct MeshRes {
 }
 
 /// Base data of a `MODGE`/`WAVE` mesh's vertices and the frame they were last animated for.
+///
+/// Every term of `PCCalcModgeValues` has the form `f(z-term + g(x))` (or the x/z mirror), so
+/// with the angle-addition identities the sines are taken once per distinct x and z (a water
+/// grid shares them along its rows and columns) and each vertex only combines them.
 struct ModgeMesh {
-    /// Per vertex: model-space x, z; stored y, s, t, alpha.
-    base: Vec<(f32, f32, i16, i16, i16, u8)>,
+    /// Per vertex: index into `xs`, index into `zs`; stored y, s, t, alpha.
+    base: Vec<(u16, u16, i16, i16, i16, u8)>,
+    /// Distinct model-space x and z coordinates.
+    xs: Vec<f32>,
+    zs: Vec<f32>,
+    /// Per frame scratch: sin/cos pairs per distinct x and z (see `animate_modge`).
+    xt: Vec<[f32; 6]>,
+    zt: Vec<[f32; 6]>,
     frame: u32,
     flags: u8,
+}
+
+/// Distinct values of `v` (by bit pattern) and each element's index into them.
+fn distinct(v: &[f32]) -> (Vec<f32>, Vec<u16>) {
+    let mut order: Vec<u32> = (0..v.len() as u32).collect();
+    order.sort_unstable_by_key(|&i| v[i as usize].to_bits());
+    let (mut vals, mut idx) = (Vec::new(), alloc::vec![0u16; v.len()]);
+    for &i in &order {
+        let x = v[i as usize];
+        if vals.last().map(|l: &f32| l.to_bits()) != Some(x.to_bits()) {
+            vals.push(x);
+        }
+        idx[i as usize] = (vals.len() - 1) as u16;
+    }
+    (vals, idx)
 }
 
 /// 1024-entry sine table over one period (+1 for interpolation).
@@ -958,15 +983,22 @@ impl R3d {
         let scale = res.pos_scale;
         let st = res.modge.get_or_insert_with(|| {
             let rd = |o: usize| i16::from_be_bytes([v[o], v[o + 1]]);
-            let base = (0..res.n_verts as usize)
+            let n = res.n_verts as usize;
+            let (xs, xi) = distinct(&(0..n).map(|i| rd(i * 16) as f32 * scale).collect::<Vec<_>>());
+            let (zs, zi) = distinct(&(0..n).map(|i| rd(i * 16 + 4) as f32 * scale).collect::<Vec<_>>());
+            let base = (0..n)
                 .map(|i| {
                     let o = i * 16;
-                    (rd(o) as f32 * scale, rd(o + 4) as f32 * scale, rd(o + 2), rd(o + 12), rd(o + 14), v[o + 11])
+                    (xi[i], zi[i], rd(o + 2), rd(o + 12), rd(o + 14), v[o + 11])
                 })
                 .collect();
             #[cfg(target_vendor = "nintendo64")]
-            crate::log!("r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, flags {})", res.id, res.n_verts, flags);
-            alloc::boxed::Box::new(ModgeMesh { base, frame: u32::MAX, flags: 0 })
+            crate::log!(
+                "r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, {}x{} distinct x/z, flags {})",
+                res.id, n, xs.len(), zs.len(), flags
+            );
+            let (xt, zt) = (alloc::vec![[0.0; 6]; xs.len()], alloc::vec![[0.0; 6]; zs.len()]);
+            alloc::boxed::Box::new(ModgeMesh { base, xs, zs, xt, zt, frame: u32::MAX, flags: 0 })
         });
         if st.frame == fc && st.flags == flags {
             return;
@@ -976,15 +1008,34 @@ impl R3d {
         let tb = sin_table();
         let sinf = |x: f32| fast_sin(tb, x);
         let cosf = |x: f32| fast_sin(tb, x + core::f32::consts::FRAC_PI_2);
+        let sc = |x: f32| (sinf(x), cosf(x));
         let t = fc as f32;
         let (modge, wave) = (flags & 1 != 0, flags & 2 != 0);
+        // mx = sin(A(z) + B(x)), mz = cos(P(x) + Q(z)), my = sin(R(z) + S(x)) with
+        //   A = z·1.5/35 + t·1.5/70   B = sin(x·1.3/49 + t·2/56)
+        //   P = x·1.5/49 + t·1.5/66   Q = cos(z·1.3/29 + t·2/66)
+        //   R = z·1.2/26 + t/26       S = cos(x·1.3/49 + t/26)
+        // Per x: [sin B, cos B, sin P, cos P, sin S, cos S]; per z: the same for A, Q, R.
+        for (&x, o) in st.xs.iter().zip(st.xt.iter_mut()) {
+            let (sb, cb) = sc(sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)));
+            let (sp, cp) = sc(x * (1.5 / 49.0) + t * (1.5 / 66.0));
+            let (ss, cs) = if wave { sc(cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0))) } else { (0.0, 0.0) };
+            *o = [sb, cb, sp, cp, ss, cs];
+        }
+        for (&z, o) in st.zs.iter().zip(st.zt.iter_mut()) {
+            let (sa, ca) = sc(z * (1.5 / 35.0) + t * (1.5 / 70.0));
+            let (sq, cq) = sc(cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)));
+            let (sr, cr) = if wave { sc(z * (1.2 / 26.0) + t * (1.0 / 26.0)) } else { (0.0, 0.0) };
+            *o = [sa, ca, sq, cq, sr, cr];
+        }
         let inv = 1.0 / scale;
-        for (i, &(x, z, y0, s0, t0, a0)) in st.base.iter().enumerate() {
+        for (i, &(xi, zi, y0, s0, t0, a0)) in st.base.iter().enumerate() {
             let o = i * 16;
-            let mx = (sinf(z * (1.5 / 35.0) + sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)) + t * (1.5 / 70.0)) + 1.0) * 0.1;
-            let mz = (cosf(x * (1.5 / 49.0) + cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)) + t * (1.5 / 66.0)) + 1.0) * 0.1;
+            let (px, pz) = (&st.xt[xi as usize], &st.zt[zi as usize]);
+            let mx = (pz[0] * px[1] + pz[1] * px[0] + 1.0) * 0.1;
+            let mz = (px[3] * pz[3] - px[2] * pz[2] + 1.0) * 0.1;
             if wave {
-                let my = (sinf(z * (1.2 / 26.0) + cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0)) + t * (1.0 / 26.0)) + 1.0) * 5.0;
+                let my = (pz[4] * px[5] + pz[5] * px[4] + 1.0) * 5.0;
                 let y = round_i32(y0 as f32 + my * inv).clamp(-32768, 32767) as i16;
                 v[o + 2..o + 4].copy_from_slice(&y.to_be_bytes());
             }
@@ -1330,6 +1381,27 @@ pub fn emulate_vertex(u: &R3dDrawUniform, fr: &R3dFrame, guard: i32, pos: [i16; 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `animate_modge`'s per-x/per-z decomposition matches the direct `PCCalcModgeValues` terms.
+    #[test]
+    fn modge_decomposition() {
+        let tb = sin_table();
+        let (sinf, cosf) = (|x: f32| fast_sin(tb, x), |x: f32| fast_sin(tb, x + core::f32::consts::FRAC_PI_2));
+        let (xs, idx) = distinct(&[3.0, -1.0, 3.0, 0.0, -1.0]);
+        assert_eq!((xs, idx), (alloc::vec![0.0, 3.0, -1.0], alloc::vec![1, 2, 1, 0, 2]));
+        for (x, z, t) in [(0.0f32, 0.0f32, 0.0f32), (-812.5, 433.0, 17.0), (1530.0, -2048.0, 9001.0), (77.0, 5.5, 123456.0)] {
+            let mx = sinf(z * (1.5 / 35.0) + sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)) + t * (1.5 / 70.0));
+            let mz = cosf(x * (1.5 / 49.0) + cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)) + t * (1.5 / 66.0));
+            let my = sinf(z * (1.2 / 26.0) + cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0)) + t * (1.0 / 26.0));
+            let (a, b) = (z * (1.5 / 35.0) + t * (1.5 / 70.0), sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)));
+            let (p, q) = (x * (1.5 / 49.0) + t * (1.5 / 66.0), cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)));
+            let (r, w) = (z * (1.2 / 26.0) + t * (1.0 / 26.0), cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0)));
+            let tol = 1e-4 + (x.abs() + z.abs() + t.abs()) * 1e-6;
+            assert!((sinf(a) * cosf(b) + cosf(a) * sinf(b) - mx).abs() < tol, "mx {x} {z} {t}");
+            assert!((cosf(p) * cosf(q) - sinf(p) * sinf(q) - mz).abs() < tol, "mz {x} {z} {t}");
+            assert!((sinf(r) * cosf(w) + cosf(r) * sinf(w) - my).abs() < tol, "my {x} {z} {t}");
+        }
+    }
 
     /// f2-engine `View::project` (scene.rs) for reference.
     fn mdx_project(v: &ViewParams, p: [f32; 3]) -> Option<[f32; 3]> {

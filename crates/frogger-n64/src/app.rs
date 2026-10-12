@@ -49,6 +49,12 @@ use f2_game::{Effect, Game, TickInput};
 pub const TICK: u32 = TICKS_PER_SEC / 60;
 /// Most simulation ticks run before one rendered frame (catch-up limit).
 pub const MAX_TICKS_PER_FRAME: u32 = 6;
+/// Whether frames are capped to an even divisor of 60 ([`pick_fps`]; build-time
+/// `F2N64_PACE=on`). Off: frames are shown as soon as they are ready.
+pub const PACE: bool = match option_env!("F2N64_PACE") {
+    Some(s) => matches!(s.as_bytes(), b"on"),
+    None => false,
+};
 /// Frame rates the pacing picks from (frames shown per second, divisors of 60).
 pub const PACED_FPS: [u32; 4] = [60, 30, 20, 15];
 
@@ -964,6 +970,11 @@ impl App {
         }
         ema(&mut self.avg_draw, draw.saturating_sub(rt::FB_WAIT.load(core::sync::atomic::Ordering::Relaxed)));
         let (tick_us, draw_us) = (ticks_to_us(self.avg_tick >> 4), ticks_to_us(self.avg_draw >> 4));
+        // Unlocked by default (owner's choice: the console can be overclocked); the even-rate
+        // cap is opt-in with `F2N64_PACE=on`.
+        if !PACE {
+            return;
+        }
         // Slower as soon as 90 % of a second is exceeded, faster only below 80 % (no
         // oscillation between two rates).
         let down = pick_fps(tick_us, draw_us, 900_000);
