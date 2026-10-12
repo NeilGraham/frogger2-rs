@@ -97,7 +97,7 @@ typedef struct {
     uint16_t fogm[4];       /* VCC masks: keep colour alpha (else constant), per-vertex fog */
 } __attribute__((aligned(8))) n64_r3d_draw_uniform_t;
 
-/* F2_FRAME uniform (120 bytes) + host fields. clip_text/clip_size are filled by C. */
+/* F2_FRAME uniform (128 bytes) + host fields. clip_* / modge_* are filled by C. */
 typedef struct n64_r3d_frame_s {
     int16_t vo[4];          /* x, y screen offset (s13.2), Zoff, 0 */
     int16_t vs[4];          /* S, S (-8 * FOV * scale), K integer, 0 */
@@ -108,6 +108,7 @@ typedef struct n64_r3d_frame_s {
     int16_t vp_i[16];       /* view x projection (rows; lanes X, Y, Z, W), s15.16 integer halves */
     uint16_t vp_f[16];      /* fraction halves */
     uint32_t clip_text, clip_size;
+    uint32_t modge_text, modge_size;
     uint32_t guard;         /* guard band in multiples of FOV*scale pixels (0 = 4) */
     uint32_t fog_rgba;      /* fog colour, 0 = leave */
 } __attribute__((aligned(8))) n64_r3d_frame_t;

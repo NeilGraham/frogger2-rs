@@ -28,6 +28,8 @@ MgBeginShaderUniforms
         F2_VP_F:        .ds.b 32    # same, fraction halves
         F2_CLIP_TEXT:   .ds.b 4     # RDRAM address of the rsp_f2clip overlay text
         F2_CLIP_SIZE:   .ds.b 4     # its size - 1
+        F2_MODGE_TEXT:  .ds.b 4     # RDRAM address of the rsp_f2modge overlay text
+        F2_MODGE_SIZE:  .ds.b 4     # its size - 1
     MgEndUniform
     # Pad to the full uniform region so .bss addresses (MG_SCRATCH_MEM, MG_OUTPUT_BUFFER,
     # clip cache) are the same as in the magma core overlay.

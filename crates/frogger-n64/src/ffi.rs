@@ -153,6 +153,8 @@ pub struct R3dFrame {
     pub vp_f: [u16; 16],
     pub clip_text: u32,
     pub clip_size: u32,
+    pub modge_text: u32,
+    pub modge_size: u32,
     pub guard: u32,
     pub fog_rgba: u32,
 }

@@ -1114,6 +1114,8 @@ pub fn frame_uniform(v: &ViewParams) -> R3dFrame {
         vp_f: [0; 16],
         clip_text: 0,
         clip_size: 0,
+        modge_text: 0,
+        modge_size: 0,
         guard: v.guard,
         fog_rgba: v.fog.map_or(0, |f| f.rgba | 0xFF),
     }

@@ -17,6 +17,7 @@
 
 DEFINE_RSP_UCODE(rsp_f2mdx);
 DEFINE_RSP_UCODE(rsp_f2clip);
+DEFINE_RSP_UCODE(rsp_f2modge);
 
 #define F2_ATTR_POS 0
 #define F2_ATTR_COLOR 1
@@ -67,6 +68,7 @@ typedef struct {
 static mg_pipeline_t *pipe;
 static const mg_uniform_t *u_draw, *u_tex, *u_frame;
 static uint32_t clip_text, clip_size;
+static uint32_t modge_text, modge_size;
 static r3d_tex_t texs[MAX_R3D_TEX];
 static uint32_t num_texs = 1;  /* 0 = none */
 static r3d_group_t groups[MAX_R3D_GROUPS];
@@ -113,6 +115,9 @@ void n64_r3d_init_impl(void) {
     assertf(u_frame->size == offsetof(n64_r3d_frame_t, guard), "F2_FRAME size %lu", u_frame->size);
     assertf(RSP_F2MDX_MG_OVERLAY_OFFSET == RSP_F2CLIP_MG_OVERLAY_OFFSET, "magma core text differs between ucodes");
     get_overlay_text(&rsp_f2clip, RSP_F2CLIP_MG_OVERLAY_OFFSET, &clip_text, &clip_size);
+    assertf(RSP_F2MDX_MG_OVERLAY_OFFSET == RSP_F2MODGE_MG_OVERLAY_OFFSET, "magma core text differs (modge overlay)");
+    assertf(RSP_F2MODGE_ENTRY_OFFSET == 16, "F2_ModgeEntry at overlay +%d", RSP_F2MODGE_ENTRY_OFFSET);
+    get_overlay_text(&rsp_f2modge, RSP_F2MODGE_MG_OVERLAY_OFFSET, &modge_text, &modge_size);
     debugf("r3d: magma pipeline up (overlay at IMEM +0x%x, shader %lu bytes, clip overlay %lu bytes; F2_DRAW @%lu F2_TEX @%lu F2_FRAME @%lu)\n",
            RSP_F2MDX_MG_OVERLAY_OFFSET, (uint32_t)((uint8_t *)rsp_f2mdx.code_end - rsp_f2mdx.code) - RSP_F2MDX_MG_OVERLAY_OFFSET,
            clip_size + 1, u_draw->offset, u_tex->offset, u_frame->offset);
@@ -387,6 +392,8 @@ static void load_frame(const n64_r3d_frame_t *f) {
     n64_r3d_frame_t fr = *f;
     fr.clip_text = clip_text;
     fr.clip_size = clip_size;
+    fr.modge_text = modge_text;
+    fr.modge_size = modge_size;
     mg_uniform_load_inline(u_frame, &fr);
     cur_frame = f;
 }
