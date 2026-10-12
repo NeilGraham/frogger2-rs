@@ -951,3 +951,17 @@ ares v148, Garden 1 (`level 0 0`), frog hopping (camera moving), 5 s `perf` wind
   CPU triangle path (sprites, shadows, effects, HUD) ~15 %, memcpy/memset ~7 %.
   Next: batch CPU sprites/effects; reduce per-actor work for animated actors; merge
   static scenery draws.
+
+## 3D (cont.): 2D rect fast paths (2026-10-11)
+`cputri:` log line (every 300 frames, main.c) splits the CPU-side 2D/3D submission; libdragon-3p
+now counts RSP-wait ticks (`rspq_wait_ticks`): 0 here, so the cost is CPU work, not waiting.
+Measured in ares: `rdpq_tex_blit` ~41 us per call vs ~19 us for upload + one
+`rdpq_texture_rectangle_scaled` and ~3.8 us for the rectangle alone.
+- Rects of a surface that fits TMEM: upload once per batch, then one texture rectangle each
+  (`rect_fast`); TMEM-sized minified copies (HUD clock) likewise.
+- Sub-rects of bigger surfaces (font atlas glyphs): `rdpq_tex_upload_sub` of the sub-rect
+  (+1 texel border when filtering) + one rectangle (`rect_sub`); must set the TLUT mode
+  (a preceding CI icon leaves palette lookup on: the digits drew as dark boxes until fixed).
+- Garden 1 hopping: rects 3.7 -> 2.2 ms/frame, ~16.2 -> ~17.8 fps. Left: ~6 full RDP mode
+  resets/frame after r3d lists (~100 us each; push/pop could cut them), ~40 CPU triangles
+  (shadows/effects, ~2 ms; candidates for the RSP path).

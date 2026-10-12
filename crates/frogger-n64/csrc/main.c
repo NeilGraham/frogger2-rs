@@ -54,6 +54,14 @@ static bool attached;
 static n64_state_t cur_state;
 static int cur_kind = -1; /* 0 = triangles, 1 = rectangles */
 static uint32_t cur_tex_loaded;
+static uint32_t st_mode_ticks, st_modes, st_tex_ticks; /* apply_state statistics */
+/* The surface whose whole image (and palette) is in TMEM for rects, or NULL. Rects of a
+ * surface that fits one TMEM load upload it once and then cost one texture-rectangle
+ * command each, instead of rdpq_tex_blit's generic chunked path (~41 us vs ~3.8 us per
+ * rect in ares). Valid within one rect batch only (reset per batch; blits, mode changes
+ * and triangles also forget it). */
+static const surface_t *rect_tmem;
+
 
 /* ---- audio: a generated square-wave beep through the mixer (bring-up) ---- */
 #define BEEP_CH (MIXER_CHANNELS - 1)
@@ -569,6 +577,7 @@ void n64_tex_free_impl(uint32_t h) {
 
 /* ---- frame ---- */
 void n64_begin_frame_impl(uint32_t rgba) {
+    rect_tmem = NULL;
     surface_t *fb = display_get();
     last_fb = fb;
     rdpq_attach(fb, &zbuf);
@@ -778,8 +787,10 @@ static void use_tlut(const tex_t *t, const surface_t *s, int tile) {
 
 static void apply_state(const n64_state_t *st, int kind) {
     bool tex = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used;
+    uint32_t mt0 = TICKS_READ();
     if (cur_kind != kind || st->flags != cur_state.flags || st->blend != cur_state.blend ||
         st->alpha_ref != cur_state.alpha_ref || (st->tex == 0) != (cur_state.tex == 0)) {
+        st_modes++;
         rdpq_set_mode_standard();
         if (kind == 0)
             rdpq_mode_combiner(tex ? RDPQ_COMBINER_TEX_SHADE : RDPQ_COMBINER_SHADE);
@@ -800,18 +811,22 @@ static void apply_state(const n64_state_t *st, int kind) {
         }
         cur_tex_loaded = 0;
         cur_tlut_mode = 0; /* rdpq_set_mode_standard: no TLUT */
+        rect_tmem = NULL;
     }
     if (kind == 0 && tex && (st->tex != cur_tex_loaded || ((st->flags ^ cur_state.flags) & N64_WRAP))) {
         rdpq_texparms_t parms = {0};
         if (st->flags & N64_WRAP) parms.s.repeats = parms.t.repeats = REPEAT_INFINITE;
         const surface_t *s = tri_surface(st);
         use_tlut(&textures[st->tex], s, 0);
+        uint32_t tt0 = TICKS_READ();
         rdpq_tex_upload(TILE0, s, &parms);
+        st_tex_ticks += TICKS_READ() - tt0;
         cur_tex_loaded = st->tex;
     }
     if (kind == 1) cur_tex_loaded = 0; /* blits reload TMEM */
     cur_state = *st;
     cur_kind = kind;
+    st_mode_ticks += TICKS_READ() - mt0;
 }
 
 /* ---- large textures on triangles: TMEM tiles ----
@@ -840,6 +855,11 @@ static int clip_axis(n64_vertex_t *in, int n, n64_vertex_t *out, int axis, float
     }
     return m;
 }
+
+/* CPU-triangle statistics (logged every 300 presented frames). */
+extern volatile uint32_t rspq_wait_ticks;
+static uint32_t st_tri_ticks, st_rect_ticks, st_rects, st_tri_wait, st_rect_wait, st_wait0;
+static uint32_t st_calls, st_src_tris, st_rdpq_tris, st_tiled_src, st_tiled_uploads, st_frames;
 
 static void draw_tri_tiled(const rdpq_trifmt_t *f, const tex_t *tx, const n64_vertex_t *v, uint32_t flags) {
     const surface_t *s = &tx->full[0];
@@ -880,6 +900,8 @@ static void draw_tri_tiled(const rdpq_trifmt_t *f, const tex_t *tx, const n64_ve
             if (ux1 > (int)w) ux1 = w;
             if (uy1 > (int)h) uy1 = h;
             rdpq_tex_upload_sub(TILE0, s, &parms, tx0, ty, ux1, uy1);
+            st_tiled_uploads++;
+            st_rdpq_tris += n - 2;
             for (int k = 1; k + 1 < n; k++)
                 rdpq_triangle(f, (const float *)&a[0], (const float *)&a[k], (const float *)&a[k + 1]);
         }
@@ -887,8 +909,18 @@ static void draw_tri_tiled(const rdpq_trifmt_t *f, const tex_t *tx, const n64_ve
     cur_tex_loaded = 0;
 }
 
+static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st);
 void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
+    uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
+    draw_tris_inner(v, ntris, st);
+    st_tri_ticks += TICKS_READ() - t0;
+    st_tri_wait += rspq_wait_ticks - w0;
+}
+static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
     if (!attached || !ntris) return;
+    st_calls++;
+    st_src_tris += ntris;
+    rect_tmem = NULL;
     apply_state(st, 0);
     bool tex = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used;
     /* Our vertices always have the 10-float ZBUF_SHADE_TEX layout; describe the subset used. */
@@ -900,6 +932,7 @@ void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t
         .tex_offset = (i & 1) ? 7 : -1, .tex_tile = TILE0,
     };
     if (tex && (st->flags & N64_UVNORM) && textures[st->tex].tile3d && !textures[st->tex].own_small && !(st->flags & N64_WRAP) && st->blend != N64_BLEND_ADD) {
+        st_tiled_src += ntris;
         for (uint32_t k = 0; k < ntris; k++, v += 3) draw_tri_tiled(f, &textures[st->tex], v, st->flags);
         return;
     }
@@ -916,89 +949,153 @@ void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t
             }
             rdpq_triangle(f, (const float *)&t[0], (const float *)&t[1], (const float *)&t[2]);
         }
+        st_rdpq_tris += ntris;
         return;
     }
+    st_rdpq_tris += ntris;
     for (uint32_t k = 0; k < ntris; k++, v += 3)
         rdpq_triangle(f, (const float *)&v[0], (const float *)&v[1], (const float *)&v[2]);
 }
 
+static void draw_rects_inner(const n64_rect_t *r, uint32_t n, const n64_state_t *st);
 void n64_draw_rects_impl(const n64_rect_t *r, uint32_t n, const n64_state_t *st) {
+    uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
+    st_rects += n;
+    draw_rects_inner(r, n, st);
+    st_rect_ticks += TICKS_READ() - t0;
+    st_rect_wait += rspq_wait_ticks - w0;
+}
+
+/* Draws [x0,x1)x[y0,y1) from texels s0..s1 / t0..t1 of `s` (s1 < s0 / t1 < t0 = flipped)
+ * when `s` fits TMEM; false = use the blit path. */
+static bool rect_fast(const tex_t *tx, const surface_t *s, float x0, float y0, float x1, float y1, float s0, float t0, float s1, float t1) {
+    if (!fits_tmem_block(s)) return false;
+    if (rect_tmem != s) {
+        use_tlut(tx, s, 0);
+        rdpq_tex_upload(TILE0, s, NULL);
+        rect_tmem = s;
+    }
+    rdpq_texture_rectangle_scaled(TILE0, x0, y0, x1, y1, s0, t0, s1, t1);
+    return true;
+}
+
+/* A sub-rectangle of a surface too big for TMEM (e.g. a glyph of the font atlas): uploads
+ * just that part (+1 texel border for bilinear, clamped to the image) with
+ * rdpq_tex_upload_sub, which keeps the full image's texel coordinates, and draws one
+ * texture rectangle. false = it does not fit TMEM (use the blit path). */
+static bool rect_sub(const tex_t *tx, const surface_t *s, const n64_rect_t *r, int is0, int it0, int is1, int it1, bool fx, bool fy, bool filter) {
+    tex_format_t f = surface_get_format(s);
+    if (f == FMT_CI4 || f == FMT_CI8 || TEX_FORMAT_BITDEPTH(f) > 16) return false;
+    int b = filter ? 1 : 0;
+    int u0 = is0 - b < 0 ? 0 : is0 - b, v0 = it0 - b < 0 ? 0 : it0 - b;
+    int u1 = is1 + b > s->width ? s->width : is1 + b, v1 = it1 + b > s->height ? s->height : it1 + b;
+    int row = (TEX_FORMAT_PIX2BYTES(f, u1 - u0) + 7) & ~7;
+    if (row * (v1 - v0) > 4096) return false;
+    use_tlut(tx, s, 0); /* switches palette lookup off (a CI rect may have turned it on) */
+    rdpq_tex_upload_sub(TILE0, s, NULL, u0, v0, u1, v1);
+    rdpq_texture_rectangle_scaled(TILE0, r->x0, r->y0, r->x1, r->y1, fx ? is1 : is0, fy ? it1 : it0, fx ? is0 : is1, fy ? it0 : it1);
+    return true;
+}
+
+/* One rect of draw_rects_inner; returns the path taken (statistics). */
+static int draw_one_rect(const n64_rect_t *r, const n64_state_t *st, bool tex, const tex_t *tx) {
+    rdpq_set_prim_color(color_from_packed32(r->rgba));
+    if (!tex) {
+        rdpq_fill_rectangle(r->x0, r->y0, r->x1, r->y1);
+        return 1;
+    }
+    const surface_t *s = &tx->full[0];
+    float w = tx->width, h = s->height;
+    float s0 = r->s0 * w, s1 = r->s1 * w, t0 = r->t0 * h, t1 = r->t1 * h;
+    bool fx = s1 < s0, fy = t1 < t0;
+    float sa = fx ? s1 : s0, sb = fx ? s0 : s1, ta = fy ? t1 : t0, tb = fy ? t0 : t1;
+    int is0 = (int)(sa + 0.5f), it0 = (int)(ta + 0.5f);
+    int is1 = (int)(sb + 0.5f), it1 = (int)(tb + 0.5f);
+    if (tx->nfull > 1) {
+        /* Wide image: the chunk holding the sub-rect, in chunk coordinates. */
+        int c = is0 < 0 ? 0 : is0 / CHUNK_STEP;
+        if (c >= tx->nfull) c = tx->nfull - 1;
+        s = &tx->full[c];
+        is0 -= c * CHUNK_STEP;
+        is1 -= c * CHUNK_STEP;
+    }
+    if (is0 < 0) is0 = 0;
+    if (it0 < 0) it0 = 0;
+    if (is1 > s->width) is1 = s->width;
+    if (it1 > s->height) it1 = s->height;
+    int sw = is1 - is0, sh = it1 - it0;
+    if (sw <= 0 || sh <= 0 || r->x1 <= r->x0 || r->y1 <= r->y0) return 2;
+    if (tx->per_tile && tx->tile_w > 0 && tx->tile_h > 0 && !fx && !fy) {
+        rect_tmem = NULL;
+    /* One palette per tile: blit tile by tile (unfiltered, as the backdrops are). */
+        float kx = (r->x1 - r->x0) / sw, ky = (r->y1 - r->y0) / sh;
+        int ntx = (s->width + tx->tile_w - 1) / tx->tile_w;
+        for (int ty = it0 / tx->tile_h * tx->tile_h; ty < it1; ty += tx->tile_h)
+            for (int tx0 = is0 / tx->tile_w * tx->tile_w; tx0 < is1; tx0 += tx->tile_w) {
+                int a0 = tx0 > is0 ? tx0 : is0, b0 = ty > it0 ? ty : it0;
+                int a1 = tx0 + tx->tile_w < is1 ? tx0 + tx->tile_w : is1, b1 = ty + tx->tile_h < it1 ? ty + tx->tile_h : it1;
+                if (a1 <= a0 || b1 <= b0) return 3;
+                use_tlut(tx, s, (ty / tx->tile_h) * ntx + tx0 / tx->tile_w);
+                rdpq_tex_blit(s, r->x0 + (a0 - is0) * kx, r->y0 + (b0 - it0) * ky, &(rdpq_blitparms_t){
+                    .s0 = a0, .t0 = b0, .width = a1 - a0, .height = b1 - b0, .scale_x = kx, .scale_y = ky,
+                });
+            }
+        return 4;
+    }
+    /* Minified blits of textures larger than TMEM (HUD clock 128x128 drawn ~30 px wide):
+     * the TMEM-sized box-filtered copy has at least one texel per pixel, so blit it
+     * instead (one texture load instead of one per TMEM-sized piece; phase 3P). */
+    if (tx->nfull == 1 && !tx->per_tile && !fits_tmem_block(s)) {
+        const surface_t *tm = n64_tex_tmem_surface(st->tex);
+        if (tm && tm != s && tm->width > 0 && tm->height > 0) {
+            float kx = (float)tm->width / s->width, ky = (float)tm->height / s->height;
+            int a0 = (int)(is0 * kx), b0 = (int)(it0 * ky), a1 = (int)(is1 * kx + 0.5f), b1 = (int)(it1 * ky + 0.5f);
+            if (a1 > a0 && b1 > b0 && r->x1 - r->x0 <= a1 - a0 && r->y1 - r->y0 <= b1 - b0) {
+                if (rect_fast(tx, tm, r->x0, r->y0, r->x1, r->y1, fx ? a1 : a0, fy ? b1 : b0, fx ? a0 : a1, fy ? b0 : b1)) return 6;
+                rect_tmem = NULL;
+                use_tlut(tx, tm, 0);
+                rdpq_tex_blit(tm, r->x0, r->y0, &(rdpq_blitparms_t){
+                    .s0 = a0, .t0 = b0, .width = a1 - a0, .height = b1 - b0, .flip_x = fx, .flip_y = fy,
+                    .scale_x = (r->x1 - r->x0) / (a1 - a0), .scale_y = (r->y1 - r->y0) / (b1 - b0),
+                    .filtering = (st->flags & N64_BILINEAR) != 0,
+                });
+                return 5;
+            }
+        }
+    }
+    if (tx->nfull == 1 && rect_fast(tx, s, r->x0, r->y0, r->x1, r->y1, fx ? is1 : is0, fy ? it1 : it0, fx ? is0 : is1, fy ? it0 : it1)) return 7;
+    rect_tmem = NULL;
+    if (tx->nfull == 1 && rect_sub(tx, s, r, is0, it0, is1, it1, fx, fy, (st->flags & N64_BILINEAR) != 0)) return 8;
+    use_tlut(tx, s, 0);
+    rdpq_tex_blit(s, r->x0, r->y0, &(rdpq_blitparms_t){
+        .s0 = is0, .t0 = it0, .width = sw, .height = sh, .flip_x = fx, .flip_y = fy,
+        .scale_x = (r->x1 - r->x0) / sw, .scale_y = (r->y1 - r->y0) / sh,
+        .filtering = (st->flags & N64_BILINEAR) != 0,
+    });
+    return 0;
+}
+
+static void draw_rects_inner(const n64_rect_t *r, uint32_t n, const n64_state_t *st) {
     if (!attached || !n) return;
     apply_state(st, 1);
+    /* Only within one batch: between batches the RSP renderer's lists load TMEM too. */
+    rect_tmem = NULL;
     bool tex = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used;
     const tex_t *tx = tex ? &textures[st->tex] : NULL;
     for (uint32_t k = 0; k < n; k++, r++) {
-        rdpq_set_prim_color(color_from_packed32(r->rgba));
-        if (!tex) {
-            rdpq_fill_rectangle(r->x0, r->y0, r->x1, r->y1);
-            continue;
-        }
-        const surface_t *s = &tx->full[0];
-        float w = tx->width, h = s->height;
-        float s0 = r->s0 * w, s1 = r->s1 * w, t0 = r->t0 * h, t1 = r->t1 * h;
-        bool fx = s1 < s0, fy = t1 < t0;
-        float sa = fx ? s1 : s0, sb = fx ? s0 : s1, ta = fy ? t1 : t0, tb = fy ? t0 : t1;
-        int is0 = (int)(sa + 0.5f), it0 = (int)(ta + 0.5f);
-        int is1 = (int)(sb + 0.5f), it1 = (int)(tb + 0.5f);
-        if (tx->nfull > 1) {
-            /* Wide image: the chunk holding the sub-rect, in chunk coordinates. */
-            int c = is0 < 0 ? 0 : is0 / CHUNK_STEP;
-            if (c >= tx->nfull) c = tx->nfull - 1;
-            s = &tx->full[c];
-            is0 -= c * CHUNK_STEP;
-            is1 -= c * CHUNK_STEP;
-        }
-        if (is0 < 0) is0 = 0;
-        if (it0 < 0) it0 = 0;
-        if (is1 > s->width) is1 = s->width;
-        if (it1 > s->height) it1 = s->height;
-        int sw = is1 - is0, sh = it1 - it0;
-        if (sw <= 0 || sh <= 0 || r->x1 <= r->x0 || r->y1 <= r->y0) continue;
-        if (tx->per_tile && tx->tile_w > 0 && tx->tile_h > 0 && !fx && !fy) {
-            /* One palette per tile: blit tile by tile (unfiltered, as the backdrops are). */
-            float kx = (r->x1 - r->x0) / sw, ky = (r->y1 - r->y0) / sh;
-            int ntx = (s->width + tx->tile_w - 1) / tx->tile_w;
-            for (int ty = it0 / tx->tile_h * tx->tile_h; ty < it1; ty += tx->tile_h)
-                for (int tx0 = is0 / tx->tile_w * tx->tile_w; tx0 < is1; tx0 += tx->tile_w) {
-                    int a0 = tx0 > is0 ? tx0 : is0, b0 = ty > it0 ? ty : it0;
-                    int a1 = tx0 + tx->tile_w < is1 ? tx0 + tx->tile_w : is1, b1 = ty + tx->tile_h < it1 ? ty + tx->tile_h : it1;
-                    if (a1 <= a0 || b1 <= b0) continue;
-                    use_tlut(tx, s, (ty / tx->tile_h) * ntx + tx0 / tx->tile_w);
-                    rdpq_tex_blit(s, r->x0 + (a0 - is0) * kx, r->y0 + (b0 - it0) * ky, &(rdpq_blitparms_t){
-                        .s0 = a0, .t0 = b0, .width = a1 - a0, .height = b1 - b0, .scale_x = kx, .scale_y = ky,
-                    });
-                }
-            continue;
-        }
-        /* Minified blits of textures larger than TMEM (HUD clock 128x128 drawn ~30 px wide):
-         * the TMEM-sized box-filtered copy has at least one texel per pixel, so blit it
-         * instead (one texture load instead of one per TMEM-sized piece; phase 3P). */
-        if (tx->nfull == 1 && !tx->per_tile && !fits_tmem_block(s)) {
-            const surface_t *tm = n64_tex_tmem_surface(st->tex);
-            if (tm && tm != s && tm->width > 0 && tm->height > 0) {
-                float kx = (float)tm->width / s->width, ky = (float)tm->height / s->height;
-                int a0 = (int)(is0 * kx), b0 = (int)(it0 * ky), a1 = (int)(is1 * kx + 0.5f), b1 = (int)(it1 * ky + 0.5f);
-                if (a1 > a0 && b1 > b0 && r->x1 - r->x0 <= a1 - a0 && r->y1 - r->y0 <= b1 - b0) {
-                    use_tlut(tx, tm, 0);
-                    rdpq_tex_blit(tm, r->x0, r->y0, &(rdpq_blitparms_t){
-                        .s0 = a0, .t0 = b0, .width = a1 - a0, .height = b1 - b0, .flip_x = fx, .flip_y = fy,
-                        .scale_x = (r->x1 - r->x0) / (a1 - a0), .scale_y = (r->y1 - r->y0) / (b1 - b0),
-                        .filtering = (st->flags & N64_BILINEAR) != 0,
-                    });
-                    continue;
-                }
-            }
-        }
-        use_tlut(tx, s, 0);
-        rdpq_tex_blit(s, r->x0, r->y0, &(rdpq_blitparms_t){
-            .s0 = is0, .t0 = it0, .width = sw, .height = sh, .flip_x = fx, .flip_y = fy,
-            .scale_x = (r->x1 - r->x0) / sw, .scale_y = (r->y1 - r->y0) / sh,
-            .filtering = (st->flags & N64_BILINEAR) != 0,
-        });
+        draw_one_rect(r, st, tex, tx);
     }
 }
 
+
 void n64_present_impl(void) {
+    if (++st_frames == 300) {
+        debugf("cputri: per frame %lu calls, %lu source tris (%lu tiled), %lu rdpq triangles, %lu tile uploads, tris %lu us (wait %lu); %lu rects %lu us (wait %lu); all rspq waits %lu us; apply_state %lu us (%lu mode resets, tri tex uploads %lu us)\n", st_calls / 300, st_src_tris / 300, st_tiled_src / 300, st_rdpq_tris / 300, st_tiled_uploads / 300, TICKS_TO_US(st_tri_ticks) / 300, TICKS_TO_US(st_tri_wait) / 300, st_rects / 300, TICKS_TO_US(st_rect_ticks) / 300, TICKS_TO_US(st_rect_wait) / 300, TICKS_TO_US(rspq_wait_ticks - st_wait0) / 300, TICKS_TO_US(st_mode_ticks) / 300, st_modes / 300, TICKS_TO_US(st_tex_ticks) / 300);
+        st_mode_ticks = st_modes = st_tex_ticks = 0;
+        st_tri_wait = st_rect_wait = 0; st_wait0 = rspq_wait_ticks;
+        st_tri_ticks = st_rect_ticks = st_rects = 0;
+        st_frames = st_calls = st_src_tris = st_rdpq_tris = st_tiled_src = st_tiled_uploads = 0;
+    }
     if (!attached) return;
     rdpq_detach_show();
     attached = false;

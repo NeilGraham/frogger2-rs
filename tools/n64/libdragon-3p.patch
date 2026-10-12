@@ -10,7 +10,7 @@
  
  #define RSPQ_DMEM_BUFFER_SIZE          0x100   ///< Size of the RSPQ DMEM buffer (in bytes)
 --- a/src/rspq/rspq.c	2026-10-10 22:10:34.025620825 -0600
-+++ b/src/rspq/rspq.c	2026-10-11 06:32:38.470104130 -0600
++++ b/src/rspq/rspq.c	2026-10-11 22:07:33.983431506 -0600
 @@ -724,6 +724,20 @@
  }
  
@@ -32,7 +32,32 @@
  static void rspq_init_context(rspq_ctx_t *ctx, int buf_size)
  {
      memset(ctx, 0, sizeof(rspq_ctx_t));
-@@ -1154,7 +1168,9 @@
+@@ -1110,6 +1124,9 @@
+  * we need to switch buffer (double buffering strategy), making sure the
+  * other buffer has been already fully executed by the RSP.
+  */
++/** Ticks the CPU spent waiting for the RSP to free a low-priority buffer (statistics). */
++volatile uint32_t rspq_wait_ticks;
++
+ __attribute__((noinline))
+ void rspq_next_buffer(void) {
+     // If we're creating a block
+@@ -1140,12 +1157,14 @@
+     // if the overhead of an interrupt is obviously higher.
+     MEMORY_BARRIER();
+     if (!(*SP_STATUS & rspq_ctx->sp_status_bufdone)) {
++        uint32_t wait_t0 = TICKS_READ();
+         rspq_flush_internal();
+         ACCT_SCOPE(ACCT_CAT_RSPQ) RSP_WAIT_LOOP(200) {
+             __rspq_deferred_poll();
+             if (*SP_STATUS & rspq_ctx->sp_status_bufdone)
+                 break;
+         }
++        rspq_wait_ticks += TICKS_READ() - wait_t0;
+     }
+     MEMORY_BARRIER();
+     *SP_STATUS = rspq_ctx->sp_wstatus_clear_bufdone;
+@@ -1154,7 +1173,9 @@
      // Switch current buffer
      rspq_ctx->buf_idx = 1-rspq_ctx->buf_idx;
      uint32_t *new = rspq_ctx->buffers[rspq_ctx->buf_idx];

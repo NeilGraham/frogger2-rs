@@ -3,7 +3,8 @@
 #   tools/n64/libdragon-3p.sh
 # Copies the toolchain prefix ~/opt/n64root -> ~/opt/n64root-3p and the libdragon source
 # ~/opt/libdragon (39d0d60) -> ~/opt/libdragon-3p, applies tools/n64/libdragon-3p.patch
-# (rspq low-priority ring 2 x 32 KiB instead of 2 x 2 KiB, plus rspq_set_lowpri_window()
+# (rspq low-priority ring 2 x 32 KiB instead of 2 x 2 KiB, a `rspq_wait_ticks` counter of
+# the CPU time spent waiting for a free buffer (logged by main.c), plus rspq_set_lowpri_window()
 # for the H.264 decoder), and installs libdragon into the copy. Use it with
 #   N64_INST=~/opt/n64root-3p/opt/libdragon tools/n64/build.sh
 # (build.sh prefers it automatically when present; see tools/n64/README.md).
