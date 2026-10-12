@@ -30,6 +30,11 @@ pub struct Canvas {
     pub w: u32,
     pub h: u32,
     pub scale: u32,
+    /// The stored rows `y0..y0 + rows` of the `w`×`h` page (all of it, except for a strip
+    /// canvas: a console composes the page a strip at a time, see [`Canvas::strip`]); drawing
+    /// outside them is clipped.
+    pub y0: u32,
+    pub rows: u32,
     pub rgba: Vec<u8>,
 }
 
@@ -110,17 +115,34 @@ impl Canvas {
     /// A `w`×`h` (original pixels) canvas stored at `scale`× resolution.
     pub fn scaled(w: u32, h: u32, scale: u32) -> Canvas {
         let scale = scale.max(1);
-        Canvas { w: w * scale, h: h * scale, scale, rgba: vec![0; (w * h * scale * scale * 4) as usize] }
+        Canvas { w: w * scale, h: h * scale, scale, y0: 0, rows: h * scale, rgba: vec![0; (w * h * scale * scale * 4) as usize] }
+    }
+
+    /// A `w`×`h` page canvas (1×) storing `rows` rows at a time; [`Canvas::window`] moves it.
+    pub fn strip(w: u32, h: u32, rows: u32) -> Canvas {
+        let rows = rows.min(h);
+        Canvas { w, h, scale: 1, y0: 0, rows, rgba: vec![0; (w * rows * 4) as usize] }
+    }
+
+    /// Stores rows `y0..y0 + rows` from now on (the contents are not kept).
+    pub fn window(&mut self, y0: u32) {
+        self.y0 = y0.min(self.h - self.rows);
+    }
+
+    /// Whether canvas row `y` is stored.
+    #[inline]
+    fn has_row(&self, y: i32) -> bool {
+        y >= self.y0 as i32 && y < (self.y0 + self.rows) as i32
     }
 
     /// Source-over blend of the premultiplied `src` modulated by `col`
     /// (`D3DTOP_MODULATE` on colour and alpha, then `SRCALPHA`/`INVSRCALPHA`) into
     /// canvas pixel `(x, y)`.
     fn blend(&mut self, x: i32, y: i32, src: Px, col: [f32; 4]) {
-        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 {
+        if x < 0 || x >= self.w as i32 || !self.has_row(y) {
             return;
         }
-        let i = ((y as u32 * self.w + x as u32) * 4) as usize;
+        let i = (((y as u32 - self.y0) * self.w + x as u32) * 4) as usize;
         let a = src[3] * col[3];
         if a <= 0.0 {
             return;
@@ -159,6 +181,9 @@ impl Canvas {
         };
         let cols: Vec<(i32, f32)> = (l..r).map(|x| split(((x - l) as f32 + 0.5) / rw * iw as f32)).collect();
         for y in t..b {
+            if !self.has_row(y) {
+                continue;
+            }
             let (y0, ty) = split(((y - t) as f32 + 0.5) / rh * ih as f32);
             for (x, &(x0, tx)) in (l..r).zip(&cols) {
                 let (a, b2, c, d) = (fetch(x0, y0), fetch(x0 + 1, y0), fetch(x0, y0 + 1), fetch(x0 + 1, y0 + 1));
@@ -241,7 +266,7 @@ impl Canvas {
         let (vlo, vhi) = (0, src.h as i32 - 1);
         for y in 0..h {
             let cy = t + y;
-            if cy < 0 || cy >= self.h as i32 {
+            if !self.has_row(cy) {
                 continue;
             }
             let (y0, wy) = split((y as f32 + 0.5) / rh * src.h as f32);
@@ -256,7 +281,7 @@ impl Canvas {
                     }
                 }
             }
-            let row = (cy as u32 * self.w) as usize;
+            let row = ((cy as u32 - self.y0) * self.w) as usize;
             for (x, (top, bot)) in line.iter().enumerate() {
                 let cx = l + x as i32;
                 if cx < 0 || cx >= self.w as i32 {
@@ -346,12 +371,16 @@ impl Canvas {
         if lim == 0 {
             return;
         }
-        for y in 0..self.h {
+        for y in self.y0..self.y0 + self.rows {
             for x in 0..self.w {
                 if x < lim && y < lim {
                     continue;
                 }
                 let (sx, sy) = (x.min(lim - 1), y.min(lim - 1));
+                if !self.has_row(sy as i32) {
+                    continue; // the source row is in another strip (never for DrawPageB's)
+                }
+                let (y, sy) = (y - self.y0, sy - self.y0);
                 let (d, s) = (((y * self.w + x) * 4) as usize, ((sy * self.w + sx) * 4) as usize);
                 if self.rgba[d + 3] == 0 {
                     self.rgba.copy_within(s..s + 4, d);
@@ -511,6 +540,29 @@ mod tests {
             if !cfg!(feature = "lean") {
                 assert!(worst <= 2, "{rect:?}: max difference {worst}");
             }
+        }
+    }
+
+    /// Composing in strips gives the whole canvas's bytes, strip by strip.
+    #[test]
+    fn strips_match_whole_canvas() {
+        let (iw, ih) = (32u32, 32u32);
+        let rgba: Vec<u8> = (0..iw * ih).flat_map(|i| [(i * 37) as u8, (i * 91 + 3) as u8, (i * 13 + 200) as u8, (i * 7 + 100) as u8]).collect();
+        let img = Image { width: iw, height: ih, rgba };
+        let draw = |c: &mut Canvas| {
+            c.rgba.fill(0);
+            c.draw_textured_rect((0, 0, 0xff, 0xff), [1.0; 4], &img);
+            c.draw_textured_rect((60, 70, 0xff - 60, 0xff - 100), [0.8, 0.6, 1.0, 0.5], &img);
+            c.extend_edges(0xff);
+        };
+        let mut whole = Canvas::new(256, 256);
+        draw(&mut whole);
+        let mut strip = Canvas::strip(256, 256, 64);
+        for k in 0..4 {
+            strip.window(k * 64);
+            draw(&mut strip);
+            let n = (256 * 64 * 4) as usize;
+            assert!(strip.rgba == whole.rgba[k as usize * n..(k as usize + 1) * n], "strip {k}");
         }
     }
 

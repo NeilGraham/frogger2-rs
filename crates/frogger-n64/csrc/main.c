@@ -41,6 +41,7 @@ typedef struct {
     bool per_tile;      /* one 256-entry palette per tile_w x tile_h tile (backdrops) */
     int tile_w, tile_h;
     bool own_small;     /* `small` is a downscaled copy (made on demand, see make_small_variant) */
+    bool tiled;         /* N64_NTX_TILED: triangles use the TMEM tiles even with a small copy */
     surface_t tmem;     /* r3d: downscaled copy of a texture larger than one TMEM load */
     bool has_tmem;
 } tex_t;
@@ -577,6 +578,7 @@ uint32_t n64_tex_create_ntx_impl(const n64_ntx_desc_t *d) {
         t->small = t->full[0];
         t->small_is_full = true;
         t->tile3d = !(d->flags & N64_NTX_SINGLE) && t->nfull == 1;
+        t->tiled = (d->flags & N64_NTX_TILED) && t->tile3d;
         t->used = true;
         tex_hint = h + 1;
         return h;
@@ -996,7 +998,7 @@ static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_sta
         .pos_offset = 0, .z_offset = (i & 2) ? 2 : -1, .shade_offset = 3,
         .tex_offset = (i & 1) ? 7 : -1, .tex_tile = TILE0,
     };
-    if (tex && (st->flags & N64_UVNORM) && textures[st->tex].tile3d && !textures[st->tex].own_small && !(st->flags & N64_WRAP) && st->blend != N64_BLEND_ADD) {
+    if (tex && (st->flags & N64_UVNORM) && textures[st->tex].tile3d && (!textures[st->tex].own_small || textures[st->tex].tiled) && !(st->flags & N64_WRAP) && st->blend != N64_BLEND_ADD) {
         st_tiled_src += ntris;
         for (uint32_t k = 0; k < ntris; k++, v += 3) draw_tri_tiled(f, &textures[st->tex], v, st->flags);
         return;

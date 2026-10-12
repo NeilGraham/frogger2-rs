@@ -96,6 +96,8 @@ pub struct NtxDesc {
 }
 pub const NTX_SINGLE: u32 = 1 << 0;
 pub const NTX_PER_TILE: u32 = 1 << 1;
+/// Triangles always sample the full image in TMEM tiles (the story book pages).
+pub const NTX_TILED: u32 = 1 << 2;
 
 // ---- r3d (csrc/r3d.c): RSP 3D renderer ----
 

@@ -171,8 +171,13 @@ pub struct Level {
     pub r3d: crate::render_r3d::R3dLevel,
     /// Registry images below this index (white, fonts) survive a level unload.
     pub keep_images: u32,
-    /// The story book's page canvas (frontend only; 256 KiB).
-    pub page_canvas: Option<f2_draw::book::Canvas>,
+    /// The story book (frontend only, allocated at its load while the heap is clean): a
+    /// 64-row strip canvas the page is composed through (64 KiB) and each page texture's
+    /// RGBA16 texels (128 KiB, the textures point into them). A page grabbed later (after a
+    /// level and a game over) then needs no large allocation (a fragmented heap had none:
+    /// a crash in the texture's memcpy).
+    pub page_strip: Option<f2_draw::book::Canvas>,
+    pub page_bufs: [Option<alloc::sync::Arc<Vec<u8>>>; 2],
 }
 
 pub static LEVEL: spin::Mutex<Option<Level>> = spin::Mutex::new(None);
@@ -190,7 +195,8 @@ pub fn unload_level_render() {
     let t0 = rt::ticks();
     if let Some(l) = LEVEL.lock().as_mut() {
         l.scene = None;
-        l.page_canvas = None;
+        l.page_strip = None;
+        l.page_bufs = [None, None];
         let keep = l.keep_images;
         l.gfx.free_from(keep);
         #[cfg(not(feature = "render-cpu"))]
@@ -289,7 +295,8 @@ impl App {
             #[cfg(not(feature = "render-cpu"))]
             r3d: crate::render_r3d::R3dLevel::new(),
             keep_images: 0,
-            page_canvas: None,
+            page_strip: None,
+            page_bufs: [None, None],
         });
         let mut app = App {
             data,
@@ -575,6 +582,16 @@ impl App {
         }
         // The textures hold on to the files they use.
         self.ntx_cache.clear();
+        // The story book's page memory, while the heap is still in one piece (see `Level`).
+        if world == f2_game::layout::worldid::FRONTEND {
+            if let Some(l) = lv().as_mut() {
+                let (w, h) = (f2_draw::book::PAGE_SIZE, f2_draw::book::PAGE_SIZE);
+                l.page_strip.get_or_insert_with(|| f2_draw::book::Canvas::strip(w, h, 64));
+                for b in &mut l.page_bufs {
+                    b.get_or_insert_with(|| alloc::sync::Arc::new(alloc::vec![0u8; (w * h * 2) as usize]));
+                }
+            }
+        }
         self.heap_step("textures");
         let mut banks = Vec::new();
         for f in &assets.object_banks {
@@ -761,38 +778,47 @@ impl App {
         };
         let mut g = lv();
         let Some(l) = g.as_mut() else { return };
-        // Memory: the page's old texture goes first, the 256 KiB canvas (a large-block pool
-        // block) only lives while a page is composed, so the frontend holds the two full-size
-        // pages (2 x 128 KiB RGBA16) and no canvas between page turns. Audio is polled between
-        // the steps (each takes a few hundred ms; the music buffer holds 300).
         let t0 = ticks();
+        // The old page texture holds a reference to its buffer: freed first.
         l.gfx.free_image(h.0);
-        let c = l.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
-        f2_draw::book::draw_page_b_into(&self.r, &self.game, self.book_font.as_ref(), c);
-        rt::audio_poll();
-        let t1 = ticks();
-        self.game.options.grab_to_texture = if self.game.options.grab_to_texture == 1 { 0 } else { 2 };
-        // Full size (256x256 RGBA16): the chapter page fills most of the screen when the book
-        // is open; half size (128x128) was blurry.
-        let mut size = (c.w, c.h);
-        if !l.gfx.grab_rgba(h.0, c.w, c.h, &c.rgba) {
-            // No memory for a full-size page (the frontend after a game over was full: the
-            // texture's allocation failed): the half-size page, 4x less.
-            let (w, h2, half) = crate::texconv::halve_rgba8(c.w, c.h, &c.rgba);
-            l.page_canvas = None;
-            let ok = l.gfx.grab_rgba(h.0, w, h2, &half);
-            log!("app: book page {target}: no memory for 256x256, {}", if ok { "128x128 instead" } else { "none (page blank)" });
-            size = (w, h2);
+        let slot = if target == "page256a.bmp" { 0 } else { 1 };
+        let (w, ph) = (f2_draw::book::PAGE_SIZE, f2_draw::book::PAGE_SIZE);
+        let strip = l.page_strip.get_or_insert_with(|| f2_draw::book::Canvas::strip(w, ph, 64));
+        let buf = l.page_bufs[slot].get_or_insert_with(|| alloc::sync::Arc::new(alloc::vec![0u8; (w * ph * 2) as usize]));
+        let Some(texels) = alloc::sync::Arc::get_mut(buf) else {
+            log!("app: book page {target}: buffer still in use");
+            return;
+        };
+        // Strip by strip into the page's RGBA16 texels (the page is opaque).
+        for y0 in (0..ph).step_by(strip.rows as usize) {
+            strip.window(y0);
+            f2_draw::book::draw_page_b_into(&self.r, &self.game, self.book_font.as_ref(), strip);
+            let out = &mut texels[(y0 * w * 2) as usize..((y0 + strip.rows) * w * 2) as usize];
+            for (o, p) in out.as_chunks_mut::<2>().0.iter_mut().zip(strip.rgba.as_chunks::<4>().0) {
+                *o = (((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 3) << 6) | ((p[2] as u16 >> 3) << 1) | 1).to_be_bytes();
+            }
+            rt::audio_poll();
         }
+        self.game.options.grab_to_texture = if self.game.options.grab_to_texture == 1 { 0 } else { 2 };
+        let desc = crate::ffi::NtxDesc {
+            fmt: 0, // RGBA16
+            width: w,
+            height: ph,
+            stride: w * 2,
+            texels: buf.as_ptr(),
+            tlut: core::ptr::null(),
+            tlut_count: 0,
+            flags: crate::ffi::NTX_TILED, // sharp: the full page in TMEM tiles
+            tile_w: 0,
+            tile_h: 0,
+        };
+        let ok = l.gfx.adopt_ntx(h.0, buf.clone(), &desc);
         if let Some(img) = self.r.textures.images.get_mut(h.0 as usize) {
-            img.width = size.0;
-            img.height = size.1;
+            img.width = w;
+            img.height = ph;
             img.rgba = Vec::new();
         }
-        l.page_canvas = None;
-        rt::audio_poll();
-        let ms = |a: u32, b: u32| ticks_to_us(b.wrapping_sub(a)) / 1000;
-        log!("app: book page {target}: compose {} ms, convert {} ms", ms(t0, t1), ms(t1, ticks()));
+        log!("app: book page {target}: {} ms{}", ticks_to_us(ticks().wrapping_sub(t0)) / 1000, if ok { "" } else { " (no texture slot)" });
     }
 
     fn dispatch_effects(&mut self) {

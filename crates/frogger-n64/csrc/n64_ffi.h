@@ -55,7 +55,7 @@ typedef struct { float x0, y0, x1, y1, s0, t0, s1, t1; uint32_t rgba; } n64_rect
 
 /* An NTX1 image (1C pack) as a texture: texels/tlut stay in the caller's buffer. fmt: NTX
  * format (0 RGBA16, 1 RGBA32, 2 CI4, 3 CI8, 4 IA4, 5 IA8, 6 I4, 7 I8, 8 IA16). */
-enum { N64_NTX_SINGLE = 1 << 0, N64_NTX_PER_TILE = 1 << 1 };
+enum { N64_NTX_SINGLE = 1 << 0, N64_NTX_PER_TILE = 1 << 1, N64_NTX_TILED = 1 << 2 /* triangles always sample the full image in TMEM tiles */ };
 typedef struct {
     uint32_t fmt, width, height, stride;
     const void *texels;
