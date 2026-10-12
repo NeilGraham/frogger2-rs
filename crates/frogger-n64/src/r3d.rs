@@ -833,36 +833,36 @@ fn enclosing_sphere(parts: &[Part]) -> ([f32; 3], f32) {
 }
 
 /// The renderer (one per program).
+/// Measurement: bytes of padding before the struct (`F2N64_PADX`), to sample data layouts.
+const PADX: usize = match option_env!("F2N64_PADX") { Some(v) => parse_usize(v), None => 0 };
+const fn parse_usize(v: &str) -> usize {
+    let (b, mut i, mut n) = (v.as_bytes(), 0, 0);
+    while i < b.len() {
+        n = n * 10 + (b[i] - b'0') as usize;
+        i += 1;
+    }
+    n
+}
+
+#[repr(C)]
 pub struct R3d {
-    /// F2NM files (meshes and textures point into them).
-    files: Vec<Vec<u8>>,
-    tex_by_crc: BTreeMap<u32, u16>,
-    /// Dense ids of the group texture CRCs and each one's current texture (0: none).
-    crc_id: BTreeMap<u32, u16>,
-    crc_tex: Vec<u16>,
-    /// Per part of every mesh (index = `MeshHot::sph` + part): command block, texture, size.
-    gparts: Vec<GPart>,
-    /// Per-frame uniform arenas, cycled over 3 frames (the RSP reads a frame's uniforms by
-    /// DMA while the CPU already queues the next one; triple-buffered display = at most 2
-    /// frames in flight).
-    uni: [Vec<R3dDrawUniform>; 3],
-    uni_frame: usize,
-    meshes: Vec<MeshRes>,
-    /// Per mesh: the per-draw data; the parts' bounding spheres of all meshes.
-    mhot: Vec<MeshHot>,
-    spheres: Vec<[f32; 4]>,
-    lists: [Vec<DrawRec>; NUM_LISTS],
-    vis: Vec<u16>,
-    handle_scratch: Vec<u16>,
-    tex_scratch: Vec<u16>,
-    draw_scratch: Vec<R3dDraw>,
-    view: ViewParams,
-    frame: R3dFrame,
-    /// `frame` with the sky's far plane (draws with `no_clip`).
-    frame_noclip: R3dFrame,
-    /// View x projection (f32) of the frame, for culling and per-object fog.
-    vp: Mat4,
+    _pad: [u8; PADX],
+    // Per-draw state first and contiguous (repr(C)): the D-cache is 8 KiB direct-mapped,
+    // and with these fields spread over the struct, layout changes alone moved the batch
+    // by 30 % (some of them sharing cache sets with each other or the stack).
     cull: Frustum,
+    frame_no: u32,
+    /// The view equals the previous frame's.
+    view_same: bool,
+    plast: u16,
+    uni_frame: usize,
+    /// Draws reused from the previous frame (statistics).
+    pub cache_hits: u32,
+    /// Draws that reused their model-side work with a new view (see `draw_slot`).
+    pub view_hits: u32,
+    /// Draw records queued so far (all frames; [`R3d::animate_modge`] runs only for queued
+    /// draws).
+    pub pushed: u32,
     /// Triangles of the meshes queued this frame.
     pub queued_tris: u32,
     /// Triangles sent to the RSP after bounding-sphere culling (the RSP still rejects
@@ -873,16 +873,51 @@ pub struct R3d {
     /// Per draw slot: the last draw queued in it, and its uniforms (by chunk).
     slots: Vec<Slot>,
     slot_uni: Vec<alloc::boxed::Box<[SlotUni; SLOT_CHUNK]>>,
+    /// Per draw slot: the model matrix of the last (stamp, mesh) recorded in it.
+    slot_model: Vec<(u32, u16, Model34)>,
+    /// Per mesh: the per-draw data; the parts' bounding spheres of all meshes.
+    mhot: Vec<MeshHot>,
+    spheres: Vec<[f32; 4]>,
+    vis: Vec<u16>,
     /// The previous frame's `vis` (reused draws copy their parts from it).
     prev_vis: Vec<u16>,
-    frame_no: u32,
-    /// Draws reused from the previous frame (statistics).
-    pub cache_hits: u32,
-    /// Draw records queued so far (all frames; [`R3d::animate_modge`] runs only for queued
-    /// draws).
-    pub pushed: u32,
-    /// Draws that reused their model-side work with a new view (see `draw_slot`).
-    pub view_hits: u32,
+    lists: [Vec<DrawRec>; NUM_LISTS],
+    /// Per-frame uniform arenas, cycled over 3 frames (the RSP reads a frame's uniforms by
+    /// DMA while the CPU already queues the next one; triple-buffered display = at most 2
+    /// frames in flight).
+    uni: [Vec<R3dDrawUniform>; 3],
+    /// Draws recorded since `begin_frame` ([`R3d::queue`]), bone matrices of the skinned ones,
+    /// model matrices of the ones without a slot.
+    q: Vec<QDraw>,
+    qbones: Vec<Mat4>,
+    qmodels: Vec<Model34>,
+    qgouraud: Vec<[f32; 3]>,
+    /// MODGE/WAVE meshes found visible by `run_queue` (animated after its loop).
+    modge_todo: Vec<(MeshId, u32, u8)>,
+    /// Interned draw parameters ([`R3d::intern_params`]) and their keys; the last id.
+    ptab: Vec<DrawParams>,
+    pkeys: Vec<[u32; 6]>,
+    /// Hash of `pkeys` (id + 1, 0 = empty; ids < `PID_NONE` only).
+    phash: alloc::boxed::Box<[u16; PHASH]>,
+    /// View x projection (f32) of the frame, for culling and per-object fog.
+    vp: Mat4,
+    view: ViewParams,
+    // Load-time / flush-time / measurement state.
+    /// F2NM files (meshes and textures point into them).
+    files: Vec<Vec<u8>>,
+    tex_by_crc: BTreeMap<u32, u16>,
+    /// Dense ids of the group texture CRCs and each one's current texture (0: none).
+    crc_id: BTreeMap<u32, u16>,
+    crc_tex: Vec<u16>,
+    /// Per part of every mesh (index = `MeshHot::sph` + part): command block, texture, size.
+    gparts: Vec<GPart>,
+    meshes: Vec<MeshRes>,
+    handle_scratch: Vec<u16>,
+    tex_scratch: Vec<u16>,
+    draw_scratch: Vec<R3dDraw>,
+    frame: R3dFrame,
+    /// `frame` with the sky's far plane (draws with `no_clip`).
+    frame_noclip: R3dFrame,
     /// Measurement (polygon budget, 2026-10): draws and triangles per on-screen radius class
     /// (< 1, < 1.5, < 3 px; whole-mesh bounding sphere), summed with all draws and frames;
     /// logged every 300 frames.
@@ -892,26 +927,9 @@ pub struct R3d {
     /// `F2_Modge` commands of this frame (mesh, descriptor, size): queued at the flush, before
     /// the lists.
     modge_cmds: Vec<(u32, *const u8, u32)>,
-    /// Draws recorded since `begin_frame` ([`R3d::queue`]), bone matrices of the skinned ones,
-    /// model matrices of the ones without a slot.
-    q: Vec<QDraw>,
-    qbones: Vec<Mat4>,
-    qmodels: Vec<Model34>,
-    qgouraud: Vec<[f32; 3]>,
-    /// MODGE/WAVE meshes found visible by `run_queue` (animated after its loop).
-    modge_todo: Vec<(MeshId, u32, u8)>,
-    /// Per draw slot: the model matrix of the last (stamp, mesh) recorded in it.
-    slot_model: Vec<(u32, u16, Model34)>,
-    /// Interned draw parameters ([`R3d::intern_params`]) and their keys; the last id.
-    ptab: Vec<DrawParams>,
-    pkeys: Vec<[u32; 6]>,
-    plast: u16,
-    /// Hash of `pkeys` (id + 1, 0 = empty; ids < `PID_NONE` only).
-    phash: alloc::boxed::Box<[u16; PHASH]>,
-    /// The view equals the previous frame's.
-    view_same: bool,
     /// Measurement (`F2N64_R3D_PROF=1`): C0 ticks and counts per phase, logged every 300 frames.
     pub prof: R3dProf,
+
 }
 
 /// Measurement counters (`F2N64_R3D_PROF=1`).
@@ -1176,6 +1194,7 @@ impl R3d {
             ffi::n64_r3d_init()
         };
         R3d {
+            _pad: [0; PADX],
             files: Vec::new(),
             tex_by_crc: BTreeMap::new(),
             crc_id: BTreeMap::new(),
@@ -1536,7 +1555,7 @@ impl R3d {
     /// space: the parts lie inside the mesh's sphere, so the other planes cannot cull them).
     /// Conservative: a culled batch is one whose every face MDX would reject (all vertices
     /// off-screen past one edge, or beyond near/far), so the image is unchanged.
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[inline(always)]
     fn cull_world(&mut self, mesh: usize, wc: &[f32; 3], s: f32, model: &Model34, no_clip: bool) -> u32 {
         let t0 = prof_ticks();
         let n = self.cull_world_inner(mesh, wc, s, model, no_clip);
@@ -1547,7 +1566,7 @@ impl R3d {
         n
     }
 
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[inline(always)]
     fn cull_world_inner(&mut self, mesh: usize, wc: &[f32; 3], s: f32, model: &Model34, no_clip: bool) -> u32 {
         let res = &self.mhot[mesh];
         let fr = &self.cull;
@@ -1888,12 +1907,11 @@ impl R3d {
     /// parameters and view, its uniform and visible parts are reused (no conversion, no
     /// culling, no copy). `slot` `u32::MAX` or `stamp` 0: no reuse.
     pub fn draw_slot(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams, slot: u32, stamp: u32) {
-        let pid = self.intern_params(p);
-        let slot = if slot >= NO_SLOT as u32 || stamp == 0 { NO_SLOT } else { slot as u16 };
-        self.draw_slot_pid(list, mesh, &to34(model), p, pid, slot, stamp);
+        // Queued like the game's draws; the work runs in `run_queue` (or at the flush).
+        self.queue(list, mesh, &[*model], p, false, slot, stamp, 0, 0);
     }
 
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn draw_slot_pid(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32) {
         if !R3D_PROF {
@@ -1911,7 +1929,7 @@ impl R3d {
         }
     }
 
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn draw_slot_inner(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32) {
         let Some(res) = self.mhot.get(mesh.0 as usize) else { return };
@@ -2069,7 +2087,7 @@ impl R3d {
         id as u16
     }
 
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[inline(always)]
     fn push_rec_ptr(&mut self, list: List, mesh: MeshId, p: &DrawParams, uptr: *const R3dDrawUniform, vis_first: u32, vis_count: u32) {
         self.pushed = self.pushed.wrapping_add(1);
         let rec =
@@ -2184,7 +2202,7 @@ impl R3d {
             }
             if d.lf & Q_SKINNED != 0 {
                 let bones = core::mem::take(&mut self.qbones);
-                self.draw_skinned(list, mesh, &bones[d.stamp as usize..d.stamp as usize + d.slot as usize], &p);
+                self.draw_skinned_q(list, mesh, &bones[d.stamp as usize..d.stamp as usize + d.slot as usize], &p);
                 self.qbones = bones;
                 continue;
             }
@@ -2225,8 +2243,13 @@ impl R3d {
 
     /// Queues a skinned mesh draw: one model → world matrix per bone (pre-order object
     /// index, as `xform_actor` returns them).
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     pub fn draw_skinned(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
+        self.queue(list, mesh, bones, p, true, u32::MAX, 0, 0, 0);
+    }
+
+    /// The batch's skinned draw (`run_queue`).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    fn draw_skinned_q(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         let t0 = prof_ticks();
         self.draw_skinned_inner(list, mesh, bones, p);
         if R3D_PROF {
@@ -2277,6 +2300,9 @@ impl R3d {
     /// `Overlay`, ...). Clears the lists.
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     pub fn flush(&mut self, mut after: impl FnMut(List)) {
+        if !self.q.is_empty() {
+            self.run_queue();
+        }
         #[cfg(target_vendor = "nintendo64")]
         unsafe {
             ffi::n64_r3d_begin(&self.frame);
@@ -2728,12 +2754,14 @@ mod tests {
         let ids = fresh.load_file(bytes.clone()).unwrap();
         fresh.begin_frame(&view);
         fresh.draw(List::Normal, ids[0], &model, &DrawParams::default());
+        fresh.run_queue();
         let want = snapshot(&fresh);
         let mut r = R3d::new();
         let ids = r.load_file(bytes).unwrap();
         for frame in 0..3 {
             r.begin_frame(&view);
             r.draw_slot(List::Normal, ids[0], &model, &DrawParams::default(), 0, 7);
+            r.run_queue();
             assert_eq!(snapshot(&r), want, "frame {frame}");
             assert!(!r.lists[List::Normal as usize][0].uptr.is_null());
             assert_eq!(r.cache_hits, (frame > 0) as u32);
@@ -2743,6 +2771,7 @@ mod tests {
         view.far = 900.0;
         r.begin_frame(&view);
         r.draw_slot(List::Normal, ids[0], &model, &DrawParams::default(), 0, 7);
+        r.run_queue();
         assert_eq!(r.cache_hits, 0);
     }
 
@@ -2793,6 +2822,7 @@ mod tests {
                 a.draw_slot(List::Normal, ia[k], m, &DrawParams::default(), slot, 99);
                 b.queue(List::Normal, ib[k], &[*m], &DrawParams::default(), false, slot, 99, 0, 0);
             }
+            a.run_queue();
             b.run_queue();
             assert_eq!(lists(&a), lists(&b));
             a.flush(|_| {});
@@ -2839,6 +2869,7 @@ mod tests {
             }
             r.begin_frame(&view);
             r.draw_slot(List::Normal, ids[0], &IDENTITY, &DrawParams { override_tex: ovr, ..Default::default() }, 0, 1);
+            r.run_queue();
             let vis: Vec<u16> = r.vis.clone();
             r.flush(|_| {});
             let d = &r.draw_scratch;
@@ -2895,8 +2926,10 @@ mod tests {
             let fids = fresh.load_file(bytes.clone()).unwrap();
             fresh.begin_frame(&view);
             fresh.draw(List::Normal, fids[0], model, &p);
+            fresh.run_queue();
             r.begin_frame(&view);
             r.draw_slot(List::Normal, ids[0], model, &p, 3, stamp);
+            r.run_queue();
             assert_eq!(snapshot(&r), snapshot(&fresh), "frame {k}");
             views += r.view_hits;
             r.flush(|_| {});
@@ -2990,6 +3023,7 @@ mod cull_tests {
             r.begin_frame(&view);
             let model = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [k as f32 * 20.0, 0.0, 0.0, 1.0]];
             r.draw(List::Normal, ids[0], &model, &DrawParams::default());
+            r.run_queue();
             let vis: Vec<u16> = r.vis.clone();
             let u = draw_uniform(&model_scaled(&model, mv.entry.pos_scale()), &DrawParams::default());
             let fr = frame_uniform_vp(&view, false);
