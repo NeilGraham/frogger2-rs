@@ -122,11 +122,38 @@ pub struct BankStats {
 
 /// The F2NM file (meshes only) of an object bank.
 pub fn encode_bank(bank: &ObjectBank) -> (Vec<u8>, BankStats) {
+    encode_bank_with(bank, None)
+}
+
+/// [`encode_bank`]; with `landscape_mats` (the `world.obe` model's key-0 object matrices,
+/// pre-order, row-vector `[x y z 1] * M`) the landscape is stored in world space on one
+/// position grid ([`mesh_flags::WORLD`](crate::mesh_flags::WORLD)): shared edges between its
+/// meshes quantise identically, so no cracks open between them.
+pub fn encode_bank_with(bank: &ObjectBank, landscape_mats: Option<&[[[f32; 4]; 4]]>) -> (Vec<u8>, BankStats) {
     let world = f2_formats::crc("world.obe");
     let mut fb = FileBuilder::new();
     let mut st = BankStats::default();
     for (mi, model) in bank.models.iter().enumerate() {
         let landscape = model.id == world;
+        let xf = |m: &[[f32; 4]; 4], v: [f32; 3]| -> [f32; 3] { core::array::from_fn(|k| v[0] * m[0][k] + v[1] * m[1][k] + v[2] * m[2][k] + m[3][k]) };
+        // World-space landscape: every mesh's positions through its object's matrix, one grid.
+        let world_pos: Option<(alloc::vec::Vec<alloc::vec::Vec<[f32; 3]>>, i8)> = match (landscape && !model.is_skinned, landscape_mats) {
+            (true, Some(mats)) => {
+                let mut per: alloc::vec::Vec<alloc::vec::Vec<[f32; 3]>> = alloc::vec::Vec::new();
+                let mut maxabs = 0f32;
+                for_each_object(model, |i, o| {
+                    while per.len() <= i {
+                        per.push(alloc::vec::Vec::new());
+                    }
+                    if let (Some(mesh), Some(m)) = (o.mesh.as_ref(), mats.get(i)) {
+                        per[i] = mesh.vertices.iter().map(|&v| xf(m, v)).collect();
+                        maxabs = per[i].iter().flat_map(|p| p.iter()).fold(maxabs, |a, &v| a.max(v.abs()));
+                    }
+                });
+                Some((per, crate::encode::pos_shift_for(maxabs)))
+            }
+            _ => None,
+        };
         if model.is_skinned {
             let Some(mesh) = model.root.mesh.as_ref() else { continue };
             let mut bone_of = vec![u8::MAX; mesh.vertices.len()];
@@ -141,8 +168,15 @@ pub fn encode_bank(bank: &ObjectBank) -> (Vec<u8>, BankStats) {
             if faces.is_empty() {
                 continue;
             }
-            let em =
-                encode_mesh(&MeshIn { id: mesh_id(mi, SKIN), positions: &mesh.vertices, faces: &faces, bone_of: Some(&bone_of), ordered: false, wrap: false });
+            let em = encode_mesh(&MeshIn {
+                id: mesh_id(mi, SKIN),
+                positions: &mesh.vertices,
+                faces: &faces,
+                bone_of: Some(&bone_of),
+                ordered: false,
+                wrap: false,
+                world_shift: None,
+            });
             st.skinned += 1;
             st.tris += em.n_tris;
             st.vertices += em.vertices.len();
@@ -163,7 +197,11 @@ pub fn encode_bank(bank: &ObjectBank) -> (Vec<u8>, BankStats) {
                         f.rgba = f.rgba.map(additive_corner);
                     }
                 }
-                let em = encode_mesh(&MeshIn { id: mesh_id(mi, i as u16), positions: &mesh.vertices, faces: &faces, bone_of: None, ordered, wrap });
+                let (positions, world_shift) = match &world_pos {
+                    Some((per, shift)) if per.get(i).is_some_and(|p| p.len() == mesh.vertices.len()) => (&per[i][..], Some(*shift)),
+                    _ => (&mesh.vertices[..], None),
+                };
+                let em = encode_mesh(&MeshIn { id: mesh_id(mi, i as u16), positions, faces: &faces, bone_of: None, ordered, wrap, world_shift });
                 st.tris += em.n_tris;
                 st.vertices += em.vertices.len();
                 fb.meshes.push(em);

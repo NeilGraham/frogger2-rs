@@ -50,7 +50,7 @@ fn grid(id: u32, g: usize, size: f32, tex: u32, flip: bool) -> EncodedMesh {
             }
         }
     }
-    encode_mesh(&MeshIn { id, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false })
+    encode_mesh(&MeshIn { id, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false, world_shift: None })
 }
 
 fn translate(x: f32, y: f32, z: f32) -> Mat4 {

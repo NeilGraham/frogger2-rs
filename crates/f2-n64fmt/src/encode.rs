@@ -37,6 +37,9 @@ pub struct MeshIn<'a> {
     /// lists): out-of-range texture coordinates may be shifted by whole periods. Clamped
     /// meshes (`Normal` list: landscape, most objects, skins) keep their coordinates.
     pub wrap: bool,
+    /// Force this position shift (one grid for several meshes, e.g. a world-space landscape)
+    /// instead of the one fitted to the mesh; sets [`mesh_flags::WORLD`] when `Some`.
+    pub world_shift: Option<i8>,
 }
 
 /// An encoded mesh, ready for [`FileBuilder`].
@@ -58,7 +61,7 @@ pub struct EncodedMesh {
 /// stored magnitude).
 const POS_TARGET: f32 = 8192.0;
 
-fn pos_shift_for(maxabs: f32) -> i8 {
+pub fn pos_shift_for(maxabs: f32) -> i8 {
     if maxabs <= 0.0 || maxabs.is_nan() {
         return 0;
     }
@@ -146,7 +149,7 @@ pub fn encode_mesh(m: &MeshIn) -> EncodedMesh {
     let used = |i: usize| m.faces.iter().any(|f| f.v.contains(&(i as u16)));
     let maxabs =
         m.positions.iter().enumerate().filter(|(i, _)| m.positions.len() < 4096 || used(*i)).flat_map(|(_, p)| p.iter()).fold(0f32, |a, &v| a.max(v.abs()));
-    let pos_shift = pos_shift_for(maxabs);
+    let pos_shift = m.world_shift.unwrap_or_else(|| pos_shift_for(maxabs));
     let scale = pow2(pos_shift as i32);
     let qpos: Vec<[i16; 3]> = m.positions.iter().map(|p| p.map(|v| round_i32(v * scale).clamp(-32768, 32767) as i16)).collect();
     let bone = |pi: u16| m.bone_of.and_then(|b| b.get(pi as usize).copied()).unwrap_or(0);
@@ -168,7 +171,9 @@ pub fn encode_mesh(m: &MeshIn) -> EncodedMesh {
 
     let mut out = EncodedMesh {
         id: m.id,
-        flags: if m.bone_of.is_some() { mesh_flags::SKINNED } else { 0 } | if m.ordered { mesh_flags::ORDERED } else { 0 },
+        flags: if m.bone_of.is_some() { mesh_flags::SKINNED } else { 0 }
+            | if m.ordered { mesh_flags::ORDERED } else { 0 }
+            | if m.world_shift.is_some() { mesh_flags::WORLD } else { 0 },
         pos_shift,
         n_bones: m.bone_of.map_or(0, |b| b.iter().copied().max().map_or(0, |x| x.saturating_add(1))),
         ..Default::default()
@@ -615,7 +620,7 @@ mod tests {
     #[test]
     fn mesh_batches_cover_all_faces() {
         let (pos, faces) = grid(16, |i| [11, 22, 33][i % 3]);
-        let m = MeshIn { id: 1, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false };
+        let m = MeshIn { id: 1, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false, world_shift: None };
         let e = encode_mesh(&m);
         assert_eq!(e.groups.len(), 3);
         assert_eq!(e.n_tris, 512);
@@ -629,7 +634,7 @@ mod tests {
     #[test]
     fn batch_spheres_contain_their_vertices() {
         let (pos, faces) = grid(16, |i| [11, 22][i % 2]);
-        let e = encode_mesh(&MeshIn { id: 3, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false });
+        let e = encode_mesh(&MeshIn { id: 3, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false, world_shift: None });
         for g in &e.groups {
             let bs = &e.batches[g.batch_first as usize..(g.batch_first + g.batch_count) as usize];
             assert_eq!(bs.iter().map(|b| b.n_tris as u32).sum::<u32>(), g.n_tris as u32);
@@ -651,7 +656,7 @@ mod tests {
     fn skinned_loads_per_bone() {
         let (pos, faces) = grid(8, |_| 5);
         let bones: Vec<u8> = (0..pos.len()).map(|i| (i % 3) as u8).collect();
-        let m = MeshIn { id: 2, positions: &pos, faces: &faces, bone_of: Some(&bones), ordered: false, wrap: false };
+        let m = MeshIn { id: 2, positions: &pos, faces: &faces, bone_of: Some(&bones), ordered: false, wrap: false, world_shift: None };
         let e = encode_mesh(&m);
         assert_eq!(e.n_bones, 3);
         check(&m, &e);
@@ -689,7 +694,7 @@ mod tests {
     #[test]
     fn file_roundtrip() {
         let (pos, faces) = grid(4, |_| 0xABCD);
-        let mesh = encode_mesh(&MeshIn { id: 9, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false });
+        let mesh = encode_mesh(&MeshIn { id: 9, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false, world_shift: None });
         let rgba: Vec<u8> = (0..32 * 32).flat_map(|i| if i % 2 == 0 { [255, 0, 0, 255] } else { [0, 0, 255, 0] }).collect();
         let tex = encode_texture(&TexIn { crc: 0xABCD, width: 32, height: 32, rgba: &rgba });
         assert_eq!(tex.fmt, TexFormat::Ci4);

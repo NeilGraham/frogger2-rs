@@ -57,6 +57,10 @@ pub mod mesh_flags {
     /// Faces kept in their original order (groups are runs of one texture, so a texture can
     /// appear in several groups). Set for meshes whose draw order matters (translucent).
     pub const ORDERED: u16 = 1 << 1;
+    /// Positions are in world space (static landscape baked with its key-0 transforms, all
+    /// meshes of the model on one position grid so shared edges are bit-identical): drawn
+    /// with an identity model matrix.
+    pub const WORLD: u16 = 1 << 2;
 }
 
 /// Texture flags.
@@ -324,6 +328,10 @@ impl MeshEntry {
     }
     pub fn is_skinned(&self) -> bool {
         self.flags & mesh_flags::SKINNED != 0
+    }
+
+    pub fn is_world(&self) -> bool {
+        self.flags & mesh_flags::WORLD != 0
     }
     /// `2^-pos_shift`: multiply stored positions by this to get model units.
     pub fn pos_scale(&self) -> f32 {

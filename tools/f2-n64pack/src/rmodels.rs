@@ -76,7 +76,15 @@ fn convert_one(p: &Path) -> Result<(RawAsset, RawAsset, u32)> {
     let d = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
     let bank = ObjectBank::parse(&d).map_err(|e| format!("{}: {e}", p.display()))?;
     let pcd = postcard::to_allocvec(&sim_bank(&bank)).map_err(|e| e.to_string())?;
-    let (f2nm, st) = f2_n64fmt::bank::encode_bank(&bank);
+    // The landscape (`world.obe`) goes into world space with the key-0 matrices the game draws
+    // it with (`Renderer::draw_landscape`), so its meshes share one position grid (no cracks).
+    let world = f2_formats::crc("world.obe");
+    let landscape_mats = bank
+        .models
+        .iter()
+        .find(|m| m.id == world && !m.is_skinned)
+        .map(|m| f2_engine::xform_actor(m, &mut f2_engine::Actor { animated: false, ..Default::default() }));
+    let (f2nm, st) = f2_n64fmt::bank::encode_bank_with(&bank, landscape_mats.as_deref());
     let name = p.file_name().unwrap().to_string_lossy().to_lowercase();
     let mk = |suffix: &str, data: Vec<u8>, src: u64, note: String| RawAsset {
         path: format!("objects/{name}{suffix}"),

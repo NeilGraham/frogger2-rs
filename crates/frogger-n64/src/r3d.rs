@@ -265,6 +265,8 @@ struct MeshRes {
     verts: usize,
     n_verts: u32,
     modge: Option<alloc::boxed::Box<ModgeMesh>>,
+    /// World-space positions (`mesh_flags::WORLD`): drawn with an identity model matrix.
+    world: bool,
 }
 
 /// Base data of a `MODGE`/`WAVE` mesh's vertices and the frame they were last animated for.
@@ -281,7 +283,7 @@ fn sin_table() -> &'static [f32; 1025] {
     TABLE.call_once(|| core::array::from_fn(|i| libm::sinf(i as f32 * (core::f32::consts::TAU / 1024.0))))
 }
 
-/// Table sine (linear interpolation; |error| < 5e-6): the N64 approximation of
+/// Table sine (linear interpolation; |error| < 2e-5 + |x|·2e-7): the N64 approximation of
 /// `PCCalcModgeValues`' `sinf`/`cosf`.
 #[inline]
 fn fast_sin(t: &[f32; 1025], x: f32) -> f32 {
@@ -712,6 +714,7 @@ impl R3d {
             verts: m.vertices.as_ptr() as usize,
             n_verts: m.entry.n_verts as u32,
             modge: None,
+            world: m.entry.is_world(),
         };
         let add = |cmds: &[u8], group: usize, tris: u16, center: [f32; 3], radius: f32| -> Result<Part, LoadError> {
             let desc = ffi::R3dGroupDesc {
@@ -923,6 +926,11 @@ impl R3d {
         self.draw_slot(list, mesh, model, p, u32::MAX, 0);
     }
 
+    /// Whether `mesh` is stored in world space (draw it with an identity model matrix).
+    pub fn mesh_is_world(&self, mesh: MeshId) -> bool {
+        self.meshes.get(mesh.0 as usize).is_some_and(|m| m.world)
+    }
+
     /// `PCCalcModgeValues` on a rigid mesh's vertices at frame `fc` (`flags` bit 0 MODGE:
     /// texture coordinates wobble by `0.4·(tMx, tMz)`; bit 1 WAVE: vertices rise by `tMy`;
     /// both: the water's alpha follows `50 + (tMx + tMz)·400` around its stored value), written
@@ -945,6 +953,7 @@ impl R3d {
                     (rd(o) as f32 * scale, rd(o + 4) as f32 * scale, rd(o + 2), rd(o + 12), rd(o + 14), v[o + 11])
                 })
                 .collect();
+            #[cfg(target_vendor = "nintendo64")]
             crate::log!("r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, flags {})", res.id, res.n_verts, flags);
             alloc::boxed::Box::new(ModgeMesh { base, frame: u32::MAX, flags: 0 })
         });
@@ -1406,7 +1415,8 @@ mod tests {
         let t = sin_table();
         for i in -20000..20000 {
             let x = i as f32 * 0.0137;
-            assert!((fast_sin(t, x) - libm::sinf(x)).abs() < 2e-5, "{x}");
+            // table error + f32 phase rounding (grows with |x|)
+            assert!((fast_sin(t, x) - libm::sinf(x)).abs() < 2e-5 + x.abs() * 2e-7, "{x}");
         }
     }
 
@@ -1546,7 +1556,7 @@ mod cull_tests {
             }
         }
         let mut fb = FileBuilder::new();
-        fb.meshes.push(encode_mesh(&MeshIn { id: 1, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false }));
+        fb.meshes.push(encode_mesh(&MeshIn { id: 1, positions: &pos, faces: &faces, bone_of: None, ordered: false, wrap: false, world_shift: None }));
         fb.finish()
     }
 

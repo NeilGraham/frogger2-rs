@@ -241,7 +241,7 @@ fn main() {
         for f in &faces {
             tex_crcs.insert(f.tex_crc, ());
         }
-        let em = encode_mesh(&MeshIn { id: o.id, positions: &mesh.vertices, faces: &faces, bone_of: None, ordered: false, wrap: false });
+        let em = encode_mesh(&MeshIn { id: o.id, positions: &mesh.vertices, faces: &faces, bone_of: None, ordered: false, wrap: false, world_shift: None });
         draws.push((fb.meshes.len() as u32, 0, vec![mats[i]]));
         fb.meshes.push(em);
     });
@@ -262,7 +262,7 @@ fn main() {
             for f in &faces {
                 tex_crcs.insert(f.tex_crc, ());
             }
-            let em = encode_mesh(&MeshIn { id: model.id, positions: &mesh.vertices, faces: &faces, bone_of: Some(&bone_of), ordered: false, wrap: false });
+            let em = encode_mesh(&MeshIn { id: model.id, positions: &mesh.vertices, faces: &faces, bone_of: Some(&bone_of), ordered: false, wrap: false, world_shift: None });
             draws.push((fb.meshes.len() as u32, 0x100, mats.clone()));
             fb.meshes.push(em);
         } else {
@@ -276,7 +276,7 @@ fn main() {
                 for f in &faces {
                     tex_crcs.insert(f.tex_crc, ());
                 }
-                let em = encode_mesh(&MeshIn { id: o.id, positions: &mesh.vertices, faces: &faces, bone_of: None, ordered: list >= 2, wrap: list >= 1 });
+                let em = encode_mesh(&MeshIn { id: o.id, positions: &mesh.vertices, faces: &faces, bone_of: None, ordered: list >= 2, wrap: list >= 1, world_shift: None });
                 draws.push((fb.meshes.len() as u32, list | 0x100, vec![mats[i]]));
                 fb.meshes.push(em);
             });

@@ -263,6 +263,9 @@ impl R3dLevel {
         if d.object == MESH_SKIN {
             self.r.draw_skinned(list, mesh, mats, &p);
         } else if let Some(m) = mats.first() {
+            // World-space landscape meshes (packer-baked key-0 transforms): identity.
+            const IDENTITY: [[f32; 4]; 4] = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            let m = if self.r.mesh_is_world(mesh) { &IDENTITY } else { m };
             self.r.draw_slot(list, mesh, m, &p, slot as u32, d.stamp);
         }
         self.rec.draws += 1;
