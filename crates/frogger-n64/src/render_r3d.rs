@@ -55,8 +55,6 @@ pub struct R3dLevel {
     /// Registry image → (RenderCpu texture generation, r3d alias).
     img: Vec<(u32, Option<TexId>)>,
     pub stats: R3dFrameStats,
-    /// Per sink draw slot: the (model, object) and mesh it had last time (skips the map).
-    slot_mesh: Vec<(u32, u16, MeshId)>,
     /// Recorded draws without an F2NM mesh (logged once each).
     missing: alloc::collections::BTreeSet<(u32, u16)>,
     frame_no: u32,
@@ -114,7 +112,6 @@ impl R3dLevel {
             meshes: BTreeMap::new(),
             img: Vec::new(),
             stats: R3dFrameStats::default(),
-            slot_mesh: Vec::new(),
             missing: Default::default(),
             frame_no: 0,
             dump_next: false,
@@ -132,7 +129,6 @@ impl R3dLevel {
     pub fn unload(&mut self) {
         self.r.reset_to(self.base);
         self.meshes.clear();
-        self.slot_mesh.clear();
         self.img.clear();
         self.missing.clear();
         self.synced.clear();
@@ -298,7 +294,7 @@ impl R3dLevel {
     /// Inside the game's draw loop: only records the draw (mesh lookup, textures and the
     /// debug filters follow in [`resolve_queue`](Self::resolve_queue), after the loop).
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
-    fn record_inner(&mut self, _cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]], slot: usize) {
+    fn record_inner(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]], slot: usize) {
         let Some(mut list) = list_of(d.frame) else { return };
         if d.no_clip && list == List::Normal {
             list = List::Background;
@@ -308,79 +304,48 @@ impl R3dLevel {
             rt::audio_poll_due();
         }
         let flags = (d.no_clip, d.object_fog, d.object == MESH_SKIN);
-        let ovr = d.override_tex.map(|h| h.0);
+        let ovr = match d.override_tex {
+            None => None,
+            Some(h) => match self.tex_for(cpu, h.0) {
+                Some(t) => Some(t),
+                None => return, // PC: no texture, nothing drawn
+            },
+        };
         self.r.queue_raw(list, d.model, d.object, mats, d.alpha_mul, d.gouraud, ovr, flags, slot as u32, d.stamp, d.modge, d.modge_frame);
     }
 
-    /// Resolves the draws recorded during the draw loop: meshes (last frame's of each slot
-    /// first), override textures, the debug filters.
-    fn resolve_queue(&mut self, cpu: &RenderCpu) {
-        for i in 0..self.r.queued() {
-            let Some(d) = self.r.raw_draw(i) else { continue };
-            let skip = |list: &str| list.split(',').any(|m| alloc::format!("{:08x}", d.model) == m);
-            if option_env!("F2N64_SKIP_MODEL").is_some_and(skip) || option_env!("F2N64_ONLY_MODEL").is_some_and(|l| !skip(l)) {
-                self.r.resolve_draw(i, None, None);
-                continue;
-            }
-            // The draw order rarely changes between frames: try last frame's mesh of this slot.
-            let mesh = match d.slot.and_then(|s| self.slot_mesh.get(s as usize)) {
-                Some(&(m, o, id)) if m == d.model && o == d.object => Some(id),
-                _ => self.lookup_mesh(&d),
-            };
-            let ovr = match d.override_img {
-                Some(h) => match self.tex_for(cpu, h) {
-                    Some(t) => Some(t),
-                    None => {
-                        // PC: no texture, nothing drawn.
-                        self.r.resolve_draw(i, None, None);
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            self.r.resolve_draw(i, mesh, ovr);
-            if let Some(m) = mesh {
-                self.rec.draws += 1;
-                if option_env!("F2N64_LOG_MODELS").is_some() || self.dump_next {
-                    self.log_draw(&d, m);
-                }
-            }
-        }
-    }
-
-    /// The mesh of a recorded draw (remembered for its slot), logging missing ones once.
+    /// The mesh of a recorded draw ([`R3d::run_queue_with`]'s resolver: the slot memo had
+    /// another model/object), applying the debug filters and logging missing meshes once.
     #[cold]
     #[inline(never)]
-    fn lookup_mesh(&mut self, d: &crate::r3d::RawDraw) -> Option<MeshId> {
-        let Some(&mesh) = self.meshes.get(&(d.model, d.object)) else {
-            if self.missing.insert((d.model, d.object)) {
+    fn lookup_mesh(meshes: &BTreeMap<(u32, u16), MeshId>, missing: &mut alloc::collections::BTreeSet<(u32, u16)>, d: &crate::r3d::RawDraw) -> Option<MeshId> {
+        let skip = |list: &str| list.split(',').any(|m| alloc::format!("{:08x}", d.model) == m);
+        if option_env!("F2N64_SKIP_MODEL").is_some_and(skip) || option_env!("F2N64_ONLY_MODEL").is_some_and(|l| !skip(l)) {
+            return None;
+        }
+        let Some(&mesh) = meshes.get(&(d.model, d.object)) else {
+            if missing.insert((d.model, d.object)) {
                 crate::log!("r3d: no mesh for model {:08x} object {} (list {:?})", d.model, d.object, d.list);
             }
             return None;
         };
-        if let Some(slot) = d.slot.map(|s| s as usize) {
-            if self.slot_mesh.len() <= slot {
-                self.slot_mesh.resize(slot + 1, (0, 0, MeshId(u32::MAX)));
-            }
-            self.slot_mesh[slot] = (d.model, d.object, mesh);
-        }
         Some(mesh)
     }
 
     #[cold]
     #[inline(never)]
-    fn log_draw(&mut self, d: &crate::r3d::RawDraw, mesh: MeshId) {
-        if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {
-            crate::log!("r3d: model {:08x} first drawn ({:?}, {} tris)", d.model, d.list, self.r.mesh_tris(mesh));
+    fn log_draw(seen: &mut alloc::collections::BTreeSet<u32>, dump: bool, d: &crate::r3d::RawDraw, mesh: MeshId) {
+        if option_env!("F2N64_LOG_MODELS").is_some() && seen.insert(d.model) {
+            crate::log!("r3d: model {:08x} first drawn ({:?}, mesh {})", d.model, d.list, mesh.0);
         }
-        if self.dump_next {
+        if dump {
             crate::log!(
-                "dump r3d {:?} model {:08x} obj {} alpha {} tris {} no_clip {}",
+                "dump r3d {:?} model {:08x} obj {} alpha {} mesh {} no_clip {}",
                 d.list,
                 d.model,
                 d.object,
                 d.alpha,
-                self.r.mesh_tris(mesh),
+                mesh.0,
                 d.no_clip
             );
         }
@@ -400,20 +365,26 @@ impl R3dLevel {
         rt::begin_frame((c[0] << 24) | (c[1] << 16) | (c[2] << 8) | 0xff);
         cpu.draw_segment(0);
         cpu.zk = 4000.0 * view_params(r).z_scale() / 32767.0;
-        let tq = rt::ticks();
-        self.resolve_queue(cpu);
-        let resolve_ticks = rt::ticks().wrapping_sub(tq);
         let mut st = self.rec;
-        st.queue_ticks = st.queue_ticks.wrapping_add(resolve_ticks);
-        if st.draws == 0 {
+        if self.r.queued() == 0 {
             self.r.discard_frame();
             for seg in 1..=7 {
                 cpu.draw_segment(seg);
             }
         } else {
             let tq = rt::ticks();
-            self.r.run_queue();
+            let log = option_env!("F2N64_LOG_MODELS").is_some() || self.dump_next;
+            self.r.resolve_all(log);
+            let R3dLevel { r: rr, meshes, missing, seen, dump_next, .. } = self;
+            rr.run_queue_with(&mut |d| {
+                let m = Self::lookup_mesh(meshes, missing, d);
+                if let (true, Some(m)) = (log, m) {
+                    Self::log_draw(seen, *dump_next, d, m);
+                }
+                m
+            });
             st.queue_ticks = st.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(tq));
+            st.draws = self.r.drawn;
             let tf = rt::ticks();
             let seg0 = cpu.stats.submit_ticks;
             self.r.flush(|l| {

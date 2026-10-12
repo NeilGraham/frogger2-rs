@@ -696,7 +696,7 @@ struct QDraw {
     /// Key of the slot's model matrix with the stamp (the object of `queue_raw`, the mesh of
     /// `queue`).
     key: u16,
-    /// [`TexId`] + 1 (0: none); with `Q_OVR_RAW`, the game's override image + 1.
+    /// [`TexId`] + 1 (0: none).
     ovr: u16,
     /// Index + 1 into `qgouraud` (0: none).
     gour: u16,
@@ -708,20 +708,16 @@ struct QDraw {
 const Q_SKINNED: u8 = 8;
 const Q_NO_CLIP: u8 = 16;
 const Q_OBJECT_FOG: u8 = 32;
-const Q_OVR_RAW: u8 = 64;
 /// `QDraw::mesh` of a raw draw not resolved yet / of a draw not to draw.
 const MESH_UNRESOLVED: u16 = 0xFFFE;
 const MESH_SKIP: u16 = 0xFFFF;
 
-/// A [`R3d::queue_raw`] draw waiting for [`R3d::resolve_draw`].
+/// A [`R3d::queue_raw`] draw whose mesh [`R3d::run_queue_with`] asks its resolver for (the
+/// draw slot's memo had another model/object).
 #[derive(Clone, Copy, Debug)]
 pub struct RawDraw {
     pub model: u32,
     pub object: u16,
-    /// The draw slot (`None`: skinned or slotless).
-    pub slot: Option<u16>,
-    /// The game's override image.
-    pub override_img: Option<u32>,
     pub list: List,
     pub alpha: f32,
     pub no_clip: bool,
@@ -898,6 +894,13 @@ pub struct R3d {
     /// Per draw slot: the last draw queued in it, and its uniforms (by chunk).
     slots: Vec<Slot>,
     slot_uni: Vec<alloc::boxed::Box<[SlotUni; SLOT_CHUNK]>>,
+    /// Per draw slot: the (model, object) of the last raw draw in it and its mesh
+    /// ([`R3d::run_queue_with`]).
+    slot_key: Vec<(u32, u16, u16)>,
+    /// Raw draws resolved this frame (statistics).
+    pub drawn: u32,
+    /// Resolve every raw draw (no memo).
+    resolve_all: bool,
     /// Per draw slot: the model matrix of the last (stamp, key) recorded in it.
     slot_model: Vec<(u32, u16, Model34)>,
     /// Per mesh: the per-draw data; the parts' bounding spheres of all meshes.
@@ -1260,6 +1263,9 @@ impl R3d {
             qgouraud: Vec::new(),
             modge_todo: Vec::new(),
             slot_model: Vec::new(),
+            slot_key: Vec::new(),
+            drawn: 0,
+            resolve_all: false,
             ptab: Vec::new(),
             pkeys: Vec::new(),
             plast: 0,
@@ -1528,6 +1534,7 @@ impl R3d {
         self.vis.clear();
         self.cache_hits = 0;
         self.view_hits = 0;
+        self.drawn = 0;
         self.size_frames += 1;
         if option_env!("F2N64_MEASURE_SIZES").is_some() && self.size_frames == 300 {
             let f = self.size_frames;
@@ -2153,8 +2160,7 @@ impl R3d {
     }
 
     /// [`queue`](Self::queue) of the game's draw loop: the game's model id and object (the
-    /// mesh and the override image's texture are resolved after the loop, [`raw_draw`]
-    /// (Self::raw_draw) / [`resolve_draw`](Self::resolve_draw)).
+    /// mesh is resolved in [`run_queue_with`](Self::run_queue_with)).
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     #[allow(clippy::too_many_arguments)]
     pub fn queue_raw(
@@ -2165,7 +2171,7 @@ impl R3d {
         mats: &[Mat4],
         alpha: f32,
         gouraud: Option<[f32; 3]>,
-        override_img: Option<u32>,
+        override_tex: Option<TexId>,
         flags: (bool, bool, bool),
         slot: u32,
         stamp: u32,
@@ -2173,14 +2179,8 @@ impl R3d {
         modge_frame: u32,
     ) {
         let (no_clip, object_fog, skinned) = flags;
-        let mut lf = list as u8 | if no_clip { Q_NO_CLIP } else { 0 } | if object_fog { Q_OBJECT_FOG } else { 0 };
-        let ovr = match override_img {
-            None => 0,
-            Some(h) => {
-                lf |= Q_OVR_RAW;
-                (h.min(0xFFFE) + 1) as u16
-            }
-        };
+        let lf = list as u8 | if no_clip { Q_NO_CLIP } else { 0 } | if object_fog { Q_OBJECT_FOG } else { 0 };
+        let ovr = override_tex.map_or(0, |t| t.0 + 1);
         self.queue_core(lf, model, MESH_UNRESOLVED, object, ovr, mats, alpha, gouraud, skinned, slot, stamp, modge, modge_frame);
     }
 
@@ -2274,48 +2274,46 @@ impl R3d {
         self.q.push(QDraw { stamp, modge_frame, alpha, model, slot, mesh, key, ovr, gour, lf, modge });
     }
 
-    /// Draws queued so far (indices for [`raw_draw`](Self::raw_draw)).
+    /// Draws queued so far.
     pub fn queued(&self) -> usize {
         self.q.len()
     }
 
-    /// Queued draw `i` if it is a [`queue_raw`](Self::queue_raw) draw still to resolve.
-    #[inline]
-    pub fn raw_draw(&self, i: usize) -> Option<RawDraw> {
-        let d = self.q.get(i)?;
-        (d.mesh == MESH_UNRESOLVED).then(|| RawDraw {
-            model: d.model,
-            object: d.key,
-            slot: (d.lf & Q_SKINNED == 0 && d.slot != NO_SLOT).then_some(d.slot),
-            override_img: (d.lf & Q_OVR_RAW != 0).then(|| d.ovr as u32 - 1),
-            list: BY_INDEX[(d.lf & 7) as usize],
-            alpha: d.alpha,
-            no_clip: d.lf & Q_NO_CLIP != 0,
-        })
-    }
-
-    /// Resolves queued draw `i` ([`raw_draw`](Self::raw_draw)): its mesh and override texture
-    /// (`None` mesh: not drawn).
-    #[inline]
-    pub fn resolve_draw(&mut self, i: usize, mesh: Option<MeshId>, override_tex: Option<TexId>) {
-        let d = &mut self.q[i];
-        d.mesh = mesh.map_or(MESH_SKIP, |m| m.0 as u16);
-        d.ovr = override_tex.map_or(0, |t| t.0 + 1);
-        d.lf &= !Q_OVR_RAW;
+    /// Resolves every queued draw's mesh from now on with the resolver (no slot memo: logs
+    /// of every draw, `F2N64_DUMP_FRAME`).
+    pub fn resolve_all(&mut self, on: bool) {
+        self.resolve_all = on;
     }
 
     /// Queues the draws recorded with [`queue`](Self::queue) (call before [`flush`](Self::flush)).
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     pub fn run_queue(&mut self) {
+        self.run_queue_with(&mut |_| None);
+    }
+
+    /// [`run_queue`](Self::run_queue); [`queue_raw`](Self::queue_raw) draws get their mesh from
+    /// their slot's memo (same model and object as last time) or from `resolve` (`None`: not
+    /// drawn).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    pub fn run_queue_with(&mut self, resolve: &mut dyn FnMut(&RawDraw) -> Option<MeshId>) {
         let t_run = prof_ticks();
         let q = core::mem::take(&mut self.q);
         // No audio polls in here: the recording (draw loop) and the CPU batches after it poll.
         for d in q.iter() {
-            if d.mesh >= MESH_UNRESOLVED {
+            let mut mesh = d.mesh;
+            if mesh == MESH_UNRESOLVED {
+                // The draw order rarely changes between frames: last frame's mesh of this slot.
+                let memo = (d.lf & Q_SKINNED == 0 && d.slot != NO_SLOT && !self.resolve_all).then_some(d.slot as usize);
+                mesh = match memo.and_then(|s| self.slot_key.get(s)) {
+                    Some(&(m, o, id)) if m == d.model && o == d.key => id,
+                    _ => self.resolve_raw(resolve, d, memo),
+                };
+            }
+            if mesh >= MESH_UNRESOLVED {
                 continue;
             }
+            self.drawn += 1;
             let list = BY_INDEX[(d.lf & 7) as usize];
-            let mesh = MeshId(d.mesh as u32);
+            let mesh = MeshId(mesh as u32);
             let p = DrawParams {
                 alpha_mul: d.alpha,
                 gouraud: if d.gour == 0 { None } else { Some(self.qgouraud[d.gour as usize - 1]) },
@@ -2372,6 +2370,22 @@ impl R3d {
     /// index, as `xform_actor` returns them).
     pub fn draw_skinned(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         self.queue(list, mesh, bones, p, true, u32::MAX, 0, 0, 0);
+    }
+
+    /// Asks the resolver for a raw draw's mesh (and remembers it for the slot).
+    #[cold]
+    #[inline(never)]
+    fn resolve_raw(&mut self, resolve: &mut dyn FnMut(&RawDraw) -> Option<MeshId>, d: &QDraw, memo: Option<usize>) -> u16 {
+        let raw = RawDraw { model: d.model, object: d.key, list: BY_INDEX[(d.lf & 7) as usize], alpha: d.alpha, no_clip: d.lf & Q_NO_CLIP != 0 };
+        let mesh = resolve(&raw).map_or(MESH_SKIP, |m| m.0 as u16);
+        // Only found meshes are remembered (a missing one is looked up again next time).
+        if let (Some(s), true) = (memo, mesh != MESH_SKIP) {
+            if self.slot_key.len() <= s {
+                self.slot_key.resize(s + 1, (0, u16::MAX, MESH_SKIP));
+            }
+            self.slot_key[s] = (d.model, d.key, mesh);
+        }
+        mesh
     }
 
     /// The batch's skinned draw (`run_queue`).
@@ -2578,8 +2592,9 @@ impl R3d {
         self.qmodels.clear();
         self.qgouraud.clear();
         self.vis.clear();
-        // Mesh ids are reused after a reset: forget the reusable draws.
+        // Mesh ids are reused after a reset: forget the reusable draws and the slot memo.
         self.slots.clear();
+        self.slot_key.clear();
         self.prev_vis.clear();
     }
 
@@ -3050,18 +3065,22 @@ mod tests {
             let p = DrawParams { alpha_mul: 0.5, object_fog: true, override_tex: Some(TexId(4)), ..Default::default() };
             a.queue(List::Normal, ia[0], &[*m], &p, false, 0, 7 + f, 0, 0);
             a.queue(List::Xlu, ia[0], &[m1], &DrawParams::default(), false, 1, 3, 0, 0);
-            b.queue_raw(List::Normal, 0x1234, 2, &[*m], 0.5, None, Some(17), (false, true, false), 0, 7 + f, 0, 0);
+            b.queue_raw(List::Normal, 0x1234, 2, &[*m], 0.5, None, Some(TexId(4)), (false, true, false), 0, 7 + f, 0, 0);
             b.queue_raw(List::Xlu, 0x1234, 3, &[m1], 1.0, None, None, (false, false, false), 1, 3, 0, 0);
             b.queue_raw(List::Normal, 0x9999, 0, &[m1], 1.0, None, None, (false, false, false), 2, 3, 0, 0);
-            b.queue_raw(List::Normal, 0x8888, 0, &[m1], 1.0, None, None, (false, false, false), 3, 3, 0, 0);
-            let d0 = b.raw_draw(0).unwrap();
-            assert_eq!((d0.model, d0.object, d0.slot, d0.override_img, d0.list), (0x1234, 2, Some(0), Some(17), List::Normal));
-            b.resolve_draw(0, Some(ib[0]), Some(TexId(4)));
-            b.resolve_draw(1, Some(ib[0]), None);
-            b.resolve_draw(2, None, None);
-            // draw 3 left unresolved
             a.run_queue();
-            b.run_queue();
+            let mut asked = Vec::new();
+            b.run_queue_with(&mut |d| {
+                asked.push((d.model, d.object, d.list));
+                (d.model == 0x1234).then_some(ib[0])
+            });
+            // The slot memo: asked in the first frame only (the skipped draw every time).
+            let mut want = alloc::vec![(0x9999, 0, List::Normal)];
+            if f == 0 {
+                want = alloc::vec![(0x1234, 2, List::Normal), (0x1234, 3, List::Xlu), (0x9999, 0, List::Normal)];
+            }
+            assert_eq!(asked, want, "frame {f}");
+            assert_eq!(b.drawn, 2);
             assert_eq!(snap(&a), snap(&b), "frame {f}");
             a.flush(|_| {});
             b.flush(|_| {});
