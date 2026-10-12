@@ -260,6 +260,9 @@ extern "C" {
     pub fn n64_r3d_tex_alias(tex: u32) -> u32;
     pub fn n64_r3d_reset(tex_first: u32, group_first: u32);
     pub fn n64_r3d_counts() -> u32;
+    /// Queues the RSP water animation (`F2_Modge` in rsp_f2mdx.S) of a descriptor of `size`
+    /// bytes (after `n64_r3d_begin`).
+    pub fn n64_r3d_modge(desc: *const u8, size: u32);
     pub fn n64_tex_create_ntx(desc: *const NtxDesc) -> u32;
     pub fn n64_sfx_freq(handle: u32) -> u32;
     pub fn n64_fmv_play(path: *const u8) -> u32;

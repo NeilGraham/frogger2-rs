@@ -190,6 +190,7 @@ void n64_r3d_stats(n64_r3d_stats_t *out);
 uint32_t n64_r3d_tex_alias(uint32_t tex);                        /* r3d texture over a main.c texture's TMEM surface */
 void n64_r3d_reset(uint32_t tex_first, uint32_t group_first);    /* free r3d textures/groups from these handles on */
 uint32_t n64_r3d_counts(void);                                   /* next texture handle << 16 | next group handle */
+void n64_r3d_modge(const void *desc, uint32_t size);            /* RSP water animation (F2_Modge), after n64_r3d_begin */
 
 /* C -> Rust */
 void f2n64_init(void);

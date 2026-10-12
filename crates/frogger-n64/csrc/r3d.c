@@ -215,6 +215,11 @@ void n64_r3d_reset_impl(uint32_t tex_first, uint32_t group_first) {
 /* Current counts (next texture handle << 16 | next group handle). */
 uint32_t n64_r3d_counts_impl(void) { return (num_texs << 16) | num_groups; }
 
+/* Queues F2_Modge (rsp_f2mdx.S): a 0-vertex load whose cache offset holds the descriptor size. */
+void n64_r3d_modge_impl(const void *desc, uint32_t size) {
+    mg_cmd_write(MG_CMD_LOAD_VERTICES, PhysicalAddr(desc), size << 16);
+}
+
 uint32_t n64_r3d_group_create_impl(const n64_r3d_group_desc_t *d) {
     if (num_groups >= MAX_R3D_GROUPS) return 0;
     r3d_group_t *g = &groups[num_groups];

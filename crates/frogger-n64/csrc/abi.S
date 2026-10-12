@@ -73,6 +73,7 @@
     RUST_TO_C n64_r3d_tex_alias
     RUST_TO_C n64_r3d_reset
     RUST_TO_C n64_r3d_counts
+    RUST_TO_C n64_r3d_modge
     RUST_TO_C n64_tex_create_ntx
     RUST_TO_C n64_sfx_freq
     RUST_TO_C n64_fmv_play

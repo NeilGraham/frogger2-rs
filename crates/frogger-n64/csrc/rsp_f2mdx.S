@@ -403,6 +403,10 @@ LD_ST1:
 ##############################################################################
 #define F2_TEXDESC_SIZE 144
 F2_LoadTex:
+    # A 0-vertex load with a non-zero cache offset is F2_Modge (a1 >> 16 = its size).
+    srl t0, a1, 16
+    bnez t0, F2_Modge
+    nop
     # Wait for the previous triangle's output DMA.
 1:  mfc0 t0, COP0_DMA_BUSY
     bnez t0, 1b
@@ -460,6 +464,120 @@ F2_LoadTex_Append:
     addu a0, s0, t5
     j RSPQCmd_RdpAppendBuffer
     li ra, %lo(RSPQ_Loop)
+
+##############################################################################
+# F2_Modge: the MODGE/WAVE water animation (r3d.rs `animate_modge`) applied on the RSP.
+#
+# a0 (low 24 bits) = RDRAM address of a descriptor built by r3d.rs, a1 >> 16 = its size:
+#   +0  u32 base vertices (the mesh's stored vertices, 16 bytes each)
+#   +4  u32 output (the mesh's vertex buffer, which the vertex loads read)
+#   +8  u32 per-vertex u16 position index (readable up to 8 bytes past the end)
+#   +12 u16 vertex count, +14 u16 position count, +16 u16 flags (bit 2: write alpha)
+#   +24 per position 8 bytes: i16 dy, ds, dt, u8 alpha, pad
+# Per vertex: y += dy, s += ds, t += dt (saturating to s16), alpha = its position's
+# (with flag 4). Runs between draws, so the vertex cache is scratch here.
+##############################################################################
+#define MODGE_DESC   MG_VERTEX_CACHE
+#define MODGE_PT     (MG_VERTEX_CACHE + 24)
+#define MODGE_VBUF   (MG_VERTEX_CACHE + 1056)
+#define MODGE_IBUF   (MG_VERTEX_CACHE + 1568)
+#define MODGE_CHUNK  32
+
+    # r = clamp(r, -32768, 32767) (r holds a sum of two s16 values).
+    .macro F2SatS16 r
+    sra t9, \r, 15
+    beqz t9, 1f
+    addiu t9, t9, 1
+    beqz t9, 1f
+    nop
+    bltz \r, 1f
+    li \r, -32768
+    li \r, 32767
+1:
+    .endm
+
+F2_Modge:
+    jal DMAWaitIdle
+    nop
+    sll s0, a0, 8
+    srl s0, s0, 8
+    srl t0, a1, 16
+    addiu t0, t0, -1
+    jal DMAIn
+    li s4, %lo(MODGE_DESC)
+    lw s5, %lo(MODGE_DESC + 0)
+    lw s6, %lo(MODGE_DESC + 4)
+    lw s7, %lo(MODGE_DESC + 8)
+    lhu s3, %lo(MODGE_DESC + 12)
+    lhu k0, %lo(MODGE_DESC + 16)
+F2_ModgeChunk:
+    blez s3, F2_ModgeDone
+    move t3, s3
+    slti t9, s3, MODGE_CHUNK
+    bnez t9, F2_ModgeCount
+    nop
+    li t3, MODGE_CHUNK
+F2_ModgeCount:
+    # This chunk's vertices and position indices (rounded up to 8 bytes).
+    move s0, s5
+    li s4, %lo(MODGE_VBUF)
+    sll t0, t3, 4
+    jal DMAIn
+    addiu t0, t0, -1
+    move s0, s7
+    li s4, %lo(MODGE_IBUF)
+    sll t0, t3, 1
+    addiu t0, t0, 7
+    andi t0, t0, 0xFF8
+    jal DMAIn
+    addiu t0, t0, -1
+    li t4, %lo(MODGE_VBUF)
+    li t5, %lo(MODGE_IBUF)
+    sll t6, t3, 4
+    addu t6, t6, t4
+F2_ModgeVtx:
+    lhu t7, 0(t5)
+    sll t7, t7, 3
+    addiu t7, t7, %lo(MODGE_PT)
+    lh t8, 0(t7)
+    lh t1, 2(t4)
+    addu t1, t1, t8
+    F2SatS16 t1
+    sh t1, 2(t4)
+    lh t8, 2(t7)
+    lh t1, 12(t4)
+    addu t1, t1, t8
+    F2SatS16 t1
+    sh t1, 12(t4)
+    lh t8, 4(t7)
+    lh t1, 14(t4)
+    addu t1, t1, t8
+    F2SatS16 t1
+    sh t1, 14(t4)
+    andi t9, k0, 4
+    beqz t9, F2_ModgeNoAlpha
+    nop
+    lbu t8, 6(t7)
+    sb t8, 11(t4)
+F2_ModgeNoAlpha:
+    addiu t4, t4, 16
+    bne t4, t6, F2_ModgeVtx
+    addiu t5, t5, 2
+    move s0, s6
+    li s4, %lo(MODGE_VBUF)
+    sll t0, t3, 4
+    jal DMAOut
+    addiu t0, t0, -1
+    sll t9, t3, 4
+    addu s5, s5, t9
+    addu s6, s6, t9
+    sll t9, t3, 1
+    addu s7, s7, t9
+    j F2_ModgeChunk
+    subu s3, s3, t3
+F2_ModgeDone:
+    j RSPQ_Loop
+    nop
 
 F2_Clip:
     # A vertex outside near/far: MDX drops the whole face.

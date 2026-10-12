@@ -273,26 +273,62 @@ struct MeshRes {
 
 /// Base data of a `MODGE`/`WAVE` mesh's vertices and the frame they were last animated for.
 ///
-/// Every term of `PCCalcModgeValues` has the form `f(z-term + g(x))` (or the x/z mirror), so
-/// with the angle-addition identities the sines are taken once per distinct x and z (a water
-/// grid shares them along its rows and columns) and each vertex only combines them. All of it
-/// in integers (phases as `u32` turns, sines Q14): the f32 version spent ~7 ms a frame in
-/// Garden 1 on float compares and saturating float -> int conversions.
+/// Every term of `PCCalcModgeValues` is `sin(z-phase + x-phase)` (one side holding a nested
+/// sine), so the phases are resolved once per distinct x and z (a water grid shares them along
+/// its rows and columns), and once per distinct (x, z) position (corners share positions) the
+/// three sines are table lookups of the summed phases. All of it in integers (phases as `u32`
+/// turns): the f32 version spent ~7 ms a frame in Garden 1 on float compares and saturating
+/// float -> int conversions, an angle-addition version ~3 ms on products and table misses.
 struct ModgeMesh {
-    /// Per vertex: index into `xph`, index into `zph`; stored y, s, t, alpha.
-    base: Vec<(u16, u16, i16, i16, i16, u8)>,
+    /// Per vertex: index into `pairs`; stored y, s, t, alpha.
+    base: Vec<ModgeBase>,
+    /// Distinct (index into `xph`, index into `zph`, stored alpha) of the vertices (corners
+    /// share positions).
+    pairs: Vec<(u16, u16, u8)>,
+    /// Per frame scratch: per pair, the offsets of [`modge_pair`].
+    pt: Vec<ModgePair>,
     /// Per distinct model-space x: the x parts of the phases of B, P, S; per z: of A, Q, R
-    /// (see [`modge_terms`]).
+    /// (see [`modge_x_terms`]).
     xph: Vec<[u32; 3]>,
     zph: Vec<[u32; 3]>,
-    /// Per frame scratch: Q14 sin/cos pairs per distinct x and z.
-    xt: Vec<[i16; 6]>,
-    zt: Vec<[i16; 6]>,
+    /// Per frame scratch: the summands of the three sines' phases per distinct x and z.
+    xt: Vec<[u32; 3]>,
+    zt: Vec<[u32; 3]>,
     /// Wave height in stored y units per Q10 `(sin + 1)`: `y += (S·ky) >> ky_sh`.
     ky: i32,
     ky_sh: u32,
     frame: u32,
     flags: u8,
+    /// The per-vertex part on the RSP (`F2_Modge`; `None`: on the CPU).
+    rsp: Option<ModgeRsp>,
+}
+
+/// Most positions of a mesh `F2_Modge` takes (its table lives in DMEM).
+const MODGE_RSP_MAX_PAIRS: usize = 128;
+/// `F2_Modge` descriptor header bytes (the position table follows).
+const MODGE_DESC_HEAD: usize = 24;
+
+/// RDRAM buffers of a mesh animated by `F2_Modge` (rsp_f2mdx.S): the stored vertices, the
+/// per-vertex position index and a ring of three descriptors (header + position table: the
+/// RSP may still read the two previous frames' while the CPU writes the next).
+struct ModgeRsp {
+    buf: Vec<u64>,
+    idx_off: usize,
+    desc_off: usize,
+    desc_size: usize,
+    cur: usize,
+}
+
+impl ModgeRsp {
+    fn bytes(&mut self) -> &mut [u8] {
+        // SAFETY: plain memory owned by `buf`.
+        unsafe { core::slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut u8, self.buf.len() * 8) }
+    }
+}
+
+/// The physical (RDRAM) address of a pointer into cached memory.
+fn phys(p: *const u8) -> u32 {
+    p as u32 & 0x1FFF_FFFF
 }
 
 /// Distinct values of `v` (by bit pattern) and each element's index into them.
@@ -310,10 +346,19 @@ fn distinct(v: &[f32]) -> (Vec<f32>, Vec<u16>) {
     (vals, idx)
 }
 
-/// 1024-entry Q14 sine table over one period (+1 for interpolation).
-fn sin_q14() -> &'static [i16; 1025] {
-    static TABLE: spin::Once<[i16; 1025]> = spin::Once::new();
-    TABLE.call_once(|| core::array::from_fn(|i| libm::round(libm::sin(i as f64 * (core::f64::consts::TAU / 1024.0)) * 16384.0) as i16))
+/// The sine table of [`isin`]: Q14 at 256 phases over one period (+1 for interpolation).
+/// Small (512 bytes) so that it stays in the D-cache: with a 2 KiB table most lookups missed.
+type SinTab = [i16; 257];
+
+fn sin_q14() -> &'static SinTab {
+    static TABLE: spin::Once<SinTab> = spin::Once::new();
+    TABLE.call_once(|| core::array::from_fn(|i| libm::round(libm::sin(i as f64 * (core::f64::consts::TAU / 256.0)) * 16384.0) as i16))
+}
+
+/// `(sin + 1)` of a phase in Q10 (0..2048).
+#[inline(always)]
+fn sinp1(t: &SinTab, ph: u32) -> i32 {
+    (isin(t, ph) + 16384 + 8) >> 4
 }
 
 /// An angle in radians as a phase (`2^32` = one turn).
@@ -322,17 +367,17 @@ fn phase(rad: f64) -> u32 {
     ((turns - libm::floor(turns)) * 4_294_967_296.0) as u64 as u32
 }
 
-/// Q14 sine of a phase (table + linear interpolation; |error| < 2 / 16384).
+/// Q14 sine of a phase (table + linear interpolation; |error| < 2.5 / 16384).
 #[inline(always)]
-fn isin(t: &[i16; 1025], ph: u32) -> i32 {
-    let i = (ph >> 22) as usize;
-    let f = ((ph >> 6) & 0xffff) as i32;
+fn isin(t: &SinTab, ph: u32) -> i32 {
+    let i = (ph >> 24) as usize;
+    let f = ((ph >> 8) & 0xffff) as i32;
     let a = t[i] as i32;
     a + (((t[i + 1] as i32 - a) * f) >> 16)
 }
 
 #[inline(always)]
-fn icos(t: &[i16; 1025], ph: u32) -> i32 {
+fn icos(t: &SinTab, ph: u32) -> i32 {
     isin(t, ph.wrapping_add(1 << 30))
 }
 
@@ -348,8 +393,13 @@ fn q14_phase(v: i32) -> u32 {
 ///   R = z·1.2/26 + t/26       S = cos(x·1.3/49 + t/26)
 /// so that mx = sin(A + B), mz = cos(P + Q), my = sin(R + S).
 fn modge_time_phases(fc: u32) -> [u32; 6] {
-    let t = fc as f64;
-    [t * (2.0 / 56.0), t * (1.5 / 66.0), t / 26.0, t * (1.5 / 70.0), t * (2.0 / 66.0), t / 26.0].map(phase)
+    // Integer: the per-frame phase steps in 2^-48 turns (f64 maths, `floor` and f64 -> u64
+    // conversions cost ~20 us per call on the VR4300).
+    const fn step(rad: f64) -> u64 {
+        (rad / core::f64::consts::TAU * 281_474_976_710_656.0 + 0.5) as u64
+    }
+    const K: [u64; 6] = [step(2.0 / 56.0), step(1.5 / 66.0), step(1.0 / 26.0), step(1.5 / 70.0), step(2.0 / 66.0), step(1.0 / 26.0)];
+    K.map(|k| ((fc as u64).wrapping_mul(k) >> 16) as u32)
 }
 
 /// The x-only phases (B, P, S) and z-only phases (A, Q, R) of a coordinate.
@@ -362,58 +412,85 @@ fn modge_z_phases(z: f32) -> [u32; 3] {
     [phase(z * (1.5 / 35.0)), phase(z * (1.3 / 29.0)), phase(z * (1.2 / 26.0))]
 }
 
-/// Per x: [sin B, cos B, sin P, cos P, sin S, cos S]; per z: [sin A, cos A, sin Q, cos Q,
-/// sin R, cos R] (Q14). `tp` from [`modge_time_phases`]; the third pair only with `wave`.
+/// The x and z summands of the three sines' phases: per x [B, P, S], per z [A, Q + π/2, R]
+/// (B, Q, S hold the nested sines), so that mx = sin(A + B), mz = cos(P + Q) =
+/// sin(P + Q + π/2), my = sin(R + S). `tp` from [`modge_time_phases`]; S and R only with `wave`.
 #[inline(always)]
-fn modge_x_terms(t: &[i16; 1025], ph: &[u32; 3], tp: &[u32; 6], wave: bool) -> [i16; 6] {
+fn modge_x_terms(t: &SinTab, ph: &[u32; 3], tp: &[u32; 6], wave: bool) -> [u32; 3] {
     let b = q14_phase(isin(t, ph[0].wrapping_add(tp[0])));
     let p = ph[1].wrapping_add(tp[1]);
-    let (ss, cs) = if wave {
-        let s = q14_phase(icos(t, ph[2].wrapping_add(tp[2])));
-        (isin(t, s), icos(t, s))
-    } else {
-        (0, 0)
-    };
-    [isin(t, b), icos(t, b), isin(t, p), icos(t, p), ss, cs].map(|v| v as i16)
+    let s = if wave { q14_phase(icos(t, ph[2].wrapping_add(tp[2]))) } else { 0 };
+    [b, p, s]
 }
 #[inline(always)]
-fn modge_z_terms(t: &[i16; 1025], ph: &[u32; 3], tp: &[u32; 6], wave: bool) -> [i16; 6] {
+fn modge_z_terms(t: &SinTab, ph: &[u32; 3], tp: &[u32; 6], wave: bool) -> [u32; 3] {
     let a = ph[0].wrapping_add(tp[3]);
-    let q = q14_phase(icos(t, ph[1].wrapping_add(tp[4])));
-    let (sr, cr) = if wave {
-        let r = ph[2].wrapping_add(tp[5]);
-        (isin(t, r), icos(t, r))
-    } else {
-        (0, 0)
-    };
-    [isin(t, a), icos(t, a), isin(t, q), icos(t, q), sr, cr].map(|v| v as i16)
+    let q = q14_phase(icos(t, ph[1].wrapping_add(tp[4]))).wrapping_add(1 << 30);
+    let r = if wave { ph[2].wrapping_add(tp[5]) } else { 0 };
+    [a, q, r]
 }
 
-/// `(sin(u + v) + 1)` in Q10 from Q14 sin/cos of u and v (`s_u·c_v + c_u·s_v`).
-#[inline(always)]
-fn sin_sum_q10(su: i16, cu: i16, sv: i16, cv: i16) -> i32 {
-    ((su as i32 * cv as i32 + cu as i32 * sv as i32) >> 18) + 1024
+/// A `MODGE`/`WAVE` vertex's stored values: index into `ModgeMesh::pairs`, y, s, t.
+#[derive(Clone, Copy)]
+struct ModgeBase {
+    pair: u16,
+    y: i16,
+    s: i16,
+    t: i16,
 }
 
-/// One vertex of [`R3d::animate_modge`]: (y, s, t, alpha) from the stored values and the
-/// x/z terms. `ky`/`ky_sh` as in [`ModgeMesh`].
+/// The offsets of one (x, z, alpha) position at a frame: y, s, t to add (0 for the parts
+/// `flags` leave alone) and the new alpha (written only when [`modge_writes_alpha`]).
+#[derive(Clone, Copy, Default)]
+struct ModgePair {
+    dy: i16,
+    ds: i16,
+    dt: i16,
+    a: u8,
+}
+
+/// Whether `flags` animate the alpha (MODGE and WAVE).
+fn modge_writes_alpha(flags: u8) -> bool {
+    flags & 3 == 3
+}
+
+/// The per-position part of [`modge_vertex`] from the x/z terms ([`modge_x_terms`]) and the
+/// stored alpha `a0`. `ky`/`ky_sh` as in [`ModgeMesh`]; `flags` bit 0 MODGE (s, t), bit 1
+/// WAVE (y).
 #[inline(always)]
-fn modge_vertex(px: &[i16; 6], pz: &[i16; 6], y0: i16, s0: i16, t0: i16, a0: u8, ky: i32, ky_sh: u32) -> (i16, i16, i16, u8) {
-    // mx = sin(A + B), mz = cos(P + Q) = sin(P + Q + π/2), my = sin(R + S); tM? = (m + 1)·0.1
-    // (·5 for y). S? = (m + 1) in Q10.
-    let sx = sin_sum_q10(pz[0], pz[1], px[0], px[1]);
-    let sz = ((px[3] as i32 * pz[3] as i32 - px[2] as i32 * pz[2] as i32) >> 18) + 1024;
-    let sy = sin_sum_q10(pz[4], pz[5], px[4], px[5]);
-    let sat16 = |v: i32| v.clamp(-32768, 32767) as i16;
-    let y = sat16(y0 as i32 + ((sy * ky + (1 << (ky_sh - 1))) >> ky_sh));
-    // s += 0.4·1024·tMx = S·40.96/1024 (41943 = 40.96·1024).
-    let s = sat16(s0 as i32 + ((sx * 41943 + (1 << 19)) >> 20));
-    let tt = sat16(t0 as i32 + ((sz * 41943 + (1 << 19)) >> 20));
+fn modge_pair(t: &SinTab, px: &[u32; 3], pz: &[u32; 3], a0: u8, ky: i32, ky_sh: u32, flags: u8) -> ModgePair {
+    // tM? = (m + 1)·0.1 (·5 for y); S? = (m + 1) in Q10.
+    let sx = sinp1(t, px[0].wrapping_add(pz[0]));
+    let sz = sinp1(t, px[1].wrapping_add(pz[1]));
+    let sy = sinp1(t, px[2].wrapping_add(pz[2]));
     // PC: alpha = 50 + (tMx+tMz)·400 (130 on average), scaled around the stored alpha:
     // a0·(50·1024 + (Sx+Sz)·40) / (130·1024), with 63/2^23 ≈ 1/133120.
     let num = (51200 + (sx + sz) * 40).max(0) as u32;
-    let a = ((a0 as u32 * num * 63 + (1 << 22)) >> 23).min(255) as u8;
-    (y, s, tt, a)
+    let (modge, wave) = (flags & 1 != 0, flags & 2 != 0);
+    ModgePair {
+        dy: if wave { ((sy * ky + (1 << (ky_sh - 1))) >> ky_sh).clamp(-32768, 32767) as i16 } else { 0 },
+        // s += 0.4·1024·tMx = S·40.96/1024 (41943 = 40.96·1024).
+        ds: if modge { ((sx * 41943 + (1 << 19)) >> 20) as i16 } else { 0 },
+        dt: if modge { ((sz * 41943 + (1 << 19)) >> 20) as i16 } else { 0 },
+        a: ((a0 as u32).wrapping_mul(num.wrapping_mul(63)).wrapping_add(1 << 22) >> 23).min(255) as u8,
+    }
+}
+
+/// A vertex's (y, s, t) from its stored values and its position's [`ModgePair`] (what
+/// `F2_Modge` computes on the RSP).
+#[inline(always)]
+fn modge_apply(q: &ModgePair, y0: i16, s0: i16, t0: i16) -> (i16, i16, i16) {
+    let sat16 = |v: i32| v.clamp(-32768, 32767) as i16;
+    (sat16(y0 as i32 + q.dy as i32), sat16(s0 as i32 + q.ds as i32), sat16(t0 as i32 + q.dt as i32))
+}
+
+/// One vertex of [`R3d::animate_modge`] (MODGE and WAVE): (y, s, t, alpha) from the stored
+/// values and the x/z terms.
+#[cfg(test)]
+fn modge_vertex(px: &[u32; 3], pz: &[u32; 3], y0: i16, s0: i16, t0: i16, a0: u8, ky: i32, ky_sh: u32) -> (i16, i16, i16, u8) {
+    let q = modge_pair(sin_q14(), px, pz, a0, ky, ky_sh, 3);
+    let (y, s, t) = modge_apply(&q, y0, s0, t0);
+    (y, s, t, q.a)
 }
 
 /// Draw slot `i`'s last draw (see [`R3d::draw_slot`]): reusable while nothing it depends
@@ -600,6 +677,9 @@ pub struct R3d {
     size_all: (u32, u32),
     size_frames: u32,
     wc_tmp: Vec<[f32; 3]>,
+    /// `F2_Modge` commands of this frame (mesh, descriptor, size): queued at the flush, before
+    /// the lists.
+    modge_cmds: Vec<(u32, *const u8, u32)>,
     /// Measurement (`F2N64_R3D_PROF=1`): C0 ticks and counts per phase, logged every 300 frames.
     pub prof: R3dProf,
 }
@@ -880,6 +960,7 @@ impl R3d {
             size_all: (0, 0),
             size_frames: 0,
             wc_tmp: Vec::new(),
+            modge_cmds: Vec::new(),
             prof: R3dProf::default(),
         }
     }
@@ -1210,13 +1291,12 @@ impl R3d {
             return;
         }
         let t0 = prof_ticks();
-        // SAFETY: `verts` points into a file kept in `self.files` for as long as the mesh.
-        let v = unsafe { core::slice::from_raw_parts_mut(res.verts as *mut u8, res.n_verts as usize * 16) };
         st.frame = fc;
         st.flags = flags;
         let tb = sin_q14();
         let tp = modge_time_phases(fc);
         let (modge, wave) = (flags & 1 != 0, flags & 2 != 0);
+        let _ = modge;
         for (ph, o) in st.xph.iter().zip(st.xt.iter_mut()) {
             *o = modge_x_terms(tb, ph, &tp, wave);
         }
@@ -1225,22 +1305,63 @@ impl R3d {
         }
         let (ky, ky_sh) = (st.ky, st.ky_sh);
         let (xt, zt) = (&st.xt[..], &st.zt[..]);
-        for (c, &(xi, zi, y0, s0, t0, a0)) in v.chunks_exact_mut(16).zip(st.base.iter()) {
-            let (Some(px), Some(pz)) = (xt.get(xi as usize), zt.get(zi as usize)) else { continue };
-            let (y, s, tt, a) = modge_vertex(px, pz, y0, s0, t0, a0, ky, ky_sh);
-            let c: &mut [u8; 16] = c.try_into().unwrap();
-            if wave {
-                [c[2], c[3]] = y.to_be_bytes();
-            }
-            if modge {
-                [c[12], c[13]] = s.to_be_bytes();
-                [c[14], c[15]] = tt.to_be_bytes();
-                if wave {
-                    c[11] = a;
+        let alpha = modge_writes_alpha(flags);
+        if st.rsp.is_none() {
+            for (&(xi, zi, a0), q) in st.pairs.iter().zip(st.pt.iter_mut()) {
+                if let (Some(px), Some(pz)) = (xt.get(xi as usize), zt.get(zi as usize)) {
+                    *q = modge_pair(tb, px, pz, a0, ky, ky_sh, flags);
                 }
             }
         }
-        Self::c_writeback(v);
+        if let Some(r) = &mut st.rsp {
+            // The per-vertex part on the RSP: this frame's descriptor (header + positions).
+            r.cur = (r.cur + 1) % 3;
+            let (base_off, idx_off, size) = (0, r.idx_off, r.desc_size);
+            let off = r.desc_off + r.cur * size;
+            let (n, np) = (st.base.len() as u16, st.pairs.len() as u16);
+            let out = res.verts as *const u8;
+            let b = r.bytes();
+            let bp = b.as_ptr();
+            let (base, idx) = (phys(bp.wrapping_add(base_off)), phys(bp.wrapping_add(idx_off)));
+            let d = &mut b[off..off + size];
+            d[0..4].copy_from_slice(&base.to_be_bytes());
+            d[4..8].copy_from_slice(&phys(out).to_be_bytes());
+            d[8..12].copy_from_slice(&idx.to_be_bytes());
+            d[12..14].copy_from_slice(&n.to_be_bytes());
+            d[14..16].copy_from_slice(&np.to_be_bytes());
+            d[16..18].copy_from_slice(&(if alpha { 4u16 } else { 0 }).to_be_bytes());
+            // The positions straight into the table (one 8-byte store each).
+            for (e, &(xi, zi, a0)) in d[MODGE_DESC_HEAD..].chunks_exact_mut(8).zip(st.pairs.iter()) {
+                if let (Some(px), Some(pz)) = (xt.get(xi as usize), zt.get(zi as usize)) {
+                    let q = modge_pair(tb, px, pz, a0, ky, ky_sh, flags);
+                    let w = (q.dy as u16 as u64) << 48 | (q.ds as u16 as u64) << 32 | (q.dt as u16 as u64) << 16 | (q.a as u64) << 8;
+                    let e: &mut [u8; 8] = e.try_into().unwrap();
+                    *e = w.to_be_bytes();
+                }
+            }
+            Self::c_writeback(d);
+            self.modge_cmds.push((mesh.0, d.as_ptr(), size as u32));
+        } else {
+            // SAFETY: `verts` points into a file kept in `self.files` for as long as the mesh.
+            let v = unsafe { core::slice::from_raw_parts_mut(res.verts as *mut u8, res.n_verts as usize * 16) };
+            let pt = &st.pt[..];
+            for (c, b) in v.chunks_exact_mut(16).zip(st.base.iter()) {
+                let Some(q) = pt.get(b.pair as usize) else { continue };
+                let (y, s, tt) = modge_apply(q, b.y, b.s, b.t);
+                let c: &mut [u8; 16] = c.try_into().unwrap();
+                if wave {
+                    [c[2], c[3]] = y.to_be_bytes();
+                }
+                if modge {
+                    [c[12], c[13]] = s.to_be_bytes();
+                    [c[14], c[15]] = tt.to_be_bytes();
+                }
+                if alpha {
+                    c[11] = q.a;
+                }
+            }
+            Self::c_writeback(v);
+        }
         if R3D_PROF {
             self.prof.modge_ticks = self.prof.modge_ticks.wrapping_add(prof_ticks().wrapping_sub(t0));
             self.prof.modge_runs += 1;
@@ -1258,16 +1379,23 @@ impl R3d {
         let n = res.n_verts as usize;
         let (xs, xi) = distinct(&(0..n).map(|i| rd(i * 16) as f32 * scale).collect::<Vec<_>>());
         let (zs, zi) = distinct(&(0..n).map(|i| rd(i * 16 + 4) as f32 * scale).collect::<Vec<_>>());
-        let base = (0..n)
+        let mut pair_of = BTreeMap::new();
+        let mut pairs = Vec::new();
+        let base: Vec<ModgeBase> = (0..n)
             .map(|i| {
                 let o = i * 16;
-                (xi[i], zi[i], rd(o + 2), rd(o + 12), rd(o + 14), v[o + 11])
+                let key = (xi[i], zi[i], v[o + 11]);
+                let pair = *pair_of.entry(key).or_insert_with(|| {
+                    pairs.push(key);
+                    pairs.len() as u16 - 1
+                });
+                ModgeBase { pair, y: rd(o + 2), s: rd(o + 12), t: rd(o + 14) }
             })
             .collect();
         #[cfg(target_vendor = "nintendo64")]
         crate::log!(
-            "r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, {}x{} distinct x/z, flags {})",
-            res.id, n, xs.len(), zs.len(), flags
+            "r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, {}x{} distinct x/z, {} positions, flags {})",
+            res.id, n, xs.len(), zs.len(), pairs.len(), flags
         );
         let _ = flags;
         // y += my / scale with my = 5·(sin + 1) = 5·S/1024: ky = 5 / scale / 1024 · 2^sh,
@@ -1278,9 +1406,26 @@ impl R3d {
             ky_sh -= 1;
         }
         let ky = libm::round(k * (1u64 << ky_sh) as f64) as i32;
-        let (xt, zt) = (alloc::vec![[0; 6]; xs.len()], alloc::vec![[0; 6]; zs.len()]);
+        let (xt, zt) = (alloc::vec![[0; 3]; xs.len()], alloc::vec![[0; 3]; zs.len()]);
         let (xph, zph) = (xs.iter().map(|&x| modge_x_phases(x)).collect(), zs.iter().map(|&z| modge_z_phases(z)).collect());
-        alloc::boxed::Box::new(ModgeMesh { base, xph, zph, xt, zt, ky, ky_sh, frame: u32::MAX, flags: 0 })
+        let pt = alloc::vec![ModgePair::default(); pairs.len()];
+        let rsp = (cfg!(target_vendor = "nintendo64") && pairs.len() <= MODGE_RSP_MAX_PAIRS && option_env!("F2N64_MODGE_CPU").is_none()).then(|| {
+            // Stored vertices (16 bytes each), position indices (+8 bytes: the RSP reads whole
+            // 8-byte words), 3 descriptors (16-byte multiples, so each starts a cache line).
+            let idx_off = n * 16;
+            let desc_off = (idx_off + n * 2 + 8 + 15) & !15;
+            let desc_size = (MODGE_DESC_HEAD + pairs.len() * 8 + 15) & !15;
+            let total = desc_off + 3 * desc_size;
+            let mut r = ModgeRsp { buf: alloc::vec![0u64; total.div_ceil(8) + 2], idx_off, desc_off, desc_size, cur: 0 };
+            let b = r.bytes();
+            b[..idx_off].copy_from_slice(v);
+            for (i, m) in base.iter().enumerate() {
+                b[idx_off + 2 * i..idx_off + 2 * i + 2].copy_from_slice(&m.pair.to_be_bytes());
+            }
+            Self::c_writeback(&b[..desc_off]);
+            r
+        });
+        alloc::boxed::Box::new(ModgeMesh { base, pairs, pt, xph, zph, xt, zt, ky, ky_sh, frame: u32::MAX, flags: 0, rsp })
     }
 
     /// Before a mesh's first additive draw: its vertex colours split like the packer's
@@ -1311,6 +1456,16 @@ impl R3d {
             c[8..12].copy_from_slice(&s);
         }
         Self::c_writeback(v);
+        // `F2_Modge` rewrites the vertex buffer from its stored copy: split that one too.
+        if let Some(r) = res.modge.as_deref_mut().and_then(|m| m.rsp.as_mut()) {
+            let n = v.len();
+            let b = &mut r.bytes()[..n];
+            for c in b.chunks_exact_mut(16) {
+                let s = f2_n64fmt::bank::additive_corner([c[8], c[9], c[10], c[11]]);
+                c[8..12].copy_from_slice(&s);
+            }
+            Self::c_writeback(b);
+        }
     }
 
     #[cfg(target_vendor = "nintendo64")]
@@ -1559,8 +1714,15 @@ impl R3d {
     pub fn flush(&mut self, mut after: impl FnMut(List)) {
         #[cfg(target_vendor = "nintendo64")]
         unsafe {
-            ffi::n64_r3d_begin(&self.frame)
+            ffi::n64_r3d_begin(&self.frame);
+            for &(_, d, size) in &self.modge_cmds {
+                ffi::n64_r3d_modge(d, size);
+            }
         };
+        if option_env!("F2N64_MODGE_CHECK").is_some() && self.frame_no % 64 == 0 {
+            self.modge_check();
+        }
+        self.modge_cmds.clear();
         for list in LIST_ORDER {
             self.flush_list(list);
             after(list);
@@ -1621,11 +1783,62 @@ impl R3d {
         self.lists[list as usize].clear();
     }
 
+    /// Testing (`F2N64_MODGE_CHECK=1`): waits for the RSP and compares the vertex buffers
+    /// `F2_Modge` wrote with the CPU's result (logged).
+    #[cold]
+    #[inline(never)]
+    fn modge_check(&mut self) {
+        #[cfg(target_vendor = "nintendo64")]
+        unsafe {
+            ffi::n64_rdp_wait()
+        };
+        for &(mesh, _, _) in &self.modge_cmds {
+            let res = &self.meshes[mesh as usize];
+            let Some(st) = res.modge.as_deref() else { continue };
+            let Some(r) = &st.rsp else { continue };
+            // The RSP wrote RDRAM behind the cache: read through the uncached segment.
+            let v = (res.verts as usize & 0x1FFF_FFFF) | 0xA000_0000;
+            let base = r.buf.as_ptr() as *const u8;
+            let desc = r.desc_off + r.cur * r.desc_size + MODGE_DESC_HEAD;
+            let pt: Vec<ModgePair> = (0..st.pairs.len())
+                .map(|k| {
+                    // SAFETY: inside `buf` (the descriptor's position table).
+                    let e = unsafe { *(base.add(desc + 8 * k) as *const [u8; 8]) };
+                    let h = |o: usize| i16::from_be_bytes([e[o], e[o + 1]]);
+                    ModgePair { dy: h(0), ds: h(2), dt: h(4), a: e[6] }
+                })
+                .collect();
+            let (mut bad, mut first) = (0u32, None);
+            for (i, b) in st.base.iter().enumerate() {
+                // SAFETY: both point to `n_verts * 16` bytes.
+                let (got, orig): ([u8; 16], [u8; 16]) =
+                    unsafe { (core::ptr::read_volatile((v + i * 16) as *const [u8; 16]), *(base.add(i * 16) as *const [u8; 16])) };
+                let q = &pt[b.pair as usize];
+                let (y, s, t) = modge_apply(q, b.y, b.s, b.t);
+                let mut want = orig;
+                [want[2], want[3]] = y.to_be_bytes();
+                [want[12], want[13]] = s.to_be_bytes();
+                [want[14], want[15]] = t.to_be_bytes();
+                if modge_writes_alpha(st.flags) {
+                    want[11] = q.a;
+                }
+                if got != want {
+                    bad += 1;
+                    first.get_or_insert((i, got, want));
+                }
+            }
+            #[cfg(target_vendor = "nintendo64")]
+            crate::log!("modge check mesh {:08x}: {} vertices, {} mismatches, first {:?}", res.id, st.base.len(), bad, first);
+            let _ = (bad, first);
+        }
+    }
+
     /// Drops the lists queued this frame (nothing to draw), keeping the reusable draws.
     pub fn discard_frame(&mut self) {
         for l in &mut self.lists {
             l.clear();
         }
+        self.modge_cmds.clear();
     }
 
     /// Drops everything queued this frame without drawing it.
@@ -1633,6 +1846,7 @@ impl R3d {
         for l in &mut self.lists {
             l.clear();
         }
+        self.modge_cmds.clear();
         self.vis.clear();
         // Mesh ids are reused after a reset: forget the reusable draws.
         self.slots.clear();
@@ -1737,6 +1951,7 @@ mod tests {
             worst_a = worst_a.max((a as i32 - ea).abs());
         }
         // s/t in 1/1024 texels (the wobble spans ±41), y in world units (wave height 0..10).
+        std::eprintln!("modge worst: s/t {worst_st}, y {worst_y}, alpha {worst_a}");
         assert!(worst_st <= 1, "s/t off by {worst_st}");
         assert!(worst_y <= 0.6, "y off by {worst_y} world units");
         assert!(worst_a <= 2, "alpha off by {worst_a}");
