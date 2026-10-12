@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Vector ("modern") version of a Frogger 2 font strip, traced from the user's own game data.
 
-Defaults (owner-chosen v6, 2026-10-11): anti-aliasing-aware tracing (fill luminance as
-greyscale, mkbitmap low-pass 1.5 + cubic 8x + 50% threshold), enclosed counters opened by one
-pixel so they survive the smoothing, potrace alphamax 1.33 / opttolerance 3.0; uniform 1.5 px
+Defaults (owner-chosen v7, 2026-10-11; between v5 detail and v6 smoothness): anti-aliasing-aware tracing (fill luminance as
+greyscale, mkbitmap low-pass 1.2 + cubic 8x + 50% threshold), enclosed counters opened by one
+pixel so they survive the smoothing, potrace alphamax 1.0 / opttolerance 2.5; uniform 1.5 px
 outline and 1.1 px drop shadow. Needs potrace + mkbitmap (apt potrace), ffmpeg, rsvg-convert.
 
 usage: python3 -I trace2.py STRIP.ppm OUTDIR [SIGMA] [OUTLINE_PX] [SHADOW_PX]
@@ -81,12 +81,12 @@ def main():
         with open(f"{out}/gray.pgm", "wb") as f:
             f.write(b"P5\n%d %d\n255\n" % (w, h))
             f.write(bytes(gg))
-        subprocess.run(["mkbitmap", "-n", "-b", os.environ.get("F2T_BLUR", "1.5"), "-s", "8", "-3", "-t", os.environ.get("F2T_THR", "0.5"), "-o", f"{out}/fill_up.pgm", f"{out}/gray.pgm"], check=True)
+        subprocess.run(["mkbitmap", "-n", "-b", os.environ.get("F2T_BLUR", "1.2"), "-s", "8", "-3", "-t", os.environ.get("F2T_THR", "0.5"), "-o", f"{out}/fill_up.pgm", f"{out}/gray.pgm"], check=True)
         UPX = 8
     vf = f"scale=iw*{UP}:ih*{UP}:flags=neighbor" + (f",gblur=sigma={sigma},lut=y='if(lt(val\\,128)\\,0\\,255)'" if sigma > 0 else "")
     if os.environ.get("F2T_MODE", "gray") != "gray":
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", f"{out}/fill.pgm", "-vf", vf, "-pix_fmt", "gray", f"{out}/fill_up.pgm"], check=True)
-    subprocess.run(["potrace", "-s", "-a", os.environ.get("F2T_A", "1.33"), "-O", os.environ.get("F2T_O", "3.0"), "-t", os.environ.get("F2T_T", "40"), "-o", f"{out}/fill.svg", f"{out}/fill_up.pgm"], check=True)
+    subprocess.run(["potrace", "-s", "-a", os.environ.get("F2T_A", "1.0"), "-O", os.environ.get("F2T_O", "2.5"), "-t", os.environ.get("F2T_T", "150"), "-o", f"{out}/fill.svg", f"{out}/fill_up.pgm"], check=True)
     s = open(f"{out}/fill.svg").read()
     head = s[: s.index("<g")]
     g_open = s[s.index("<g"): s.index(">", s.index("<g")) + 1]
