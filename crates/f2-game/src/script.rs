@@ -431,10 +431,19 @@ impl Game {
             Command::If { trigger, .. } => {
                 let Some(t) = self.load_trigger(trigger) else { return false };
                 if self.call_trigger(t) {
-                    let mut sub: Vec<u32> = path.to_vec();
-                    sub.push(index as u32);
+                    // Phase 3S2: the sub-block path on the stack (no allocation per `If`).
+                    let mut buf = [0u32; 16];
+                    let owned: Vec<u32>;
+                    let sub: &[u32] = if path.len() < buf.len() {
+                        buf[..path.len()].copy_from_slice(path);
+                        buf[path.len()] = index as u32;
+                        &buf[..=path.len()]
+                    } else {
+                        owned = path.iter().copied().chain(core::iter::once(index as u32)).collect();
+                        &owned
+                    };
                     // Interpret's result is ignored here.
-                    self.interpret(script, &sub);
+                    self.interpret(script, sub);
                 }
                 self.deallocate_trigger(Some(t));
             }
