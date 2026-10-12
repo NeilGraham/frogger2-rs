@@ -196,9 +196,16 @@ impl R3dLevel {
     /// `f2_draw::render::draw_loop` with the camera it will set: the draws arrive through
     /// [`R3dBackend`] while the loop runs).
     pub fn begin_queue(&mut self, r: &Renderer) {
-        if let Some(n) = option_env!("F2N64_DUMP_FRAME").and_then(|s| s.parse::<u32>().ok()) {
-            self.frame_no += 1;
-            self.dump_next = self.frame_no == n;
+        // F2N64_DUMP_FRAME=N (frame N of the level) or A-B (frames A..=B).
+        if let Some(s) = option_env!("F2N64_DUMP_FRAME") {
+            let (a, b) = s.split_once('-').unwrap_or((s, s));
+            if let (Ok(a), Ok(b)) = (a.parse::<u32>(), b.parse::<u32>()) {
+                self.frame_no += 1;
+                self.dump_next = (a..=b).contains(&self.frame_no);
+                if self.dump_next {
+                    crate::log!("dump frame {}", self.frame_no);
+                }
+            }
         }
         self.r.begin_frame(&view_params(r));
         self.slot = 0;

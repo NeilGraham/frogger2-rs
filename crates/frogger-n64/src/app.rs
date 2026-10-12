@@ -304,6 +304,7 @@ impl App {
         log!("app: save game {}", if cfg.save_data.is_some() { "loaded from SRAM" } else { "not found (new player)" });
         let t0 = ticks();
         app.game = Game::new_session(cfg);
+        app.game.set_game_options(f2_game::enhance::GameOptions { console: true, ..f2_game::enhance::GameOptions::AUTHENTIC });
         app.install_game_hooks();
         app.book_font = load_font(&app.data, "textures/font/monofont.bmp").map(|f| font_subset(&f, &book_chars(&app.game)));
         log!("app: session up in {} ms", ticks_to_us(ticks().wrapping_sub(t0)) / 1000);
@@ -751,7 +752,13 @@ impl App {
             Effect::SetSoundVolume { vol } => self.audio.sfx_volume = vol.clamp(0, crate::audio::MAX_SOUND_VOL),
             Effect::PauseAudio => self.audio.pause(true),
             Effect::UnPauseAudio => self.audio.pause(false),
-            Effect::Quit | Effect::OpenSettings => {}
+            // "Quit" from the frontend pause menu: no OS to return to, so a soft reset
+            // (start-up logos, then the title, as at power-on).
+            Effect::Quit => {
+                log!("app: quit: back to start-up");
+                self.game.common_init();
+            }
+            Effect::OpenSettings => {}
         }
     }
 

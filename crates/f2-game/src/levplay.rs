@@ -142,7 +142,9 @@ impl Game {
         self.levplay.cur_play_key = 0;
         let s = self.gamestring(crate::language::str_id::STR_DEMO_MODE);
         self.textover.create_and_add_text_overlay(2048, 128, &s, true, 128, crate::textover::Font::Normal, 0);
-        let s = self.gamestring(crate::language::str_id::STR_PRESSENTER);
+        // Console hosts: no Enter key (the host option, not `game_options()`, which reads
+        // the authentic set in demo mode).
+        let s = if self.enhance.opts.console { "Press Start".to_string() } else { self.gamestring(crate::language::str_id::STR_PRESSENTER) };
         self.textover.create_and_add_text_overlay(2048, 3500, &s, true, 128, crate::textover::Font::Normal, 0);
         self.levplay.demo_timeout.init(DEMO_TIMEOUT);
         self.disable_hud();

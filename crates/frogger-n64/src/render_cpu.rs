@@ -439,11 +439,13 @@ impl RenderCpu {
     fn tris(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
         self.verts.clear();
         let zk = self.zk;
-        let add = state.blend == ffi::BLEND_ADD;
+        let (add, sub) = (state.blend == ffi::BLEND_ADD, state.blend == ffi::BLEND_SUB);
         self.verts.extend(tv.iter().map(|v| {
             let mut o = Vertex { z: (v.sz * zk).clamp(0.0, 1.0), ..vertex(v) };
             if add {
                 additive_colour(&mut o);
+            } else if sub {
+                subtractive_colour(&mut o);
             }
             o
         }));
@@ -457,14 +459,19 @@ impl RenderCpu {
         self.rects.clear();
         self.verts.clear();
         // Additive: the colour split of `additive_colour` (main.c draws the rects and
-        // triangles from the texture's additive variant).
+        // triangles from the texture's additive variant); subtractive: `subtractive_colour`.
         let split;
-        let tv = if state.blend == ffi::BLEND_ADD {
+        let conv: Option<fn(&mut Vertex)> = match state.blend {
+            ffi::BLEND_ADD => Some(additive_colour),
+            ffi::BLEND_SUB => Some(subtractive_colour),
+            _ => None,
+        };
+        let tv = if let Some(f) = conv {
             split = tv
                 .iter()
                 .map(|v| {
                     let mut o = vertex(v);
-                    additive_colour(&mut o);
+                    f(&mut o);
                     TlVertex { color: [o.r, o.g, o.b, o.a], ..*v }
                 })
                 .collect::<Vec<_>>();
@@ -521,6 +528,17 @@ fn additive_colour(v: &mut Vertex) {
     } else {
         v.a = 0.0;
     }
+}
+
+/// Subtractive batches (D3D `ZERO, INVSRCCOLOR`: `dst * (1 - colour)`, alpha unused) are
+/// drawn with the alpha blender as black at alpha = the colour's brightest channel:
+/// `dst * (1 - a)`, exact for grey (the screen fades; drawn opaque grey before, so a fade
+/// from black flashed white).
+fn subtractive_colour(v: &mut Vertex) {
+    v.a = v.r.max(v.g).max(v.b);
+    v.r = 0.0;
+    v.g = 0.0;
+    v.b = 0.0;
 }
 
 fn vertex(v: &TlVertex) -> Vertex {

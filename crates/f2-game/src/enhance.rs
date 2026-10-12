@@ -51,6 +51,10 @@ pub struct GameOptions {
     /// (parity, demos, netplay); the `frogger` host turns it on for normal offline play.
     #[serde(default)]
     pub settings_menu: bool,
+    /// Host flag (not a retail option): a console build. The frontend pause menu's quit item
+    /// reads "Quit" instead of "Quit to Windows" (the host decides what quitting does).
+    #[serde(default)]
+    pub console: bool,
 }
 
 impl Default for GameOptions {
@@ -68,6 +72,7 @@ impl GameOptions {
         enemy_speed: ENEMY_SPEED_RETAIL,
         fix_tube_softlock: false,
         settings_menu: false,
+        console: false,
     };
     /// Enhanced profile defaults: fixes on, assists off.
     pub const ENHANCED: GameOptions = GameOptions { profile: GameProfile::Enhanced, fix_tube_softlock: true, ..GameOptions::AUTHENTIC };

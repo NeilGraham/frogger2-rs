@@ -107,7 +107,7 @@ USA data: 36 MiB ROM.
 | `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` / `profile-draw` (sample inside `Game::tick` / `App::draw` only), `game-log` (the simulation's `Effect::Log`), `render-cpu` (phase-2G CPU renderer), `prep-data` (set by `F2N64_DATA=prep`), `simbench` (no game: runs the `f2_game::simbench` scenarios, logs per-tick times, phases and state checksums; research/n64-performance.md §3S) |
 | `F2N64_DATA` | `pack` (default) or `prep` (phase-2G loose files) |
 | `F2N64_KEEP_DFS=1` | skip the data step (reuse `target/n64/filesystem`) |
-| `F2N64_DUMP_FRAME=N` | log frame N's CPU draw commands and r3d draws |
+| `F2N64_DUMP_FRAME=N` or `A-B` | log frame N's (or frames A..=B's) CPU draw commands and r3d draws (frames counted per level) |
 | `F2N64_LOG_MODELS=1` | log each model the first time r3d draws it |
 | `F2N64_ONLY_MODEL` / `F2N64_SKIP_MODEL` | comma-separated hex model ids: draw only / never these (bisecting render bugs) |
 | `F2N64_TUNE` | with `simbench`: experiment masks run one after another in the same ROM (`f2_game::simbench::tune`), e.g. `"0 1"` |

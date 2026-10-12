@@ -489,7 +489,8 @@ impl Game {
         self.hud.continue_text = self.textover.create_and_add_text_overlay(2048, 1540, &s, true, 255, Font::Normal, TEXTOVERLAY_SHADOW | TEXTOVERLAY_PAUSED);
         let s = self.gamestring(strs::STR_RESTARTLEVEL);
         self.hud.restart_text = self.textover.create_and_add_text_overlay(2048, 1860, &s, true, 255, Font::Normal, TEXTOVERLAY_SHADOW | TEXTOVERLAY_PAUSED);
-        let s = if self.game_state.mode == FRONTEND_MODE { self.gamestring(strs::STR_QUIT_TO_WINDOWS) } else { self.gamestring(strs::STR_QUIT) };
+        let windows = self.game_state.mode == FRONTEND_MODE && !self.game_options().console;
+        let s = if windows { self.gamestring(strs::STR_QUIT_TO_WINDOWS) } else { self.gamestring(strs::STR_QUIT) };
         self.hud.quit_text = self.textover.create_and_add_text_overlay(2048, 2180, &s, true, 255, Font::Normal, TEXTOVERLAY_SHADOW | TEXTOVERLAY_PAUSED);
         self.hud.pos_text = self.textover.create_and_add_text_overlay(2048, 640, "-----------------------", true, 255, Font::Small, 0);
         self.hud.levelname_text = self.textover.create_and_add_text_overlay(2048, 800, "Levelname Goes in here", true, 255, Font::Small, 0);

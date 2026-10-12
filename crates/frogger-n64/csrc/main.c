@@ -827,8 +827,9 @@ static void apply_state(const n64_state_t *st, int kind) {
         case N64_BLEND_SEMI: rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY); break;
         /* Never RDPQ_BLENDER_ADDITIVE (wraps): see make_add_variant. */
         case N64_BLEND_ADD: rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY); break;
-        /* TODO(phase 2): D3D ZERO/INVSRCCOLOR has no exact RDP blender equivalent (the
-         * blender only has alpha factors); approximated as multiply for now. */
+        /* D3D ZERO/INVSRCCOLOR (dst * (1 - src)): the blender only has alpha factors, so
+         * render_cpu.rs sends black with alpha = the colour's brightness (subtractive_colour):
+         * black*a + dst*(1-a), exact for the grey screen fades. */
         case N64_BLEND_SUB: rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY); break;
         default: rdpq_mode_blender(0); break;
         }
