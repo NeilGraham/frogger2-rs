@@ -70,11 +70,19 @@ impl ProcTexture {
     fn blit(&mut self) {
         // Phase 3S: refill the previous surface in place (same contents, no allocation).
         let surf = self.surface.get_or_insert_with(Vec::new);
-        surf.clear();
         match <&[u16; 256]>::try_from(&self.palette[..]) {
-            // Phase 3S2: a 256-entry palette needs no bounds check per pixel.
-            Ok(pal) => surf.extend(self.buf1.iter().map(|&b| pal[b as usize])),
-            Err(_) => surf.extend(self.buf1.iter().map(|&b| self.palette[b as usize])),
+            // Phase 3S2: a 256-entry palette needs no bounds check per pixel, and the
+            // surface is overwritten in place.
+            Ok(pal) => {
+                surf.resize(self.buf1.len(), 0);
+                for (d, &b) in surf.iter_mut().zip(self.buf1.iter()) {
+                    *d = pal[b as usize];
+                }
+            }
+            Err(_) => {
+                surf.clear();
+                surf.extend(self.buf1.iter().map(|&b| self.palette[b as usize]));
+            }
         }
     }
 
@@ -104,6 +112,7 @@ impl Default for ProcTexState {
 /// BUG(original): the fire/candle/steam smoothing reads `buf1[p+64]` up to index 1054 and
 /// `buf1[p-64]` down to -31 (outside the 1024-byte buffer: neighbouring heap memory). The
 /// port reads 0 there.
+#[cfg(test)]
 #[inline]
 fn rd(b: &[u8], i: i32) -> u32 {
     if (0..1024).contains(&i) {
@@ -113,14 +122,97 @@ fn rd(b: &[u8], i: i32) -> u32 {
     }
 }
 
+/// Even (`M`-selected) bytes of eight as 16-bit lanes, and the odd ones.
+const M8: u64 = 0x00FF_00FF_00FF_00FF;
+const L16: u64 = 0x0001_0001_0001_0001;
+
+#[inline(always)]
+fn ld8(b: &[u8], o: usize) -> u64 {
+    u64::from_ne_bytes(b[o..o + 8].try_into().unwrap())
+}
+
 /// Smooth, move up and fade (fire, candle, steam).
 fn smooth_up(pt: &mut ProcTexture) {
+    smooth_up_swar(pt);
+}
+
+/// [`smooth_up_ref`] eight pixels at a time (phase 3S2; 16-bit lanes as in
+/// [`water_swar`]): `(2t + b[p-64] + b[p-32]) >> 3` (<= 2040 before the shift), reads
+/// outside the buffer are 0 (a zero-padded copy, as `rd`), row ends keep `buf2`.
+fn smooth_up_swar(pt: &mut ProcTexture) {
+    const PAD: usize = 72;
+    let mut b = [0u8; 1024 + 2 * PAD];
+    b[PAD..PAD + 1024].copy_from_slice(&pt.buf1[..1024]);
+    let b2: &mut [u8; 1024] = (&mut pt.buf2[..1024]).try_into().expect("1024-byte buffer");
+    let keep_first = u64::from_ne_bytes([0xFF, 0, 0, 0, 0, 0, 0, 0]);
+    let keep_last = u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, 0xFF]);
+    for i in 1..=30usize {
+        for g in 0..4 {
+            let q = (i << 5) + g * 8;
+            let r = PAD + q;
+            let lane = |sh: u32| {
+                let f = |o: usize| (ld8(&b, o) >> sh) & M8;
+                let t = f(r + 31) + f(r + 33) + f(r + 64);
+                ((t + t + f(r - 64) + f(r - 32)) >> 3) & (0xFF * L16)
+            };
+            let res = lane(0) | (lane(8) << 8);
+            let w = u64::from_ne_bytes(b2[q..q + 8].try_into().unwrap());
+            let keep = match g {
+                0 => keep_first,
+                3 => keep_last,
+                _ => 0,
+            };
+            b2[q..q + 8].copy_from_slice(&((res & !keep) | (w & keep)).to_ne_bytes());
+        }
+    }
+}
+
+/// The original loop (reference for [`smooth_up_swar`]).
+#[cfg(test)]
+fn smooth_up_ref(pt: &mut ProcTexture) {
     for i in (1..=30).rev() {
         for j in (1..=30).rev() {
             let p = (i << 5) + j;
             let t = rd(&pt.buf1, p + 31) + rd(&pt.buf1, p + 33) + rd(&pt.buf1, p + 64);
             pt.buf2[p as usize] = (((t + rd(&pt.buf1, p - 64)) + (t + rd(&pt.buf1, p - 32))) >> 3) as u8;
         }
+    }
+}
+
+/// The forcefield filter of `ProcessPTForcefield`, eight pixels at a time (phase 3S2):
+/// `((b[i] + b[i-1] + b[i-31] + b[i+32] - 10) as u32 >> 2) as u8` with indices mod 1024
+/// (a circularly padded copy). The low byte of `(s - 10) >> 2` (arithmetic, also for the
+/// negative sums the `u32` shift makes huge) is the low byte of `(s + 1014) >> 2`.
+fn forcefield_filter(pt: &mut ProcTexture) {
+    const PAD: usize = 48;
+    let src: &[u8; 1024] = pt.buf1[..1024].try_into().expect("1024-byte buffer");
+    let mut b = [0u8; 1024 + 2 * PAD];
+    b[..PAD].copy_from_slice(&src[1024 - PAD..]);
+    b[PAD..PAD + 1024].copy_from_slice(src);
+    b[PAD + 1024..].copy_from_slice(&src[..PAD]);
+    let b2: &mut [u8; 1024] = (&mut pt.buf2[..1024]).try_into().expect("1024-byte buffer");
+    for q in (0..1024).step_by(8) {
+        let r = PAD + q;
+        let lane = |sh: u32| {
+            let f = |o: usize| (ld8(&b, o) >> sh) & M8;
+            ((f(r) + f(r - 1) + f(r - 31) + f(r + 32) + 1014 * L16) >> 2) & (0xFF * L16)
+        };
+        b2[q..q + 8].copy_from_slice(&(lane(0) | (lane(8) << 8)).to_ne_bytes());
+    }
+}
+
+/// The original forcefield loop (reference for [`forcefield_filter`]).
+#[cfg(test)]
+fn forcefield_ref(pt: &mut ProcTexture) {
+    for i in 0..1024u32 {
+        let b = &pt.buf1;
+        let sum = b[(i & 1023) as usize] as i32
+            + b[(i.wrapping_sub(1) & 1023) as usize] as i32
+            + b[(i.wrapping_sub(31) & 1023) as usize] as i32
+            + b[((i + 32) & 1023) as usize] as i32
+            - 10;
+        let res = ((sum as u32) >> 2) as u16;
+        pt.buf2[i as usize] = res as u8;
     }
 }
 
@@ -349,16 +441,7 @@ impl Game {
                 for q in [p + 1, p - 1, p - 32, p + 32] {
                     pt.buf1[q] = pt.buf1[q].wrapping_sub(15);
                 }
-                for i in 0..1024u32 {
-                    let b = &pt.buf1;
-                    let sum = b[(i & 1023) as usize] as i32
-                        + b[(i.wrapping_sub(1) & 1023) as usize] as i32
-                        + b[(i.wrapping_sub(31) & 1023) as usize] as i32
-                        + b[((i + 32) & 1023) as usize] as i32
-                        - 10;
-                    let res = ((sum as u32) >> 2) as u16;
-                    pt.buf2[i as usize] = res as u8;
-                }
+                forcefield_filter(&mut pt);
             }
             PtUpdate::WaterDrops => {
                 // Port of `ProcessPTWaterDrops` (Common/ptexture.c:176).
@@ -565,6 +648,25 @@ mod tests {
                 water_swar(&mut b, damp);
                 assert_eq!(a.buf2, b.buf2, "case {case} damp {damp}");
             }
+            let mk = || ProcTexture {
+                name: String::new(),
+                crc: 0,
+                timer: 0,
+                buf1: buf1.clone(),
+                buf2: buf2.clone(),
+                active: 1,
+                palette: vec![0; 256],
+                update: None,
+                surface: None,
+            };
+            let (mut a, mut b) = (mk(), mk());
+            smooth_up_ref(&mut a);
+            smooth_up_swar(&mut b);
+            assert_eq!(a.buf2, b.buf2, "smooth_up case {case}");
+            let (mut a, mut b) = (mk(), mk());
+            forcefield_ref(&mut a);
+            forcefield_filter(&mut b);
+            assert_eq!(a.buf2, b.buf2, "forcefield case {case}");
         }
     }
 
