@@ -1664,6 +1664,12 @@ int main(void) {
      * for the whole run, so the pool holds only per-level and transient large blocks. */
     big_init();
     floor_selftest();
+#ifdef F2N64_AUDIO_PROF
+    /* libdragon's mixer profile slots (PROFILE_SCOPE is compiled in): dumped every 5 s. */
+    extern void __mixer_profile_init(void);
+    profile_init(&(profile_parms_t){.num_slots = 64, .dump_stderr_interval = 5.0f});
+    __mixer_profile_init();
+#endif
     debugf("large-block pool %d KiB\n", big_base ? BIG_POOL / 1024 : 0);
     f2n64_call(f2n64_init);
     for (;;) {
@@ -1671,6 +1677,9 @@ int main(void) {
         n64_audio_poll_impl();
         f2n64_call(f2n64_frame);
         n64_audio_poll_impl();
+#ifdef F2N64_AUDIO_PROF
+        profile_next_frame();
+#endif
     }
 }
 
