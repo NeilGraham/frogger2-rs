@@ -371,6 +371,7 @@ impl Game {
             root_object_flags: model.root_flags() & !(object_flags::OBJECT_FLAGS_MODGE | object_flags::OBJECT_FLAGS_WAVE | object_flags::OBJECT_FLAGS_ADDITIVE),
             animation: Some(init_anims(&model)),
             placement: Default::default(),
+            sphere: Default::default(),
         };
 
         let mut item = Actor2::default();

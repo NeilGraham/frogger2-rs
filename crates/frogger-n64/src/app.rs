@@ -1324,13 +1324,22 @@ impl App {
     fn log_window(&mut self, span: u32) {
         let w = core::mem::take(&mut self.win);
         {
+            use core::sync::atomic::Ordering::Relaxed;
             use f2_game::simbench::phase::{COUNT, NAMES};
             let mut s = String::new();
+            let mut sum = 0;
             for i in 0..COUNT {
-                let us = ticks_to_us(PHASES[i].swap(0, core::sync::atomic::Ordering::Relaxed)) / w.ticks.max(1);
+                let us = ticks_to_us(PHASES[i].swap(0, Relaxed)) / w.ticks.max(1);
+                sum += us;
                 let _ = core::fmt::Write::write_fmt(&mut s, format_args!(" {} {}", NAMES[i], us));
             }
-            log!("sim phases [{}] us/tick:{}", self.level_name, s);
+            // F2N64_TUNE_AB=mask (build time): `f2_game::simbench::TUNE` alternates between 0
+            // and `mask` every window, an A/B of experiment code in one ROM (same layout).
+            let tune = f2_game::simbench::TUNE.load(Relaxed);
+            if let Some(mask) = option_env!("F2N64_TUNE_AB").and_then(|m| m.trim().parse::<u32>().ok()) {
+                f2_game::simbench::TUNE.store(if tune == 0 { mask } else { 0 }, Relaxed);
+            }
+            log!("sim phases [{}] tune {} sum {} us/tick:{}", self.level_name, tune, sum, s);
         }
         let (rsp, rdp) = rt::rcp_load();
         let ms = |t: u32| ticks_to_us(t) / 1000;

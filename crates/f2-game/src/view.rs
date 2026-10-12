@@ -584,11 +584,49 @@ fn set<T: PartialEq + Copy>(dst: &mut T, v: T) {
 }
 
 /// `*dst = v` unless every float already has the same bit pattern (`==` would treat
-/// `-0.0` and `0.0` as equal).
+/// `-0.0` and `0.0` as equal); whether it changed.
 #[inline(always)]
-fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) {
+fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) -> bool {
     if dst.iter().zip(v.iter()).any(|(a, b)| a.to_bits() != b.to_bits()) {
         *dst = v;
+        return true;
+    }
+    false
+}
+
+/// Phase 3S2: an actor's world-space bounding sphere ([`sphere_world`]) as last computed,
+/// for the model `model` (with the model table at `generation`) and the actor's placement
+/// at that time. Not game state: never serialized (a deserialized actor starts invalid),
+/// never compared, not printed. **Every write of `MdxPlacement::{pos, q_rot, scale}` must
+/// [`invalidate`](Self::invalidate) it** (`copy_actor`, `xform_new_actor`; a new actor
+/// starts invalid); debug builds check each reuse against a fresh computation.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct SphereCache {
+    valid: bool,
+    model: u32,
+    generation: u32,
+    centre: Vec3,
+    radius: f32,
+}
+
+impl SphereCache {
+    #[inline(always)]
+    pub fn invalidate(&mut self) {
+        self.valid = false;
+    }
+}
+
+impl PartialEq for SphereCache {
+    /// A cache: equal whatever it holds.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl core::fmt::Debug for SphereCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SphereCache")
     }
 }
 
@@ -597,18 +635,35 @@ fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) {
 #[inline]
 #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn sphere_visible(model: &crate::assets::ModelInfo, p: &MdxPlacement, view: &ViewXform) -> bool {
+    let (t_pos, radius) = sphere_world(model, p);
+    sphere_on_screen(t_pos, radius, view)
+}
+
+/// The view-independent half of [`sphere_visible`]: the sphere's world-space centre
+/// (`trueCentre` scaled, rotated by `qRot`, plus `pos`) and radius (`radius` times the
+/// largest scale).
+#[inline]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
+pub fn sphere_world(model: &crate::assets::ModelInfo, p: &MdxPlacement) -> (Vec3, f32) {
     let tc = model.true_centre;
     let t_pos = [tc[0] * p.scale[0], tc[1] * p.scale[1], tc[2] * p.scale[2]];
     let rotmat = quaternion_to_matrix(&p.q_rot);
     let t2 = mtx_xfm(&rotmat, t_pos);
     let t_pos = [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]];
+    let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
+    (t_pos, model.actor_radius * scale)
+}
+
+/// The view half of [`sphere_visible`] for a world-space sphere from [`sphere_world`].
+#[inline]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
+pub fn sphere_on_screen(t_pos: Vec3, radius: f32, view: &ViewXform) -> bool {
+    let mut radius = radius;
     {
         // Phase 3S: the depth test needs only the view-space z (the same sum as
         // `mtx_xfm`'s third component); the projection is computed only if it passes.
         let m = &view.matrix;
         let z = m[0][2] * t_pos[0] + m[1][2] * t_pos[1] + m[2][2] * t_pos[2] + m[3][2];
-        let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
-        let mut radius = model.actor_radius * scale;
         let depth = z + view.dist as f32;
         if !(depth + radius > view.near_clip && depth - radius < view.far_clip) {
             return false;
@@ -635,17 +690,27 @@ pub fn sub_object_matrix(chain: &[XNode], name: &str, p: &MdxPlacement, animated
     // computed along the found object's ancestor path alone (a sibling's matrix never
     // feeds another object's, and `TransformObject`'s key search starts from fresh key
     // hints per object), instead of for every object visited.
-    fn find<'a>(chain: &'a [XNode], i: usize, name: &str, path: &mut Vec<&'a XNode>) -> bool {
+    // Phase 3S2: the path lives in a fixed array (no allocation per call); a deeper tree
+    // than `MAX_DEPTH` is not found (no model comes close: the frog's head is 4 deep).
+    const MAX_DEPTH: usize = 32;
+    struct Path<'a> {
+        n: usize,
+        v: [Option<&'a XNode>; MAX_DEPTH],
+    }
+    fn find<'a>(chain: &'a [XNode], i: usize, name: &str, path: &mut Path<'a>) -> bool {
         let me = &chain[i];
         if me.name.eq_ignore_ascii_case(name) {
-            path.push(me);
+            path.v[path.n] = Some(me);
+            path.n += 1;
             return true;
         }
         if i + 1 < chain.len() && find(chain, i + 1, name, path) {
             return true;
         }
         if !me.children.is_empty() && find(&me.children, 0, name, path) {
-            path.push(me);
+            assert!(path.n < MAX_DEPTH, "object tree deeper than {MAX_DEPTH}");
+            path.v[path.n] = Some(me);
+            path.n += 1;
             return true;
         }
         false
@@ -653,14 +718,15 @@ pub fn sub_object_matrix(chain: &[XNode], name: &str, p: &MdxPlacement, animated
     if chain.is_empty() {
         return None;
     }
-    let mut path = Vec::new();
-    if !find(chain, 0, name, &mut path) {
+    let mut found = Path { n: 0, v: [None; MAX_DEPTH] };
+    if !find(chain, 0, name, &mut found) {
         return None;
     }
+    let path = &found.v[..found.n];
     // `path` is target first, then its ancestors.
     let mut top = actor_top(p.pos, &p.q_rot);
     let mut ps = [1.0; 3];
-    for (k, me) in path.iter().rev().enumerate() {
+    for (k, me) in path.iter().rev().flatten().enumerate() {
         let mut last = [0i16; 3];
         let (rotmat, scale) = object_local_k(&me.keys, animated, time, &mut last, p.scale, ps);
         let m1 = mtx_cat(&rotmat, &top);
@@ -1030,8 +1096,10 @@ impl Game {
         self.transform_actor_sprites(id);
         // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
         if self.frogger.frog[0] == Some(id) {
-            if let Some(name) = self.tongue.head_object.clone() {
-                if let Some(mut m) = self.actor_sub_object_matrix(id, &name) {
+            // Phase 3S2: the name is borrowed (no `String` clone per tick).
+            let head = self.tongue.head_object.as_deref().and_then(|name| self.actor_sub_object_matrix(id, name));
+            {
+                if let Some(mut m) = head {
                     // TransformObject: objMatrix = postMatrix . top (headPostMatrix).
                     if let Some([x, y, z]) = self.tongue.head_post {
                         m = mtx_cat(&gu_scale(x, y, z), &m);
@@ -1167,7 +1235,9 @@ impl Game {
     /// `CreateActor`'s `XformActor(t, 1)` at the origin (mdxActor.cpp:953): sets the
     /// root object's initial clip flag against the current view.
     pub fn xform_new_actor(&mut self, id: ActorId) {
-        self.actor2.actors[id].actor.actual_actor.placement = MdxPlacement::default();
+        let a = &mut self.actor2.actors[id].actor.actual_actor;
+        a.placement = MdxPlacement::default();
+        a.sphere.invalidate();
         if self.view.valid {
             self.xform_actor(id, false);
         }
@@ -1214,11 +1284,14 @@ impl Game {
         }
         set(&mut p.visible, 1);
         set(&mut p.draw, 1);
-        set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
+        let mut changed = set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
         const S: f32 = 1.0 / 4096.0;
-        set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
+        changed |= set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
         if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
-            set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
+            changed |= set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
+        }
+        if changed {
+            c.actor.actual_actor.sphere.invalidate();
         }
     }
 
@@ -1263,12 +1336,27 @@ impl Game {
             self.transform_actor_sprites(id);
             return;
         };
-        let a = &self.actor2.actors[id].actor.actual_actor;
-        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return };
+        let a = &mut self.actor2.actors[id].actor.actual_actor;
+        let Some(mid) = a.object_controller else { return };
+        let Some(model) = self.models.get(mid) else { return };
         self.view.draw_this_objects_sprites = a.placement.draw as u32;
-        let p = a.placement;
         let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
-        let visible = if draw_override { true } else { sphere_visible(model, &p, view) };
+        let visible = draw_override || {
+            // Phase 3S2: the world sphere is reused while placement and model are unchanged.
+            let generation = self.models.generation();
+            let c = &mut a.sphere;
+            if !(c.valid && c.model == mid && c.generation == generation) {
+                let (centre, radius) = sphere_world(model, &a.placement);
+                *c = SphereCache { valid: true, model: mid, generation, centre, radius };
+            } else if cfg!(debug_assertions) {
+                let (centre, radius) = sphere_world(model, &a.placement);
+                assert!(
+                    centre.map(f32::to_bits) == c.centre.map(f32::to_bits) && radius.to_bits() == c.radius.to_bits(),
+                    "stale SphereCache for actor {id:?}: a placement write did not invalidate it"
+                );
+            }
+            sphere_on_screen(c.centre, c.radius, view)
+        };
         if visible {
             self.xform_actor(id, draw_override);
         } else {

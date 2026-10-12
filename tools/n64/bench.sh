@@ -34,5 +34,5 @@ for l in sys.stdin:
           "submit", g(r"CPU-side submit (\d+) ms"), "queue", g(r"r3d queue (\d+) us"), "flush", g(r"flush (\d+) us"),
           "| tick", g(r"Game::tick (\d+) us"), "poll", g(r"audio poll (\d+) us"), "worst", g(r"worst frame (\d+) ms"))
 '
-grep -E '^sim phases' "$out/$name.txt" | tail -1 || true
+grep -E "^sim phases" "$out/$name.txt" | tail -"${BENCH_PHASE_LINES:-1}" || true
 echo "log: $out/$name.txt  elf: $out/$name.elf  shot: $out/$name.png"

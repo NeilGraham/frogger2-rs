@@ -104,6 +104,9 @@ pub struct MdxActor {
     pub list_num: u32,
     /// `pos`/`qRot`/`scale`/`visible`/`draw` as `CopyActorList` sets them (`view.rs`).
     pub placement: crate::view::MdxPlacement,
+    /// Phase 3S2: the world-space bounding sphere `ActorListDraw` computes from `placement`
+    /// (a cache, not state; see [`crate::view::SphereCache`]).
+    pub sphere: crate::view::SphereCache,
     /// `animation`; `None` when the model has no animation table.
     pub animation: Option<MdxActorAnimation>,
     /// `LODObjectController` (used by `ChangeModel` to remember the original model).
@@ -118,7 +121,7 @@ crate::ser_order!(MdxActor, "MdxActor", MdxActorWire {
     root_object_flags: i16,
     animation: Option<MdxActorAnimation>,
     placement: crate::view::MdxPlacement,
-});
+} skip { sphere });
 
 /// Port of `QueueFlush` (`MDX Library/mdxActor.cpp:288`).
 pub fn queue_flush(anim: &mut MdxActorAnimation) {
