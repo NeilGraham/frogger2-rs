@@ -351,6 +351,16 @@ fn modge_rsp_table() -> *const u8 {
     t.0.as_ptr() as *const u8
 }
 
+/// `Vec::shrink_to_fit` for [`R3d::reset_to`]'s list of vectors.
+trait ShrinkVec {
+    fn shrink(&mut self);
+}
+impl<T> ShrinkVec for Vec<T> {
+    fn shrink(&mut self) {
+        self.shrink_to_fit();
+    }
+}
+
 /// The physical (RDRAM) address of a pointer into cached memory.
 fn phys(p: *const u8) -> u32 {
     p as u32 & 0x1FFF_FFFF
@@ -634,9 +644,7 @@ struct Slot {
     cf: u8,
 }
 
-/// `SlotUni::base` holds the draw's uniform without fog.
-const SLOT_BASE: u8 = 4;
-/// `SlotUni::u[cur]` is `base` with some fog fields.
+/// `SlotUni::u[cur]` is the slot's uniform (its model, mesh and parameters) with some fog.
 const SLOT_U: u8 = 8;
 /// ... and those are the no-fog fields ([`fog_fields`] without fog).
 const SLOT_U_NOFOG: u8 = 16;
@@ -644,11 +652,10 @@ const SLOT_CUR: u8 = 3;
 
 /// A slot's uniforms: a ring of three (a change writes the next one, as the RSP may still read
 /// the one of each of the two frames before: the CPU starts recording frame N before waiting
-/// for a framebuffer, i.e. while N-2 and N-1 can still be in flight) and the fog-less base.
+/// for a framebuffer, i.e. while N-2 and N-1 can still be in flight).
 #[derive(Clone, Copy, Default)]
 struct SlotUni {
     u: [R3dDrawUniform; 3],
-    base: R3dDrawUniform,
 }
 
 /// Slots per [`SlotUni`] chunk (chunks never move: the RSP reads the uniforms in place).
@@ -1433,12 +1440,38 @@ impl R3d {
             ffi::n64_r3d_reset(m.tex, m.groups)
         };
         self.discard();
+        // Per-level storage (the RSP finished above): freed, the next level grows its own.
+        self.slots = Vec::new();
+        self.slot_uni = Vec::new();
+        self.slot_model = Vec::new();
+        self.slot_key = Vec::new();
+        self.ptab = Vec::new();
+        self.pkeys = Vec::new();
+        self.phash.fill(0);
+        self.plast = 0;
+        self.q = Vec::new();
+        self.qbones = Vec::new();
+        self.qmodels = Vec::new();
+        self.qgouraud = Vec::new();
+        self.modge_todo = Vec::new();
+        self.modge_cmds = Vec::new();
+        for l in &mut self.lists {
+            *l = Vec::new();
+        }
+        self.draw_scratch = Vec::new();
         if let Some(h) = self.mhot.get(m.meshes) {
             self.spheres.truncate(h.sph as usize);
             self.gparts.truncate(h.sph as usize);
         }
         self.mhot.truncate(m.meshes);
         self.meshes.truncate(m.meshes);
+        for v in [&mut self.spheres as &mut dyn ShrinkVec, &mut self.gparts, &mut self.mhot, &mut self.meshes] {
+            v.shrink();
+        }
+        if self.meshes.is_empty() {
+            self.crc_id.clear();
+            self.crc_tex = Vec::new();
+        }
         self.files.truncate(m.files);
         self.tex_by_crc.retain(|_, h| (*h as u32) < m.tex);
         for (crc, &id) in &self.crc_id {
@@ -2087,20 +2120,16 @@ impl R3d {
             return;
         }
         let su = &mut self.slot_uni[i / SLOT_CHUNK][i % SLOT_CHUNK];
-        if e.cf & SLOT_BASE == 0 {
-            draw_uniform_into(&model_scaled(&to44(model), pos_scale), p, &mut su.base);
-            e.cf = (e.cf & SLOT_CUR) | SLOT_BASE;
-        }
-        // The ring's current uniform is `base` with that frame's fog: with the same fog it is
-        // this frame's too (no write, in flight or not).
+        // The ring's current uniform is this draw's with that frame's fog: with the same fog it
+        // is this frame's too (no write, in flight or not). Else the next one, from the model.
         let mut cur = (e.cf & SLOT_CUR) as usize;
         let keep = e.cf & SLOT_U != 0 && if nofog { e.cf & SLOT_U_NOFOG != 0 } else { su.u[cur].fogc == fogc && su.u[cur].fogm == fogm };
         if !keep {
             cur = if cur >= 2 { 0 } else { cur + 1 };
             let u = &mut su.u[cur];
-            *u = su.base;
+            draw_uniform_into(&model_scaled(&to44(model), pos_scale), p, u);
             (u.fogc, u.fogm) = (fogc, fogm);
-            e.cf = cur as u8 | SLOT_BASE | SLOT_U | if nofog { SLOT_U_NOFOG } else { 0 };
+            e.cf = cur as u8 | SLOT_U | if nofog { SLOT_U_NOFOG } else { 0 };
         }
         let uptr: *const R3dDrawUniform = &su.u[cur];
         self.push_rec_ptr(list, mesh, p, uptr, vis_first, n);
@@ -3065,6 +3094,44 @@ mod tests {
                 assert!(texs.contains(&0));
             }
         }
+    }
+
+    /// After a reset to an empty mark (level unload) the per-level storage is gone and the next
+    /// level draws exactly like a fresh renderer.
+    #[test]
+    fn reset_frees_level_state() {
+        let bytes = super::cull_tests::terrain();
+        let mut view = ViewParams::pc_default(320.0, 240.0);
+        view.view = camera_view([0.0, 300.0, -700.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let m: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [10.0, 0.0, 20.0, 1.0]];
+        let snap = |r: &R3d| -> Vec<(Vec<u16>, R3dDrawUniform)> {
+            r.lists[List::Normal as usize]
+                .iter()
+                .map(|d| (r.vis[d.vis_first as usize..(d.vis_first + d.vis_count) as usize].to_vec(), unsafe { *d.uptr }))
+                .collect()
+        };
+        let mut r = R3d::new();
+        let base = r.mark();
+        let ids = r.load_file(bytes.clone()).unwrap();
+        for f in 0..2 {
+            r.begin_frame(&view);
+            r.queue_raw(List::Normal, 5, 0, &[m], 1.0, None, None, (false, false, false), 40, 9, 0, 0);
+            r.run_queue_with(&mut |_| Some(ids[0]));
+            r.flush(|_| {});
+            let _ = f;
+        }
+        r.reset_to(base);
+        assert!(r.slots.is_empty() && r.slot_uni.is_empty() && r.slot_model.is_empty() && r.mhot.is_empty() && r.spheres.is_empty());
+        let ids = r.load_file(bytes.clone()).unwrap();
+        let mut fresh = R3d::new();
+        let fids = fresh.load_file(bytes).unwrap();
+        for (x, id) in [(&mut r, ids[0]), (&mut fresh, fids[0])] {
+            x.begin_frame(&view);
+            x.queue_raw(List::Normal, 5, 0, &[m], 1.0, None, None, (false, false, false), 40, 9, 0, 0);
+            x.run_queue_with(&mut |_| Some(id));
+        }
+        assert_eq!(snap(&r), snap(&fresh));
+        assert!(!snap(&r).is_empty());
     }
 
     /// Raw draws (the game's model/object, resolved after the draw loop) give what draws
