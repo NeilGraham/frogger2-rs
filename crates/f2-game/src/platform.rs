@@ -219,6 +219,7 @@ impl Game {
     }
 
     /// Port of `UpdatePlatforms` (Common/platform.c:105).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
     pub fn update_platforms(&mut self) {
         if self.platform.platform_list.count == 0 {
             return;
@@ -232,6 +233,7 @@ impl Game {
     }
 
     /// The loop body of `UpdatePlatforms` (`continue` = return).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
     fn update_platform(&mut self, id: PlatformId) {
         let gs = self.game_speed;
         let act2 = self.plt(id).plt_actor;
@@ -783,6 +785,7 @@ impl Game {
     }
 
     /// Port of `UpdatePathPlatform` (Common/platform.c:840).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
     pub fn update_path_platform(&mut self, pid: PlatformId) {
         let afc = self.act_frame_count;
         let ws = self.frogger.wait_scale;

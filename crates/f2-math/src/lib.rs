@@ -10,7 +10,10 @@
 //! console/embedded targets (docs/PLATFORMS.md). Float maths goes through [`detfloat`] (libm),
 //! never the host C library, so results are identical with and without `std`.
 #![cfg_attr(not(feature = "std"), no_std)]
-#![forbid(unsafe_code)]
+#![cfg_attr(not(target_vendor = "nintendo64"), forbid(unsafe_code))]
+// The N64 build only: `link_section` (an "unsafe" attribute) places hot functions in the
+// I-cache regions of tools/n64/Makefile; there is still no unsafe code.
+#![cfg_attr(target_vendor = "nintendo64", deny(unsafe_code))]
 
 pub mod acostable;
 pub mod detfloat;

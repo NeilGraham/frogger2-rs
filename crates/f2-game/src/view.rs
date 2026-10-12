@@ -74,6 +74,7 @@ fn acos_fast(x: f32) -> f32 {
 }
 
 /// The `PushMatrix` macro body (mdxMath.h:86) / `guMtxCatF`: `a · b`, affine.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn mtx_cat(a: &Mat4, b: &Mat4) -> Mat4 {
     // Built as one array literal (phase 3S: no zeroing `memset` call first); every entry is
     // the same expression as before.
@@ -99,6 +100,7 @@ fn gu_translate(dx: f32, dy: f32, dz: f32) -> Mat4 {
 }
 
 /// Port of `guMtxXFMF` (mdxMath.cpp:127).
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn mtx_xfm(m: &Mat4, v: Vec3) -> Vec3 {
     [
         m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2] + m[3][0],
@@ -151,6 +153,7 @@ pub fn gu_look_at(eye: Vec3, at: Vec3, up: Vec3) -> Mat4 {
 }
 
 /// Port of `QuaternionToMatrix` (mdxMath.cpp:237); quaternions are `[x, y, z, w]`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn quaternion_to_matrix(q: &Quat) -> Mat4 {
     let [x, y, z, w] = *q;
     let s = 2.0 / (x * x + y * y + z * z + w * w);
@@ -162,6 +165,7 @@ pub fn quaternion_to_matrix(q: &Quat) -> Mat4 {
 }
 
 /// Port of `QuatSlerp` (mdxMath.cpp:304).
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn quat_slerp(s1: &Quat, sp2: &Quat, t: f32) -> Quat {
     let (x, y, z, w) = (s1[0] - sp2[0], s1[1] - sp2[1], s1[2] - sp2[2], s1[3] - sp2[3]);
     let pdist = x * x + y * y + z * z + w * w;
@@ -254,6 +258,7 @@ fn fallback<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: &KeyChannel) -> (
 /// returns the unique `i` with `t(i) == time`, else the last `i` with `t(i) < time`, so a
 /// short scan from any start finds the same keys; the scan starts at the channel's last
 /// answer and falls back to the original search when it would be long.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn find_to_from_ch<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: Option<&KeyChannel>) -> (usize, usize, f32) {
     use core::sync::atomic::Ordering::Relaxed;
     let n = keys.len();
@@ -388,6 +393,7 @@ fn object_local_k(k: &RootObject, animated: bool, time: f32, last: &mut [i16; 3]
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn object_local_r(
     mk: &[VKey],
     sk: &[VKey],
@@ -440,6 +446,7 @@ fn object_local_r(
 
 /// The matrix-stack top `XformActor` (mdxActor.cpp:547) pushes before the root object:
 /// `qRot · translate(pos)`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn actor_top(pos: Vec3, q_rot: &Quat) -> Mat4 {
     let top = mtx_cat(&gu_translate(pos[0], pos[1], pos[2]), &IDENTITY);
     mtx_cat(&quaternion_to_matrix(q_rot), &top)
@@ -576,30 +583,171 @@ fn set<T: PartialEq + Copy>(dst: &mut T, v: T) {
 }
 
 /// `*dst = v` unless every float already has the same bit pattern (`==` would treat
-/// `-0.0` and `0.0` as equal).
+/// `-0.0` and `0.0` as equal); whether it changed.
 #[inline(always)]
-fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) {
+fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) -> bool {
     if dst.iter().zip(v.iter()).any(|(a, b)| a.to_bits() != b.to_bits()) {
         *dst = v;
+        return true;
+    }
+    false
+}
+
+/// `CopyActorList`'s float copies of an actor's position (×0.1), size and rotation (/4096;
+/// an all-zero rotation is not copied); whether any bits changed.
+#[inline(always)]
+fn copy_placement(p: &mut MdxPlacement, pos: SVector, size: f2_math::FVector, q: f2_math::IQuaternion) -> bool {
+    let mut changed = set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
+    const S: f32 = 1.0 / 4096.0;
+    changed |= set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
+    if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
+        changed |= set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
+    }
+    changed
+}
+
+/// Phase 3S2: an actor's world-space bounding sphere ([`sphere_world`]) as last computed,
+/// for the model `model` (with the model table at `generation`) and the actor's placement
+/// at that time. Not game state: never serialized (a deserialized actor starts invalid),
+/// never compared, not printed. **Every write of `MdxPlacement::{pos, q_rot, scale}` must
+/// [`invalidate`](Self::invalidate) it** (`copy_actor`, `xform_new_actor`; a new actor
+/// starts invalid); debug builds check each reuse against a fresh computation.
+///
+/// `root_valid` / `spr_valid`: the actor's [`RootCache`] / [`SpriteCache`] was filled with
+/// the current placement.
+/// `copy_valid`: `placement.{pos, scale, q_rot}` are what `CopyActorList` made of the
+/// actor's `position`/`size`/`qRot` copies `src_*` (it then skips the float conversions
+/// while they are unchanged). [`invalidate`](Self::invalidate) clears all three.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct SphereCache {
+    valid: bool,
+    root_valid: bool,
+    copy_valid: bool,
+    pub(crate) spr_valid: bool,
+    model: u32,
+    generation: u32,
+    centre: Vec3,
+    radius: f32,
+    src_pos: [i16; 3],
+    src_size: [i32; 3],
+    src_q: [i32; 4],
+}
+
+impl SphereCache {
+    #[inline(always)]
+    pub fn invalidate(&mut self) {
+        self.valid = false;
+        self.root_valid = false;
+        self.copy_valid = false;
+        self.spr_valid = false;
+    }
+}
+
+/// Phase 3S2: an actor's object-sprite placements from `TransformObject` (`transform_actor_sprites`):
+/// per sprite callback (index, `pos` x/y/z, `scaleX`, `scaleY` as stored, `xlu`) for the
+/// model + table generation, `animated` and `animTime` bits in the key and the placement at
+/// the time (`SphereCache::spr_valid`). Not game state (never serialized, compared or
+/// printed); debug builds check every reuse.
+#[derive(Clone, Default)]
+pub struct SpriteCache {
+    model: u32,
+    generation: u32,
+    animated: bool,
+    time: u32,
+    vals: Vec<(u32, [i16; 5], u8)>,
+}
+
+impl PartialEq for SpriteCache {
+    /// A cache: equal whatever it holds.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl core::fmt::Debug for SpriteCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SpriteCache")
+    }
+}
+
+/// Phase 3S2: the root object's `TransformObject` result for an actor (`transform_root_object`):
+/// the `lastMKey/lastSKey/lastRKey` it leaves and the object matrix (when it was needed),
+/// for the inputs in the key (model + table generation, `animated`, `animTime` bits, the
+/// `last` keys it started from) and the placement at the time (`SphereCache::root_valid`).
+/// Not game state (never serialized, compared or printed); debug builds check every reuse.
+#[derive(Clone, Copy, Default)]
+pub struct RootCache {
+    model: u32,
+    generation: u32,
+    animated: bool,
+    has_obj: bool,
+    time: u32,
+    last_in: [i16; 3],
+    last_out: [i16; 3],
+    obj: Mat4,
+}
+
+impl PartialEq for RootCache {
+    /// A cache: equal whatever it holds.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl core::fmt::Debug for RootCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RootCache")
+    }
+}
+
+impl PartialEq for SphereCache {
+    /// A cache: equal whatever it holds.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl core::fmt::Debug for SphereCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SphereCache")
     }
 }
 
 /// The sphere test of `ActorListDraw` (mdxActor.cpp:139) for an actor without
 /// `ACTOR_ALWAYSDRAW`: whether its bounding sphere is on screen.
 #[inline]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn sphere_visible(model: &crate::assets::ModelInfo, p: &MdxPlacement, view: &ViewXform) -> bool {
+    let (t_pos, radius) = sphere_world(model, p);
+    sphere_on_screen(t_pos, radius, view)
+}
+
+/// The view-independent half of [`sphere_visible`]: the sphere's world-space centre
+/// (`trueCentre` scaled, rotated by `qRot`, plus `pos`) and radius (`radius` times the
+/// largest scale).
+#[inline]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
+pub fn sphere_world(model: &crate::assets::ModelInfo, p: &MdxPlacement) -> (Vec3, f32) {
     let tc = model.true_centre;
     let t_pos = [tc[0] * p.scale[0], tc[1] * p.scale[1], tc[2] * p.scale[2]];
     let rotmat = quaternion_to_matrix(&p.q_rot);
     let t2 = mtx_xfm(&rotmat, t_pos);
     let t_pos = [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]];
+    let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
+    (t_pos, model.actor_radius * scale)
+}
+
+/// The view half of [`sphere_visible`] for a world-space sphere from [`sphere_world`].
+#[inline]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
+pub fn sphere_on_screen(t_pos: Vec3, radius: f32, view: &ViewXform) -> bool {
+    let mut radius = radius;
     {
         // Phase 3S: the depth test needs only the view-space z (the same sum as
         // `mtx_xfm`'s third component); the projection is computed only if it passes.
         let m = &view.matrix;
         let z = m[0][2] * t_pos[0] + m[1][2] * t_pos[1] + m[2][2] * t_pos[2] + m[3][2];
-        let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
-        let mut radius = model.actor_radius * scale;
         let depth = z + view.dist as f32;
         if !(depth + radius > view.near_clip && depth - radius < view.far_clip) {
             return false;
@@ -626,17 +774,27 @@ pub fn sub_object_matrix(chain: &[XNode], name: &str, p: &MdxPlacement, animated
     // computed along the found object's ancestor path alone (a sibling's matrix never
     // feeds another object's, and `TransformObject`'s key search starts from fresh key
     // hints per object), instead of for every object visited.
-    fn find<'a>(chain: &'a [XNode], i: usize, name: &str, path: &mut Vec<&'a XNode>) -> bool {
+    // Phase 3S2: the path lives in a fixed array (no allocation per call); a deeper tree
+    // than `MAX_DEPTH` is not found (no model comes close: the frog's head is 4 deep).
+    const MAX_DEPTH: usize = 32;
+    struct Path<'a> {
+        n: usize,
+        v: [Option<&'a XNode>; MAX_DEPTH],
+    }
+    fn find<'a>(chain: &'a [XNode], i: usize, name: &str, path: &mut Path<'a>) -> bool {
         let me = &chain[i];
         if me.name.eq_ignore_ascii_case(name) {
-            path.push(me);
+            path.v[path.n] = Some(me);
+            path.n += 1;
             return true;
         }
         if i + 1 < chain.len() && find(chain, i + 1, name, path) {
             return true;
         }
         if !me.children.is_empty() && find(&me.children, 0, name, path) {
-            path.push(me);
+            assert!(path.n < MAX_DEPTH, "object tree deeper than {MAX_DEPTH}");
+            path.v[path.n] = Some(me);
+            path.n += 1;
             return true;
         }
         false
@@ -644,14 +802,15 @@ pub fn sub_object_matrix(chain: &[XNode], name: &str, p: &MdxPlacement, animated
     if chain.is_empty() {
         return None;
     }
-    let mut path = Vec::new();
-    if !find(chain, 0, name, &mut path) {
+    let mut found = Path { n: 0, v: [None; MAX_DEPTH] };
+    if !find(chain, 0, name, &mut found) {
         return None;
     }
+    let path = &found.v[..found.n];
     // `path` is target first, then its ancestors.
     let mut top = actor_top(p.pos, &p.q_rot);
     let mut ps = [1.0; 3];
-    for (k, me) in path.iter().rev().enumerate() {
+    for (k, me) in path.iter().rev().flatten().enumerate() {
         let mut last = [0i16; 3];
         let (rotmat, scale) = object_local_k(&me.keys, animated, time, &mut last, p.scale, ps);
         let m1 = mtx_cat(&rotmat, &top);
@@ -701,6 +860,7 @@ impl ViewXform {
     }
 
     /// Port of `XfmPoint` (mdxRender.cpp:331) for an MDX-space point, `d == NULL`.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn xfm_point_f(&self, p: Vec3) -> Vec3 {
         let [x, y, z] = mtx_xfm(&self.matrix, p);
         let zd = z + self.dist as f32;
@@ -713,6 +873,7 @@ impl ViewXform {
     }
 
     /// Port of `CheckBoundingBox` (mdxActor.cpp:465): 1 when the box is off screen.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn check_bounding_box(&self, bbox: &[Vec3; 8], m: &Mat4) -> bool {
         const TOP: u32 = 0x1;
         const BOTTOM: u32 = 0x2;
@@ -833,6 +994,7 @@ impl Game {
 
     /// The root object's `OBJECT_FLAGS_CLIPPED` as `TransformObject` sets it (only the
     /// root's flag is ever read, by `CopyActorList`).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn transform_root_object(&mut self, id: ActorId, no_clip: bool) {
         let Some(view) = self.specfx.view.as_ref() else { return };
         let a = &self.actor2.actors[id].actor.actual_actor;
@@ -841,20 +1003,61 @@ impl Game {
         let animated = a.animation.is_some();
         let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
         let p = a.placement;
-        let mut last = p.last_keys;
-        let (rotmat, scale) = object_local_k(root, animated, time, &mut last, p.scale, [1.0; 3]);
         // Phase 3S: the object matrix only feeds the (pure) bounding-box test, whose result
         // is unused without a box or with `noClip`: computed only when it matters.
-        let clipped = match root.bbox.as_ref() {
-            Some(b) if !no_clip => {
+        let need_obj = root.bbox.is_some() && !no_clip;
+        let compute = |last: &mut [i16; 3]| {
+            let (rotmat, scale) = object_local_k(root, animated, time, last, p.scale, [1.0; 3]);
+            need_obj.then(|| {
                 let top = actor_top(p.pos, &p.q_rot);
                 let m1 = mtx_cat(&rotmat, &top);
-                let obj = mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1);
-                view.check_bounding_box(b, &obj)
+                mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1)
+            })
+        };
+        // Phase 3S2: reuse the last result while every input is unchanged.
+        let mid = a.object_controller.unwrap_or(0);
+        let generation = self.models.generation();
+        let rc = &a.root_cache;
+        let hit = a.sphere.root_valid
+            && rc.model == mid
+            && rc.generation == generation
+            && rc.animated == animated
+            && rc.time == time.to_bits()
+            && rc.last_in == p.last_keys
+            && (rc.has_obj || !need_obj);
+        let (last, obj) = if hit {
+            if cfg!(debug_assertions) {
+                let mut last = p.last_keys;
+                let obj = compute(&mut last);
+                assert!(
+                    last == rc.last_out && obj.is_none_or(|o| o.as_flattened().iter().zip(rc.obj.as_flattened()).all(|(x, y)| x.to_bits() == y.to_bits())),
+                    "stale RootCache for actor {id:?}"
+                );
             }
+            (rc.last_out, need_obj.then_some(rc.obj))
+        } else {
+            let mut last = p.last_keys;
+            let obj = compute(&mut last);
+            (last, obj)
+        };
+        let clipped = match (root.bbox.as_ref(), obj.as_ref()) {
+            (Some(b), Some(obj)) => view.check_bounding_box(b, obj),
             _ => false,
         };
         let a = &mut self.actor2.actors[id].actor.actual_actor;
+        if !hit {
+            a.root_cache = RootCache {
+                model: mid,
+                generation,
+                animated,
+                has_obj: obj.is_some(),
+                time: time.to_bits(),
+                last_in: p.last_keys,
+                last_out: last,
+                obj: obj.unwrap_or(IDENTITY),
+            };
+            a.sphere.root_valid = true;
+        }
         a.placement.last_keys = last;
         if clipped {
             a.root_object_flags |= OBJECT_FLAGS_CLIPPED;
@@ -1008,6 +1211,7 @@ impl Game {
     }
 
     /// Port of `XformActor` (mdxActor.cpp:547): `UpdateAnims`, then the object transform.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn xform_actor(&mut self, id: ActorId, no_clip: bool) {
         if self.actor2.actors[id].actor.actual_actor.object_controller.is_none() {
             return;
@@ -1017,8 +1221,10 @@ impl Game {
         self.transform_actor_sprites(id);
         // `headMatrix` points at frog[0]'s head object's objMatrix (FindFrogSubObjects).
         if self.frogger.frog[0] == Some(id) {
-            if let Some(name) = self.tongue.head_object.clone() {
-                if let Some(mut m) = self.actor_sub_object_matrix(id, &name) {
+            // Phase 3S2: the name is borrowed (no `String` clone per tick).
+            let head = self.tongue.head_object.as_deref().and_then(|name| self.actor_sub_object_matrix(id, name));
+            {
+                if let Some(mut m) = head {
                     // TransformObject: objMatrix = postMatrix . top (headPostMatrix).
                     if let Some([x, y, z]) = self.tongue.head_post {
                         m = mtx_cat(&gu_scale(x, y, z), &m);
@@ -1031,12 +1237,15 @@ impl Game {
 
     /// The object sprites of `TransformObject` (mdxObject.cpp:461) for actor `id`: the sprites
     /// the model's objects point at follow the actor (position, size, `xlu`, `draw`).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn transform_actor_sprites(&mut self, id: ActorId) {
         let a2 = &self.actor2.actors[id];
         let a = &a2.actor.actual_actor;
         let Some(mid) = a.object_controller else { return };
         // After `ChangeModel` the controller is the shared bank model (NULL sprite pointers).
-        let Some(ptrs) = a2.obj_sprites.as_ref().filter(|(m, _)| *m == mid).map(|(_, p)| p) else { return };
+        if !a2.obj_sprites.as_ref().is_some_and(|(m, _)| *m == mid) {
+            return;
+        }
         let Some(model) = self.models.get(mid) else { return };
         if !model.xform_tree.iter().any(|x| x.has_sprites) {
             return;
@@ -1045,21 +1254,44 @@ impl Game {
         let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
         let p = a.placement;
         let draw = self.view.draw_this_objects_sprites;
-        let top = actor_top(p.pos, &p.q_rot);
-        let (sprites, model) = (&mut self.sprite, model.clone());
-        let mut next = 0;
-        transform_object_sprites(&model.xform_tree, &top, [1.0; 3], &p, animated, time, &mut next, &mut |i, pos, sx, sy, xlu| {
-            let Some(Some(sid)) = ptrs.get(i) else { return };
-            let sp = sprites.get_mut(*sid);
+        // Phase 3S2: the sprite placements are a function of the model, `animTime` and the
+        // placement; while those are unchanged the last ones are applied again.
+        let generation = self.models.generation();
+        let c = &a2.spr_cache;
+        let hit = a.sphere.spr_valid && c.model == mid && c.generation == generation && c.animated == animated && c.time == time.to_bits();
+        let compute = |vals: &mut Vec<(u32, [i16; 5], u8)>| {
+            vals.clear();
+            let top = actor_top(p.pos, &p.q_rot);
+            let mut next = 0;
+            transform_object_sprites(&model.xform_tree, &top, [1.0; 3], &p, animated, time, &mut next, &mut |i, pos, sx, sy, xlu| {
+                vals.push((i as u32, [ftol16(pos[0]), ftol16(pos[1]), ftol16(pos[2]), ftol16(sx), ftol16(sy)], xlu));
+            });
+        };
+        let a2 = &mut self.actor2.actors[id];
+        if !hit {
+            let mut vals = core::mem::take(&mut a2.spr_cache.vals);
+            compute(&mut vals);
+            a2.spr_cache = SpriteCache { model: mid, generation, animated, time: time.to_bits(), vals };
+            a2.actor.actual_actor.sphere.spr_valid = true;
+        } else if cfg!(debug_assertions) {
+            let mut vals = Vec::new();
+            compute(&mut vals);
+            assert!(vals == a2.spr_cache.vals, "stale SpriteCache for actor {id:?}");
+        }
+        let a2 = &self.actor2.actors[id];
+        let Some((_, ptrs)) = a2.obj_sprites.as_ref() else { return };
+        for &(i, [x, y, z, sx, sy], xlu) in &a2.spr_cache.vals {
+            let Some(Some(sid)) = ptrs.get(i as usize) else { continue };
+            let sp = self.sprite.get_mut(*sid);
             sp.draw = draw as i8;
             sp.g = (draw.wrapping_mul(0xff)) as u8;
-            sp.scale_x = ftol16(sx);
-            sp.scale_y = ftol16(sy);
+            sp.scale_x = sx;
+            sp.scale_y = sy;
             sp.a = xlu;
             sp.offset_x = -16;
             sp.offset_y = -16;
-            sp.pos = SVector { vx: ftol16(pos[0]), vy: ftol16(pos[1]), vz: ftol16(pos[2]), pad: 0 };
-        });
+            sp.pos = SVector { vx: x, vy: y, vz: z, pad: 0 };
+        }
     }
 
     /// Render-only (reads the state, changes nothing): the object sprites of actor `id` as
@@ -1100,6 +1332,7 @@ impl Game {
 
     /// Port of `KillObjectSprites` (mdxActor.cpp:115): an actor culled by `ActorListDraw`
     /// hides its object sprites.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     fn kill_object_sprites(&mut self, id: ActorId) {
         let a2 = &self.actor2.actors[id];
         let Some(mid) = a2.actor.actual_actor.object_controller else { return };
@@ -1152,7 +1385,9 @@ impl Game {
     /// `CreateActor`'s `XformActor(t, 1)` at the origin (mdxActor.cpp:953): sets the
     /// root object's initial clip flag against the current view.
     pub fn xform_new_actor(&mut self, id: ActorId) {
-        self.actor2.actors[id].actor.actual_actor.placement = MdxPlacement::default();
+        let a = &mut self.actor2.actors[id].actor.actual_actor;
+        a.placement = MdxPlacement::default();
+        a.sphere.invalidate();
         if self.view.valid {
             self.xform_actor(id, false);
         }
@@ -1175,6 +1410,7 @@ impl Game {
     }
 
     /// The loop body of `CopyActorList` for actor `id`.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn copy_actor(&mut self, id: ActorId, frog0: Option<SVector>) {
         let c = &mut self.actor2.actors[id];
         // Phase 3S: fields are only stored when their bits change, so unchanged actors
@@ -1198,12 +1434,32 @@ impl Game {
         }
         set(&mut p.visible, 1);
         set(&mut p.draw, 1);
-        set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
-        const S: f32 = 1.0 / 4096.0;
-        set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
-        if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
-            set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
+        // Phase 3S2: the float copies are already there while the integer sources are the
+        // ones they were made from (and nothing else has written the placement since).
+        let (src_pos, src_size, src_q) = ([pos.vx, pos.vy, pos.vz], [size.vx, size.vy, size.vz], [q.x, q.y, q.z, q.w]);
+        let pc = &c.actor.actual_actor.sphere;
+        if pc.copy_valid && pc.src_pos == src_pos && pc.src_size == src_size && pc.src_q == src_q {
+            if cfg!(debug_assertions) {
+                let mut check = *p;
+                copy_placement(&mut check, pos, size, q);
+                assert!(
+                    check.pos.map(f32::to_bits) == p.pos.map(f32::to_bits)
+                        && check.scale.map(f32::to_bits) == p.scale.map(f32::to_bits)
+                        && check.q_rot.map(f32::to_bits) == p.q_rot.map(f32::to_bits),
+                    "stale CopyActorList cache for actor {id:?}: a placement write did not invalidate it"
+                );
+            }
+            return;
         }
+        let changed = copy_placement(p, pos, size, q);
+        let pc = &mut c.actor.actual_actor.sphere;
+        if changed {
+            pc.invalidate();
+        }
+        pc.src_pos = src_pos;
+        pc.src_size = src_size;
+        pc.src_q = src_q;
+        pc.copy_valid = true;
     }
 
     /// Port of `ActorListDraw` (mdxActor.cpp:139): the sphere test that decides whether
@@ -1239,6 +1495,7 @@ impl Game {
 
     /// The loop body of `ActorListDraw` for actor `id` (`view` = the current
     /// `specfx.view`; without one nothing is culled).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn actor_list_draw_one(&mut self, id: ActorId, view: Option<&ViewXform>) {
         let Some(view) = view else {
             self.view.draw_this_objects_sprites = self.actor2.actors[id].actor.actual_actor.placement.draw as u32;
@@ -1246,12 +1503,39 @@ impl Game {
             self.transform_actor_sprites(id);
             return;
         };
-        let a = &self.actor2.actors[id].actor.actual_actor;
-        let Some(model) = a.object_controller.and_then(|m| self.models.get(m)) else { return };
+        let generation = self.models.generation();
+        let a = &mut self.actor2.actors[id].actor.actual_actor;
+        let Some(mid) = a.object_controller else { return };
+        // Phase 3S2: the world sphere is reused while placement and model are unchanged (a
+        // valid entry also proves the model exists: the table has not changed since).
+        let hit = a.sphere.valid && a.sphere.model == mid && a.sphere.generation == generation;
+        let model = if hit {
+            None
+        } else {
+            let Some(model) = self.models.get(mid) else { return };
+            Some(model)
+        };
         self.view.draw_this_objects_sprites = a.placement.draw as u32;
-        let p = a.placement;
         let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
-        let visible = if draw_override { true } else { sphere_visible(model, &p, view) };
+        let visible = draw_override || {
+            let c = &mut a.sphere;
+            if let Some(model) = model {
+                let (centre, radius) = sphere_world(model, &a.placement);
+                c.valid = true;
+                c.model = mid;
+                c.generation = generation;
+                c.centre = centre;
+                c.radius = radius;
+            } else if cfg!(debug_assertions) {
+                let model = self.models.get(mid).expect("cached model");
+                let (centre, radius) = sphere_world(model, &a.placement);
+                assert!(
+                    centre.map(f32::to_bits) == c.centre.map(f32::to_bits) && radius.to_bits() == c.radius.to_bits(),
+                    "stale SphereCache for actor {id:?}: a placement write did not invalidate it"
+                );
+            }
+            sphere_on_screen(c.centre, c.radius, view)
+        };
         if visible {
             self.xform_actor(id, draw_override);
         } else {

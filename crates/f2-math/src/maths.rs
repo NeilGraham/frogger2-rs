@@ -402,6 +402,7 @@ fn normalise_components(comps: &mut [i32], num: u32, l: u32, s: u32) {
 ///
 /// # Panics
 /// Only where the original would raise a divide-by-zero (not reachable for `m != 0`).
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
 pub fn make_unit(vect: &mut FVector) {
     let c = [fabs(vect.vx) as u32, fabs(vect.vy) as u32, fabs(vect.vz) as u32];
     let num = c[0] | c[1] | c[2];
@@ -479,6 +480,7 @@ pub fn calculate_quat_for_plane2(y_rot: Fixed, q_aim: &mut IQuaternion, normal: 
 
 /// Port of `IQuatSlerp` (Common/maths.c:1248). Equivalent to the C when `dquat` aliases
 /// `sp2` (as in babyfrog.c); the C never calls it with `dquat` aliasing `src1`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
 pub fn iquat_slerp(src1: &IQuaternion, sp2: &IQuaternion, t: Fixed, dquat: &mut IQuaternion) {
     let (a, b) = (*src1, *sp2);
     let sq4 = |x: i32, y: i32, z: i32, w: i32| fmul(x, x).wrapping_add(fmul(y, y)).wrapping_add(fmul(z, z)).wrapping_add(fmul(w, w));

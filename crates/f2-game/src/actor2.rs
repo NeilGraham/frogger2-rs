@@ -119,6 +119,9 @@ pub struct Actor2 {
     /// objects per actor), in `AddObjectsSpritesToSpriteList` order, with the model id they
     /// belong to. `TransformObject` positions them (`view.rs`).
     pub obj_sprites: Option<(u32, Vec<Option<crate::ids::SpriteId>>)>,
+    /// Phase 3S2: the object sprites' last placements (a cache, not state; see
+    /// [`crate::view::SpriteCache`]).
+    pub spr_cache: crate::view::SpriteCache,
 }
 
 crate::ser_order!(Actor2, "Actor2", Actor2Wire {
@@ -139,7 +142,7 @@ crate::ser_order!(Actor2, "Actor2", Actor2Wire {
     dff_clipping: i8,
     #[serde(default)]
     obj_sprites: Option<(u32, Vec<Option<crate::ids::SpriteId>>)>,
-});
+} skip { spr_cache });
 
 /// Arena of actors; freed slots stay `None` until the next level.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -225,6 +228,7 @@ pub fn actor_model_name(name: &str) -> String {
 
 /// Port of `Orientate` (Common/actor2.c:1038): builds a quaternion that points the
 /// actor's z axis along `fd` with `up` as the up vector.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
 pub fn orientate(me: &mut IQuaternion, fd: &FVector, up: &FVector) {
     let mut r1 = IQuaternion::default();
     let mut q1 = IQuaternion::default();
@@ -370,6 +374,8 @@ impl Game {
             root_object_flags: model.root_flags() & !(object_flags::OBJECT_FLAGS_MODGE | object_flags::OBJECT_FLAGS_WAVE | object_flags::OBJECT_FLAGS_ADDITIVE),
             animation: Some(init_anims(&model)),
             placement: Default::default(),
+            sphere: Default::default(),
+            root_cache: Default::default(),
         };
 
         let mut item = Actor2::default();

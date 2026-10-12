@@ -187,6 +187,12 @@ impl SpriteState {
         self.next.get(s.idx()).is_some_and(|&n| n != NIL)
     }
 
+    /// The sprite after `s` in the list (`None` at the end), as [`iter_list`](Self::iter_list) walks it.
+    pub fn next_in_list(&self, s: SpriteId) -> Option<SpriteId> {
+        let n = self.next[s.idx()];
+        (n != self.head() && n != NIL).then_some(SpriteId(n))
+    }
+
     /// Live sprites in list order (`for(cur = sprList.head.next; cur != &sprList.head; ...)`).
     pub fn iter_list(&self) -> impl Iterator<Item = (SpriteId, &Sprite)> + '_ {
         let head = self.head();
@@ -223,8 +229,10 @@ impl Game {
             return;
         }
         let gs = self.game_speed;
-        let ids: Vec<SpriteId> = self.sprite.iter_list().map(|(i, _)| i).collect();
-        for id in ids {
+        // Phase 3S2: walks the list in place (the body changes no links), no id snapshot.
+        let mut cur = self.sprite.iter_list().next().map(|(i, _)| i);
+        while let Some(id) = cur {
+            cur = self.sprite.next_in_list(id);
             let s = self.sprite.get_mut(id);
             if s.draw == 0 || s.texture == 0 || s.scale_x == 0 || s.scale_y == 0 {
                 continue;

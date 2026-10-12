@@ -321,6 +321,7 @@ impl Game {
 
     /// P7b hook (`UpdateEnemies`): `true` if a live script claimed enemy `id` and its
     /// `on_enemy_update(e)` ran instead of the built-in movement.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn modscript_update_enemy(&mut self, id: EnemyId) -> bool {
         if !self.modscript_active() {
             return false;

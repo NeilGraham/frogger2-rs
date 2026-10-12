@@ -1899,6 +1899,7 @@ impl Game {
     }
 
     /// Port of `ProcessAttachedEffects` (Common/specfx.c:1802).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn process_attached_effects(&mut self, entity: FxEntity) {
         let (act, tile, flags, path, is_enemy) = match entity {
             FxEntity::Enemy(id) => {

@@ -8,7 +8,10 @@
 //! * one call to [`Game::tick`] = one 60 Hz logical frame (`gameSpeed == 4096`).
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![forbid(unsafe_code)]
+#![cfg_attr(not(target_vendor = "nintendo64"), forbid(unsafe_code))]
+// The N64 build only: `link_section` (an "unsafe" attribute) places the per-actor pass in one
+// I-cache-friendly region (`.text.f2hot_s`, tools/n64/Makefile); there is still no unsafe code.
+#![cfg_attr(target_vendor = "nintendo64", deny(unsafe_code))]
 
 extern crate alloc;
 
@@ -93,6 +96,11 @@ mod view_tables; // phase 3S: generated sinFast/acosFast tables
 #[doc(hidden)]
 macro_rules! ser_order {
     ($ty:ident, $name:literal, $wire:ident { $( $(#[$m:meta])* $f:ident : $t:ty ),* $(,)? }) => {
+        $crate::ser_order!($ty, $name, $wire { $( $(#[$m])* $f: $t ),* } skip {});
+    };
+    // `skip`: derived caches that are not part of the state (not serialized; `Default` when
+    // deserialized).
+    ($ty:ident, $name:literal, $wire:ident { $( $(#[$m:meta])* $f:ident : $t:ty ),* $(,)? } skip { $( $sk:ident ),* }) => {
         #[derive(serde::Serialize)]
         #[serde(rename = $name)]
         struct $wire<'a> {
@@ -112,7 +120,7 @@ macro_rules! ser_order {
             impl<'de> serde::Deserialize<'de> for $ty {
                 fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
                     let o = Owned::deserialize(d)?;
-                    Ok($ty { $( $f: o.$f, )* })
+                    Ok($ty { $( $f: o.$f, )* $( $sk: Default::default(), )* })
                 }
             }
         };
@@ -318,6 +326,7 @@ impl Game {
     /// matrix, sounds and `Random()` (in the same order as before, as `CopyActorList` makes
     /// none of those calls); `CopyActorList` reads only its own actor and `frog[0]`'s
     /// position (unchanged by drawing); neither creates, frees nor re-lists actors.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     fn copy_and_draw_actors(&mut self) {
         use define::mode::*;
         if matches!(self.game_state.mode, ARTVIEWER_MODE | STARTUP_MODE | TEASERSCREEN_MODE) {
