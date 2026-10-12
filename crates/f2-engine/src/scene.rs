@@ -569,6 +569,10 @@ pub struct MeshDraw {
     /// Version of the matrices (`PoseCache::stamp`): a draw of the same object with the
     /// same stamp has the same matrices. 0 = unknown.
     pub stamp: u32,
+    /// The object's `OBJECT_FLAGS_MODGE` (bit 0) / `OBJECT_FLAGS_WAVE` (bit 1): the back end
+    /// animates the mesh like `PCCalcModgeValues` at `modge_frame` (`timeInfo.frameCount`).
+    pub modge: u8,
+    pub modge_frame: u32,
 }
 
 /// Receives each recorded mesh draw as it is made (a [`MeshSink`] with a back end stores
@@ -638,6 +642,8 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
         no_clip: cx.view.no_clip,
         object_fog: true,
         stamp,
+        modge: 0,
+        modge_frame: actor.modge_frame,
     };
     if model.is_skinned {
         if model.root.mesh.is_none() {
@@ -659,10 +665,12 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
         }
         let objs = &actor.mesh_objects.as_ref().unwrap().1;
         for &(i, flags) in objs {
-            let frame = object_frame(flags | extra, fade, actor.wrap_tc);
+            let f = flags | extra;
+            let frame = object_frame(f, fade, actor.wrap_tc);
             if frame != Frame::Glow {
                 let i = i as usize;
-                sink.push(cx.view, MeshDraw { object: i as u16, frame, ..base }, &mats[i..i + 1]);
+                let modge = (f & OBJECT_FLAGS_MODGE != 0) as u8 | ((f & OBJECT_FLAGS_WAVE != 0) as u8) << 1;
+                sink.push(cx.view, MeshDraw { object: i as u16, frame, modge, ..base }, &mats[i..i + 1]);
             }
         }
     }
@@ -690,6 +698,8 @@ pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink)
             no_clip: cx.view.no_clip,
             object_fog: false,
             stamp,
+            modge: 0,
+            modge_frame: 0,
         };
         sink.push(cx.view, d, &mats[i..i + 1]);
     });

@@ -234,6 +234,8 @@ extern "C" {
     pub fn n64_tex_create2(full: *const TexDesc, small: *const TexDesc) -> u32;
     pub fn n64_tex_free(handle: u32);
     pub fn n64_draw_rects(rects: *const Rect, n: u32, state: *const State);
+    /// Writes `len` bytes at `p` back from the data cache (data the RSP will DMA).
+    pub fn n64_cache_writeback(p: *const u8, len: u32);
     pub fn n64_heap_stats(out: *mut HeapStats);
     pub fn n64_sfx_open(path: *const u8, looped: u32) -> u32;
     pub fn n64_sfx_close(handle: u32);

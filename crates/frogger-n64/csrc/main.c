@@ -1390,3 +1390,7 @@ F2_NO_FAST_MATH static void floor_selftest(void) {
     if (!__builtin_signbit(z)) bad++;
     debugf("floor selftest: %d mismatches\n", bad);
 }
+
+void n64_cache_writeback_impl(const void *p, uint32_t len) {
+    if (len) data_cache_hit_writeback(p, len);
+}

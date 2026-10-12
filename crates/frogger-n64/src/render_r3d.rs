@@ -256,6 +256,9 @@ impl R3dLevel {
             },
             None => None,
         };
+        if d.modge != 0 {
+            self.r.animate_modge(mesh, d.modge_frame, d.modge);
+        }
         let p = crate::r3d::DrawParams { alpha_mul: d.alpha_mul, gouraud: d.gouraud, override_tex, no_clip: d.no_clip, object_fog: d.object_fog };
         if d.object == MESH_SKIN {
             self.r.draw_skinned(list, mesh, mats, &p);

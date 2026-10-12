@@ -260,6 +260,36 @@ struct MeshRes {
     /// mesh is skinned): tested first, so wholly visible / invisible meshes skip the parts.
     center: [f32; 3],
     radius: f32,
+    /// The mesh's vertices in its loaded file (16 bytes each, big-endian), read by the RSP's
+    /// DMA: `MODGE`/`WAVE` meshes are rewritten in place each frame ([`R3d::animate_modge`]).
+    verts: usize,
+    n_verts: u32,
+    modge: Option<alloc::boxed::Box<ModgeMesh>>,
+}
+
+/// Base data of a `MODGE`/`WAVE` mesh's vertices and the frame they were last animated for.
+struct ModgeMesh {
+    /// Per vertex: model-space x, z; stored y, s, t, alpha.
+    base: Vec<(f32, f32, i16, i16, i16, u8)>,
+    frame: u32,
+    flags: u8,
+}
+
+/// 1024-entry sine table over one period (+1 for interpolation).
+fn sin_table() -> &'static [f32; 1025] {
+    static TABLE: spin::Once<[f32; 1025]> = spin::Once::new();
+    TABLE.call_once(|| core::array::from_fn(|i| libm::sinf(i as f32 * (core::f32::consts::TAU / 1024.0))))
+}
+
+/// Table sine (linear interpolation; |error| < 5e-6): the N64 approximation of
+/// `PCCalcModgeValues`' `sinf`/`cosf`.
+#[inline]
+fn fast_sin(t: &[f32; 1025], x: f32) -> f32 {
+    let p = x * (1024.0 / core::f32::consts::TAU);
+    let fl = libm::floorf(p);
+    let i = (fl as i64).rem_euclid(1024) as usize;
+    let f = p - fl;
+    t[i] + (t[i + 1] - t[i]) * f
 }
 
 /// Draw slot `i`'s last draw (see [`R3d::draw_slot`]): reusable while nothing it depends
@@ -679,6 +709,9 @@ impl R3d {
             tris: m.entry.n_tris,
             center: [0.0; 3],
             radius: -1.0,
+            verts: m.vertices.as_ptr() as usize,
+            n_verts: m.entry.n_verts as u32,
+            modge: None,
         };
         let add = |cmds: &[u8], group: usize, tris: u16, center: [f32; 3], radius: f32| -> Result<Part, LoadError> {
             let desc = ffi::R3dGroupDesc {
@@ -889,6 +922,74 @@ impl R3d {
     pub fn draw(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams) {
         self.draw_slot(list, mesh, model, p, u32::MAX, 0);
     }
+
+    /// `PCCalcModgeValues` on a rigid mesh's vertices at frame `fc` (`flags` bit 0 MODGE:
+    /// texture coordinates wobble by `0.4·(tMx, tMz)`; bit 1 WAVE: vertices rise by `tMy`;
+    /// both: the water's alpha follows `50 + (tMx + tMz)·400` around its stored value), written
+    /// into the mesh's vertex buffer once per frame (instances share the model-space result).
+    /// The RSP may still be reading the previous frame's values: a wave one frame newer.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    pub fn animate_modge(&mut self, mesh: MeshId, fc: u32, flags: u8) {
+        let Some(res) = self.meshes.get_mut(mesh.0 as usize) else { return };
+        if res.skinned || res.n_verts == 0 || flags & 3 == 0 {
+            return;
+        }
+        // SAFETY: `verts` points into a file kept in `self.files` for as long as the mesh.
+        let v = unsafe { core::slice::from_raw_parts_mut(res.verts as *mut u8, res.n_verts as usize * 16) };
+        let scale = res.pos_scale;
+        let st = res.modge.get_or_insert_with(|| {
+            let rd = |o: usize| i16::from_be_bytes([v[o], v[o + 1]]);
+            let base = (0..res.n_verts as usize)
+                .map(|i| {
+                    let o = i * 16;
+                    (rd(o) as f32 * scale, rd(o + 4) as f32 * scale, rd(o + 2), rd(o + 12), rd(o + 14), v[o + 11])
+                })
+                .collect();
+            crate::log!("r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, flags {})", res.id, res.n_verts, flags);
+            alloc::boxed::Box::new(ModgeMesh { base, frame: u32::MAX, flags: 0 })
+        });
+        if st.frame == fc && st.flags == flags {
+            return;
+        }
+        st.frame = fc;
+        st.flags = flags;
+        let tb = sin_table();
+        let sinf = |x: f32| fast_sin(tb, x);
+        let cosf = |x: f32| fast_sin(tb, x + core::f32::consts::FRAC_PI_2);
+        let t = fc as f32;
+        let (modge, wave) = (flags & 1 != 0, flags & 2 != 0);
+        let inv = 1.0 / scale;
+        for (i, &(x, z, y0, s0, t0, a0)) in st.base.iter().enumerate() {
+            let o = i * 16;
+            let mx = (sinf(z * (1.5 / 35.0) + sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)) + t * (1.5 / 70.0)) + 1.0) * 0.1;
+            let mz = (cosf(x * (1.5 / 49.0) + cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)) + t * (1.5 / 66.0)) + 1.0) * 0.1;
+            if wave {
+                let my = (sinf(z * (1.2 / 26.0) + cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0)) + t * (1.0 / 26.0)) + 1.0) * 5.0;
+                let y = libm::roundf(y0 as f32 + my * inv).clamp(-32768.0, 32767.0) as i16;
+                v[o + 2..o + 4].copy_from_slice(&y.to_be_bytes());
+            }
+            if modge {
+                let s = libm::roundf(s0 as f32 + mx * 0.4 * 1024.0).clamp(-32768.0, 32767.0) as i16;
+                let tt = libm::roundf(t0 as f32 + mz * 0.4 * 1024.0).clamp(-32768.0, 32767.0) as i16;
+                v[o + 12..o + 14].copy_from_slice(&s.to_be_bytes());
+                v[o + 14..o + 16].copy_from_slice(&tt.to_be_bytes());
+                if wave {
+                    // PC: alpha = 50 + (tMx+tMz)·400 (130 on average); scaled around the stored
+                    // alpha so additive-split corner colours keep their factor.
+                    let k = (50.0 + (mx + mz) * 400.0) / 130.0;
+                    v[o + 11] = libm::roundf(a0 as f32 * k).clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        Self::c_writeback(v);
+    }
+
+    #[cfg(target_vendor = "nintendo64")]
+    fn c_writeback(v: &[u8]) {
+        unsafe { ffi::n64_cache_writeback(v.as_ptr(), v.len() as u32) }
+    }
+    #[cfg(not(target_vendor = "nintendo64"))]
+    fn c_writeback(_v: &[u8]) {}
 
     /// [`draw`](Self::draw) as draw number `slot` of the frame with matrix stamp `stamp`
     /// (`MeshDraw::stamp`): when the previous frame's draw `slot` had the same mesh, stamp,
@@ -1300,6 +1401,15 @@ mod tests {
     }
 
     /// The integer conversion equals the FPU one (multiply, truncate, saturate).
+    #[test]
+    fn fast_sin_is_close() {
+        let t = sin_table();
+        for i in -20000..20000 {
+            let x = i as f32 * 0.0137;
+            assert!((fast_sin(t, x) - libm::sinf(x)).abs() < 2e-5, "{x}");
+        }
+    }
+
     #[test]
     fn to_fixed_matches_fpu() {
         let fpu = |v: f32| -> (i16, u16) {

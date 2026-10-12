@@ -27,7 +27,7 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 libm = "0.2.16"
 # F2Z asset codec: default features = the no_std, allocation-free decoder.
 f2-n64z = { path = "../f2-n64z" }
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "once"] }
 
 [dev-dependencies]
 # examples/host_shot.rs (host only): directory data source and PNG output.

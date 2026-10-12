@@ -152,6 +152,7 @@ uint32_t n64_tex_create_ntx(const n64_ntx_desc_t *desc);         /* texture over
 void n64_begin_frame(uint32_t clear_rgba);         /* attach next framebuffer + z-buffer, clear both */
 void n64_draw_tris(const n64_vertex_t *verts, uint32_t ntris, const n64_state_t *state);
 void n64_draw_rects(const n64_rect_t *rects, uint32_t n, const n64_state_t *state);
+void n64_cache_writeback(const void *p, uint32_t len);
 void n64_present(void);                            /* detach + show */
 void n64_set_fps_limit(uint32_t fps);                /* display_set_fps_limit (0 = none) */
 void n64_rdp_wait(void);                           /* block until the RSP/RDP queue is idle (probes) */

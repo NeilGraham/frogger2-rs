@@ -50,6 +50,7 @@
     RUST_TO_C n64_tex_create2
     RUST_TO_C n64_tex_free
     RUST_TO_C n64_draw_rects
+    RUST_TO_C n64_cache_writeback
     RUST_TO_C n64_heap_stats
     RUST_TO_C n64_sfx_open
     RUST_TO_C n64_sfx_close
