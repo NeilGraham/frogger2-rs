@@ -455,6 +455,12 @@ pub struct R3d {
     pub cache_hits: u32,
     /// Draws that reused their model-side work with a new view (see `draw_slot`).
     pub view_hits: u32,
+    /// Measurement (polygon budget, 2026-10): draws and triangles per on-screen radius class
+    /// (< 1, < 1.5, < 3 px; whole-mesh bounding sphere), summed with all draws and frames;
+    /// logged every 300 frames.
+    size_classes: [(u32, u32); 3],
+    size_all: (u32, u32),
+    size_frames: u32,
     wc_tmp: Vec<[f32; 3]>,
 }
 
@@ -696,6 +702,9 @@ impl R3d {
             frame_no: 1,
             cache_hits: 0,
             view_hits: 0,
+            size_classes: [(0, 0); 3],
+            size_all: (0, 0),
+            size_frames: 0,
             wc_tmp: Vec::new(),
         }
     }
@@ -888,6 +897,22 @@ impl R3d {
         self.vis.clear();
         self.cache_hits = 0;
         self.view_hits = 0;
+        self.size_frames += 1;
+        if option_env!("F2N64_MEASURE_SIZES").is_some() && self.size_frames == 300 {
+            let f = self.size_frames;
+            let [a, b, c] = self.size_classes.map(|(d, t)| (d / f, t / f));
+            #[cfg(target_vendor = "nintendo64")]
+            crate::log!(
+                "r3d sizes per frame: {} draws {} tris; radius < 1 px: {} draws {} tris; < 1.5 px: {} / {}; < 3 px: {} / {}",
+                self.size_all.0 / f, self.size_all.1 / f, a.0, a.1, b.0, b.1, c.0, c.1
+            );
+            let _ = (a, b, c);
+            self.size_classes = [(0, 0); 3];
+            self.size_all = (0, 0);
+        }
+        if self.size_frames >= 300 {
+            self.size_frames = 0;
+        }
         self.frame = frame_uniform_vp(view, false);
         self.frame_noclip = frame_uniform_vp(view, true);
         self.vp = view_proj(view, false);
@@ -1095,6 +1120,26 @@ impl R3d {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         self.queued_tris += res.tris;
         let pos_scale = res.pos_scale;
+        // Measurement (F2N64_MEASURE_SIZES=1): on-screen radius of the mesh's bounding
+        // sphere (`p * M`, clip w).
+        if option_env!("F2N64_MEASURE_SIZES").is_some() && res.radius >= 0.0 {
+            let m = &model_scaled(model, pos_scale);
+            let c = res.center;
+            let wc = core::array::from_fn::<f32, 3, _>(|k| c[0] * m[0][k] + c[1] * m[1][k] + c[2] * m[2][k] + m[3][k]);
+            let w = wc[0] * self.vp[0][3] + wc[1] * self.vp[1][3] + wc[2] * self.vp[2][3] + self.vp[3][3];
+            let sc = fast_sqrt(m[0][0] * m[0][0] + m[0][1] * m[0][1] + m[0][2] * m[0][2]);
+            let focal = self.view.fov * self.view.viewport[2] / 640.0;
+            let px = if w > self.view.near { res.radius * sc * focal / w } else { f32::MAX };
+            let (tris, t) = (res.tris, &mut self.size_classes);
+            self.size_all.0 += 1;
+            self.size_all.1 += tris;
+            for (k, lim) in [1.0f32, 1.5, 3.0].into_iter().enumerate() {
+                if px < lim {
+                    t[k].0 += 1;
+                    t[k].1 += tris;
+                }
+            }
+        }
         let cached = slot != u32::MAX && stamp != 0;
         let pk = if cached { params_key(p) } else { [0; 6] };
         let prev = self.frame_no.wrapping_sub(1);

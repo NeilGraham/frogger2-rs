@@ -421,8 +421,10 @@ void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draw
             if (st->blend == N64_BLEND_ADD && !(st->flags & N64_TRUE_ADDITIVE)) th = additive_tex(th);
             if (th != cur_tex) upload_tex(th, st->flags);
             const r3d_group_t *g = &groups[gh];
+#ifndef F2N64_NO_TRIS /* measurement: everything but the triangles (the ceiling of fewer polygons) */
             if (g->block && !r3d_flat) rspq_block_run(g->block);
             else draw_inline(g, d);
+#endif
             stats.groups++;
         }
         stats.draws++;

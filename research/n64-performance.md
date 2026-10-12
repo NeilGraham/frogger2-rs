@@ -965,3 +965,33 @@ Measured in ares: `rdpq_tex_blit` ~41 us per call vs ~19 us for upload + one
 - Garden 1 hopping: rects 3.7 -> 2.2 ms/frame, ~16.2 -> ~17.8 fps. Left: ~6 full RDP mode
   resets/frame after r3d lists (~100 us each; push/pop could cut them), ~40 CPU triangles
   (shadows/effects, ~2 ms; candidates for the RSP path).
+
+## Polygon budget (2026-10-12): the triangles are not the cost
+
+Question: would fewer polygons (the N64's 320x240 hides much of the detail) raise the frame
+rate? Measured in ares, idle in each level, normal build against `F2N64_CFLAGS=-DF2N64_NO_TRIS`
+(r3d does all of its CPU work but sends no triangles) and `F2N64_MEASURE_SIZES=1` (on-screen
+radius of each draw's bounding sphere):
+
+| level | fps | fps, no triangles | sim | draw loop | RSP busy | RDP busy |
+|---|---|---|---|---|---|---|
+| Garden 1 (0-0) | 15.7 | 15.8 | 14 ms | 33 ms | 31 % | 18 % |
+| Space 1 (2-0) | 9.6 | 9.7 | 22 ms | 53 ms | 29 % | 17 % |
+| Lab 1 (5-0) | 9.3 | 9.6 | 19 ms | 53 ms | 30 % | 19 % |
+
+Without any triangles the frame rate moves 0-3 %: the RSP and RDP idle ~70 % of the time and
+the CPU is the whole bottleneck (per-object draw work and the simulation). Mesh decimation
+would cost model quality for no measurable gain; dropped.
+
+Draws per frame by on-screen radius (draws / their triangles):
+
+| level | all | < 1 px | < 1.5 px | < 3 px |
+|---|---|---|---|---|
+| Garden 1 | 204 / 8986 | 22 / 194 | 41 / 418 | 68 / 1016 |
+| Space 1 | 241 / 9249 | 6 / 54 | 11 / 98 | 27 / 356 |
+| Lab 1 | 269 / 9053 | 25 / 215 | 52 / 476 | 81 / 994 |
+
+15-30 % of the draws in Garden and Lab are a few pixels big (~10 % of the triangles): skipping
+them saves per-object CPU work, but only if the test comes before that work. Order chosen:
+per-object CPU cost first (unchanged objects skip their draw work), then the small-object skip
+on its cached transforms, then the simulation (19-22 ms in Space/Lab).

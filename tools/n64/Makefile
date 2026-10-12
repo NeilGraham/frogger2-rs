@@ -13,6 +13,8 @@ N64_ROM_EXPANSIONPAK = required
 N64_ROM_SAVETYPE = sram256k
 
 CFLAGS += -I$(CSRC) -I$(BUILD_DIR)
+# Measurement switches from the environment (e.g. F2N64_CFLAGS=-DF2N64_NO_TRIS).
+CFLAGS += $(F2N64_CFLAGS)
 
 # RSP ucodes (rsp_*.S are assembled as RSP code by n64.mk).
 RSP_OBJS = $(BUILD_DIR)/rsp_f2mdx.o $(BUILD_DIR)/rsp_f2clip.o
