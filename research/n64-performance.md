@@ -1427,3 +1427,23 @@ hopping on the head: 11.1–13.1 fps, queue 5.2–5.6 ms, flush 1.3–1.8 ms, no
   palette and RGBA textures.
 - Merging the objects of a multi-object actor into one multi-matrix draw (70 of 205 draws in
   Garden are one 14-object model × 5) needs packer + f2-engine changes.
+
+## After the 3S2 + 3E + 3R merges (2026-10-12, `e087180`)
+Same benchmark (`tools/n64/bench.sh m3-wW "level-hop W 0" 40`, clean build, last 4 windows of
+5 s, frog hopping). fps before (first table of "30 fps push") → now; per frame now:
+
+| level | fps | sim | draw (loop / r3d queue / flush / 2D submit) | Game::tick (of which actordraw) | audio poll / tick | worst frame |
+|---|---|---|---|---|---|---|
+| Garden 1 (0-0) | 15.4 → **28.4** | 10 ms | 21–22 (13 / 4.1 / 1.4 / 1) | 8.9 (4.0) | 1.0 | 36 ms |
+| Ancients 1 (1-0) | 19.0 → **29.4** | 9 | 22 (13 / 4.1 / 1.4 / 1) | 7.1 (3.0) | 0.9 | 34 |
+| Space 1 (2-0) | 10.2 → **16.6** | 18 | 37 (24 / 4.7 / 1.5 / 3–4) | 14.9 (6.4) | 2.1 | 58 |
+| City (3-0) | 39.8 → **59.0** | 5 | 10 (4 / 3.1 / 0.8 / 0) | 3.6 (1.5) | 0.6 | 19 |
+| Subterranean 1 (4-0) | 12.6 → **19.3** | 15 | 30 (20 / 4.9 / 1.3 / 1) | 10.9 (4.8) | 2.5 | 49 |
+| Lab 1 (5-0) | 10.6 → **17.5** | 15 | 34 (21 / 5.0 / 1.4 / 3) | 11.1 | 2.8 | 60 |
+| Halloween 1 (6-0) | 13.5 → **22.2** | 13 | 27 (16 / 5.5 / 1.2 / 1) | 11.0 (4.1) | 1.6 | 45 |
+| Retro 1 (7-0) | 28.7 → **45.6** | 8 | 12 (7 / 2.1 / 0.8 / 0) | 6.9 (3.4) | 0.7 | 25 |
+| frontend (8-0) | 16.5 → **25.5** | 8 | 26 (13 / 5.2 / 1.7 / 3) | 6.8 (3.4) | 1.1 | 41 |
+
+Lab 1's last window is a game over (mode 0), so its row uses the earlier windows. Garden draw
+phases (µs/frame): actors0 7.8 ms, actors1 1.6, shadows 0.9, sprites 1.0, overlays 1.2,
+refill 0.4, snapshot 0.5. Host tests pass. Screenshots: `target/n64/bench-m3/` (not in the repo).
