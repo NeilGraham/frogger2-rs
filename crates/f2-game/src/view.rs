@@ -537,7 +537,6 @@ impl XNode {
 /// (`scalemat . rotmat . top`). Calls `f(sprite index, world pos ×10, scaleX, scaleY, xlu)`
 /// in `AddObjectsSpritesToSpriteList` order.
 #[allow(clippy::too_many_arguments)]
-#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 fn transform_object_sprites(
     chain: &[XNode],
     top: &Mat4,
