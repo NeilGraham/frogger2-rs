@@ -304,20 +304,30 @@ struct ModgeMesh {
     rsp: Option<ModgeRsp>,
 }
 
-/// Most positions of a mesh `F2_Modge` takes (its table lives in DMEM).
-const MODGE_RSP_MAX_PAIRS: usize = 128;
-/// `F2_Modge` descriptor header bytes (the position table follows).
-const MODGE_DESC_HEAD: usize = 24;
+/// `F2_Modge` descriptor header bytes (the x and z terms follow, 8 bytes each).
+const MODGE_DESC_HEAD: usize = 32;
+/// DMEM scratch of `F2_Modge` (magma's vertex cache + padding, rsp_f2mdx.S).
+const MODGE_DMEM: usize = 1960;
+/// The sine table as `F2_Modge` DMAs it (bytes; [`SinTab`] padded to 8).
+const MODGE_TAB_BYTES: usize = 520;
 
-/// RDRAM buffers of a mesh animated by `F2_Modge` (rsp_f2mdx.S): the stored vertices, the
-/// per-vertex position index and a ring of three descriptors (header + position table: the
-/// RSP may still read the two previous frames' while the CPU writes the next).
+/// RDRAM buffers of a mesh whose positions and vertices `F2_Modge` (rsp_f2mdx.S) animates:
+/// the stored vertices, the per-vertex position index, the position list (byte offsets of
+/// its x and z terms in the descriptor, stored alpha << 7) and a ring of three descriptors
+/// (header + this frame's x/z terms: the RSP may still read the two previous frames' while
+/// the CPU writes the next).
 struct ModgeRsp {
     buf: Vec<u64>,
     idx_off: usize,
+    pos_off: usize,
     desc_off: usize,
+    /// Descriptor bytes (`F2_Modge`'s DMA size) and the ring's stride.
     desc_size: usize,
+    desc_stride: usize,
+    /// DMEM offset of the position table (`MODGE_DMEM` - 8 x positions rounded up to 16).
+    pt_off: u16,
     cur: usize,
+    k: ModgeK16,
 }
 
 impl ModgeRsp {
@@ -325,6 +335,20 @@ impl ModgeRsp {
         // SAFETY: plain memory owned by `buf`.
         unsafe { core::slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut u8, self.buf.len() * 8) }
     }
+}
+
+/// The sine table for `F2_Modge` in RDRAM (8-byte aligned for DMA, written back once).
+fn modge_rsp_table() -> *const u8 {
+    #[repr(C, align(16))]
+    struct Tab([i16; MODGE_TAB_BYTES / 2]);
+    static TABLE: spin::Once<Tab> = spin::Once::new();
+    let t = TABLE.call_once(|| {
+        let mut t = Tab([0; MODGE_TAB_BYTES / 2]);
+        t.0[..257].copy_from_slice(sin_q14());
+        R3d::c_writeback(unsafe { core::slice::from_raw_parts(t.0.as_ptr() as *const u8, MODGE_TAB_BYTES) });
+        t
+    });
+    t.0.as_ptr() as *const u8
 }
 
 /// The physical (RDRAM) address of a pointer into cached memory.
@@ -483,6 +507,68 @@ fn modge_pair(t: &SinTab, px: &[u32; 3], pz: &[u32; 3], a0: u8, ky: i32, ky_sh: 
 fn modge_apply(q: &ModgePair, y0: i16, s0: i16, t0: i16) -> (i16, i16, i16) {
     let sat16 = |v: i32| v.clamp(-32768, 32767) as i16;
     (sat16(y0 as i32 + q.dy as i32), sat16(s0 as i32 + q.ds as i32), sat16(t0 as i32 + q.dt as i32))
+}
+
+/// `F2_Modge`'s per-mesh constants (Q15 multipliers of `vmulf`): y per Q10 `(sin + 1)`
+/// (WAVE; 0 without), s and t per Q10 `(sin + 1)` (MODGE; 0 without).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ModgeK16 {
+    kyh: i16,
+    kst: i16,
+}
+
+fn modge_k16(scale: f32, flags: u8) -> ModgeK16 {
+    // dy = S·5/(1024·scale), ds = S·0.04 (0.4·1024·0.1/1024): vmulf(S, k) = S·k/32768.
+    let ky = libm::round(5.0 / (1024.0 * scale as f64) * 32768.0).min(32767.0) as i16;
+    ModgeK16 { kyh: if flags & 2 != 0 { ky } else { 0 }, kst: if flags & 1 != 0 { 1311 } else { 0 } }
+}
+
+/// RSP `VMULF` of one lane: `(a·b·2 + 0x8000) >> 16`, clamped to s16.
+#[inline(always)]
+fn rsp_vmulf(a: i32, b: i32) -> i32 {
+    ((a as i64 * b as i64 * 2 + 0x8000) >> 16).clamp(-32768, 32767) as i32
+}
+
+/// RSP `VMUDM` of one lane: signed `a` × unsigned `b`, `>> 16`, clamped to s16.
+#[inline(always)]
+fn rsp_vmudm(a: i32, b: u32) -> i32 {
+    ((a as i64 * b as i64) >> 16).clamp(-32768, 32767) as i32
+}
+
+/// `F2_Modge`'s `(sin + 1)` in Q10 of a 16-bit phase (the [`SinTab`] interpolated on 8 bits).
+#[inline(always)]
+fn rsp_sinp1(t: &SinTab, ph: u16) -> i32 {
+    let i = (ph >> 8) as usize;
+    let (a, d) = (t[i] as i32, t[i + 1] as i32 - t[i] as i32);
+    let s = (a + rsp_vmudm(d, ((ph & 0xFF) as u32) << 8)).clamp(-32768, 32767);
+    rsp_vmudm(s + 8, 4096) + 1024
+}
+
+/// The RSP's (`F2_Modge`) offsets of one position from its 16-bit x and z phase summands and
+/// stored alpha (bit-exact model of rsp_f2mdx.S).
+fn modge_pair16(t: &SinTab, x: &[u16; 3], z: &[u16; 3], a0: u8, k: ModgeK16) -> ModgePair {
+    let (sx, sz, sy) = (rsp_sinp1(t, x[0].wrapping_add(z[0])), rsp_sinp1(t, x[1].wrapping_add(z[1])), rsp_sinp1(t, x[2].wrapping_add(z[2])));
+    // alpha = a0·(1280 + Sx + Sz)/3328 (= a0·(50 + (tMx + tMz)·400)/130).
+    let y = rsp_vmudm((a0 as i32) << 7, (sx + sz + 1280) as u32);
+    ModgePair {
+        dy: rsp_vmulf(sy, k.kyh as i32) as i16,
+        ds: rsp_vmulf(sx, k.kst as i32) as i16,
+        dt: rsp_vmulf(sz, k.kst as i32) as i16,
+        a: rsp_vmulf(y, 5041).min(255) as u8,
+    }
+}
+
+/// The 16-bit phase summands `F2_Modge` reads ([`modge_x_terms`] / [`modge_z_terms`]).
+fn modge_terms16(t: &[u32; 3]) -> [u16; 3] {
+    t.map(|v| (v >> 16) as u16)
+}
+
+/// One vertex of `F2_Modge` (MODGE and WAVE): (y, s, t, alpha).
+#[cfg(test)]
+fn modge_vertex16(px: &[u32; 3], pz: &[u32; 3], y0: i16, s0: i16, t0: i16, a0: u8, k: ModgeK16) -> (i16, i16, i16, u8) {
+    let q = modge_pair16(sin_q14(), &modge_terms16(px), &modge_terms16(pz), a0, k);
+    let (y, s, t) = modge_apply(&q, y0, s0, t0);
+    (y, s, t, q.a)
 }
 
 /// One vertex of [`R3d::animate_modge`] (MODGE and WAVE): (y, s, t, alpha) from the stored
@@ -1541,6 +1627,11 @@ impl R3d {
         }
         let t0 = prof_ticks();
         st.frame = fc;
+        if st.flags != flags {
+            if let Some(r) = &mut st.rsp {
+                r.k = modge_k16(res.pos_scale, flags);
+            }
+        }
         st.flags = flags;
         let tb = sin_q14();
         let tp = modge_time_phases(fc);
@@ -1563,30 +1654,34 @@ impl R3d {
             }
         }
         if let Some(r) = &mut st.rsp {
-            // The per-vertex part on the RSP: this frame's descriptor (header + positions).
+            // Positions and vertices on the RSP: this frame's descriptor (header + x/z terms).
             r.cur = (r.cur + 1) % 3;
-            let (base_off, idx_off, size) = (0, r.idx_off, r.desc_size);
-            let off = r.desc_off + r.cur * size;
+            let off = r.desc_off + r.cur * r.desc_stride;
+            let (size, idx_off, pos_off, pt_off, k) = (r.desc_size, r.idx_off, r.pos_off, r.pt_off, r.k);
             let (n, np) = (st.base.len() as u16, st.pairs.len() as u16);
             let out = res.verts as *const u8;
             let b = r.bytes();
             let bp = b.as_ptr();
-            let (base, idx) = (phys(bp.wrapping_add(base_off)), phys(bp.wrapping_add(idx_off)));
+            let (base, idx, pos) = (phys(bp), phys(bp.wrapping_add(idx_off)), phys(bp.wrapping_add(pos_off)));
             let d = &mut b[off..off + size];
-            d[0..4].copy_from_slice(&base.to_be_bytes());
-            d[4..8].copy_from_slice(&phys(out).to_be_bytes());
-            d[8..12].copy_from_slice(&idx.to_be_bytes());
-            d[12..14].copy_from_slice(&n.to_be_bytes());
-            d[14..16].copy_from_slice(&np.to_be_bytes());
-            d[16..18].copy_from_slice(&(if alpha { 4u16 } else { 0 }).to_be_bytes());
-            // The positions straight into the table (one 8-byte store each).
-            for (e, &(xi, zi, a0)) in d[MODGE_DESC_HEAD..].chunks_exact_mut(8).zip(st.pairs.iter()) {
-                if let (Some(px), Some(pz)) = (xt.get(xi as usize), zt.get(zi as usize)) {
-                    let q = modge_pair(tb, px, pz, a0, ky, ky_sh, flags);
-                    let w = (q.dy as u16 as u64) << 48 | (q.ds as u16 as u64) << 32 | (q.dt as u16 as u64) << 16 | (q.a as u64) << 8;
-                    let e: &mut [u8; 8] = e.try_into().unwrap();
-                    *e = w.to_be_bytes();
-                }
+            let mut w = |o: usize, v: &[u8]| d[o..o + v.len()].copy_from_slice(v);
+            w(0, &base.to_be_bytes());
+            w(4, &phys(out).to_be_bytes());
+            w(8, &idx.to_be_bytes());
+            w(12, &n.to_be_bytes());
+            w(14, &np.to_be_bytes());
+            w(16, &(if alpha { 4u16 } else { 0 }).to_be_bytes());
+            w(18, &k.kyh.to_be_bytes());
+            w(20, &k.kst.to_be_bytes());
+            w(22, &pt_off.to_be_bytes());
+            w(24, &pos.to_be_bytes());
+            w(28, &phys(modge_rsp_table()).to_be_bytes());
+            // The terms (one 8-byte store each).
+            for (e, t) in d[MODGE_DESC_HEAD..].chunks_exact_mut(8).zip(xt.iter().chain(zt.iter())) {
+                let [a, b, c] = modge_terms16(t);
+                let v = (a as u64) << 48 | (b as u64) << 32 | (c as u64) << 16;
+                let e: &mut [u8; 8] = e.try_into().unwrap();
+                *e = v.to_be_bytes();
             }
             Self::c_writeback(d);
             self.modge_cmds.push((mesh.0, d.as_ptr(), size as u32));
@@ -1658,22 +1753,49 @@ impl R3d {
         let (xt, zt) = (alloc::vec![[0; 3]; xs.len()], alloc::vec![[0; 3]; zs.len()]);
         let (xph, zph) = (xs.iter().map(|&x| modge_x_phases(x)).collect(), zs.iter().map(|&z| modge_z_phases(z)).collect());
         let pt = alloc::vec![ModgePair::default(); pairs.len()];
-        let rsp = (cfg!(target_vendor = "nintendo64") && pairs.len() <= MODGE_RSP_MAX_PAIRS && option_env!("F2N64_MODGE_CPU").is_none()).then(|| {
+        // F2_Modge's DMEM: descriptor (header + terms), sine table, a 16-position input chunk,
+        // then the position table at the end (8 bytes each, rounded up to 16 positions).
+        let desc_size = MODGE_DESC_HEAD + 8 * (xs.len() + zs.len());
+        let pt_off = MODGE_DMEM - 8 * pairs.len().next_multiple_of(16);
+        // (and a wave height multiplier within s16: stored-unit scales above 1/200)
+        let fits = desc_size + MODGE_TAB_BYTES + 128 <= pt_off && 5.0 / (1024.0 * scale) * 32768.0 < 32767.0;
+        let rsp = (cfg!(target_vendor = "nintendo64") && fits && option_env!("F2N64_MODGE_CPU").is_none()).then(|| {
             // Stored vertices (16 bytes each), position indices (+8 bytes: the RSP reads whole
-            // 8-byte words), 3 descriptors (16-byte multiples, so each starts a cache line).
+            // 8-byte words), the position list, 3 descriptors (16-byte multiples).
             let idx_off = n * 16;
-            let desc_off = (idx_off + n * 2 + 8 + 15) & !15;
-            let desc_size = (MODGE_DESC_HEAD + pairs.len() * 8 + 15) & !15;
-            let total = desc_off + 3 * desc_size;
-            let mut r = ModgeRsp { buf: alloc::vec![0u64; total.div_ceil(8) + 2], idx_off, desc_off, desc_size, cur: 0 };
+            let pos_off = (idx_off + n * 2 + 8 + 7) & !7;
+            let desc_off = (pos_off + pairs.len() * 8 + 15) & !15;
+            let desc_stride = (desc_size + 15) & !15;
+            let total = desc_off + 3 * desc_stride;
+            let mut r = ModgeRsp {
+                buf: alloc::vec![0u64; total.div_ceil(8) + 2],
+                idx_off,
+                pos_off,
+                desc_off,
+                desc_size,
+                desc_stride,
+                pt_off: pt_off as u16,
+                cur: 0,
+                k: modge_k16(scale, flags),
+            };
+            let nx = xs.len();
             let b = r.bytes();
             b[..idx_off].copy_from_slice(v);
             for (i, m) in base.iter().enumerate() {
                 b[idx_off + 2 * i..idx_off + 2 * i + 2].copy_from_slice(&m.pair.to_be_bytes());
             }
+            for (i, &(xi, zi, a0)) in pairs.iter().enumerate() {
+                let (xo, zo) = (MODGE_DESC_HEAD + 8 * xi as usize, MODGE_DESC_HEAD + 8 * (nx + zi as usize));
+                let e = (xo as u64) << 48 | (zo as u64) << 32 | ((a0 as u64) << 7) << 16;
+                b[pos_off + 8 * i..pos_off + 8 * i + 8].copy_from_slice(&e.to_be_bytes());
+            }
             Self::c_writeback(&b[..desc_off]);
             r
         });
+        #[cfg(target_vendor = "nintendo64")]
+        if rsp.is_none() {
+            crate::log!("r3d: MODGE/WAVE mesh {:08x} animated on the CPU ({} bytes of terms, {} positions)", res.id, desc_size, pairs.len());
+        }
         alloc::boxed::Box::new(ModgeMesh { base, pairs, pt, xph, zph, xt, zt, ky, ky_sh, frame: u32::MAX, flags: 0, rsp })
     }
 
@@ -2212,15 +2334,14 @@ impl R3d {
             // The RSP wrote RDRAM behind the cache: read through the uncached segment.
             let v = (res.verts as usize & 0x1FFF_FFFF) | 0xA000_0000;
             let base = r.buf.as_ptr() as *const u8;
-            let desc = r.desc_off + r.cur * r.desc_size + MODGE_DESC_HEAD;
-            let pt: Vec<ModgePair> = (0..st.pairs.len())
-                .map(|k| {
-                    // SAFETY: inside `buf` (the descriptor's position table).
-                    let e = unsafe { *(base.add(desc + 8 * k) as *const [u8; 8]) };
-                    let h = |o: usize| i16::from_be_bytes([e[o], e[o + 1]]);
-                    ModgePair { dy: h(0), ds: h(2), dt: h(4), a: e[6] }
-                })
-                .collect();
+            let desc = r.desc_off + r.cur * r.desc_stride + MODGE_DESC_HEAD;
+            // SAFETY: inside `buf` (the descriptor's terms).
+            let term = |k: usize| -> [u16; 3] {
+                let e = unsafe { *(base.add(desc + 8 * k) as *const [u8; 8]) };
+                [0, 2, 4].map(|o| u16::from_be_bytes([e[o], e[o + 1]]))
+            };
+            let nx = st.xt.len();
+            let pt: Vec<ModgePair> = st.pairs.iter().map(|&(xi, zi, a0)| modge_pair16(sin_q14(), &term(xi as usize), &term(nx + zi as usize), a0, r.k)).collect();
             let (mut bad, mut first) = (0u32, None);
             for (i, b) in st.base.iter().enumerate() {
                 // SAFETY: both point to `n_verts * 16` bytes.
@@ -2376,6 +2497,46 @@ mod tests {
         assert!(worst_st <= 1, "s/t off by {worst_st}");
         assert!(worst_y <= 0.6, "y off by {worst_y} world units");
         assert!(worst_a <= 2, "alpha off by {worst_a}");
+    }
+
+    /// `F2_Modge`'s arithmetic (the bit-exact model `modge_pair16`) against the f64 PC terms.
+    #[test]
+    fn rsp_modge_matches_pc_terms() {
+        let tb = sin_q14();
+        let mut seed = 1234u32;
+        let mut rnd = |m: u32| {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 8) % m
+        };
+        let (mut worst_st, mut worst_y, mut worst_a) = (0i32, 0f64, 0i32);
+        for _ in 0..40000 {
+            let (x, z) = ((rnd(8000) as f32 - 4000.0) * 0.25, (rnd(8000) as f32 - 4000.0) * 0.25);
+            let fc = rnd(400_000);
+            let scale = [0.25f32, 0.125, 1.0 / 16.0, 1.0 / 32.0][rnd(4) as usize];
+            let (y0, s0, t0, a0) = (rnd(2000) as i16 - 1000, rnd(4000) as i16 - 2000, rnd(4000) as i16 - 2000, rnd(256) as u8);
+            let t = fc as f64;
+            let (xd, zd) = (x as f64, z as f64);
+            let mx = ((zd * (1.5 / 35.0) + (xd * (1.3 / 49.0) + t * (2.0 / 56.0)).sin() + t * (1.5 / 70.0)).sin() + 1.0) * 0.1;
+            let mz = ((xd * (1.5 / 49.0) + (zd * (1.3 / 29.0) + t * (2.0 / 66.0)).cos() + t * (1.5 / 66.0)).cos() + 1.0) * 0.1;
+            let my = ((zd * (1.2 / 26.0) + (xd * (1.3 / 49.0) + t * (1.0 / 26.0)).cos() + t * (1.0 / 26.0)).sin() + 1.0) * 5.0;
+            let tp = modge_time_phases(fc);
+            let px = modge_x_terms(tb, &modge_x_phases(x), &tp, true);
+            let pz = modge_z_terms(tb, &modge_z_phases(z), &tp, true);
+            let (y, s, tt, a) = modge_vertex16(&px, &pz, y0, s0, t0, a0, modge_k16(scale, 3));
+            let ey = y0 as f64 + my / scale as f64;
+            let (es, et) = ((s0 as f64 + mx * 0.4 * 1024.0).round() as i32, (t0 as f64 + mz * 0.4 * 1024.0).round() as i32);
+            let ea = (a0 as f64 * (50.0 + (mx + mz) * 400.0) / 130.0).round().min(255.0) as i32;
+            worst_st = worst_st.max((s as i32 - es).abs()).max((tt as i32 - et).abs());
+            worst_y = worst_y.max((y as f64 - ey).abs() * scale as f64);
+            worst_a = worst_a.max((a as i32 - ea).abs());
+        }
+        std::eprintln!("rsp modge worst: s/t {worst_st}, y {worst_y}, alpha {worst_a}");
+        assert!(worst_st <= 1, "s/t off by {worst_st}");
+        assert!(worst_y <= 0.6, "y off by {worst_y} world units");
+        assert!(worst_a <= 2, "alpha off by {worst_a}");
+        // Without MODGE / WAVE the offsets vanish.
+        let q = modge_pair16(tb, &[1, 2, 3], &[4, 5, 6], 100, modge_k16(0.125, 0));
+        assert_eq!((q.dy, q.ds, q.dt), (0, 0, 0));
     }
 
     /// f2-engine `View::project` (scene.rs) for reference.
