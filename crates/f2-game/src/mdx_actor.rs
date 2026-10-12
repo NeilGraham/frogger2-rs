@@ -102,15 +102,20 @@ pub struct MdxActor {
     pub flags: i32,
     /// `listNum`: which `actorDrawList` the actor is on (0 normal, 1 shadows/additive).
     pub list_num: u32,
+    /// Phase 3S2: `CopyActorList`'s sources and the world-space bounding sphere
+    /// `ActorListDraw` computes from `placement` (a cache, not state; see
+    /// [`crate::view::SphereCache`]). Before `placement`: an unchanged, culled actor reads
+    /// only this.
+    pub sphere: crate::view::SphereCache,
     /// `pos`/`qRot`/`scale`/`visible`/`draw` as `CopyActorList` sets them (`view.rs`).
     pub placement: crate::view::MdxPlacement,
-    /// Phase 3S2: the world-space bounding sphere `ActorListDraw` computes from `placement`
-    /// (a cache, not state; see [`crate::view::SphereCache`]).
-    pub sphere: crate::view::SphereCache,
     /// `animation`; `None` when the model has no animation table.
     pub animation: Option<MdxActorAnimation>,
     /// `LODObjectController` (used by `ChangeModel` to remember the original model).
     pub lod_object_controller: Option<u32>,
+    /// Phase 3S2: the root object transform's last result (a cache, not state; see
+    /// [`crate::view::RootCache`]).
+    pub root_cache: crate::view::RootCache,
 }
 
 crate::ser_order!(MdxActor, "MdxActor", MdxActorWire {
@@ -121,7 +126,7 @@ crate::ser_order!(MdxActor, "MdxActor", MdxActorWire {
     root_object_flags: i16,
     animation: Option<MdxActorAnimation>,
     placement: crate::view::MdxPlacement,
-} skip { sphere });
+} skip { sphere, root_cache });
 
 /// Port of `QueueFlush` (`MDX Library/mdxActor.cpp:288`).
 pub fn queue_flush(anim: &mut MdxActorAnimation) {

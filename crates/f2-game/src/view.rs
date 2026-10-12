@@ -594,26 +594,81 @@ fn set_f32s<const N: usize>(dst: &mut [f32; N], v: [f32; N]) -> bool {
     false
 }
 
+/// `CopyActorList`'s float copies of an actor's position (×0.1), size and rotation (/4096;
+/// an all-zero rotation is not copied); whether any bits changed.
+#[inline(always)]
+fn copy_placement(p: &mut MdxPlacement, pos: SVector, size: f2_math::FVector, q: f2_math::IQuaternion) -> bool {
+    let mut changed = set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
+    const S: f32 = 1.0 / 4096.0;
+    changed |= set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
+    if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
+        changed |= set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
+    }
+    changed
+}
+
 /// Phase 3S2: an actor's world-space bounding sphere ([`sphere_world`]) as last computed,
 /// for the model `model` (with the model table at `generation`) and the actor's placement
 /// at that time. Not game state: never serialized (a deserialized actor starts invalid),
 /// never compared, not printed. **Every write of `MdxPlacement::{pos, q_rot, scale}` must
 /// [`invalidate`](Self::invalidate) it** (`copy_actor`, `xform_new_actor`; a new actor
 /// starts invalid); debug builds check each reuse against a fresh computation.
+///
+/// `root_valid`: the actor's [`RootCache`] was filled with the current placement.
+/// `copy_valid`: `placement.{pos, scale, q_rot}` are what `CopyActorList` made of the
+/// actor's `position`/`size`/`qRot` copies `src_*` (it then skips the float conversions
+/// while they are unchanged). [`invalidate`](Self::invalidate) clears all three.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct SphereCache {
     valid: bool,
+    root_valid: bool,
+    copy_valid: bool,
     model: u32,
     generation: u32,
     centre: Vec3,
     radius: f32,
+    src_pos: [i16; 3],
+    src_size: [i32; 3],
+    src_q: [i32; 4],
 }
 
 impl SphereCache {
     #[inline(always)]
     pub fn invalidate(&mut self) {
         self.valid = false;
+        self.root_valid = false;
+        self.copy_valid = false;
+    }
+}
+
+/// Phase 3S2: the root object's `TransformObject` result for an actor (`transform_root_object`):
+/// the `lastMKey/lastSKey/lastRKey` it leaves and the object matrix (when it was needed),
+/// for the inputs in the key (model + table generation, `animated`, `animTime` bits, the
+/// `last` keys it started from) and the placement at the time (`SphereCache::root_valid`).
+/// Not game state (never serialized, compared or printed); debug builds check every reuse.
+#[derive(Clone, Copy, Default)]
+pub struct RootCache {
+    model: u32,
+    generation: u32,
+    animated: bool,
+    has_obj: bool,
+    time: u32,
+    last_in: [i16; 3],
+    last_out: [i16; 3],
+    obj: Mat4,
+}
+
+impl PartialEq for RootCache {
+    /// A cache: equal whatever it holds.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl core::fmt::Debug for RootCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RootCache")
     }
 }
 
@@ -919,20 +974,61 @@ impl Game {
         let animated = a.animation.is_some();
         let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
         let p = a.placement;
-        let mut last = p.last_keys;
-        let (rotmat, scale) = object_local_k(root, animated, time, &mut last, p.scale, [1.0; 3]);
         // Phase 3S: the object matrix only feeds the (pure) bounding-box test, whose result
         // is unused without a box or with `noClip`: computed only when it matters.
-        let clipped = match root.bbox.as_ref() {
-            Some(b) if !no_clip => {
+        let need_obj = root.bbox.is_some() && !no_clip;
+        let compute = |last: &mut [i16; 3]| {
+            let (rotmat, scale) = object_local_k(root, animated, time, last, p.scale, [1.0; 3]);
+            need_obj.then(|| {
                 let top = actor_top(p.pos, &p.q_rot);
                 let m1 = mtx_cat(&rotmat, &top);
-                let obj = mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1);
-                view.check_bounding_box(b, &obj)
+                mtx_cat(&gu_scale(scale[0] * p.scale[0], scale[1] * p.scale[1], scale[2] * p.scale[2]), &m1)
+            })
+        };
+        // Phase 3S2: reuse the last result while every input is unchanged.
+        let mid = a.object_controller.unwrap_or(0);
+        let generation = self.models.generation();
+        let rc = &a.root_cache;
+        let hit = a.sphere.root_valid
+            && rc.model == mid
+            && rc.generation == generation
+            && rc.animated == animated
+            && rc.time == time.to_bits()
+            && rc.last_in == p.last_keys
+            && (rc.has_obj || !need_obj);
+        let (last, obj) = if hit {
+            if cfg!(debug_assertions) {
+                let mut last = p.last_keys;
+                let obj = compute(&mut last);
+                assert!(
+                    last == rc.last_out && obj.is_none_or(|o| o.as_flattened().iter().zip(rc.obj.as_flattened()).all(|(x, y)| x.to_bits() == y.to_bits())),
+                    "stale RootCache for actor {id:?}"
+                );
             }
+            (rc.last_out, need_obj.then_some(rc.obj))
+        } else {
+            let mut last = p.last_keys;
+            let obj = compute(&mut last);
+            (last, obj)
+        };
+        let clipped = match (root.bbox.as_ref(), obj.as_ref()) {
+            (Some(b), Some(obj)) => view.check_bounding_box(b, obj),
             _ => false,
         };
         let a = &mut self.actor2.actors[id].actor.actual_actor;
+        if !hit {
+            a.root_cache = RootCache {
+                model: mid,
+                generation,
+                animated,
+                has_obj: obj.is_some(),
+                time: time.to_bits(),
+                last_in: p.last_keys,
+                last_out: last,
+                obj: obj.unwrap_or(IDENTITY),
+            };
+            a.sphere.root_valid = true;
+        }
         a.placement.last_keys = last;
         if clipped {
             a.root_object_flags |= OBJECT_FLAGS_CLIPPED;
@@ -1284,15 +1380,32 @@ impl Game {
         }
         set(&mut p.visible, 1);
         set(&mut p.draw, 1);
-        let mut changed = set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
-        const S: f32 = 1.0 / 4096.0;
-        changed |= set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
-        if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
-            changed |= set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
+        // Phase 3S2: the float copies are already there while the integer sources are the
+        // ones they were made from (and nothing else has written the placement since).
+        let (src_pos, src_size, src_q) = ([pos.vx, pos.vy, pos.vz], [size.vx, size.vy, size.vz], [q.x, q.y, q.z, q.w]);
+        let pc = &c.actor.actual_actor.sphere;
+        if pc.copy_valid && pc.src_pos == src_pos && pc.src_size == src_size && pc.src_q == src_q {
+            if cfg!(debug_assertions) {
+                let mut check = *p;
+                copy_placement(&mut check, pos, size, q);
+                assert!(
+                    check.pos.map(f32::to_bits) == p.pos.map(f32::to_bits)
+                        && check.scale.map(f32::to_bits) == p.scale.map(f32::to_bits)
+                        && check.q_rot.map(f32::to_bits) == p.q_rot.map(f32::to_bits),
+                    "stale CopyActorList cache for actor {id:?}: a placement write did not invalidate it"
+                );
+            }
+            return;
         }
+        let changed = copy_placement(p, pos, size, q);
+        let pc = &mut c.actor.actual_actor.sphere;
         if changed {
-            c.actor.actual_actor.sphere.invalidate();
+            pc.invalidate();
         }
+        pc.src_pos = src_pos;
+        pc.src_size = src_size;
+        pc.src_q = src_q;
+        pc.copy_valid = true;
     }
 
     /// Port of `ActorListDraw` (mdxActor.cpp:139): the sphere test that decides whether
@@ -1336,19 +1449,31 @@ impl Game {
             self.transform_actor_sprites(id);
             return;
         };
+        let generation = self.models.generation();
         let a = &mut self.actor2.actors[id].actor.actual_actor;
         let Some(mid) = a.object_controller else { return };
-        let Some(model) = self.models.get(mid) else { return };
+        // Phase 3S2: the world sphere is reused while placement and model are unchanged (a
+        // valid entry also proves the model exists: the table has not changed since).
+        let hit = a.sphere.valid && a.sphere.model == mid && a.sphere.generation == generation;
+        let model = if hit {
+            None
+        } else {
+            let Some(model) = self.models.get(mid) else { return };
+            Some(model)
+        };
         self.view.draw_this_objects_sprites = a.placement.draw as u32;
         let draw_override = a.flags & mdx_flags::ACTOR_ALWAYSDRAW != 0;
         let visible = draw_override || {
-            // Phase 3S2: the world sphere is reused while placement and model are unchanged.
-            let generation = self.models.generation();
             let c = &mut a.sphere;
-            if !(c.valid && c.model == mid && c.generation == generation) {
+            if let Some(model) = model {
                 let (centre, radius) = sphere_world(model, &a.placement);
-                *c = SphereCache { valid: true, model: mid, generation, centre, radius };
+                c.valid = true;
+                c.model = mid;
+                c.generation = generation;
+                c.centre = centre;
+                c.radius = radius;
             } else if cfg!(debug_assertions) {
+                let model = self.models.get(mid).expect("cached model");
                 let (centre, radius) = sphere_world(model, &a.placement);
                 assert!(
                     centre.map(f32::to_bits) == c.centre.map(f32::to_bits) && radius.to_bits() == c.radius.to_bits(),

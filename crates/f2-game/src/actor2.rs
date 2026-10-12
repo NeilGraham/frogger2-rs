@@ -372,6 +372,7 @@ impl Game {
             animation: Some(init_anims(&model)),
             placement: Default::default(),
             sphere: Default::default(),
+            root_cache: Default::default(),
         };
 
         let mut item = Actor2::default();
