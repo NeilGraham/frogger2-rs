@@ -994,6 +994,36 @@ pub fn prof_ticks() -> u32 {
     0
 }
 
+/// Testing (`F2N64_CVT_CHECK=1`): the shader's float -> s15.16 conversion (rsp_f2mdx.S
+/// F2_Convert) against [`to_fixed`] on edge cases and random values of all magnitudes (logged).
+#[cfg(target_vendor = "nintendo64")]
+fn cvt_check() {
+    let mut vals: Vec<f32> = alloc::vec![
+        0.0, -0.0, 1.0, -1.0, 0.5, 1e-6, -1e-6, 1.0 / 65536.0, -1.0 / 65536.0, 1.5 / 65536.0, -1.5 / 65536.0, 32767.99, -32767.99, 32768.0,
+        -32768.0, 1e9, -1e9, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e-40, -1e-40, 255.996, -0.999_999_9, 0.125, 1.0e-5, 7.629_394_5e-6f32,
+        -(7.629_394_5e-6f32), 16384.0, -16384.0,
+    ];
+    let mut seed = 0x1234_5678u32;
+    while vals.len() < 12 * 160 {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let mag = [1.0f32, 0.01, 30.0, 3000.0, 32000.0, 1e-4, 1e6][(seed >> 29) as usize % 7];
+        vals.push(((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 2.0 * mag);
+    }
+    let n = vals.len() / 12;
+    let (mut oi, mut of) = (alloc::vec![0i16; 16 * n], alloc::vec![0u16; 16 * n]);
+    unsafe { ffi::n64_r3d_cvt_check(vals.as_ptr(), n as u32, oi.as_mut_ptr(), of.as_mut_ptr()) };
+    let (mut bad, mut first) = (0, None);
+    for (k, &v) in vals.iter().enumerate().take(12 * n) {
+        let (g, r, c) = (k / 12, k % 12 / 3, k % 3);
+        let got = (oi[16 * g + 4 * r + c], of[16 * g + 4 * r + c]);
+        if got != to_fixed(v) {
+            bad += 1;
+            first.get_or_insert((v, got, to_fixed(v)));
+        }
+    }
+    crate::log!("r3d: RSP float -> s15.16 check: {} values, {} mismatches, first {:?}", 12 * n, bad, first);
+}
+
 /// f32 → s15.16 split into (integer, fraction) halves (saturating; truncated towards zero
 /// like `trunc.w.s`, NaN → 0).
 ///
@@ -1100,16 +1130,13 @@ pub fn draw_uniform(m: &Mat4, p: &DrawParams) -> R3dDrawUniform {
 /// [`draw_uniform`] written in place (no fog).
 #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
 pub fn draw_uniform_into(m: &Mat4, p: &DrawParams, out: &mut R3dDrawUniform) {
-    let (mtx_i, mtx_f) = (&mut out.mtx_i, &mut out.mtx_f);
+    // Floats: the RSP converts them (rsp_f2mdx.S F2_Convert = `to_fixed`).
     for r in 0..4 {
         for c in 0..3 {
-            let (i, f) = to_fixed(m[r][c]);
-            mtx_i[r * 4 + c] = i;
-            mtx_f[r * 4 + c] = f;
+            out.mtx[r * 3 + c] = m[r][c];
         }
-        mtx_i[r * 4 + 3] = 0;
-        mtx_f[r * 4 + 3] = 0;
     }
+    out.cvt = [0, 0];
     // c = c_in * mul + add in the shader's <<7 units; +0x7F bias rounds 255 back to 255.
     let am = (p.alpha_mul.clamp(0.0, 1.0) * 32767.0) as i16;
     let (cmul, cadd) = match p.gouraud {
@@ -1132,7 +1159,8 @@ pub fn rsp_fold(u: &R3dDrawUniform, fr: &R3dFrame) -> [[i64; 4]; 4] {
             let mut acc: i64 = 0;
             for k in 0..3 {
                 let (ai, af) = (fr.vp_i[k * 4 + c] as i64, fr.vp_f[k * 4 + c] as i64);
-                let (bi, bf) = (u.mtx_i[r * 4 + k] as i64, u.mtx_f[r * 4 + k] as i64);
+                let (bi, bf) = to_fixed(u.mtx[r * 3 + k]);
+                let (bi, bf) = (bi as i64, bf as i64);
                 acc += ((af * bf) >> 16) + ai * bf + af * bi + ((ai * bi) << 16);
             }
             if r == 3 {
@@ -1221,6 +1249,10 @@ impl R3d {
         unsafe {
             ffi::n64_r3d_init()
         };
+        #[cfg(target_vendor = "nintendo64")]
+        if option_env!("F2N64_CVT_CHECK").is_some() {
+            cvt_check();
+        }
         R3d {
             _pad: [0; PADX],
             files: Vec::new(),

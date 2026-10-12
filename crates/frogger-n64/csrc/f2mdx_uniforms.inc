@@ -5,12 +5,14 @@
 ##############################################################################
 MgBeginShaderUniforms
     MgBeginUniform F2_DRAW, 0
-        F2_MTX_I:       .ds.b 32    # model rows 0..3 (x, y, z, translation; lanes x, y, z, -), integer halves
-        F2_MTX_F:       .ds.b 32    # same, fraction halves (pos_scale folded into rows 0..2)
+        F2_MTXF:        .ds.b 48    # model rows 0..3 (x, y, z, translation) x lanes x, y, z: f32
+                                    # (pos_scale folded into rows 0..2); converted to F2_MTX_I/F
+        F2_CVT:         .ds.b 8     # 0 from the CPU; 1 once converted (rsp_f2mdx.S F2_Convert)
         F2_CMUL:        .ds.b 8     # r g b a multipliers (s0.15)
         F2_CADD:        .ds.b 8     # r g b a addends (<<7 units, + rounding bias)
         F2_FOGC:        .ds.b 8     # 0, constant unfogged fraction (per-object fog, 0..0x7FFF), 0, 0
         F2_FOGM:        .ds.b 8     # VCC masks: keep-colour (else constant fog), per-vertex fog, 0, 0
+        F2_DRAW_PAD:    .ds.b 8
     MgEndUniform
     MgBeginUniform F2_TEX, 1
         F2_TEX_I:       .ds.b 8     # s, t integer multipliers
@@ -30,6 +32,11 @@ MgBeginShaderUniforms
         F2_CLIP_SIZE:   .ds.b 4     # its size - 1
         F2_MODGE_TEXT:  .ds.b 4     # RDRAM address of the rsp_f2modge overlay text
         F2_MODGE_SIZE:  .ds.b 4     # its size - 1
+    MgEndUniform
+    # Never loaded by the CPU: the shader's s15.16 copy of F2_MTXF.
+    MgBeginUniform F2_CONV, 3
+        F2_MTX_I:       .ds.b 32    # rows 0..3, lanes x, y, z, -: integer halves
+        F2_MTX_F:       .ds.b 32    # fraction halves
     MgEndUniform
     # Pad to the full uniform region so .bss addresses (MG_SCRATCH_MEM, MG_OUTPUT_BUFFER,
     # clip cache) are the same as in the magma core overlay.

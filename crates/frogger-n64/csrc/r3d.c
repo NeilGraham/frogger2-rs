@@ -220,6 +220,35 @@ void n64_r3d_reset_impl(uint32_t tex_first, uint32_t group_first) {
 /* Current counts (next texture handle << 16 | next group handle). */
 uint32_t n64_r3d_counts_impl(void) { return (num_texs << 16) | num_groups; }
 
+void n64_r3d_begin_impl(const n64_r3d_frame_t *f);
+
+/* Testing (F2N64_CVT_CHECK): converts n x 12 floats with the shader's F2_Convert (one vertex
+ * load per 12) and returns the s15.16 halves it left in DMEM (rows of 4 lanes, lane 3 = 0). */
+void n64_r3d_cvt_check_impl(const float *vals, uint32_t n, int16_t *out_i, uint16_t *out_f) {
+    static n64_r3d_draw_uniform_t u __attribute__((aligned(16)));
+    static int16_t vtx[16] __attribute__((aligned(16)));
+    data_cache_hit_writeback(vtx, sizeof vtx);
+    for (uint32_t g = 0; g < n; g++) {
+        memset(&u, 0, sizeof u);
+        memcpy(u.mtx, vals + 12 * g, sizeof u.mtx);
+        data_cache_hit_writeback(&u, sizeof u);
+        n64_r3d_frame_t fr;
+        memset(&fr, 0, sizeof fr);
+        fr.guard = 6;
+        n64_r3d_begin_impl(&fr);
+        mg_uniform_load(u_draw, &u);
+        mg_bind_vertex_buffer(vtx);
+        mg_draw_begin();
+        mg_load_vertices(0, 0, 1);
+        mg_draw_end();
+        rspq_wait();
+        int16_t buf[32] __attribute__((aligned(16)));
+        rsp_read_data(buf, sizeof buf, RSP_F2MDX_F2_MTX_I_DMEM);
+        memcpy(out_i + 16 * g, buf, 32);
+        memcpy(out_f + 16 * g, buf + 16, 32);
+    }
+}
+
 /* Queues F2_Modge (rsp_f2mdx.S): a 0-vertex load whose cache offset holds the descriptor size. */
 void n64_r3d_modge_impl(const void *desc, uint32_t size) {
     mg_cmd_write(MG_CMD_LOAD_VERTICES, PhysicalAddr(desc), size << 16);
