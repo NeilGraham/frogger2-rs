@@ -118,6 +118,23 @@ fn quat_mul(s1: [f32; 4], s2: [f32; 4]) -> [f32; 4] {
     [t0 + t9 - t5, t1 + t9 - t8, t2 + t9 - t7, t3 + t9 - t6]
 }
 
+/// `quaternion_to_matrix(&rotation_to_normal(normal))`, memoised: shadows, decals and rings
+/// lie on a few distinct tile normals (mostly straight up), and the `acos` / `sin_cos` /
+/// normalisation behind each is costly on a console FPU. Same values as computing it.
+fn normal_rotation(normal: V3) -> Mat4 {
+    static CACHE: spin::Mutex<([([u32; 3], Mat4); 4], usize)> = spin::Mutex::new(([([u32::MAX; 3], [[0.0; 4]; 4]); 4], 0));
+    let key = normal.map(f32::to_bits);
+    let mut c = CACHE.lock();
+    if let Some((_, m)) = c.0.iter().find(|(k, _)| *k == key) {
+        return *m;
+    }
+    let m = quaternion_to_matrix(&rotation_to_normal(normal));
+    let i = c.1;
+    c.0[i] = (key, m);
+    c.1 = (i + 1) % 4;
+    m
+}
+
 /// Rotation that takes `upV` to `normal`: `cross(normal, upV)` axis, `-acos(dot)` angle
 /// (the shadow / decal / ring set-up in pcgfx.c).
 fn rotation_to_normal(normal: V3) -> [f32; 4] {
@@ -265,7 +282,7 @@ fn draw_shadow(r: &mut Renderer, pos: V3, normal: V3, size: f32, offset: f32, al
         t.tv = w;
     }
     let t = f2_engine::math::gu_translate(pos[0], pos[1], pos[2]);
-    let rot = quaternion_to_matrix(&rotation_to_normal(normal));
+    let rot = normal_rotation(normal);
     let m = mtx_cat(&rot, &mtx_cat(&t, &IDENTITY));
     let corners = [[size, offset, size], [size, offset, -size], [-size, offset, -size], [-size, offset, size]];
     if xfm_quad(r, &m, &mut v, corners, -4.0) {
@@ -371,7 +388,7 @@ fn draw_fx_ring(r: &mut Renderer, game: &Game, id: SpecFxId) {
     }
     let mut prev = [Tv::default(); 2];
     let t = f2_engine::math::gu_translate(pos[0], pos[1], pos[2]);
-    let m_rt = mtx_cat(&quaternion_to_matrix(&rotation_to_normal(normal)), &t);
+    let m_rt = mtx_cat(&normal_rotation(normal), &t);
     let frame = if fx.ty == FXTYPE_CROAK { Frame::LateAdditive } else { Frame::Late };
     let tilt2 = fx.tilt as f32 * 0.000244;
 
@@ -480,7 +497,7 @@ fn draw_tongue(r: &mut Renderer, game: &Game, pl: usize) {
     let nodes = |r: &Renderer, i: usize| -> [Tv; 2] {
         let pos = scale(rf(&t.segment[i]), 0.1);
         let normal = normalise(sub(cam, pos));
-        let m = quaternion_to_matrix(&rotation_to_normal(normal));
+        let m = normal_rotation(normal);
         let mut out = [Tv::default(); 2];
         for (k, x) in [-2.93 + i as f32 * 0.25, 2.93 - i as f32 * 0.25].into_iter().enumerate() {
             let m1 = mtx_xfm(&m, [x, 0.0, 0.0]);
