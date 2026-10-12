@@ -65,8 +65,6 @@ pub struct RenderCpu {
     /// Depth of scene triangles: RDP z = `sz * zk` (1 = the faithful 0..1 `sz`; r3d maps its
     /// linear depth differently, see `r3d::ViewParams::tl_z`).
     pub zk: f32,
-    /// Texel buffer of `update_argb4444`.
-    scratch: Vec<u8>,
 }
 
 /// Whether a bank texture is read back by the CPU (`f2_draw::book::draw_page_b`).
@@ -99,7 +97,6 @@ impl RenderCpu {
             ext: Vec::new(),
             built: Built::default(),
             zk: 1.0,
-            scratch: Vec::new(),
         }
     }
 
@@ -216,19 +213,19 @@ impl RenderCpu {
         if fmt == texconv::FMT_RGBA16 && side * side * 2 > texconv::TMEM {
             return false;
         }
-        let bytes = s.len() * if fmt == texconv::FMT_RGBA32 { 4 } else { 2 };
-        self.scratch.clear();
-        self.scratch.resize(bytes, 0);
-        if fmt == texconv::FMT_RGBA32 {
-            for (o, &c) in self.scratch.as_chunks_mut::<4>().0.iter_mut().zip(s) {
-                *o = texconv::argb4444_to_rgba32(c).to_be_bytes();
+        // Straight into the texture's (uncached) texels: one store per texel.
+        let desc = TexDesc { width: side, height: side, fmt, pixels: core::ptr::null() };
+        rt::tex_update_with(h, &desc, |out| {
+            if fmt == texconv::FMT_RGBA32 {
+                for (o, &c) in out.as_chunks_mut::<4>().0.iter_mut().zip(s) {
+                    *o = texconv::argb4444_to_rgba32(c).to_be_bytes();
+                }
+            } else {
+                for (o, &c) in out.as_chunks_mut::<2>().0.iter_mut().zip(s) {
+                    *o = texconv::argb4444_to_rgba16(c).to_be_bytes();
+                }
             }
-        } else {
-            for (o, &c) in self.scratch.as_chunks_mut::<2>().0.iter_mut().zip(s) {
-                *o = texconv::argb4444_to_rgba16(c).to_be_bytes();
-            }
-        }
-        rt::tex_update(h, &TexDesc { width: side, height: side, fmt, pixels: self.scratch.as_ptr() })
+        })
     }
 
     /// Registry image `idx` shows `rgba` (a render-to-texture result: the story book page),

@@ -10,6 +10,8 @@
 //! performance probes (research/n64-performance.md); with `r3d-test` the phase-2R RSP
 //! renderer test app (`r3dtest`: cull check, benchmarks, PC-comparison scenes).
 #![cfg_attr(target_vendor = "nintendo64", no_std)]
+// `rt::ticks` reads the COP0 count register inline (MIPS `asm!` is unstable).
+#![cfg_attr(target_vendor = "nintendo64", feature(asm_experimental_arch))]
 
 extern crate alloc;
 

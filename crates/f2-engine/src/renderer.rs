@@ -954,6 +954,13 @@ impl Renderer {
             record_actor(&cx, model, actor, sink);
             return;
         }
+        self.draw_actor_cpu(model, actor);
+    }
+
+    /// [`draw_actor`](Self::draw_actor) transformed on the CPU into the frames (out of line:
+    /// keeps the mesh-sink path small for a console's instruction cache).
+    #[inline(never)]
+    fn draw_actor_cpu(&mut self, model: &Model, actor: &mut Actor) {
         let mut frames = core::mem::take(&mut self.frames);
         let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
         draw_actor(&cx, model, actor, &mut frames);

@@ -133,6 +133,8 @@ pub struct ActorSlot {
     /// The simulation's position / rotation / size the actor's `pos`, `q_rot` and `scale`
     /// were last converted from (skips the conversions while they stay the same).
     last: Option<(Snap, [i32; 3])>,
+    /// The actor's `overrideTex` name and the CRC of its lowercase form.
+    override_crc: Option<(String, u32)>,
 }
 
 /// Renderer-side data of the loaded level (`LevelAssets`).
@@ -483,7 +485,7 @@ fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx:
     let slot = &mut scene.actors[id.idx()];
     if slot.as_ref().is_none_or(|s| s.model_id != model_id) {
         let Some(&bm) = scene.models.get(&model_id) else { return };
-        *slot = Some(ActorSlot { model_id, bm, actor: Actor::default(), last: None });
+        *slot = Some(ActorSlot { model_id, bm, actor: Actor::default(), last: None, override_crc: None });
     }
     let sl = slot.as_mut().unwrap();
     let (b, m) = sl.bm;
@@ -511,8 +513,22 @@ fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx:
     ea.extra_flags = mdx.root_object_flags & (OBJECT_FLAGS_ADDITIVE | OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE);
     ea.wrap_tc = mdx.flags & f2_game::mdx_actor::mdx_flags::ACTOR_WRAPTC != 0;
     ea.modge_frame = pc.modge_frame;
-    // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours).
-    ea.override_tex = a2.override_tex.as_deref().and_then(|n| r.textures.by_name(&n.to_ascii_lowercase()));
+    // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours):
+    // `textures.by_name(lowercase)`, with the name's CRC kept while the name stays.
+    ea.override_tex = match a2.override_tex.as_deref() {
+        None => None,
+        Some(n) => {
+            let crc = match &sl.override_crc {
+                Some((s, c)) if s == n => *c,
+                _ => {
+                    let c = f2_formats::crc(&n.to_ascii_lowercase());
+                    sl.override_crc = Some((n.into(), c));
+                    c
+                }
+            };
+            r.textures.current(crc)
+        }
+    };
     // `SetActorGouraudValues` on the multiplayer portraits (options.c:685).
     ea.gouraud = if pc.portraits {
         game.options.portrait_actor.iter().position(|&p| p == Some(id)).map(|i| game.options.portrait_gouraud[i].map(|c| c as f32 / 255.0))

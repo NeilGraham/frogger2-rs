@@ -120,8 +120,14 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 /// C0 COUNT ticks (46.875 MHz = CPU clock / 2).
 #[inline]
+/// `TICKS_READ()`: the COP0 count register (half the CPU clock), read inline (no call
+/// into C: the r3d queue and the CPU batches read it per draw).
+#[inline(always)]
 pub fn ticks() -> u32 {
-    unsafe { ffi::n64_ticks() }
+    let t: u32;
+    // SAFETY: `mfc0 $9` (Count) only reads a register.
+    unsafe { core::arch::asm!("mfc0 {0}, $9", out(reg) t, options(nomem, nostack, preserves_flags)) };
+    t
 }
 
 pub const TICKS_PER_SEC: u32 = 46_875_000;
@@ -159,6 +165,21 @@ pub fn tex_create_rgba16(width: u32, height: u32, pixels: &[u16]) -> u32 {
 
 /// Creates a texture from its full image and an optional TMEM-sized version for triangles.
 /// Replaces texture `h`'s texels in place (same size/format); false if not possible.
+/// In-place texel update written by the caller: `fill` gets the texture's tightly packed
+/// texel bytes (`d.pixels` unused). `false` if the texture cannot be updated in place.
+pub fn tex_update_with(h: u32, d: &TexDesc, fill: impl FnOnce(&mut [u8])) -> bool {
+    let p = unsafe { ffi::n64_tex_update_begin(h, d) };
+    if p.is_null() {
+        return false;
+    }
+    let bpp = if d.fmt & 0xff == 1 { 4 } else { 2 };
+    // SAFETY: `n64_tex_update_begin` returned the texture's buffer of exactly these bytes;
+    // nothing else touches it until `n64_tex_update_end`.
+    fill(unsafe { core::slice::from_raw_parts_mut(p, (d.width * d.height * bpp) as usize) });
+    unsafe { ffi::n64_tex_update_end(h) };
+    true
+}
+
 pub fn tex_update(h: u32, d: &TexDesc) -> bool {
     unsafe { ffi::n64_tex_update(h, d) != 0 }
 }
@@ -256,8 +277,17 @@ pub fn audio_poll() {
 
 /// [`audio_poll`] if 40 ms have passed since the last poll (for loops that can run long).
 #[inline]
+#[inline]
 pub fn audio_poll_due() {
-    unsafe { ffi::n64_audio_poll_due() }
+    // The C side's `n64_audio_poll_due` test, inline: called per draw in the hot loops.
+    unsafe extern "C" {
+        static audio_last_poll: u32;
+    }
+    // SAFETY: a plain u32 the C side updates on this (only) thread.
+    let last = unsafe { core::ptr::read_volatile(&raw const audio_last_poll) };
+    if ticks().wrapping_sub(last) > TICKS_PER_SEC / 1000 * 40 {
+        audio_poll();
+    }
 }
 
 /// The longest time between two audio polls (any, the C side's included) since the last

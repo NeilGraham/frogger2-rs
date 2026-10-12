@@ -71,6 +71,8 @@
     RUST_TO_C n64_r3d_draw_list
     RUST_TO_C n64_r3d_stats
     RUST_TO_C n64_tex_update
+    RUST_TO_C n64_tex_update_begin
+    RUST_TO_C n64_tex_update_end
     RUST_TO_C n64_r3d_tex_alias
     RUST_TO_C n64_r3d_reset
     RUST_TO_C n64_r3d_counts

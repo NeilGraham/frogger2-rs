@@ -174,7 +174,8 @@ void n64_music_vol_impl(uint32_t vol_permille) {
 
 /* Longest time between two polls (C0 ticks) since n64_audio_gap_take: the music buffer
  * holds 300 ms, longer gaps are audible dropouts. */
-static uint32_t audio_last_poll, audio_max_gap;
+uint32_t audio_last_poll; /* read by Rust (rt::audio_poll_due) */
+static uint32_t audio_max_gap;
 
 void n64_audio_poll_impl(void) {
     uint32_t now = TICKS_READ();
@@ -609,6 +610,24 @@ uint32_t n64_tex_update_impl(uint32_t h, const n64_tex_desc_t *d) {
     return 1;
 }
 
+void *n64_tex_update_begin_impl(uint32_t h, const n64_tex_desc_t *d) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return NULL;
+    tex_t *t = &textures[h];
+    tex_format_t fmt = (d->fmt & 0xff) == 1 ? FMT_RGBA32 : FMT_RGBA16;
+    if (!t->small_is_full || t->nfull != 1 || t->tile3d || t->external || t->own_small) return NULL;
+    surface_t *s = &t->full[0];
+    if (s->width != d->width || s->height != d->height || surface_get_format(s) != fmt) return NULL;
+    if (s->stride != TEX_FORMAT_PIX2BYTES(fmt, d->width) || !((uint32_t)s->buffer & 0x20000000)) return NULL;
+    return s->buffer;
+}
+
+void n64_tex_update_end_impl(uint32_t h) {
+    if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return;
+    tex_t *t = &textures[h];
+    if (t->has_addv) make_add_variant(t);
+    if (cur_tex_loaded == h) cur_tex_loaded = 0;
+}
+
 /* The TMEM-sized surface triangles of texture h sample (r3d aliases it), NULL if none. */
 const surface_t *n64_tex_surface(uint32_t h) {
     if (h == 0 || h >= MAX_TEXTURES || !textures[h].used) return NULL;
@@ -935,12 +954,35 @@ static void tex_upload_cached(rdpq_tile_t tile, const surface_t *s, bool wrap, i
     rspq_block_run(e->blk);
 }
 
+static void set_mode(const n64_state_t *st, int kind, bool tex);
+static void set_mode_cached(const n64_state_t *st, int kind, bool tex);
 static void apply_state(const n64_state_t *st, int kind) {
     bool tex = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used;
     uint32_t mt0 = TICKS_READ();
     if (cur_kind != kind || st->flags != cur_state.flags || st->blend != cur_state.blend ||
         st->alpha_ref != cur_state.alpha_ref || (st->tex == 0) != (cur_state.tex == 0)) {
         st_modes++;
+        set_mode_cached(st, kind, tex);
+        cur_tex_loaded = 0;
+        cur_tlut_mode = 0; /* rdpq_set_mode_standard: no TLUT */
+        rect_tmem = NULL;
+    }
+    if (kind == 0 && tex && (st->tex != cur_tex_loaded || ((st->flags ^ cur_state.flags) & N64_WRAP))) {
+        const surface_t *s = tri_surface(st);
+        use_tlut(&textures[st->tex], s, 0);
+        uint32_t tt0 = TICKS_READ();
+        tex_upload_cached(TILE0, s, (st->flags & N64_WRAP) != 0, 0, 0, s->width, s->height);
+        st_tex_ticks += TICKS_READ() - tt0;
+        cur_tex_loaded = st->tex;
+    }
+    if (kind == 1) cur_tex_loaded = 0; /* blits reload TMEM */
+    cur_state = *st;
+    cur_kind = kind;
+    st_mode_ticks += TICKS_READ() - mt0;
+}
+
+/* The render mode of a CPU batch (apply_state). */
+static void set_mode(const n64_state_t *st, int kind, bool tex) {
         rdpq_set_mode_standard();
         if (kind == 0)
             rdpq_mode_combiner(tex ? RDPQ_COMBINER_TEX_SHADE : RDPQ_COMBINER_SHADE);
@@ -963,22 +1005,32 @@ static void apply_state(const n64_state_t *st, int kind) {
         case N64_BLEND_SUB: rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY); break;
         default: rdpq_mode_blender(0); break;
         }
-        cur_tex_loaded = 0;
-        cur_tlut_mode = 0; /* rdpq_set_mode_standard: no TLUT */
-        rect_tmem = NULL;
+}
+
+/* set_mode recorded once per distinct mode into an rspq block and replayed (~100 us of
+ * rdpq mode API calls per reset otherwise; 6-7 resets a frame, after each r3d list).
+ * The key holds everything set_mode reads. */
+#define MODE_CACHE_N 48
+static struct { uint32_t key; rspq_block_t *blk; } mode_cache[MODE_CACHE_N];
+static uint32_t mode_cache_n;
+static void set_mode_cached(const n64_state_t *st, int kind, bool tex) {
+    uint32_t key = (uint32_t)kind | (tex ? 2 : 0) | ((st->blend & 7) << 2) |
+                   ((st->flags & (N64_ZTEST | N64_ZWRITE | N64_BILINEAR | N64_PERSP)) << 8) | ((st->alpha_ref & 0xff) << 24);
+    for (uint32_t i = 0; i < mode_cache_n; i++)
+        if (mode_cache[i].key == key) {
+            rspq_block_run(mode_cache[i].blk);
+            return;
+        }
+    if (mode_cache_n == MODE_CACHE_N) {
+        set_mode(st, kind, tex);
+        return;
     }
-    if (kind == 0 && tex && (st->tex != cur_tex_loaded || ((st->flags ^ cur_state.flags) & N64_WRAP))) {
-        const surface_t *s = tri_surface(st);
-        use_tlut(&textures[st->tex], s, 0);
-        uint32_t tt0 = TICKS_READ();
-        tex_upload_cached(TILE0, s, (st->flags & N64_WRAP) != 0, 0, 0, s->width, s->height);
-        st_tex_ticks += TICKS_READ() - tt0;
-        cur_tex_loaded = st->tex;
-    }
-    if (kind == 1) cur_tex_loaded = 0; /* blits reload TMEM */
-    cur_state = *st;
-    cur_kind = kind;
-    st_mode_ticks += TICKS_READ() - mt0;
+    rspq_block_begin();
+    set_mode(st, kind, tex);
+    rspq_block_t *b = rspq_block_end();
+    mode_cache[mode_cache_n].key = key;
+    mode_cache[mode_cache_n++].blk = b;
+    rspq_block_run(b);
 }
 
 /* ---- large textures on triangles: TMEM tiles ----

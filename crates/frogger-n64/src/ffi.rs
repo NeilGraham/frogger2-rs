@@ -270,6 +270,8 @@ extern "C" {
     pub fn n64_r3d_draw_list(state: *const R3dList, draws: *const R3dDraw, n: u32);
     pub fn n64_r3d_stats(out: *mut R3dStats);
     pub fn n64_tex_update(handle: u32, desc: *const TexDesc) -> u32;
+    pub fn n64_tex_update_begin(handle: u32, desc: *const TexDesc) -> *mut u8;
+    pub fn n64_tex_update_end(handle: u32);
     pub fn n64_r3d_tex_alias(tex: u32) -> u32;
     pub fn n64_r3d_reset(tex_first: u32, group_first: u32);
     pub fn n64_r3d_counts() -> u32;

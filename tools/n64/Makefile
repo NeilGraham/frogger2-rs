@@ -45,7 +45,7 @@ HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rs
 	mg_bind_vertex_buffer data_cache_hit_writeback rspq_flush_internal __rspq_deferred_poll \
 	n64_draw_tris_impl n64_draw_tl_tris_impl apply_state rdpq_triangle rdpq_triangle_rsp __rdpq_write8 \
 	__rdpq_autosync_change memcpy memset
-$(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld
+$(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld $(firstword $(MAKEFILE_LIST))
 	@mkdir -p $(BUILD_DIR)
 	@awk -v hot="$(HOT_C)" 'BEGIN { n = split(hot, h, " ") } \
 		!done && $$0 ~ /^[ \t]*\*\(\.text\)[ \t]*$$/ { \

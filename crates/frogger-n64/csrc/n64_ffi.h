@@ -149,6 +149,11 @@ uint32_t n64_tex_create(const n64_tex_desc_t *desc);
 uint32_t n64_tex_create2(const n64_tex_desc_t *full, const n64_tex_desc_t *small);
 void n64_tex_free(uint32_t handle);
 uint32_t n64_tex_update(uint32_t handle, const n64_tex_desc_t *desc); /* in-place texel update; 0 = not possible */
+/* In-place update written by the caller (desc->pixels unused): the texture's texel buffer
+ * (rows of width * bpp bytes, tightly packed; uncached memory) or NULL if it cannot be
+ * updated in place; then n64_tex_update_end. */
+void *n64_tex_update_begin(uint32_t handle, const n64_tex_desc_t *desc);
+void n64_tex_update_end(uint32_t handle);
 uint32_t n64_tex_create_ntx(const n64_ntx_desc_t *desc);         /* texture over an NTX1 image (no copy) */
 void n64_begin_frame(uint32_t clear_rgba);         /* attach next framebuffer + z-buffer, clear both */
 void n64_draw_tris(const n64_vertex_t *verts, uint32_t ntris, const n64_state_t *state);
