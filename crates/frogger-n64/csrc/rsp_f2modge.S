@@ -35,7 +35,7 @@ Mg_Clipping:
 #   +8  u32 per-vertex u16 position index (readable up to 8 bytes past the end)
 #   +12 u16 vertex count, +14 u16 position count, +16 u16 flags (bit 2: write alpha)
 #   +18 s16 y multiplier, +20 s16 s/t multiplier (VMULF, Q15), +22 u16 DMEM offset of the
-#       position table (8 bytes per position, room for a multiple of 16)
+#       position table (8 bytes per position, room for a multiple of 8)
 #   +24 u32 position list: per position u16 offsets (in DMEM, from the descriptor) of its x
 #       and z terms, u16 stored alpha << 7, pad
 #   +28 u32 sine table (Q14, 257 entries over one turn, padded to 520 bytes)
@@ -57,7 +57,8 @@ Mg_Clipping:
 #define MODGE_IBUF   (MG_VERTEX_CACHE + 512)
 #define MODGE_CHUNK  32
     # Staging for 8 lanes (16-byte aligned): per sine j at 48*j: table value, slope,
-    # fraction << 8; stored alpha << 7 at 144; constants at 160 and 240; results at 176..239.
+    # fraction << 8; stored alpha << 7 at 144; constants at 160 and 240; results at 176..239;
+    # the position input chunk at 256..319 (the clip cache has 360 bytes).
 #define MODGE_ST     MG_CLIP_CACHE
 #define vK           $v20
 #define vK2          $v21
@@ -271,15 +272,16 @@ F2_ModgePositions:
     lhu s6, %lo(MODGE_DESC + 22)
     addiu s6, s6, %lo(MODGE_DESC)
     lw a2, %lo(MODGE_DESC + 24)
-    addiu v1, s7, MODGE_TAB_BYTES
+    # The input chunk (8 positions) in the clip cache's staging area, after the staging.
+    li v1, %lo(MODGE_ST) + 256
     move v0, s6
 F2_ModgePosChunk:
     blez a3, F2_ModgeVertsInit
     move t9, a3
-    slti t4, a3, 16
+    slti t4, a3, 8
     bnez t4, F2_ModgePosCount
     nop
-    li t9, 16
+    li t9, 8
 F2_ModgePosCount:
     move s0, a2
     move s4, v1
@@ -289,11 +291,9 @@ F2_ModgePosCount:
     sll t4, t9, 3
     addu a2, a2, t4
     subu a3, a3, t9
-    # Two passes of 8 (the table has room for a multiple of 16 positions).
+    # One pass of 8 (the table has room for a multiple of 8 positions).
     jal F2_ModgeEight
     move t7, v1
-    jal F2_ModgeEight
-    nop
     j F2_ModgePosChunk
     nop
 

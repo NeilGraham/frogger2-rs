@@ -1898,13 +1898,13 @@ impl R3d {
         let ky = libm::round(k * (1u64 << ky_sh) as f64) as i32;
         let (xt, zt) = (alloc::vec![[0; 3]; xs.len()], alloc::vec![[0; 3]; zs.len()]);
         let pt = alloc::vec![ModgePair::default(); pairs.len()];
-        // F2_Modge's DMEM: descriptor (header + terms), sine table, a 16-position input chunk,
-        // then the position table at the end (8 bytes each, rounded up to 16 positions).
+        // F2_Modge's DMEM: descriptor (header + terms), sine table, then the position table at
+        // the end (8 bytes each, rounded up to 8 positions; the input chunk is in the clip cache).
         let desc_size = MODGE_DESC_HEAD + 8 * (xs.len() + zs.len());
-        let pt_off = MODGE_DMEM - 8 * pairs.len().next_multiple_of(16);
+        let pt_off = MODGE_DMEM - 8 * pairs.len().next_multiple_of(8);
         let (xph, zph): (Vec<[u32; 3]>, Vec<[u32; 3]>) = (xs.iter().map(|&x| modge_x_phases(x)).collect(), zs.iter().map(|&z| modge_z_phases(z)).collect());
         // (and a wave height multiplier within s16: stored-unit scales above 1/200)
-        let fits = desc_size + MODGE_TAB_BYTES + 128 <= pt_off && 5.0 / (1024.0 * scale) * 32768.0 < 32767.0;
+        let fits = desc_size + MODGE_TAB_BYTES <= pt_off && 5.0 / (1024.0 * scale) * 32768.0 < 32767.0;
         let rsp = (cfg!(target_vendor = "nintendo64") && fits && option_env!("F2N64_MODGE_CPU").is_none()).then(|| {
             // Stored vertices (16 bytes each), position indices (+8 bytes: the RSP reads whole
             // 8-byte words), the position list, 3 descriptors (16-byte multiples).
