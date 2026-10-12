@@ -40,6 +40,7 @@
     RUST_TO_C n64_tex_create
     RUST_TO_C n64_begin_frame
     RUST_TO_C n64_draw_tris
+    RUST_TO_C n64_draw_tl_tris
     RUST_TO_C n64_present
     RUST_TO_C n64_rdp_wait
     RUST_TO_C n64_set_fps_limit

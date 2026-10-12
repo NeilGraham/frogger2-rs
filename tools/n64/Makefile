@@ -43,7 +43,7 @@ $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rspq_block_run mg_uniform_load mg_uniform_load_raw \
 	mg_uniform_load_inline mg_uniform_load_inline_raw mg_draw_begin mg_draw_end \
 	mg_bind_vertex_buffer data_cache_hit_writeback rspq_flush_internal __rspq_deferred_poll \
-	n64_draw_tris_impl apply_state rdpq_triangle rdpq_triangle_rsp __rdpq_write8 \
+	n64_draw_tris_impl n64_draw_tl_tris_impl apply_state rdpq_triangle rdpq_triangle_rsp __rdpq_write8 \
 	__rdpq_autosync_change memcpy memset
 $(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld
 	@mkdir -p $(BUILD_DIR)

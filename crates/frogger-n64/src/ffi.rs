@@ -55,7 +55,18 @@ pub struct TexDesc {
     pub pixels: *const u8,
 }
 
-/// A screen-aligned rectangle (`n64_rect_t`): pixels, normalised UVs, 0xRRGGBBAA tint.
+/// Scene triangles straight from the frame lists (`n64_tl_batch_t`): `ntris` triangles of
+/// three `TlVertex` each, `stride` bytes apart; depth `sz * zk`.
+#[repr(C)]
+pub struct TlBatch {
+    pub tris: *const u8,
+    pub stride: u32,
+    pub ntris: u32,
+    pub zk: f32,
+}
+
+/// A screen-aligned rectangle (`n64_rect_t`): pixels, normalised UVs, 0xRRGGBBAA tint,
+/// depth `z` (0..1, the RDP's primitive depth; used when the state tests Z).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
@@ -68,6 +79,7 @@ pub struct Rect {
     pub s1: f32,
     pub t1: f32,
     pub rgba: u32,
+    pub z: f32,
 }
 
 /// A sound-effect voice (`n64_voice_t`): linear left/right volume, frequency (Hz, 0 = keep).
@@ -226,6 +238,7 @@ extern "C" {
     pub fn n64_tex_create(desc: *const TexDesc) -> u32;
     pub fn n64_begin_frame(clear_rgba: u32);
     pub fn n64_draw_tris(verts: *const Vertex, ntris: u32, state: *const State);
+    pub fn n64_draw_tl_tris(batch: *const TlBatch, state: *const State);
     pub fn n64_present();
     pub fn n64_rdp_wait();
     pub fn n64_set_fps_limit(fps: u32);

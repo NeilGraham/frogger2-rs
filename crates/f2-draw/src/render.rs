@@ -62,34 +62,65 @@ pub fn iq_to_quat(q: &IQuaternion) -> [f32; 4] {
     [q.x as f32 / 4096.0, q.y as f32 / 4096.0, q.z as f32 / 4096.0, q.w as f32 / 4096.0]
 }
 
-/// Render-relevant state of one actor at a tick (for interpolation).
-#[derive(Clone, Copy, Debug)]
+/// Render-relevant state of one actor at a tick (for interpolation): the simulation's own
+/// position and rotation, converted to render units only when drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snap {
-    pub pos: V3,
-    pub q: [f32; 4],
+    pub pos: [i16; 3],
+    pub q: IQuaternion,
+}
+
+impl Snap {
+    fn of(a: &f2_game::actor2::Actor2) -> Snap {
+        let p = &a.actor.position;
+        Snap { pos: [p.vx, p.vy, p.vz], q: a.actor.q_rot }
+    }
+
+    /// Render units ([`sv_to_render`], [`iq_to_quat`]).
+    fn render(&self) -> (V3, [f32; 4]) {
+        let p = self.pos;
+        ([p[0] as f32 / 10.0, p[1] as f32 / 10.0, p[2] as f32 / 10.0], iq_to_quat(&self.q))
+    }
 }
 
 /// Per-slot snapshot of all live actors.
 pub fn snapshot(game: &Game) -> Vec<Option<Snap>> {
-    game.actor2.actors.slots.iter().map(|s| s.as_ref().map(|a| Snap { pos: sv_to_render(&a.actor.position), q: iq_to_quat(&a.actor.q_rot) })).collect()
+    let mut v = Vec::new();
+    snapshot_into(game, &mut v);
+    v
 }
 
-fn lerp_snap(prev: Option<&Snap>, cur: Snap, alpha: f32) -> Snap {
-    let Some(p) = prev else { return cur };
+/// [`snapshot`] into `out`, reusing its allocation.
+pub fn snapshot_into(game: &Game, out: &mut Vec<Option<Snap>>) {
+    out.clear();
+    out.extend(game.actor2.actors.slots.iter().map(|s| s.as_ref().map(Snap::of)));
+}
+
+/// An actor's position and rotation `alpha` of a tick after `prev` (render units).
+fn lerp_snap(prev: Option<&Snap>, cur: &Snap, alpha: f32) -> (V3, [f32; 4]) {
+    let (cp, cq) = cur.render();
+    let Some(p) = prev else { return (cp, cq) };
     // Not moved since the last tick: `quat_slerp(q, q, alpha)` is `q` up to rounding.
     #[cfg(feature = "lean")]
-    if p.pos == cur.pos && p.q == cur.q {
-        return cur;
+    if p == cur {
+        return (cp, cq);
     }
+    let (pp, pq) = p.render();
     // Teleports (respawn, level reset, a path entity wrapping back to its first node) are not
     // interpolated: more than 1.5 tiles (90 render units) in one 60 Hz tick is faster than
     // anything moves in the game. (400 let a mower's lane wrap through: one display frame at
     // the halfway point on high-refresh screens; the original drew only whole ticks.)
-    let d = sub(cur.pos, p.pos);
+    let d = sub(cp, pp);
     if dot(d, d) > 90.0 * 90.0 {
-        return cur;
+        return (cp, cq);
     }
-    Snap { pos: f2_engine::math::linear_interp(&p.pos, &cur.pos, alpha), q: f2_engine::math::quat_slerp(&p.q, &cur.q, alpha) }
+    let pos = f2_engine::math::linear_interp(&pp, &cp, alpha);
+    // Console fast path: an unchanged rotation (moving, not turning) needs no slerp.
+    #[cfg(feature = "lean")]
+    if p.q == cur.q {
+        return (pos, cq);
+    }
+    (pos, f2_engine::math::quat_slerp(&pq, &cq, alpha))
 }
 
 // ------------------------------------------------------------------ level scene
@@ -243,6 +274,35 @@ pub struct DrawCtx<'a> {
     pub tex_anim_steps: u32,
 }
 
+/// Optional timing hook: called with a [`draw_phase`] id at the end of each part of
+/// [`draw_loop`] (console profiling; unset on the PC).
+static PHASE_HOOK: spin::Mutex<Option<fn(u32)>> = spin::Mutex::new(None);
+
+/// Installs (or removes) the [`draw_loop`] timing hook.
+pub fn set_phase_hook(h: Option<fn(u32)>) {
+    *PHASE_HOOK.lock() = h;
+}
+
+/// Phase ids passed to the hook of [`set_phase_hook`] (each marks the end of a part).
+pub mod draw_phase {
+    pub const SETUP: u32 = 0;
+    pub const WORLD: u32 = 1;
+    pub const ACTORS0: u32 = 2;
+    pub const SHADOWS: u32 = 3;
+    pub const ACTORS1: u32 = 4;
+    pub const SPRITES: u32 = 5;
+    pub const SPECFX: u32 = 6;
+    pub const OVERLAYS: u32 = 7;
+    pub const COUNT: usize = 8;
+    pub const NAMES: [&str; COUNT] = ["setup", "world", "actors0", "shadows", "actors1", "sprites", "specfx", "overlays"];
+}
+
+fn phase(id: u32) {
+    if let Some(h) = *PHASE_HOOK.lock() {
+        h(id);
+    }
+}
+
 /// Port of `DrawLoop` (PC/drawloop.cpp:132): backdrop, sky, landscape, actors, shadows,
 /// sprites, special effects, then fades and the sprite/text overlays.
 pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, ctx: &DrawCtx) {
@@ -273,6 +333,7 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
     if let Some(t) = ctx.backdrop {
         r.draw_backdrop(t);
     }
+    phase(draw_phase::SETUP);
     let tiled = game.backdrop.tiled_backdrop.as_deref();
     if let Some(name) = tiled {
         overlay::draw_tiled_backdrop(r, name, ctx.tile_scroll);
@@ -288,19 +349,25 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
                     r.draw_landscape(&scene.banks[b].models[m]);
                 }
             }
+            phase(draw_phase::WORLD);
             draw_actor_list(r, scene, game, ctx, 0);
+            phase(draw_phase::ACTORS0);
             if ctx.backdrop.is_none() && tiled.is_none() {
                 fx::process_shadows(r, game);
             }
+            phase(draw_phase::SHADOWS);
             draw_actor_list(r, scene, game, ctx, 1);
             if let Some(((b, m), a)) = &mut scene.placeholder_frog {
                 r.draw_actor(&scene.banks[*b].models[*m], a);
             }
+            phase(draw_phase::ACTORS1);
             let posed = if r.view.widened() { widened_object_sprites(game) } else { BTreeMap::new() };
             fx::print_sprites(r, game, ctx.far_clip, &posed);
+            phase(draw_phase::SPRITES);
             if !matches!(mode, MULTI_WINRACE_MODE | MULTI_WINBATTLE_MODE | MULTI_WINCOLLECT_MODE | LEVELCOMPLETE_MODE) {
                 fx::draw_special_fx(r, game);
             }
+            phase(draw_phase::SPECFX);
             if ctx.show_tiles {
                 draw_tiles(r, game);
             }
@@ -326,6 +393,7 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
     if game.fadeout.fade_text {
         overlay::draw_screen_transition(r, game);
     }
+    phase(draw_phase::OVERLAYS);
 }
 
 /// Port of `DrawBackground` (drawloop.cpp:85): the sky actor follows the camera, no
@@ -370,10 +438,9 @@ fn draw_actor_list(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &
         }
         let (_, (b, m), ea) = slot.as_mut().unwrap();
         let (b, m) = (*b, *m);
-        let cur = Snap { pos: sv_to_render(&a2.actor.position), q: iq_to_quat(&a2.actor.q_rot) };
-        let s = lerp_snap(ctx.prev.get(id.idx()).and_then(|p| p.as_ref()), cur, ctx.alpha);
-        ea.pos = s.pos;
-        ea.q_rot = s.q;
+        let (pos, q) = lerp_snap(ctx.prev.get(id.idx()).and_then(|p| p.as_ref()), &Snap::of(a2), ctx.alpha);
+        ea.pos = pos;
+        ea.q_rot = q;
         let sz = a2.actor.size;
         ea.scale = [sz.vx as f32 / 4096.0, sz.vy as f32 / 4096.0, sz.vz as f32 / 4096.0];
         ea.animated = mdx.animation.is_some();

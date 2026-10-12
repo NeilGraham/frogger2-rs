@@ -44,7 +44,7 @@ pub mod vkraw;
 
 pub use anim::{actor_bounds, xform_actor, Actor};
 pub use font::{Font, HiRes};
-pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, Quad2D, Renderer, RgbaImage, OVERLAY_SPACE};
+pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, FrameView, PassState, Quad2D, Renderer, RgbaImage, OVERLAY_SPACE};
 #[cfg(feature = "gpu")]
 pub use renderer::{GpuContext, WindowSurface};
 pub use scene::{Camera, Fog, Frame, MeshBackend, MeshDraw, MeshSink, RenderOptions, TlVertex, Tri, View, XluSort, MESH_SKIN};

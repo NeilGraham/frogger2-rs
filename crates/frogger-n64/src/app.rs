@@ -80,6 +80,16 @@ fn phase_hook(id: u32) {
     PHASES[id as usize].fetch_add(t.wrapping_sub(PHASE_LAST.swap(t, Relaxed)), Relaxed);
 }
 
+/// `f2_draw::render::set_phase_hook`: C0 ticks per draw-loop phase in the current perf window.
+static DRAW_PHASES: [core::sync::atomic::AtomicU32; f2_draw::render::draw_phase::COUNT] = [const { core::sync::atomic::AtomicU32::new(0) }; f2_draw::render::draw_phase::COUNT];
+static DRAW_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn draw_phase_hook(id: u32) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let t = ticks();
+    DRAW_PHASES[id as usize].fetch_add(t.wrapping_sub(DRAW_LAST.swap(t, Relaxed)), Relaxed);
+}
+
 /// Rank of a pacing choice (0 = 60 fps ... 4 = unlimited / overloaded).
 fn fps_rank(f: u32) -> usize {
     PACED_FPS.iter().position(|&p| p == f).unwrap_or(PACED_FPS.len())
@@ -173,6 +183,10 @@ struct Window {
     r3d_flush: u32,
     r3d_reused: u32,
     r3d_view_reused: u32,
+    /// Procedural texture refill, `render::snapshot`, host overlays (C0 ticks).
+    refill: u32,
+    snap: u32,
+    host2d: u32,
 }
 
 /// The renderer side of the loaded level, outside [`App`] so the data source can free it
@@ -242,6 +256,9 @@ pub struct App {
     backdrop: Option<(String, Option<TexHandle>)>,
     tile_scroll: TileScroll,
     prev: Vec<Option<Snap>>,
+    /// Per procedural texture: (crc, `timer`, registry image, its N64 texture generation) of its last refill (`timer` changes
+    /// exactly when the game blits a new surface).
+    proc_seen: Vec<(u32, u32, u32, u32)>,
     prev_cam: Option<Camera>,
     acc: u32,
     last: u32,
@@ -327,6 +344,7 @@ impl App {
             backdrop: None,
             tile_scroll: TileScroll::default(),
             prev: Vec::new(),
+            proc_seen: Vec::new(),
             prev_cam: None,
             acc: 0,
             last: ticks(),
@@ -439,6 +457,7 @@ impl App {
     /// renderer holds.
     fn install_game_hooks(&mut self) {
         self.game.phase_hook = Some(phase_hook);
+        render::set_phase_hook(Some(draw_phase_hook));
         if let Some(f) = self.game_fonts {
             let w = |f: &Font| (0..=255u8).map(|c| f.char_width(c).min(255) as u8).collect::<Vec<u8>>();
             self.game.textover.metrics = Some(f2_game::textover::FontMetrics { normal: w(self.r.font(f.normal)), small: w(self.r.font(f.small)) });
@@ -742,7 +761,9 @@ impl App {
     /// starting state is needed for interpolation, so only then is it snapshotted).
     fn tick(&mut self, pad: u16, last: bool, frames: u32) {
         if last {
-            self.prev = render::snapshot(&self.game);
+            let ts = ticks();
+            render::snapshot_into(&self.game, &mut self.prev);
+            self.win.snap += ticks().wrapping_sub(ts);
             self.prev_cam = Some(render::game_camera(&self.game));
         }
         if self.game.frontend.text_entry > 0 {
@@ -1008,9 +1029,17 @@ impl App {
         }
         // Procedural textures (water, fire): refilled in place from their ARGB4444 surfaces
         // (f2-draw's `lean` draw loop leaves them to the front end).
-        for pt in &self.game.ptexture.list {
+        let t_refill = ticks();
+        self.proc_seen.resize(self.game.ptexture.list.len(), (0, 0, u32::MAX, 0));
+        for (pt, seen) in self.game.ptexture.list.iter().zip(&mut self.proc_seen) {
             let Some(surf) = pt.surface.as_deref() else { continue };
             let Some(h) = self.r.textures.entry(pt.crc).map(|e| e.image) else { continue };
+            // Unchanged surface (no blit since the last refill) into the same texture.
+            let key = (pt.crc, pt.timer, h.0, l.gfx.texture_of(h.0).1);
+            if *seen == key {
+                continue;
+            }
+            *seen = key;
             let side = (1..=256u32).find(|s| (s * s) as usize >= surf.len()).unwrap_or(0);
             if side * side != surf.len() as u32 || l.gfx.update_argb4444(h.0, side, surf) {
                 continue;
@@ -1020,6 +1049,8 @@ impl App {
             }
         }
         let t_loop = ticks();
+        self.win.refill += t_loop.wrapping_sub(t_refill);
+        DRAW_LAST.store(t_loop, core::sync::atomic::Ordering::Relaxed);
         // Meshes go straight to r3d while the loop records them: begin its frame with the
         // view the loop sets first (camera, near 10, far clip).
         #[cfg(not(feature = "render-cpu"))]
@@ -1045,7 +1076,9 @@ impl App {
             let s = ctx.cam.source;
             self.audio.listener = crate::audio::Listener { cam_source: s.map(|x| (x * 10.0 * 4096.0) as i32), view: self.r.view.v_matrix };
         }
+        let t_h = ticks();
         self.draw_host_overlays();
+        self.win.host2d += ticks().wrapping_sub(t_h);
         let clear = match &l.scene {
             Some(s) => s.clear,
             None => [0.0, 0.0, 0.0, 1.0],
@@ -1328,6 +1361,20 @@ impl App {
                 let _ = core::fmt::Write::write_fmt(&mut s, format_args!(" {} {}", NAMES[i], us));
             }
             log!("sim phases [{}] us/tick:{}", self.level_name, s);
+            let f = w.frames.max(1);
+            let mut s = String::new();
+            for i in 0..f2_draw::render::draw_phase::COUNT {
+                let us = ticks_to_us(DRAW_PHASES[i].swap(0, core::sync::atomic::Ordering::Relaxed)) / f;
+                let _ = core::fmt::Write::write_fmt(&mut s, format_args!(" {} {}", f2_draw::render::draw_phase::NAMES[i], us));
+            }
+            log!(
+                "draw phases [{}] us/frame:{} | refill {} snapshot {} host2d {}",
+                self.level_name,
+                s,
+                ticks_to_us(w.refill / f),
+                ticks_to_us(w.snap / f),
+                ticks_to_us(w.host2d / f)
+            );
         }
         let (rsp, rdp) = rt::rcp_load();
         let ms = |t: u32| ticks_to_us(t) / 1000;

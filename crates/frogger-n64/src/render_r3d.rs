@@ -304,6 +304,8 @@ impl R3dLevel {
     /// (Self::begin_queue), then presents.
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     pub fn draw(&mut self, r: &mut Renderer, cpu: &mut RenderCpu, clear: [f64; 4]) {
+        // Scene depth scale first: `build` bakes it into the sprite rectangles.
+        cpu.zk = 4000.0 * view_params(r).z_scale() / 32767.0;
         cpu.build(r, clear);
         if self.dump_next {
             cpu.dump(&r.textures);
@@ -313,7 +315,6 @@ impl R3dLevel {
         let c = clear.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u32);
         rt::begin_frame((c[0] << 24) | (c[1] << 16) | (c[2] << 8) | 0xff);
         cpu.draw_segment(0);
-        cpu.zk = 4000.0 * view_params(r).z_scale() / 32767.0;
         let mut st = self.rec;
         if st.draws == 0 {
             self.r.discard_frame();

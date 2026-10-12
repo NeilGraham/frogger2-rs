@@ -61,9 +61,7 @@ pub struct RenderCpu {
     /// bank's images, or a converted copy), kept alive while the texture exists.
     ext: Vec<Option<alloc::sync::Arc<Vec<u8>>>>,
     /// The frame built by [`build`](Self::build).
-    fverts: Vec<TlVertex>,
-    fcmds: Vec<DrawCmd>,
-    marks: [u32; 10],
+    built: Built,
     /// Depth of scene triangles: RDP z = `sz * zk` (1 = the faithful 0..1 `sz`; r3d maps its
     /// linear depth differently, see `r3d::ViewParams::tl_z`).
     pub zk: f32,
@@ -99,9 +97,7 @@ impl RenderCpu {
             skip_once: Vec::new(),
             gen: Vec::new(),
             ext: Vec::new(),
-            fverts: Vec::new(),
-            fcmds: Vec::new(),
-            marks: [0; 10],
+            built: Built::default(),
             zk: 1.0,
             scratch: Vec::new(),
         }
@@ -215,21 +211,21 @@ impl RenderCpu {
         if h == 0 || s.len() != (side * side) as usize {
             return false;
         }
-        let partial = s.iter().any(|&c| c >> 12 != 0 && c >> 12 != 15);
+        let partial = s.iter().any(|&c| (0x1000..0xf000).contains(&c));
         let fmt = if partial && side * side * 4 <= texconv::TMEM { texconv::FMT_RGBA32 } else { texconv::FMT_RGBA16 };
         if fmt == texconv::FMT_RGBA16 && side * side * 2 > texconv::TMEM {
             return false;
         }
+        let bytes = s.len() * if fmt == texconv::FMT_RGBA32 { 4 } else { 2 };
         self.scratch.clear();
-        let x = |c: u16, sh: u32| ((c >> sh) & 15) as u8 * 17;
+        self.scratch.resize(bytes, 0);
         if fmt == texconv::FMT_RGBA32 {
-            for &c in s {
-                self.scratch.extend_from_slice(&[x(c, 8), x(c, 4), x(c, 0), x(c, 12)]);
+            for (o, &c) in self.scratch.as_chunks_mut::<4>().0.iter_mut().zip(s) {
+                *o = texconv::argb4444_to_rgba32(c).to_be_bytes();
             }
         } else {
-            for &c in s {
-                let v = ((x(c, 8) as u16 >> 3) << 11) | ((x(c, 4) as u16 >> 3) << 6) | ((x(c, 0) as u16 >> 3) << 1) | (x(c, 12) >= 128) as u16;
-                self.scratch.extend_from_slice(&v.to_be_bytes());
+            for (o, &c) in self.scratch.as_chunks_mut::<2>().0.iter_mut().zip(s) {
+                *o = texconv::argb4444_to_rgba16(c).to_be_bytes();
             }
         }
         rt::tex_update(h, &TexDesc { width: side, height: side, fmt, pixels: self.scratch.as_ptr() })
@@ -350,39 +346,117 @@ impl RenderCpu {
         State { flags, blend, tex: self.tex.get(c.tex.0 as usize).copied().unwrap_or(0), alpha_ref }
     }
 
-    /// Builds the frame's CPU draw list (`Renderer::build_segments`) for
-    /// [`draw_segment`](Self::draw_segment).
+    /// Builds the frame's CPU draw list for [`draw_segment`](Self::draw_segment): the
+    /// [`Renderer::frame_view`] parts converted straight into RDP batches (the batches
+    /// `Renderer::build_segments` + [`quads`](Self::quads) / [`tris`](Self::tris) make,
+    /// without the intermediate vertex list).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     pub fn build(&mut self, r: &mut Renderer, clear: [f64; 4]) {
         let t0 = ticks();
         self.persp = r.options.perspective_correct;
-        let (verts, cmds, marks) = r.build_segments(clear);
-        self.fverts = verts;
-        self.fcmds = cmds;
-        self.marks = marks;
-        self.stats = FrameStats { cmds: self.fcmds.len() as u32, build_ticks: ticks().wrapping_sub(t0), ..Default::default() };
+        let fv = r.frame_view(clear);
+        let mut b = core::mem::take(&mut self.built);
+        b.clear();
+        let white = fv.white;
+        // Segment 0: viewport clear + backdrops; 8: overlays (2D quads).
+        for q in fv.viewport_clear.iter().chain(fv.backdrops) {
+            self.add_quad(&mut b, 0, q, white);
+        }
+        for (k, (ps, tris)) in fv.passes.iter().enumerate() {
+            let seg = k as u8 + 1;
+            // Rect-eligible: sprites (screen-aligned quads at one depth) in a Z-tested,
+            // non-writing, clamped pass.
+            let rects = ps.depth != DepthMode::TestWrite && !ps.wrap;
+            let mut i = 0;
+            while i < tris.len() {
+                // A run of one texture (`build_segments` merges these into one command;
+                // quads pair up from its first triangle).
+                let tex = tris[i].tex.unwrap_or(white);
+                let mut j = i + 1;
+                while j < tris.len() && tris[j].tex.unwrap_or(white) == tex {
+                    j += 1;
+                }
+                let c = DrawCmd { blend: ps.blend, depth: ps.depth, tex, wrap: ps.wrap, scene: true, first: 0, count: 0 };
+                let state = self.state(&c, ps.alpha_ref);
+                self.add_scene_run(&mut b, seg, &state, &tris[i..j], rects);
+                i = j;
+            }
+        }
+        for q in fv.overlays {
+            self.add_quad(&mut b, 8, q, white);
+        }
+        self.stats = FrameStats { cmds: b.batches.len() as u32, build_ticks: ticks().wrapping_sub(t0), ..Default::default() };
+        self.built = b;
     }
 
-    /// Logs the built frame's CPU commands (debug aid: `F2N64_DUMP_FRAME`): segment, state,
-    /// triangle count, registry image and the name of a texture entry showing it.
+    /// One 2D quad of segment `seg` (as `build_segments` + [`quads`](Self::quads)).
+    fn add_quad(&self, b: &mut Built, seg: u8, q: &f2_engine::Quad2D, white: f2_engine::TexHandle) {
+        let c = DrawCmd { blend: q.blend, depth: DepthMode::Off, tex: q.tex.unwrap_or(white), wrap: false, scene: false, first: 0, count: 0 };
+        let state = self.state(&c, f2_engine::renderer::ALPHA_NONZERO);
+        let mut tv = q.tl_vertices();
+        if let Some(f) = colour_conv(state.blend) {
+            for v in &mut tv {
+                *v = converted(v, f);
+            }
+        }
+        if let Some(r) = as_rect(&tv) {
+            b.rect(seg, &state, r);
+        } else {
+            let mut ts = state;
+            ts.flags &= !ffi::PERSP;
+            for v in &tv {
+                b.vert(seg, &ts, vertex(v));
+            }
+        }
+    }
+
+    /// A run of one pass's triangles with one texture: sprite quads as Z-tested
+    /// rectangles when `rects`, the rest as triangles at their depth (`sz * zk`).
+    fn add_scene_run(&self, b: &mut Built, seg: u8, state: &State, tris: &[f2_engine::Tri], rects: bool) {
+        let conv = colour_conv(state.blend);
+        let mut i = 0;
+        while i < tris.len() {
+            if rects && i + 1 < tris.len() {
+                let (p, q) = (&tris[i].v, &tris[i + 1].v);
+                let mut six = [p[0], p[1], p[2], q[0], q[1], q[2]];
+                if six[1].sz == six[0].sz && six[2].sz == six[0].sz && six[4].sz == six[0].sz {
+                    if let Some(f) = conv {
+                        for v in &mut six {
+                            *v = converted(v, f);
+                        }
+                    }
+                    if let Some(mut r) = as_rect(&six) {
+                        r.z = (six[0].sz * self.zk).clamp(0.0, 1.0);
+                        b.rect(seg, state, r);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            // Converted by C at submission (`n64_draw_tl_tris`, as `tris` converts them).
+            b.tl_tri(seg, state, &tris[i]);
+            i += 1;
+        }
+    }
+
+    /// Logs the built frame's CPU batches (debug aid: `F2N64_DUMP_FRAME`): segment, state,
+    /// triangle / rectangle count and the name of a texture entry showing it.
     pub fn dump(&self, reg: &TextureRegistry) {
-        for (k, c) in self.fcmds.iter().enumerate() {
-            let seg = self.marks.iter().rposition(|&m| m as usize <= k).unwrap_or(0).min(8);
-            let name = reg.entries.iter().find(|e| e.current == Some(c.tex)).map_or("", |e| e.name.as_str());
-            let img = reg.images.get(c.tex.0 as usize).map_or((0, 0), |i| (i.width, i.height));
-            let tv = &self.fverts[c.first as usize];
+        for bt in &self.built.batches {
+            let name = reg.entries.iter().find(|e| e.current.is_some_and(|h| self.tex.get(h.0 as usize) == Some(&bt.state.tex))).map_or("", |e| e.name.as_str());
             crate::log!(
-                "dump cpu seg {seg} {:?} {:?} wrap {} scene {} tris {} tex {} {:?} {} n64 {} col {:?} aref {}",
-                c.blend,
-                c.depth,
-                c.wrap,
-                c.scene,
-                c.count / 3,
-                c.tex.0,
-                img,
+                "dump cpu seg {} flags {:x} blend {} aref {} n64 tex {} {} {} {}",
+                bt.seg,
+                bt.state.flags,
+                bt.state.blend,
+                bt.state.alpha_ref,
+                bt.state.tex,
                 name,
-                self.tex.get(c.tex.0 as usize).copied().unwrap_or(0),
-                tv.color,
-                tv.alpha_ref
+                match bt.kind {
+                    Kind::Rects => "rects",
+                    _ => "tris",
+                },
+                if bt.kind == Kind::Verts { bt.count / 3 } else { bt.count }
             );
         }
     }
@@ -392,27 +466,34 @@ impl RenderCpu {
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     pub fn draw_segment(&mut self, seg: usize) {
         let t0 = ticks();
-        let (a, b) = (self.marks[seg] as usize, self.marks[seg + 1] as usize);
-        let cmds = core::mem::take(&mut self.fcmds);
-        let verts = core::mem::take(&mut self.fverts);
+        let b = &self.built;
         let mut st = self.stats;
-        for (k, cmd) in cmds[a..b].iter().enumerate() {
-            let tv = &verts[cmd.first as usize..(cmd.first + cmd.count) as usize];
-            if tv.is_empty() {
-                continue;
+        let mut n = 0;
+        for bt in b.batches.iter().filter(|bt| bt.seg as usize == seg) {
+            let (a, e) = (bt.first as usize, bt.first as usize + bt.count as usize);
+            match bt.kind {
+                Kind::Rects => {
+                    rt::draw_rects(&b.rects[a..e], &bt.state);
+                    st.rects += bt.count;
+                }
+                Kind::Verts => {
+                    rt::draw_tris(&b.verts[a..e], &bt.state);
+                    st.tris += bt.count / 3;
+                }
+                Kind::Tl => {
+                    // SAFETY: `bt.first` points at `count` consecutive triangles of the
+                    // renderer's frame lists, unchanged since `build` (the frame is drawn
+                    // before the next `Renderer::begin_frame`).
+                    let tris = unsafe { core::slice::from_raw_parts(bt.first as *const f2_engine::Tri, bt.count as usize) };
+                    rt::draw_tl_tris(tris, self.zk, &bt.state);
+                    st.tris += bt.count;
+                }
             }
-            let state = self.state(cmd, tv[0].alpha_ref);
-            if cmd.scene {
-                self.tris(tv, &state, &mut st);
-            } else {
-                self.overlay(tv, &state, &mut st);
-            }
-            if k % 16 == 15 {
+            n += 1;
+            if n % 16 == 0 {
                 rt::audio_poll();
             }
         }
-        self.fcmds = cmds;
-        self.fverts = verts;
         st.submit_ticks += ticks().wrapping_sub(t0);
         self.stats = st;
     }
@@ -468,6 +549,14 @@ impl RenderCpu {
     /// 2D batches: screen-aligned quads become blits, anything else triangles.
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
     fn overlay(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
+        self.quads(tv, state, false, st);
+    }
+
+    /// Screen-aligned quads become texture rectangles, anything else triangles. `scene`:
+    /// a 3D pass (sprites): a quad must lie at one depth, which becomes the rectangle's
+    /// primitive depth, and the triangles keep their depth (as [`tris`](Self::tris)).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_f")]
+    fn quads(&mut self, tv: &[TlVertex], state: &State, scene: bool, st: &mut FrameStats) {
         self.rects.clear();
         self.verts.clear();
         // Additive: the colour split of `additive_colour` (main.c draws the rects and
@@ -491,10 +580,13 @@ impl RenderCpu {
         } else {
             tv
         };
+        let zk = self.zk;
         let flush_tris = |s: &mut Self, st: &mut FrameStats| {
             if !s.verts.is_empty() {
                 let mut ts = *state;
-                ts.flags &= !ffi::PERSP;
+                if !scene {
+                    ts.flags &= !ffi::PERSP;
+                }
                 rt::draw_tris(&s.verts, &ts);
                 st.tris += (s.verts.len() / 3) as u32;
                 s.verts.clear();
@@ -510,7 +602,12 @@ impl RenderCpu {
         let mut i = 0;
         while i < tv.len() {
             if i + 6 <= tv.len() {
-                if let Some(r) = as_rect(&tv[i..i + 6]) {
+                let q = &tv[i..i + 6];
+                let flat = !scene || (q[1].sz == q[0].sz && q[2].sz == q[0].sz && q[4].sz == q[0].sz);
+                if let Some(mut r) = as_rect(q).filter(|_| flat) {
+                    if scene {
+                        r.z = (q[0].sz * zk).clamp(0.0, 1.0);
+                    }
                     flush_tris(self, st);
                     self.rects.push(r);
                     i += 6;
@@ -519,12 +616,94 @@ impl RenderCpu {
             }
             flush_rects(self, st);
             let end = (i + 3).min(tv.len());
-            self.verts.extend(tv[i..end].iter().map(vertex));
+            if scene {
+                self.verts.extend(tv[i..end].iter().map(|v| Vertex { z: (v.sz * zk).clamp(0.0, 1.0), ..vertex(v) }));
+            } else {
+                self.verts.extend(tv[i..end].iter().map(vertex));
+            }
             i = end;
         }
         flush_tris(self, st);
         flush_rects(self, st);
     }
+}
+
+/// RDP batches of a frame ([`RenderCpu::build`]): vertices / rectangles and runs of them.
+#[derive(Default)]
+struct Built {
+    verts: Vec<Vertex>,
+    rects: Vec<Rect>,
+    batches: Vec<Batch>,
+}
+
+/// What a [`Batch`] draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// `count` vertices (whole triangles) of `Built::verts` from `first`.
+    Verts,
+    /// `count` rectangles of `Built::rects` from `first`.
+    Rects,
+    /// `count` consecutive `f2_engine::Tri`s at address `first` (the renderer's frame list).
+    Tl,
+}
+
+/// A run of one kind of primitive with one state.
+struct Batch {
+    seg: u8,
+    kind: Kind,
+    state: State,
+    first: usize,
+    count: u32,
+}
+
+impl Built {
+    fn clear(&mut self) {
+        self.verts.clear();
+        self.rects.clear();
+        self.batches.clear();
+    }
+
+    /// The batch to append to (a new one unless the last has this segment, kind and state
+    /// and ends at `first`).
+    fn open(&mut self, seg: u8, kind: Kind, state: &State, first: usize, unit: usize) -> &mut Batch {
+        let same = self.batches.last().is_some_and(|l| l.seg == seg && l.kind == kind && l.state == *state && l.first + l.count as usize * unit == first);
+        if !same {
+            self.batches.push(Batch { seg, kind, state: *state, first, count: 0 });
+        }
+        self.batches.last_mut().unwrap()
+    }
+
+    fn vert(&mut self, seg: u8, state: &State, v: Vertex) {
+        let n = self.verts.len();
+        self.open(seg, Kind::Verts, state, n, 1).count += 1;
+        self.verts.push(v);
+    }
+
+    fn rect(&mut self, seg: u8, state: &State, r: Rect) {
+        let n = self.rects.len();
+        self.open(seg, Kind::Rects, state, n, 1).count += 1;
+        self.rects.push(r);
+    }
+
+    fn tl_tri(&mut self, seg: u8, state: &State, t: &f2_engine::Tri) {
+        self.open(seg, Kind::Tl, state, t as *const _ as usize, core::mem::size_of::<f2_engine::Tri>()).count += 1;
+    }
+}
+
+/// The vertex colour split of an additive / subtractive batch.
+fn colour_conv(blend: u32) -> Option<fn(&mut Vertex)> {
+    match blend {
+        ffi::BLEND_ADD => Some(additive_colour),
+        ffi::BLEND_SUB => Some(subtractive_colour),
+        _ => None,
+    }
+}
+
+/// `v` with the colour split `f` applied (as [`RenderCpu::quads`] converts a batch).
+fn converted(v: &TlVertex, f: fn(&mut Vertex)) -> TlVertex {
+    let mut o = vertex(v);
+    f(&mut o);
+    TlVertex { color: [o.r, o.g, o.b, o.a], ..*v }
 }
 
 /// Additive batches are drawn with the alpha blender from each texture's additive variant
@@ -598,5 +777,5 @@ pub fn as_rect(q: &[TlVertex]) -> Option<Rect> {
         core::mem::swap(&mut t0, &mut t1);
     }
     let c8 = col.map(|x| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u32);
-    Some(Rect { x0, y0, x1, y1, s0, t0, s1, t1, rgba: (c8[0] << 24) | (c8[1] << 16) | (c8[2] << 8) | c8[3] })
+    Some(Rect { x0, y0, x1, y1, s0, t0, s1, t1, rgba: (c8[0] << 24) | (c8[1] << 16) | (c8[2] << 8) | c8[3], z: 0.0 })
 }

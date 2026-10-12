@@ -280,6 +280,14 @@ fn begin_frame_inner(clear_rgba: u32) {
     unsafe { ffi::n64_begin_frame(clear_rgba) }
 }
 
+/// Scene triangles of the renderer's frame lists, converted on the C side
+/// (`n64_draw_tl_tris`).
+pub fn draw_tl_tris(tris: &[f2_engine::Tri], zk: f32, state: &State) {
+    let Some(first) = tris.first() else { return };
+    let b = ffi::TlBatch { tris: first.v.as_ptr() as *const u8, stride: core::mem::size_of::<f2_engine::Tri>() as u32, ntris: tris.len() as u32, zk };
+    unsafe { ffi::n64_draw_tl_tris(&b, state) }
+}
+
 pub fn draw_tris(verts: &[Vertex], state: &State) {
     unsafe { ffi::n64_draw_tris(verts.as_ptr(), (verts.len() / 3) as u32, state) }
 }
