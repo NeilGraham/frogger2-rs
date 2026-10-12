@@ -37,10 +37,39 @@ pub struct Canvas {
 type Px = [f32; 4];
 
 /// Texel `(x, y)` of `rgba` (`w` wide, straight alpha) as premultiplied floats.
+/// `v as f32 / 255.0` for every byte (a table: float division is slow on console CPUs; the
+/// values are the same).
+/// Computed at compile time (IEEE arithmetic, so the same values; a lazily initialised
+/// table cost an atomic check per lookup).
+static UNIT: [f32; 256] = {
+    let mut t = [0.0f32; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = i as f32 / 255.0;
+        i += 1;
+    }
+    t
+};
+
 fn texel(rgba: &[u8], w: u32, x: u32, y: u32) -> Px {
     let i = ((y * w + x) * 4) as usize;
-    let a = rgba[i + 3] as f32 / 255.0;
-    [rgba[i] as f32 / 255.0 * a, rgba[i + 1] as f32 / 255.0 * a, rgba[i + 2] as f32 / 255.0 * a, a]
+    let u = &UNIT;
+    let a = u[rgba[i + 3] as usize];
+    [u[rgba[i] as usize] * a, u[rgba[i + 1] as usize] * a, u[rgba[i + 2] as usize] * a, a]
+}
+
+/// `v.floor()` for |v| < 2^31 (exact; without `std` `f32::floor` is a software routine).
+#[inline]
+fn floor_f32(v: f32) -> f32 {
+    let t = v as i32;
+    (if t as f32 > v { t - 1 } else { t }) as f32
+}
+
+/// `v.round()` (half away from zero) for 0 <= v < 2^23 (exact, as [`floor_f32`]).
+#[inline]
+fn round_nonneg(v: f32) -> f32 {
+    let t = v as i32;
+    (if v - t as f32 >= 0.5 { t + 1 } else { t }) as f32
 }
 
 /// Bilinear filter (`D3DTFN_LINEAR`, the MDX default: mdxD3D.cpp `BILERP_DEFAULT`) at
@@ -48,7 +77,7 @@ fn texel(rgba: &[u8], w: u32, x: u32, y: u32) -> Px {
 /// texel at integer coordinates (it does the addressing).
 fn bilinear(u: f32, v: f32, fetch: impl Fn(i32, i32) -> Px) -> Px {
     let (fu, fv) = (u - 0.5, v - 0.5);
-    let (x0, y0) = (fu.floor(), fv.floor());
+    let (x0, y0) = (floor_f32(fu), floor_f32(fv));
     let (tx, ty) = (fu - x0, fv - y0);
     let (x0, y0) = (x0 as i32, y0 as i32);
     let (a, b, c, d) = (fetch(x0, y0), fetch(x0 + 1, y0), fetch(x0, y0 + 1), fetch(x0 + 1, y0 + 1));
@@ -59,6 +88,17 @@ fn bilinear(u: f32, v: f32, fetch: impl Fn(i32, i32) -> Px) -> Px {
         o[k] = top + (bot - top) * ty;
     }
     o
+}
+
+/// A source image region for [`Canvas::blit_fixed`]: `clamp` addressing (images) or
+/// transparent outside columns `u0..u0 + uw` (a glyph's cell in the font atlas).
+struct Src<'a> {
+    rgba: &'a [u8],
+    w: u32,
+    h: u32,
+    u0: u32,
+    uw: u32,
+    clamp: bool,
 }
 
 impl Canvas {
@@ -88,7 +128,8 @@ impl Canvas {
         for k in 0..3 {
             let s = src[k] * col[k] * col[3] * 255.0;
             let d = self.rgba[i + k] as f32;
-            self.rgba[i + k] = (s + d * (1.0 - a)).round().clamp(0.0, 255.0) as u8;
+            // s, d >= 0 and a <= 1: never negative (round_nonneg's range).
+            self.rgba[i + k] = round_nonneg(s + d * (1.0 - a)).clamp(0.0, 255.0) as u8;
         }
         self.rgba[i + 3] = 255;
     }
@@ -103,13 +144,142 @@ impl Canvas {
         let (l, t, r, b) = (l * s, t * s, r * s, b * s);
         let (rw, rh) = ((r - l).max(1) as f32, (b - t).max(1) as f32);
         let (iw, ih) = (img.width as i32, img.height as i32);
+        if cfg!(feature = "lean") {
+            self.textured_rect_fixed((l, t, r, b), col, img);
+            return;
+        }
         let fetch = |x: i32, y: i32| texel(&img.rgba, img.width, x.clamp(0, iw - 1) as u32, y.clamp(0, ih - 1) as u32);
+        // `bilinear(u, v)` with its per-column / per-row parts computed once (the same
+        // operations, so the same pixels; the per-pixel divisions and floors were most of a
+        // page's cost on the N64).
+        let split = |p: f32| {
+            let f = p - 0.5;
+            let i = floor_f32(f);
+            (i as i32, f - i)
+        };
+        let cols: Vec<(i32, f32)> = (l..r).map(|x| split(((x - l) as f32 + 0.5) / rw * iw as f32)).collect();
         for y in t..b {
-            let v = ((y - t) as f32 + 0.5) / rh * ih as f32;
-            for x in l..r {
-                let u = ((x - l) as f32 + 0.5) / rw * iw as f32;
-                let p = bilinear(u, v, fetch);
+            let (y0, ty) = split(((y - t) as f32 + 0.5) / rh * ih as f32);
+            for (x, &(x0, tx)) in (l..r).zip(&cols) {
+                let (a, b2, c, d) = (fetch(x0, y0), fetch(x0 + 1, y0), fetch(x0, y0 + 1), fetch(x0 + 1, y0 + 1));
+                let mut p = [0.0; 4];
+                for k in 0..4 {
+                    let top = a[k] + (b2[k] - a[k]) * tx;
+                    let bot = c[k] + (d[k] - c[k]) * tx;
+                    p[k] = top + (bot - top) * ty;
+                }
                 self.blend(x, y, p, col);
+            }
+        }
+    }
+
+    /// [`draw_textured_rect`](Self::draw_textured_rect) in integer maths (`lean`: the N64,
+    /// where the float version took ~0.7 s for a page background): 8-bit filter weights,
+    /// premultiplied 8-bit texels; within 2 of the float result per channel. `(l, t, r, b)`
+    /// in canvas pixels.
+    fn textured_rect_fixed(&mut self, (l, t, r, b): (i32, i32, i32, i32), col: [f32; 4], img: &Image) {
+        let src = Src { rgba: &img.rgba, w: img.width, h: img.height, u0: 0, uw: img.width, clamp: true };
+        self.blit_fixed((l, t, r - l, b - t), &src, col);
+    }
+
+    /// Bilinear blit of `src` (texels `u0..u0 + uw` across, the whole height down) onto the
+    /// canvas pixels `(x, y, w, h)`, blended with `col` (the integer version of the float
+    /// `bilinear` + `blend` loops; see [`textured_rect_fixed`](Self::textured_rect_fixed)).
+    fn blit_fixed(&mut self, (l, t, w, h): (i32, i32, i32, i32), src: &Src, col: [f32; 4]) {
+        if w <= 0 || h <= 0 || src.w == 0 || src.h == 0 {
+            return;
+        }
+        let (rw, rh) = (w as f32, h as f32);
+        let (lo, hi) = if src.clamp { (0, src.w as i32 - 1) } else { (src.u0 as i32, (src.u0 + src.uw).min(src.w) as i32 - 1) };
+        // Texel index (None: transparent, outside a glyph cell) and 8-bit weight of the next.
+        let split = |p: f32| {
+            let f = p - 0.5;
+            let i = floor_f32(f);
+            (i as i32, ((f - i) * 256.0) as u32)
+        };
+        let idx = |i: i32, lo: i32, hi: i32| -> Option<u32> {
+            if src.clamp {
+                Some(i.clamp(lo, hi) as u32)
+            } else {
+                (i >= lo && i <= hi).then_some(i as u32)
+            }
+        };
+        let cols: Vec<(Option<u32>, Option<u32>, u32)> = (0..w)
+            .map(|x| {
+                let (x0, wx) = split(src.u0 as f32 + (x as f32 + 0.5) / rw * src.uw as f32);
+                (idx(x0, lo, hi), idx(x0 + 1, lo, hi), wx)
+            })
+            .collect();
+        let k = |v: f32| (v.clamp(0.0, 1.0) * 256.0 + 0.5) as u32;
+        let (cm, ca) = ([k(col[0] * col[3]), k(col[1] * col[3]), k(col[2] * col[3])], k(col[3]));
+        // Premultiplied texels (c * a / 255 rounded), once per blit: integer multiplies cost
+        // ~5 cycles each on the VR4300.
+        // Only the columns read (a glyph's cell of the font atlas, or the whole image).
+        let pw = (hi - lo + 1).max(0) as u32;
+        let pm: Vec<[u8; 4]> = (0..src.h)
+            .flat_map(|row| (lo as u32..lo as u32 + pw).map(move |c| ((row * src.w + c) * 4) as usize))
+            .map(|i| {
+                let p = &src.rgba[i..i + 4];
+                let a = p[3] as u32;
+                let m = |c: u8| {
+                    let v = c as u32 * a + 128;
+                    ((v + (v >> 8)) >> 8) as u8
+                };
+                [m(p[0]), m(p[1]), m(p[2]), p[3]]
+            })
+            .collect();
+        let tex = |row: Option<u32>, c: Option<u32>| -> [u32; 4] {
+            match (row, c) {
+                (Some(row), Some(c)) => pm[(row * pw + c - lo as u32) as usize].map(|v| v as u32),
+                _ => [0; 4],
+            }
+        };
+        // Horizontal lerps of the current texel row pair (0..255 << 8), recomputed only when
+        // the pair changes (every ~8 rows when magnifying 8x).
+        let mut line: Vec<([u32; 4], [u32; 4])> = alloc::vec![([0; 4], [0; 4]); w as usize];
+        let mut line_rows = None;
+        let (vlo, vhi) = (0, src.h as i32 - 1);
+        for y in 0..h {
+            let cy = t + y;
+            if cy < 0 || cy >= self.h as i32 {
+                continue;
+            }
+            let (y0, wy) = split((y as f32 + 0.5) / rh * src.h as f32);
+            let rows = (idx(y0, vlo, vhi), idx(y0 + 1, vlo, vhi));
+            if line_rows != Some(rows) {
+                line_rows = Some(rows);
+                for (o, &(xa, xb, wx)) in line.iter_mut().zip(&cols) {
+                    let (pa, pb, pc, pd) = (tex(rows.0, xa), tex(rows.0, xb), tex(rows.1, xa), tex(rows.1, xb));
+                    for k in 0..4 {
+                        o.0[k] = pa[k] * (256 - wx) + pb[k] * wx;
+                        o.1[k] = pc[k] * (256 - wx) + pd[k] * wx;
+                    }
+                }
+            }
+            let row = (cy as u32 * self.w) as usize;
+            for (x, (top, bot)) in line.iter().enumerate() {
+                let cx = l + x as i32;
+                if cx < 0 || cx >= self.w as i32 {
+                    continue;
+                }
+                // 0..255 << 16.
+                let lerp = |k: usize| top[k] * (256 - wy) + bot[k] * wy;
+                let a = (lerp(3) * ca) >> 16; // 0..255 << 8
+                if a == 0 {
+                    continue;
+                }
+                let i = (row + cx as usize) * 4;
+                let inv = (255 << 8) - a.min(255 << 8);
+                for c in 0..3 {
+                    let s = (lerp(c) >> 8) * cm[c]; // 0..255 << 16
+                    // dst * (1 - alpha) << 16 = dst * inv * 256 / 255 (inv is (1 - alpha) * 255 << 8);
+                    // * 256 / 255 as d + d/256 + d/65536 (no division).
+                    let d = if inv == 0 { 0 } else { self.rgba[i + c] as u32 * inv };
+                    let d = d + (d >> 8) + (d >> 16);
+                    let v = (s + d + (1 << 15)) >> 16;
+                    self.rgba[i + c] = v.min(255) as u8;
+                }
+                self.rgba[i + 3] = 255;
             }
         }
     }
@@ -141,6 +311,12 @@ impl Canvas {
                         texel(&font.rgba, font.width, fx as u32, fy as u32)
                     }
                 };
+                if cfg!(feature = "lean") && self.scale == 1 {
+                    let src = Src { rgba: &font.rgba, w: font.width, h: font.height, u0: left as u32, uw: g.width, clamp: false };
+                    self.blit_fixed((cx * s, y * s, pw, ph), &src, col);
+                    cx += gw;
+                    continue;
+                }
                 // Canvas pixels per font texel (> 1: sharpen the bilinear ramp).
                 let mag = (pw as f32 / g.width as f32).min(ph as f32 / font.height as f32);
                 let sharpen = self.scale > 1 && mag > 1.0;
@@ -288,6 +464,75 @@ pub fn copy_texture(r: &mut Renderer, dest: &str, src: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `draw_textured_rect`'s hoisted loop draws the same bytes as per-pixel `bilinear`.
+    #[test]
+    #[cfg(not(feature = "lean"))]
+    fn textured_rect_matches_per_pixel_bilinear() {
+        let (iw, ih) = (32u32, 32u32);
+        let rgba: Vec<u8> = (0..iw * ih).flat_map(|i| [(i * 37) as u8, (i * 91 + 3) as u8, (i * 13 + 200) as u8, (i * 7 + 100) as u8]).collect();
+        let img = Image { width: iw, height: ih, rgba: rgba.clone() };
+        for (rect, col) in [((0, 0, 0xff, 0xff), [1.0; 4]), ((60, 70, 0xff - 60, 0xff - 100), [0.8, 0.6, 1.0, 0.5])] {
+            let mut fast = Canvas::new(256, 256);
+            fast.rgba.iter_mut().enumerate().for_each(|(i, b)| *b = (i * 31) as u8);
+            let mut slow = Canvas::new(256, 256);
+            slow.rgba.copy_from_slice(&fast.rgba);
+            fast.draw_textured_rect(rect, col, &img);
+            let (l, t, r, b) = rect;
+            let (rw, rh) = ((r - l) as f32, (b - t) as f32);
+            let fetch = |x: i32, y: i32| texel(&rgba, iw, x.clamp(0, iw as i32 - 1) as u32, y.clamp(0, ih as i32 - 1) as u32);
+            for y in t..b {
+                let v = ((y - t) as f32 + 0.5) / rh * ih as f32;
+                for x in l..r {
+                    let u = ((x - l) as f32 + 0.5) / rw * iw as f32;
+                    slow.blend(x, y, bilinear(u, v, fetch), col);
+                }
+            }
+            assert!(fast.rgba == slow.rgba, "{rect:?}");
+        }
+    }
+
+    /// The `lean` integer path stays within 2 of the float path per channel.
+    #[test]
+    fn textured_rect_fixed_close_to_float() {
+        let (iw, ih) = (32u32, 32u32);
+        let rgba: Vec<u8> = (0..iw * ih).flat_map(|i| [(i * 37) as u8, (i * 91 + 3) as u8, (i * 13 + 200) as u8, (i * 7 + 100) as u8]).collect();
+        let img = Image { width: iw, height: ih, rgba };
+        for (rect, col) in [((0, 0, 0xff, 0xff), [1.0; 4]), ((60, 70, 0xff - 60, 0xff - 100), [0.8, 0.6, 1.0, 0.5])] {
+            let mut fixed = Canvas::new(256, 256);
+            fixed.rgba.iter_mut().enumerate().for_each(|(i, b)| *b = (i * 31) as u8);
+            let mut float = Canvas::new(256, 256);
+            float.rgba.copy_from_slice(&fixed.rgba);
+            fixed.textured_rect_fixed(rect, col, &img);
+            if !cfg!(feature = "lean") {
+                float.draw_textured_rect(rect, col, &img);
+            }
+            let worst = fixed.rgba.iter().zip(&float.rgba).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
+            if !cfg!(feature = "lean") {
+                assert!(worst <= 2, "{rect:?}: max difference {worst}");
+            }
+        }
+    }
+
+    /// The fast helpers equal the `std` operations over their ranges (the PC page bytes
+    /// must not change).
+    #[test]
+    fn exact_float_helpers() {
+        // -0.0 floors to +0.0 here (same value; bilinear only subtracts and truncates it).
+        for i in -600_000..600_000 {
+            let x = i as f32 * 1e-3;
+            assert_eq!(floor_f32(x), x.floor(), "floor {x}");
+            if x >= 0.0 {
+                assert_eq!(round_nonneg(x), x.round(), "round {x}");
+            }
+        }
+        for v in [0.49999997f32, 0.5, 1.5, 2.5, 254.5, 254.49998, 0.0] {
+            assert_eq!(round_nonneg(v), v.round(), "{v}");
+        }
+        for b in 0..=255u8 {
+            assert_eq!(UNIT[b as usize].to_bits(), (b as f32 / 255.0).to_bits());
+        }
+    }
 
     #[test]
     fn textured_rect_stretches_and_blends() {

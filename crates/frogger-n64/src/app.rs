@@ -91,7 +91,8 @@ const N64_FONT_BASE: f32 = WIDTH as f32 / 640.0;
 /// frontend with Start pressed on the title screen, into the hub) or `settings-test`
 /// (testing: `frontend-start`, then the settings page open with the FPS counter on and a
 /// 30 fps limit, not saved) or `book-test` (testing: `frontend-start`, then Right, Up: the
-/// story book open on its chapter page).
+/// story book open on its chapter page) or `level-book-test` (testing: story Garden 1 (its FMV first),
+/// back to the frontend after 300 frames as the pause menu's Quit does, then Right, Up).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Boot {
     Frontend { trained: bool },
@@ -102,6 +103,7 @@ pub enum Boot {
     FrontendStart,
     SettingsTest,
     BookTest,
+    LevelBookTest,
 }
 
 impl Boot {
@@ -115,6 +117,7 @@ impl Boot {
             (Some("frontend-start"), _, _) => Boot::FrontendStart,
             (Some("settings-test"), _, _) => Boot::SettingsTest,
             (Some("book-test"), _, _) => Boot::BookTest,
+            (Some("level-book-test"), _, _) => Boot::LevelBookTest,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
             (Some("save-test"), _, _) => Boot::SaveTest,
             _ => Boot::Frontend { trained: false },
@@ -251,6 +254,8 @@ pub struct App {
     settings_test: bool,
     /// Test boots: pad presses after the hub is up, as (frames, pad) steps; (frame, steps).
     pad_script: Option<(u32, &'static [(u32, u16)])>,
+    /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
+    level_quit: Option<u32>,
     /// FPS counter: frames and start of the current second, the last second's count.
     fps_count: (u32, u32, u32),
     /// Frame pacing: running averages (C0 ticks, x16 fixed point) of a simulation tick
@@ -315,6 +320,7 @@ impl App {
             menu_release: false,
             settings_test: false,
             pad_script: None,
+            level_quit: None,
             fps_count: (0, 0, 0),
             avg_tick: 0,
             avg_draw: 0,
@@ -346,6 +352,10 @@ impl App {
                 app.game.save_game();
             }
             Boot::FrontendStart => app.autostart = Some(0),
+            Boot::LevelBookTest => {
+                app.game.start_story(1);
+                app.level_quit = Some(0);
+            }
             Boot::BookTest => {
                 app.autostart = Some(0);
                 app.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
@@ -724,11 +734,15 @@ impl App {
         let mut g = lv();
         let Some(l) = g.as_mut() else { return };
         // Memory: the page's old texture goes first, the 256 KiB canvas (a large-block pool
-        // block) only lives while a page is composed, so the frontend holds two full-size
-        // pages (2 x 128 KiB RGBA16) and no canvas between page turns.
+        // block) only lives while a page is composed, so the frontend holds the two full-size
+        // pages (2 x 128 KiB RGBA16) and no canvas between page turns. Audio is polled between
+        // the steps (each takes a few hundred ms; the music buffer holds 300).
+        let t0 = ticks();
         l.gfx.free_image(h.0);
         let c = l.page_canvas.get_or_insert_with(|| f2_draw::book::page_canvas(1));
         f2_draw::book::draw_page_b_into(&self.r, &self.game, self.book_font.as_ref(), c);
+        rt::audio_poll();
+        let t1 = ticks();
         self.game.options.grab_to_texture = if self.game.options.grab_to_texture == 1 { 0 } else { 2 };
         // Full size (256x256 RGBA16): the chapter page fills most of the screen when the book
         // is open; half size (128x128) was blurry.
@@ -738,9 +752,10 @@ impl App {
             img.rgba = Vec::new();
         }
         l.gfx.grab_rgba(h.0, c.w, c.h, &c.rgba);
-        if self.game.options.grab_to_texture == 0 {
-            l.page_canvas = None;
-        }
+        l.page_canvas = None;
+        rt::audio_poll();
+        let ms = |a: u32, b: u32| ticks_to_us(b.wrapping_sub(a)) / 1000;
+        log!("app: book page {target}: compose {} ms, convert {} ms", ms(t0, t1), ms(t1, ticks()));
     }
 
     fn dispatch_effects(&mut self) {
@@ -1060,6 +1075,20 @@ impl App {
             }
             if *c > 1500 {
                 self.autofinish = None;
+            }
+        }
+        if let Some(c) = &mut self.level_quit {
+            *c += 1;
+            if *c == 300 {
+                // The pause menu's Quit from a level (menus.rs, quitting_level 2).
+                log!("app: level-book-test: quitting to the frontend");
+                self.level_quit = None;
+                let g = &mut self.game;
+                g.frogger.player[0].character = f2_game::frogger::FROG_FROGGER;
+                g.frogger.num_frogs = 1;
+                g.game_state.mode = f2_game::define::mode::FRONTEND_MODE;
+                g.init_level(f2_game::layout::worldid::FRONTEND, f2_game::layout::LEVELID_FRONTEND1);
+                self.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
             }
         }
         if let (None, Some((f, steps))) = (self.autostart, &mut self.pad_script) {
