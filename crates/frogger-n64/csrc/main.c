@@ -1129,14 +1129,17 @@ static int draw_one_rect(const n64_rect_t *r, const n64_state_t *st, bool tex, c
         return 4;
     }
     /* Minified blits of textures larger than TMEM (HUD clock 128x128 drawn ~30 px wide):
-     * the TMEM-sized box-filtered copy has at least one texel per pixel, so blit it
-     * instead (one texture load instead of one per TMEM-sized piece; phase 3P). */
+     * the TMEM-sized box-filtered copy has about one texel per pixel, so blit it instead
+     * (one texture load instead of one per TMEM-sized piece; phase 3P). Up to 1.25x
+     * magnification of the copy is allowed: the HUD icons (64x64 / 128x128 RGBA32, copies
+     * of 32x32) are drawn 32-35 px wide and otherwise took the multi-load blit (~0.45 ms
+     * each). */
     if (tx->nfull == 1 && !tx->per_tile && !fits_tmem_block(s)) {
         const surface_t *tm = n64_tex_tmem_surface(st->tex);
         if (tm && tm != s && tm->width > 0 && tm->height > 0) {
             float kx = (float)tm->width / s->width, ky = (float)tm->height / s->height;
             int a0 = (int)(is0 * kx), b0 = (int)(it0 * ky), a1 = (int)(is1 * kx + 0.5f), b1 = (int)(it1 * ky + 0.5f);
-            if (a1 > a0 && b1 > b0 && r->x1 - r->x0 <= a1 - a0 && r->y1 - r->y0 <= b1 - b0) {
+            if (a1 > a0 && b1 > b0 && r->x1 - r->x0 <= (a1 - a0) * 1.25f && r->y1 - r->y0 <= (b1 - b0) * 1.25f) {
                 if (rect_fast(tx, tm, r->x0, r->y0, r->x1, r->y1, fx ? a1 : a0, fy ? b1 : b0, fx ? a0 : a1, fy ? b0 : b1)) return 6;
                 rect_tmem = NULL;
                 use_tlut(tx, tm, 0);
@@ -1202,7 +1205,7 @@ void n64_set_fps_limit_impl(uint32_t fps) {
 #define PROF_SHIFT 5
 #define PROF_BUCKETS (0x200000u >> PROF_SHIFT) /* first 2 MiB of RDRAM: the code */
 extern void *interrupt_exception_frame;
-static uint16_t *prof_pc, *prof_ra;
+static uint16_t *prof_pc, *prof_ra, *prof_rm;
 static uint32_t prof_samples, prof_other;
 static volatile bool prof_paused;
 static timer_link_t *prof_timer;
@@ -1216,6 +1219,8 @@ static void prof_cb(int ovfl) {
     uint32_t i = (epc - PROF_BASE) >> PROF_SHIFT, j = (ra - PROF_BASE) >> PROF_SHIFT;
     if (i < PROF_BUCKETS) { if (prof_pc[i] < 0xffff) prof_pc[i]++; } else prof_other++;
     if (j < PROF_BUCKETS && prof_ra[j] < 0xffff) prof_ra[j]++;
+    /* Callers of memcpy/memset (leaf functions: $ra is the call site). */
+    if (j < PROF_BUCKETS && ((epc - (uint32_t)&memcpy) < 0x400 || (epc - (uint32_t)&memset) < 0x200) && prof_rm[j] < 0xffff) prof_rm[j]++;
 }
 
 /* Every non-empty bucket (address order; prof.py aggregates them per function). Buckets with
@@ -1237,6 +1242,7 @@ void n64_prof_impl(uint32_t cmd) {
     if (cmd == 0 && !prof_pc) {
         prof_pc = calloc(PROF_BUCKETS, 2);
         prof_ra = calloc(PROF_BUCKETS, 2);
+        prof_rm = calloc(PROF_BUCKETS, 2);
         timer_init();
         prof_timer = new_timer(TIMER_TICKS(500), TF_CONTINUOUS, prof_cb);
     } else if (cmd == 1 && prof_pc) {
@@ -1244,6 +1250,8 @@ void n64_prof_impl(uint32_t cmd) {
         debugf("PROF samples %lu (outside code %lu)\n", (unsigned long)prof_samples, (unsigned long)prof_other);
         prof_top("pc", prof_pc);
         prof_top("ra", prof_ra);
+        prof_top("rm", prof_rm);
+        memset(prof_rm, 0, PROF_BUCKETS * 2);
         memset(prof_pc, 0, PROF_BUCKETS * 2);
         memset(prof_ra, 0, PROF_BUCKETS * 2);
         prof_samples = prof_other = 0;

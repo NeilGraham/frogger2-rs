@@ -268,9 +268,7 @@ impl R3dLevel {
             self.r.ensure_additive(mesh);
         }
         rt::audio_poll_due();
-        if d.modge != 0 {
-            self.r.animate_modge(mesh, d.modge_frame, d.modge);
-        }
+
         let p = crate::r3d::DrawParams { alpha_mul: d.alpha_mul, gouraud: d.gouraud, override_tex, no_clip: d.no_clip, object_fog: d.object_fog };
         if d.object == MESH_SKIN {
             self.r.draw_skinned(list, mesh, mats, &p);
@@ -278,7 +276,12 @@ impl R3dLevel {
             // World-space landscape meshes (packer-baked key-0 transforms): identity.
             const IDENTITY: [[f32; 4]; 4] = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
             let m = if self.r.mesh_is_world(mesh) { &IDENTITY } else { m };
+            let pushed = self.r.pushed;
             self.r.draw_slot(list, mesh, m, &p, slot as u32, d.stamp);
+            // MODGE/WAVE vertices only for meshes on screen (the RSP reads them at the flush).
+            if d.modge != 0 && self.r.pushed != pushed {
+                self.r.animate_modge(mesh, d.modge_frame, d.modge);
+            }
         }
         self.rec.draws += 1;
         if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {

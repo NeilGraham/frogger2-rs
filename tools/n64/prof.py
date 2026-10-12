@@ -6,7 +6,7 @@ with F2N64_FEATURES=profile) to functions.
 
 Uses the last window by default (or the given 0-based window index). `pc` = where the CPU
 was (self time, 32-byte buckets), `ra` = return address register at the sample (attributes
-leaf functions such as libm calls to their callers)."""
+leaf functions such as libm calls to their callers); `rm` = the callers of memcpy/memset only."""
 import collections
 import os
 import re
@@ -21,9 +21,9 @@ if not starts:
     sys.exit("no PROF lines in the log")
 idx = starts[int(sys.argv[3])] if len(sys.argv) > 3 else starts[-1]
 total = int(lines[idx].split()[2])
-hist = {"pc": [], "ra": []}
+hist = {"pc": [], "ra": [], "rm": []}
 for l in lines[idx + 1:]:
-    m = re.match(r"PROF (pc|ra) ([0-9a-f]+) (\d+)", l)
+    m = re.match(r"PROF (pc|ra|rm) ([0-9a-f]+) (\d+)", l)
     if not m:
         break
     hist[m.group(1)].append((m.group(2), int(m.group(3))))

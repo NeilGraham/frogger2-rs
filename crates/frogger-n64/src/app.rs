@@ -98,6 +98,8 @@ pub enum Boot {
     Frontend { trained: bool },
     SaveTest,
     Level(u32, u32),
+    /// Benchmark: `level W L` with the frog hopping in a loop (up, right, down, left).
+    LevelHop(u32, u32),
     Story(u32),
     StoryFinish(u32),
     FrontendStart,
@@ -113,6 +115,7 @@ impl Boot {
         let mut it = s.split_whitespace();
         match (it.next(), it.next().and_then(|w| w.parse().ok()), it.next().and_then(|l| l.parse().ok())) {
             (Some("level"), Some(w), Some(l)) => Boot::Level(w, l),
+            (Some("level-hop"), Some(w), Some(l)) => Boot::LevelHop(w, l),
             (Some("story"), Some(n), _) => Boot::Story(n),
             (Some("story-finish"), Some(n), _) => Boot::StoryFinish(n),
             (Some("frontend-start"), _, _) => Boot::FrontendStart,
@@ -255,6 +258,8 @@ pub struct App {
     autofinish: Option<u32>,
     /// `Boot::FrontendStart`: frames spent on the title screen.
     autostart: Option<u32>,
+    /// `Boot::LevelHop`: game frames since boot (a hop every 32, after 3 s).
+    hop_bench: Option<u32>,
     /// The settings page (`settings.rs`) and its values (SRAM).
     settings: crate::settings::Settings,
     menu: crate::settings::Menu,
@@ -330,6 +335,7 @@ impl App {
             last_pad: 0,
             autofinish: None,
             autostart: None,
+            hop_bench: None,
             settings: Default::default(),
             menu: Default::default(),
             menu_release: false,
@@ -390,6 +396,11 @@ impl App {
             Boot::Level(w, l) => {
                 log!("app: booting straight into level {w}-{l}");
                 app.game.start_arcade(w, l);
+            }
+            Boot::LevelHop(w, l) => {
+                log!("app: booting straight into level {w}-{l}, hopping");
+                app.game.start_arcade(w, l);
+                app.hop_bench = Some(0);
             }
             Boot::Story(n) | Boot::StoryFinish(n) => {
                 log!("app: booting straight into story level {n}");
@@ -1138,6 +1149,14 @@ impl App {
             }
             if *c > 1500 {
                 self.autofinish = None;
+            }
+        }
+        if let Some(c) = &mut self.hop_bench {
+            // Counted in game frames (whatever the frame rate), held for 8 of every 32.
+            *c += n * k;
+            if *c > 180 && *c % 32 < 8 {
+                use f2_game::levplay::{PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_UP};
+                pad |= [PAD_UP, PAD_RIGHT, PAD_DOWN, PAD_LEFT][(*c / 32 % 4) as usize];
             }
         }
         if let Some(c) = &mut self.level_quit {

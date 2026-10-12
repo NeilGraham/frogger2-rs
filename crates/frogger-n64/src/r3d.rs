@@ -275,16 +275,22 @@ struct MeshRes {
 ///
 /// Every term of `PCCalcModgeValues` has the form `f(z-term + g(x))` (or the x/z mirror), so
 /// with the angle-addition identities the sines are taken once per distinct x and z (a water
-/// grid shares them along its rows and columns) and each vertex only combines them.
+/// grid shares them along its rows and columns) and each vertex only combines them. All of it
+/// in integers (phases as `u32` turns, sines Q14): the f32 version spent ~7 ms a frame in
+/// Garden 1 on float compares and saturating float -> int conversions.
 struct ModgeMesh {
-    /// Per vertex: index into `xs`, index into `zs`; stored y, s, t, alpha.
+    /// Per vertex: index into `xph`, index into `zph`; stored y, s, t, alpha.
     base: Vec<(u16, u16, i16, i16, i16, u8)>,
-    /// Distinct model-space x and z coordinates.
-    xs: Vec<f32>,
-    zs: Vec<f32>,
-    /// Per frame scratch: sin/cos pairs per distinct x and z (see `animate_modge`).
-    xt: Vec<[f32; 6]>,
-    zt: Vec<[f32; 6]>,
+    /// Per distinct model-space x: the x parts of the phases of B, P, S; per z: of A, Q, R
+    /// (see [`modge_terms`]).
+    xph: Vec<[u32; 3]>,
+    zph: Vec<[u32; 3]>,
+    /// Per frame scratch: Q14 sin/cos pairs per distinct x and z.
+    xt: Vec<[i16; 6]>,
+    zt: Vec<[i16; 6]>,
+    /// Wave height in stored y units per Q10 `(sin + 1)`: `y += (S·ky) >> ky_sh`.
+    ky: i32,
+    ky_sh: u32,
     frame: u32,
     flags: u8,
 }
@@ -304,32 +310,110 @@ fn distinct(v: &[f32]) -> (Vec<f32>, Vec<u16>) {
     (vals, idx)
 }
 
-/// 1024-entry sine table over one period (+1 for interpolation).
-fn sin_table() -> &'static [f32; 1025] {
-    static TABLE: spin::Once<[f32; 1025]> = spin::Once::new();
-    TABLE.call_once(|| core::array::from_fn(|i| libm::sinf(i as f32 * (core::f32::consts::TAU / 1024.0))))
+/// 1024-entry Q14 sine table over one period (+1 for interpolation).
+fn sin_q14() -> &'static [i16; 1025] {
+    static TABLE: spin::Once<[i16; 1025]> = spin::Once::new();
+    TABLE.call_once(|| core::array::from_fn(|i| libm::round(libm::sin(i as f64 * (core::f64::consts::TAU / 1024.0)) * 16384.0) as i16))
 }
 
-/// Table sine (linear interpolation; |error| < 2e-5 + |x|·2e-7): the N64 approximation of
-/// `PCCalcModgeValues`' `sinf`/`cosf`.
-#[inline]
-fn fast_sin(t: &[f32; 1025], x: f32) -> f32 {
-    // 32-bit integer maths only (64-bit remainders and libm's floorf are software on the
-    // VR4300 build): floor via truncation, index wrapped by mask.
-    let p = x * (1024.0 / core::f32::consts::TAU);
-    let mut i = p as i32;
-    if (i as f32) > p {
-        i -= 1;
-    }
-    let f = p - i as f32;
-    let k = (i & 1023) as usize;
-    t[k] + (t[k + 1] - t[k]) * f
+/// An angle in radians as a phase (`2^32` = one turn).
+fn phase(rad: f64) -> u32 {
+    let turns = rad / core::f64::consts::TAU;
+    ((turns - libm::floor(turns)) * 4_294_967_296.0) as u64 as u32
 }
 
-/// `roundf` (half away from zero) to i32 without libm.
-#[inline]
-fn round_i32(v: f32) -> i32 {
-    (v + if v >= 0.0 { 0.5 } else { -0.5 }) as i32
+/// Q14 sine of a phase (table + linear interpolation; |error| < 2 / 16384).
+#[inline(always)]
+fn isin(t: &[i16; 1025], ph: u32) -> i32 {
+    let i = (ph >> 22) as usize;
+    let f = ((ph >> 6) & 0xffff) as i32;
+    let a = t[i] as i32;
+    a + (((t[i + 1] as i32 - a) * f) >> 16)
+}
+
+#[inline(always)]
+fn icos(t: &[i16; 1025], ph: u32) -> i32 {
+    isin(t, ph.wrapping_add(1 << 30))
+}
+
+/// The phase of a Q14 value taken as radians (`2^32 / 2π / 16384` ≈ 41721.6 per unit).
+#[inline(always)]
+fn q14_phase(v: i32) -> u32 {
+    v.wrapping_mul(41722) as u32
+}
+
+/// Per frame `t` phases of `PCCalcModgeValues`' terms: B, P, S (x side), A, Q, R (z side):
+///   A = z·1.5/35 + t·1.5/70   B = sin(x·1.3/49 + t·2/56)
+///   P = x·1.5/49 + t·1.5/66   Q = cos(z·1.3/29 + t·2/66)
+///   R = z·1.2/26 + t/26       S = cos(x·1.3/49 + t/26)
+/// so that mx = sin(A + B), mz = cos(P + Q), my = sin(R + S).
+fn modge_time_phases(fc: u32) -> [u32; 6] {
+    let t = fc as f64;
+    [t * (2.0 / 56.0), t * (1.5 / 66.0), t / 26.0, t * (1.5 / 70.0), t * (2.0 / 66.0), t / 26.0].map(phase)
+}
+
+/// The x-only phases (B, P, S) and z-only phases (A, Q, R) of a coordinate.
+fn modge_x_phases(x: f32) -> [u32; 3] {
+    let x = x as f64;
+    [phase(x * (1.3 / 49.0)), phase(x * (1.5 / 49.0)), phase(x * (1.3 / 49.0))]
+}
+fn modge_z_phases(z: f32) -> [u32; 3] {
+    let z = z as f64;
+    [phase(z * (1.5 / 35.0)), phase(z * (1.3 / 29.0)), phase(z * (1.2 / 26.0))]
+}
+
+/// Per x: [sin B, cos B, sin P, cos P, sin S, cos S]; per z: [sin A, cos A, sin Q, cos Q,
+/// sin R, cos R] (Q14). `tp` from [`modge_time_phases`]; the third pair only with `wave`.
+#[inline(always)]
+fn modge_x_terms(t: &[i16; 1025], ph: &[u32; 3], tp: &[u32; 6], wave: bool) -> [i16; 6] {
+    let b = q14_phase(isin(t, ph[0].wrapping_add(tp[0])));
+    let p = ph[1].wrapping_add(tp[1]);
+    let (ss, cs) = if wave {
+        let s = q14_phase(icos(t, ph[2].wrapping_add(tp[2])));
+        (isin(t, s), icos(t, s))
+    } else {
+        (0, 0)
+    };
+    [isin(t, b), icos(t, b), isin(t, p), icos(t, p), ss, cs].map(|v| v as i16)
+}
+#[inline(always)]
+fn modge_z_terms(t: &[i16; 1025], ph: &[u32; 3], tp: &[u32; 6], wave: bool) -> [i16; 6] {
+    let a = ph[0].wrapping_add(tp[3]);
+    let q = q14_phase(icos(t, ph[1].wrapping_add(tp[4])));
+    let (sr, cr) = if wave {
+        let r = ph[2].wrapping_add(tp[5]);
+        (isin(t, r), icos(t, r))
+    } else {
+        (0, 0)
+    };
+    [isin(t, a), icos(t, a), isin(t, q), icos(t, q), sr, cr].map(|v| v as i16)
+}
+
+/// `(sin(u + v) + 1)` in Q10 from Q14 sin/cos of u and v (`s_u·c_v + c_u·s_v`).
+#[inline(always)]
+fn sin_sum_q10(su: i16, cu: i16, sv: i16, cv: i16) -> i32 {
+    ((su as i32 * cv as i32 + cu as i32 * sv as i32) >> 18) + 1024
+}
+
+/// One vertex of [`R3d::animate_modge`]: (y, s, t, alpha) from the stored values and the
+/// x/z terms. `ky`/`ky_sh` as in [`ModgeMesh`].
+#[inline(always)]
+fn modge_vertex(px: &[i16; 6], pz: &[i16; 6], y0: i16, s0: i16, t0: i16, a0: u8, ky: i32, ky_sh: u32) -> (i16, i16, i16, u8) {
+    // mx = sin(A + B), mz = cos(P + Q) = sin(P + Q + π/2), my = sin(R + S); tM? = (m + 1)·0.1
+    // (·5 for y). S? = (m + 1) in Q10.
+    let sx = sin_sum_q10(pz[0], pz[1], px[0], px[1]);
+    let sz = ((px[3] as i32 * pz[3] as i32 - px[2] as i32 * pz[2] as i32) >> 18) + 1024;
+    let sy = sin_sum_q10(pz[4], pz[5], px[4], px[5]);
+    let sat16 = |v: i32| v.clamp(-32768, 32767) as i16;
+    let y = sat16(y0 as i32 + ((sy * ky + (1 << (ky_sh - 1))) >> ky_sh));
+    // s += 0.4·1024·tMx = S·40.96/1024 (41943 = 40.96·1024).
+    let s = sat16(s0 as i32 + ((sx * 41943 + (1 << 19)) >> 20));
+    let tt = sat16(t0 as i32 + ((sz * 41943 + (1 << 19)) >> 20));
+    // PC: alpha = 50 + (tMx+tMz)·400 (130 on average), scaled around the stored alpha:
+    // a0·(50·1024 + (Sx+Sz)·40) / (130·1024), with 63/2^23 ≈ 1/133120.
+    let num = (51200 + (sx + sz) * 40).max(0) as u32;
+    let a = ((a0 as u32 * num * 63 + (1 << 22)) >> 23).min(255) as u8;
+    (y, s, tt, a)
 }
 
 /// Draw slot `i`'s last draw (see [`R3d::draw_slot`]): reusable while nothing it depends
@@ -351,6 +435,8 @@ struct SlotEntry {
     /// before waiting for a framebuffer, i.e. while N-2 and N-1 can still be in flight).
     cur: usize,
     u: [R3dDrawUniform; 3],
+    /// `u[cur]` is `base_u` with some fog (false after a draw that was wholly culled).
+    u_ok: bool,
     /// Camera-independent part, valid for `stamp`/`mesh`/`params`: the uniform without fog,
     /// the scale bound and the world-space sphere centres ([`world_spheres`]). A frame with
     /// only a new view (the camera moved) re-culls from these and refreshes the fog.
@@ -453,6 +539,9 @@ pub struct R3d {
     frame_no: u32,
     /// Draws reused from the previous frame (statistics).
     pub cache_hits: u32,
+    /// Draw records queued so far (all frames; [`R3d::animate_modge`] runs only for queued
+    /// draws).
+    pub pushed: u32,
     /// Draws that reused their model-side work with a new view (see `draw_slot`).
     pub view_hits: u32,
     /// Measurement (polygon budget, 2026-10): draws and triangles per on-screen radius class
@@ -610,18 +699,23 @@ pub fn rsp_fold(u: &R3dDrawUniform, fr: &R3dFrame) -> [[i64; 4]; 4] {
 /// Sets a draw uniform's fog fields (per vertex, per object from the origin's depth `w0`
 /// = `W` of the model origin, or none).
 fn draw_fog(u: &mut R3dDrawUniform, view: &ViewParams, p: &DrawParams, w0: f32) {
+    (u.fogc, u.fogm) = fog_fields(view, p, w0);
+}
+
+/// The fog fields (`fogc`, `fogm`) of a draw's uniform.
+#[inline]
+fn fog_fields(view: &ViewParams, p: &DrawParams, w0: f32) -> ([i16; 4], [u16; 4]) {
     match view.fog {
         Some(f) if !p.no_clip => {
             if p.object_fog {
                 // Unfogged fraction (PC `FOG(x)`), RDPQ_FOG_STANDARD's shade alpha.
                 let a = ((f.end - (w0 - DIST)) / (f.end - f.start).max(1.0)).clamp(0.0, 1.0);
-                u.fogc = [0, (a * 32767.0) as i16, 0, 0];
-                u.fogm = [0x77, 0, 0, 0];
+                ([0, (a * 32767.0) as i16, 0, 0], [0x77, 0, 0, 0])
             } else {
-                u.fogm = [0xFF, 0x88, 0, 0];
+                ([0; 4], [0xFF, 0x88, 0, 0])
             }
         }
-        _ => u.fogm = [0xFF, 0, 0, 0],
+        _ => ([0; 4], [0xFF, 0, 0, 0]),
     }
 }
 
@@ -701,6 +795,7 @@ impl R3d {
             prev_vis: Vec::with_capacity(2048),
             frame_no: 1,
             cache_hits: 0,
+            pushed: 0,
             view_hits: 0,
             size_classes: [(0, 0); 3],
             size_all: (0, 0),
@@ -1025,58 +1120,44 @@ impl R3d {
                 "r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, {}x{} distinct x/z, flags {})",
                 res.id, n, xs.len(), zs.len(), flags
             );
-            let (xt, zt) = (alloc::vec![[0.0; 6]; xs.len()], alloc::vec![[0.0; 6]; zs.len()]);
-            alloc::boxed::Box::new(ModgeMesh { base, xs, zs, xt, zt, frame: u32::MAX, flags: 0 })
+            // y += my / scale with my = 5·(sin + 1) = 5·S/1024: ky = 5 / scale / 1024 · 2^sh,
+            // the largest sh (≤ 30) that keeps S·ky (S ≤ ~2048) in an i32.
+            let k = 5.0 / scale as f64 / 1024.0;
+            let mut ky_sh = 30;
+            while ky_sh > 1 && k * (1u64 << ky_sh) as f64 * 2100.0 >= i32::MAX as f64 {
+                ky_sh -= 1;
+            }
+            let ky = libm::round(k * (1u64 << ky_sh) as f64) as i32;
+            let (xt, zt) = (alloc::vec![[0; 6]; xs.len()], alloc::vec![[0; 6]; zs.len()]);
+            let (xph, zph) = (xs.iter().map(|&x| modge_x_phases(x)).collect(), zs.iter().map(|&z| modge_z_phases(z)).collect());
+            alloc::boxed::Box::new(ModgeMesh { base, xph, zph, xt, zt, ky, ky_sh, frame: u32::MAX, flags: 0 })
         });
         if st.frame == fc && st.flags == flags {
             return;
         }
         st.frame = fc;
         st.flags = flags;
-        let tb = sin_table();
-        let sinf = |x: f32| fast_sin(tb, x);
-        let cosf = |x: f32| fast_sin(tb, x + core::f32::consts::FRAC_PI_2);
-        let sc = |x: f32| (sinf(x), cosf(x));
-        let t = fc as f32;
+        let tb = sin_q14();
+        let tp = modge_time_phases(fc);
         let (modge, wave) = (flags & 1 != 0, flags & 2 != 0);
-        // mx = sin(A(z) + B(x)), mz = cos(P(x) + Q(z)), my = sin(R(z) + S(x)) with
-        //   A = z·1.5/35 + t·1.5/70   B = sin(x·1.3/49 + t·2/56)
-        //   P = x·1.5/49 + t·1.5/66   Q = cos(z·1.3/29 + t·2/66)
-        //   R = z·1.2/26 + t/26       S = cos(x·1.3/49 + t/26)
-        // Per x: [sin B, cos B, sin P, cos P, sin S, cos S]; per z: the same for A, Q, R.
-        for (&x, o) in st.xs.iter().zip(st.xt.iter_mut()) {
-            let (sb, cb) = sc(sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)));
-            let (sp, cp) = sc(x * (1.5 / 49.0) + t * (1.5 / 66.0));
-            let (ss, cs) = if wave { sc(cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0))) } else { (0.0, 0.0) };
-            *o = [sb, cb, sp, cp, ss, cs];
+        for (ph, o) in st.xph.iter().zip(st.xt.iter_mut()) {
+            *o = modge_x_terms(tb, ph, &tp, wave);
         }
-        for (&z, o) in st.zs.iter().zip(st.zt.iter_mut()) {
-            let (sa, ca) = sc(z * (1.5 / 35.0) + t * (1.5 / 70.0));
-            let (sq, cq) = sc(cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)));
-            let (sr, cr) = if wave { sc(z * (1.2 / 26.0) + t * (1.0 / 26.0)) } else { (0.0, 0.0) };
-            *o = [sa, ca, sq, cq, sr, cr];
+        for (ph, o) in st.zph.iter().zip(st.zt.iter_mut()) {
+            *o = modge_z_terms(tb, ph, &tp, wave);
         }
-        let inv = 1.0 / scale;
-        for (i, &(xi, zi, y0, s0, t0, a0)) in st.base.iter().enumerate() {
-            let o = i * 16;
+        let (ky, ky_sh) = (st.ky, st.ky_sh);
+        for (c, &(xi, zi, y0, s0, t0, a0)) in v.chunks_exact_mut(16).zip(st.base.iter()) {
             let (px, pz) = (&st.xt[xi as usize], &st.zt[zi as usize]);
-            let mx = (pz[0] * px[1] + pz[1] * px[0] + 1.0) * 0.1;
-            let mz = (px[3] * pz[3] - px[2] * pz[2] + 1.0) * 0.1;
+            let (y, s, tt, a) = modge_vertex(px, pz, y0, s0, t0, a0, ky, ky_sh);
             if wave {
-                let my = (pz[4] * px[5] + pz[5] * px[4] + 1.0) * 5.0;
-                let y = round_i32(y0 as f32 + my * inv).clamp(-32768, 32767) as i16;
-                v[o + 2..o + 4].copy_from_slice(&y.to_be_bytes());
+                c[2..4].copy_from_slice(&y.to_be_bytes());
             }
             if modge {
-                let s = round_i32(s0 as f32 + mx * 0.4 * 1024.0).clamp(-32768, 32767) as i16;
-                let tt = round_i32(t0 as f32 + mz * 0.4 * 1024.0).clamp(-32768, 32767) as i16;
-                v[o + 12..o + 14].copy_from_slice(&s.to_be_bytes());
-                v[o + 14..o + 16].copy_from_slice(&tt.to_be_bytes());
+                c[12..14].copy_from_slice(&s.to_be_bytes());
+                c[14..16].copy_from_slice(&tt.to_be_bytes());
                 if wave {
-                    // PC: alpha = 50 + (tMx+tMz)·400 (130 on average); scaled around the stored
-                    // alpha so additive-split corner colours keep their factor.
-                    let k = (50.0 + (mx + mz) * 400.0) / 130.0;
-                    v[o + 11] = round_i32(a0 as f32 * k).clamp(0, 255) as u8;
+                    c[11] = a;
                 }
             }
         }
@@ -1179,11 +1260,18 @@ impl R3d {
                     e.vis_first = vis_first;
                     e.vis_count = vis_count;
                     if vis_count != 0 {
-                        let mut u = e.base_u;
                         let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(model) } else { 0.0 };
-                        draw_fog(&mut u, &self.view, p, w0);
-                        e.cur = (e.cur + 1) % 3;
-                        e.u[e.cur] = u;
+                        let (fogc, fogm) = fog_fields(&self.view, p, w0);
+                        // The ring's current uniform is `base_u` with that frame's fog: with
+                        // the same fog it is this frame's too (no write, in flight or not).
+                        let cu = &e.u[e.cur];
+                        if !e.u_ok || cu.fogc != fogc || cu.fogm != fogm {
+                            e.cur = (e.cur + 1) % 3;
+                            let mut u = e.base_u;
+                            (u.fogc, u.fogm) = (fogc, fogm);
+                            e.u[e.cur] = u;
+                            e.u_ok = true;
+                        }
                         let uptr: *const R3dDrawUniform = &e.u[e.cur];
                         self.push_rec_ptr(list, mesh, p, uptr, vis_first, vis_count);
                     }
@@ -1218,6 +1306,7 @@ impl R3d {
                     vis_count: 0,
                     cur: 0,
                     u: [R3dDrawUniform::default(); 3],
+                    u_ok: false,
                     base_u: R3dDrawUniform::default(),
                     s: 0.0,
                     wc: Vec::new(),
@@ -1233,8 +1322,9 @@ impl R3d {
             e.vis_count = vis_count;
             e.base_u = base_u;
             e.s = s;
-            e.wc.clear();
-            e.wc.extend_from_slice(&wc);
+            // The old centres' buffer becomes the next draw's scratch.
+            core::mem::swap(&mut e.wc, &mut wc);
+            e.u_ok = vis_count != 0;
             if vis_count != 0 {
                 e.cur = (e.cur + 1) % 3;
                 e.u[e.cur] = u;
@@ -1249,6 +1339,7 @@ impl R3d {
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn push_rec_ptr(&mut self, list: List, mesh: MeshId, p: &DrawParams, uptr: *const R3dDrawUniform, vis_first: u32, vis_count: u32) {
+        self.pushed = self.pushed.wrapping_add(1);
         let rec =
             DrawRec { u: u32::MAX, uptr, mesh: mesh.0, tex_override: p.override_tex.map_or(0, |t| t.0), n_bones: 0, no_clip: p.no_clip, vis_first, vis_count };
         self.lists[list as usize].push(rec);
@@ -1256,6 +1347,7 @@ impl R3d {
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn push_rec(&mut self, list: List, mesh: MeshId, p: &DrawParams, u: R3dDrawUniform, vis_first: u32, vis_count: u32) {
+        self.pushed = self.pushed.wrapping_add(1);
         let arena = &mut self.uni[self.uni_frame];
         arena.push(u);
         let rec = DrawRec {
@@ -1451,25 +1543,50 @@ pub fn emulate_vertex(u: &R3dDrawUniform, fr: &R3dFrame, guard: i32, pos: [i16; 
 mod tests {
     use super::*;
 
-    /// `animate_modge`'s per-x/per-z decomposition matches the direct `PCCalcModgeValues` terms.
+    /// `animate_modge`'s integer per-x/per-z decomposition matches the direct
+    /// `PCCalcModgeValues` terms (f2-engine `calc_modge_values`, f64 libm here).
     #[test]
-    fn modge_decomposition() {
-        let tb = sin_table();
-        let (sinf, cosf) = (|x: f32| fast_sin(tb, x), |x: f32| fast_sin(tb, x + core::f32::consts::FRAC_PI_2));
+    fn modge_matches_pc_terms() {
         let (xs, idx) = distinct(&[3.0, -1.0, 3.0, 0.0, -1.0]);
         assert_eq!((xs, idx), (alloc::vec![0.0, 3.0, -1.0], alloc::vec![1, 2, 1, 0, 2]));
-        for (x, z, t) in [(0.0f32, 0.0f32, 0.0f32), (-812.5, 433.0, 17.0), (1530.0, -2048.0, 9001.0), (77.0, 5.5, 123456.0)] {
-            let mx = sinf(z * (1.5 / 35.0) + sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)) + t * (1.5 / 70.0));
-            let mz = cosf(x * (1.5 / 49.0) + cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)) + t * (1.5 / 66.0));
-            let my = sinf(z * (1.2 / 26.0) + cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0)) + t * (1.0 / 26.0));
-            let (a, b) = (z * (1.5 / 35.0) + t * (1.5 / 70.0), sinf(x * (1.3 / 49.0) + t * (2.0 / 56.0)));
-            let (p, q) = (x * (1.5 / 49.0) + t * (1.5 / 66.0), cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)));
-            let (r, w) = (z * (1.2 / 26.0) + t * (1.0 / 26.0), cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0)));
-            let tol = 1e-4 + (x.abs() + z.abs() + t.abs()) * 1e-6;
-            assert!((sinf(a) * cosf(b) + cosf(a) * sinf(b) - mx).abs() < tol, "mx {x} {z} {t}");
-            assert!((cosf(p) * cosf(q) - sinf(p) * sinf(q) - mz).abs() < tol, "mz {x} {z} {t}");
-            assert!((sinf(r) * cosf(w) + cosf(r) * sinf(w) - my).abs() < tol, "my {x} {z} {t}");
+        let tb = sin_q14();
+        let mut seed = 77u32;
+        let mut rnd = |m: u32| {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 8) % m
+        };
+        let (mut worst_st, mut worst_y, mut worst_a) = (0i32, 0f64, 0i32);
+        for _ in 0..20000 {
+            let (x, z) = ((rnd(8000) as f32 - 4000.0) * 0.25, (rnd(8000) as f32 - 4000.0) * 0.25);
+            let fc = rnd(400_000);
+            let scale = [0.25f32, 0.125, 1.0 / 16.0][rnd(3) as usize];
+            let (y0, s0, t0, a0) = (rnd(2000) as i16 - 1000, rnd(4000) as i16 - 2000, rnd(4000) as i16 - 2000, rnd(256) as u8);
+            let t = fc as f64;
+            let (xd, zd) = (x as f64, z as f64);
+            let mx = ((zd * (1.5 / 35.0) + (xd * (1.3 / 49.0) + t * (2.0 / 56.0)).sin() + t * (1.5 / 70.0)).sin() + 1.0) * 0.1;
+            let mz = ((xd * (1.5 / 49.0) + (zd * (1.3 / 29.0) + t * (2.0 / 66.0)).cos() + t * (1.5 / 66.0)).cos() + 1.0) * 0.1;
+            let my = ((zd * (1.2 / 26.0) + (xd * (1.3 / 49.0) + t * (1.0 / 26.0)).cos() + t * (1.0 / 26.0)).sin() + 1.0) * 5.0;
+            let tp = modge_time_phases(fc);
+            let px = modge_x_terms(tb, &modge_x_phases(x), &tp, true);
+            let pz = modge_z_terms(tb, &modge_z_phases(z), &tp, true);
+            let k = 5.0 / scale as f64 / 1024.0;
+            let mut ky_sh = 30;
+            while ky_sh > 1 && k * (1u64 << ky_sh) as f64 * 2100.0 >= i32::MAX as f64 {
+                ky_sh -= 1;
+            }
+            let ky = (k * (1u64 << ky_sh) as f64).round() as i32;
+            let (y, s, tt, a) = modge_vertex(&px, &pz, y0, s0, t0, a0, ky, ky_sh);
+            let ey = y0 as f64 + my / scale as f64;
+            let (es, et) = ((s0 as f64 + mx * 0.4 * 1024.0).round() as i32, (t0 as f64 + mz * 0.4 * 1024.0).round() as i32);
+            let ea = (a0 as f64 * (50.0 + (mx + mz) * 400.0) / 130.0).round().min(255.0) as i32;
+            worst_st = worst_st.max((s as i32 - es).abs()).max((tt as i32 - et).abs());
+            worst_y = worst_y.max((y as f64 - ey).abs() * scale as f64);
+            worst_a = worst_a.max((a as i32 - ea).abs());
         }
+        // s/t in 1/1024 texels (the wobble spans ±41), y in world units (wave height 0..10).
+        assert!(worst_st <= 1, "s/t off by {worst_st}");
+        assert!(worst_y <= 0.6, "y off by {worst_y} world units");
+        assert!(worst_a <= 2, "alpha off by {worst_a}");
     }
 
     /// f2-engine `View::project` (scene.rs) for reference.
@@ -1562,16 +1679,6 @@ mod tests {
     }
 
     /// The integer conversion equals the FPU one (multiply, truncate, saturate).
-    #[test]
-    fn fast_sin_is_close() {
-        let t = sin_table();
-        for i in -20000..20000 {
-            let x = i as f32 * 0.0137;
-            // table error + f32 phase rounding (grows with |x|)
-            assert!((fast_sin(t, x) - libm::sinf(x)).abs() < 2e-5 + x.abs() * 2e-7, "{x}");
-        }
-    }
-
     #[test]
     fn to_fixed_matches_fpu() {
         let fpu = |v: f32| -> (i16, u16) {
