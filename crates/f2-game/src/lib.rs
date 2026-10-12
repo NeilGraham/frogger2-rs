@@ -96,7 +96,7 @@ mod view_tables; // phase 3S: generated sinFast/acosFast tables
 #[doc(hidden)]
 macro_rules! ser_order {
     ($ty:ident, $name:literal, $wire:ident { $( $(#[$m:meta])* $f:ident : $t:ty ),* $(,)? }) => {
-        crate::ser_order!($ty, $name, $wire { $( $(#[$m])* $f: $t ),* } skip {});
+        $crate::ser_order!($ty, $name, $wire { $( $(#[$m])* $f: $t ),* } skip {});
     };
     // `skip`: derived caches that are not part of the state (not serialized; `Default` when
     // deserialized).

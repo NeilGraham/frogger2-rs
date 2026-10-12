@@ -71,7 +71,11 @@ impl ProcTexture {
         // Phase 3S: refill the previous surface in place (same contents, no allocation).
         let surf = self.surface.get_or_insert_with(Vec::new);
         surf.clear();
-        surf.extend(self.buf1.iter().map(|&b| self.palette[b as usize]));
+        match <&[u16; 256]>::try_from(&self.palette[..]) {
+            // Phase 3S2: a 256-entry palette needs no bounds check per pixel.
+            Ok(pal) => surf.extend(self.buf1.iter().map(|&b| pal[b as usize])),
+            Err(_) => surf.extend(self.buf1.iter().map(|&b| self.palette[b as usize])),
+        }
     }
 
     fn swap(&mut self) {
@@ -122,6 +126,66 @@ fn smooth_up(pt: &mut ProcTexture) {
 
 /// The water ripple filter: `res = sum8 >> 2; res -= buf2[p] + (buf2[p] >> damp); buf2[p] = max(res,0)`.
 fn water(pt: &mut ProcTexture, damp: u32) {
+    water_swar(pt, damp);
+}
+
+/// [`water_scalar`] eight pixels at a time (phase 3S2): 16-bit lanes in a `u64`, even and
+/// odd bytes separately. Every lane holds exactly the scalar integer: the 8-neighbour sum
+/// (<= 2040) never carries into the next lane, the damped subtraction is done with a +1024
+/// bias (no borrow; bit 10 tells the sign) and the low byte of a non-negative result is
+/// stored, as `max(res, 0) as u8`. Pixels outside 1..=30 (row ends) keep their `buf2`
+/// value; the neighbour reads go through a zero-padded copy of `buf1` (the lanes that would
+/// read outside the buffer are those discarded row ends).
+fn water_swar(pt: &mut ProcTexture, damp: u32) {
+    const PAD: usize = 40;
+    const M: u64 = 0x00FF_00FF_00FF_00FF;
+    const L: u64 = 0x0001_0001_0001_0001;
+    let mut b = [0u8; 1024 + 2 * PAD];
+    b[PAD..PAD + 1024].copy_from_slice(&pt.buf1[..1024]);
+    let b2: &mut [u8; 1024] = (&mut pt.buf2[..1024]).try_into().expect("1024-byte buffer");
+    let ld = |o: usize| u64::from_ne_bytes(b[o..o + 8].try_into().unwrap());
+    // Byte 0 / byte 7 of a group (column 0 / 31 of the row) keep their old value.
+    let keep_first = u64::from_ne_bytes([0xFF, 0, 0, 0, 0, 0, 0, 0]);
+    let keep_last = u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, 0xFF]);
+    let dmask = (0xFFu64 >> damp) * L;
+    for i in 1..=30usize {
+        let mut out = [0u64; 4];
+        for (g, o) in out.iter_mut().enumerate() {
+            let q = (i << 5) + g * 8;
+            let r = PAD + q;
+            let n = [ld(r - 32), ld(r + 32), ld(r + 1), ld(r - 1), ld(r + 33), ld(r + 31), ld(r - 33), ld(r - 31)];
+            let mut se = 0u64;
+            let mut so = 0u64;
+            for v in n {
+                se += v & M;
+                so += (v >> 8) & M;
+            }
+            let w = u64::from_ne_bytes(b2[q..q + 8].try_into().unwrap());
+            let lane = |s: u64, w: u64| {
+                let s = (s >> 2) & (0x3FFF * L);
+                let t = w + ((w >> damp) & dmask);
+                let r = (s + 0x0400 * L) - t;
+                let nonneg = ((r >> 10) & L) * 0xFF;
+                r & nonneg & M
+            };
+            let res = lane(se, w & M) | (lane(so, (w >> 8) & M) << 8);
+            let keep = match g {
+                0 => keep_first,
+                3 => keep_last,
+                _ => 0,
+            };
+            *o = (res & !keep) | (w & keep);
+        }
+        for (g, o) in out.iter().enumerate() {
+            let q = (i << 5) + g * 8;
+            b2[q..q + 8].copy_from_slice(&o.to_ne_bytes());
+        }
+    }
+}
+
+/// The original loop (reference for [`water_swar`]).
+#[cfg(test)]
+fn water_scalar(pt: &mut ProcTexture, damp: u32) {
     // Phase 3S: fixed-size views so the indexing below needs no bounds checks (every index
     // is within 0..=1023); the buffers are 1024 bytes as before (shorter ones panic, as the
     // indexing did).
@@ -455,6 +519,53 @@ mod tests {
         let seed = g.rng;
         g.process_proc_textures();
         assert_eq!(g.rng, seed);
+    }
+
+    /// The eight-pixel water filter equals the scalar one on random and extreme buffers.
+    #[test]
+    fn water_swar_matches_scalar() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for case in 0..4000 {
+            let fill = |r: &mut dyn FnMut() -> u64| -> Vec<u8> {
+                (0..1024)
+                    .map(|_| match case % 5 {
+                        0 => r() as u8,
+                        1 => 255,
+                        2 => 0,
+                        3 => [0u8, 1, 3, 4, 127, 128, 254, 255][(r() % 8) as usize],
+                        _ => (r() % 16) as u8,
+                    })
+                    .collect()
+            };
+            let mut buf1 = fill(&mut rnd);
+            let buf2 = fill(&mut rnd);
+            if case % 7 == 0 {
+                buf1.iter_mut().for_each(|v| *v = 0);
+            }
+            for damp in [0u32, 1, 2, 3, 4] {
+                let mk = || ProcTexture {
+                    name: String::new(),
+                    crc: 0,
+                    timer: 0,
+                    buf1: buf1.clone(),
+                    buf2: buf2.clone(),
+                    active: 1,
+                    palette: vec![0; 256],
+                    update: None,
+                    surface: None,
+                };
+                let (mut a, mut b) = (mk(), mk());
+                water_scalar(&mut a, damp);
+                water_swar(&mut b, damp);
+                assert_eq!(a.buf2, b.buf2, "case {case} damp {damp}");
+            }
+        }
     }
 
     #[test]
