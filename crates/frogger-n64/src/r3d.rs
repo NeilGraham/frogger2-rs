@@ -467,13 +467,62 @@ struct DrawRec {
     vis_count: u32,
 }
 
-/// Per-frame constants of the bounding-sphere test (see [`R3d::draw`]).
+/// Per-frame constants of the bounding-sphere test (see [`R3d::draw`]): world-space planes
+/// `p · (x, y, z, 1)` scaled so that a sphere of radius `r` is wholly outside a plane when
+/// its centre's value is `>= r`. Order: left, right, top, bottom (the four screen-edge planes
+/// through the eye, moved one pixel outwards), near, far.
 #[derive(Clone, Copy, Debug, Default)]
-struct CullPlanes {
-    /// Slopes of the four screen-edge planes through the eye (left, right, top, bottom),
-    /// moved one pixel outwards, and `sqrt(1 + a^2)`.
-    a: [f32; 4],
-    n: [f32; 4],
+struct Frustum {
+    p: [[f32; 4]; 6],
+}
+
+impl Frustum {
+    /// The planes of view x projection `vp` (columns X, Y, -, W), the screen-edge slopes `a`
+    /// (`x <= a * w` inside, ...) and near/far in `W` units.
+    fn new(vp: &Mat4, a: [f32; 4], near: f32, far: f32) -> Frustum {
+        let col = |k: usize| [vp[0][k], vp[1][k], vp[2][k], vp[3][k]];
+        let (x, y, w) = (col(0), col(1), col(3));
+        let comb = |sx: f32, sy: f32, aw: f32| -> [f32; 4] {
+            // (sx*X + sy*Y - aw*W) / sqrt(1 + aw^2) (with a little slack: conservative).
+            let n = 1.0 / (fast_sqrt(1.0 + aw * aw) * 1.0001);
+            core::array::from_fn(|i| (sx * x[i] + sy * y[i] - aw * w[i]) * n)
+        };
+        let mut nearp: [f32; 4] = core::array::from_fn(|i| -w[i]);
+        nearp[3] += near;
+        let mut farp = w;
+        farp[3] -= far;
+        Frustum { p: [comb(1.0, 0.0, a[0]), comb(-1.0, 0.0, a[1]), comb(0.0, 1.0, a[2]), comb(0.0, -1.0, a[3]), nearp, farp] }
+    }
+
+    /// Sphere test: 1 = wholly outside a plane (culled), 2 = wholly inside all, 0 = both.
+    /// `planes` = 5 without the far plane (`noClip`), else 6.
+    #[inline(always)]
+    fn classify(&self, c: &[f32; 3], r: f32, planes: usize) -> u32 {
+        let mut inside = true;
+        for p in &self.p[..planes] {
+            let d = c[0] * p[0] + c[1] * p[1] + c[2] * p[2] + p[3];
+            if d >= r {
+                return 1;
+            }
+            inside &= d < -r;
+        }
+        if inside {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// Whether a sphere is wholly outside a plane (culled).
+    #[inline(always)]
+    fn outside(&self, c: &[f32; 3], r: f32, planes: usize) -> bool {
+        for p in &self.p[..planes] {
+            if c[0] * p[0] + c[1] * p[1] + c[2] * p[2] + p[3] >= r {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// A sphere enclosing every part's bounding sphere (radius < 0 if a part has none).
@@ -524,7 +573,7 @@ pub struct R3d {
     frame_noclip: R3dFrame,
     /// View x projection (f32) of the frame, for culling and per-object fog.
     vp: Mat4,
-    cull: CullPlanes,
+    cull: Frustum,
     /// Triangles of the meshes queued this frame.
     pub queued_tris: u32,
     /// Triangles sent to the RSP after bounding-sphere culling (the RSP still rejects
@@ -551,6 +600,36 @@ pub struct R3d {
     size_all: (u32, u32),
     size_frames: u32,
     wc_tmp: Vec<[f32; 3]>,
+    /// Measurement (`F2N64_R3D_PROF=1`): C0 ticks and counts per phase, logged every 300 frames.
+    pub prof: R3dProf,
+}
+
+/// Measurement counters (`F2N64_R3D_PROF=1`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct R3dProf {
+    pub frames: u32,
+    pub cull_ticks: u32,
+    pub cull_calls: u32,
+    pub sphere_tests: u32,
+    pub modge_ticks: u32,
+    pub modge_runs: u32,
+    pub full_ticks: u32,
+    pub full_draws: u32,
+    pub view_ticks: u32,
+    pub view_draws: u32,
+    pub skin_ticks: u32,
+    pub skin_draws: u32,
+}
+
+pub const R3D_PROF: bool = option_env!("F2N64_R3D_PROF").is_some();
+
+#[inline(always)]
+pub fn prof_ticks() -> u32 {
+    #[cfg(target_vendor = "nintendo64")]
+    if R3D_PROF {
+        return crate::rt::ticks();
+    }
+    0
 }
 
 /// f32 → s15.16 split into (integer, fraction) halves (saturating; truncated towards zero
@@ -787,7 +866,7 @@ impl R3d {
             frame: R3dFrame::default(),
             frame_noclip: R3dFrame::default(),
             vp: IDENTITY,
-            cull: CullPlanes::default(),
+            cull: Frustum::default(),
             queued_tris: 0,
             sent_tris: 0,
             view_gen: 0,
@@ -801,6 +880,7 @@ impl R3d {
             size_all: (0, 0),
             size_frames: 0,
             wc_tmp: Vec::new(),
+            prof: R3dProf::default(),
         }
     }
 
@@ -1008,6 +1088,21 @@ impl R3d {
         if self.size_frames >= 300 {
             self.size_frames = 0;
         }
+        if R3D_PROF {
+            self.prof.frames += 1;
+            if self.prof.frames == 150 {
+                let p = self.prof;
+                let us = |t: u32| t / 47 / p.frames;
+                #[cfg(target_vendor = "nintendo64")]
+                crate::log!(
+                    "r3dprof per frame: full {} draws {} us | view-only {} draws {} us | skinned {} {} us | cull {} calls {} tests {} us | modge {} runs {} us",
+                    p.full_draws / p.frames, us(p.full_ticks), p.view_draws / p.frames, us(p.view_ticks), p.skin_draws / p.frames, us(p.skin_ticks),
+                    p.cull_calls / p.frames, p.sphere_tests / p.frames, us(p.cull_ticks), p.modge_runs / p.frames, us(p.modge_ticks)
+                );
+                let _ = (p, us);
+                self.prof = R3dProf::default();
+            }
+        }
         self.frame = frame_uniform_vp(view, false);
         self.frame_noclip = frame_uniform_vp(view, true);
         self.vp = view_proj(view, false);
@@ -1019,7 +1114,7 @@ impl R3d {
         let k = view.fov * view.proj_scale();
         let (cx, cy) = (x + w / 2.0, y + h / 2.0);
         let a = [(cx - x - 1.0) / k, (x + w - 1.0 - cx - 1.0) / k, (cy - y - 1.0) / k, (y + h - 1.0 - cy - 1.0) / k];
-        self.cull = CullPlanes { a, n: a.map(|a| fast_sqrt(1.0 + a * a) * 1.0001) };
+        self.cull = Frustum::new(&self.vp, a, view.near, view.far);
     }
 
     /// Culls a rigid mesh's batches against the screen and near/far with their bounding
@@ -1029,41 +1124,47 @@ impl R3d {
     /// near/far), so the image is unchanged.
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn cull_world(&mut self, mesh: usize, wc: &[[f32; 3]], s: f32, no_clip: bool) -> u32 {
+        let t0 = prof_ticks();
+        let n = self.cull_world_inner(mesh, wc, s, no_clip);
+        if R3D_PROF {
+            self.prof.cull_ticks = self.prof.cull_ticks.wrapping_add(prof_ticks().wrapping_sub(t0));
+            self.prof.cull_calls += 1;
+        }
+        n
+    }
+
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    fn cull_world_inner(&mut self, mesh: usize, wc: &[[f32; 3]], s: f32, no_clip: bool) -> u32 {
         let res = &self.meshes[mesh];
-        let first = self.vis.len();
-        let vp = &self.vp;
-        let (near, far) = (self.view.near, self.view.far);
-        let CullPlanes { a, n } = self.cull;
-        let clip = |p: [f32; 3]| -> [f32; 3] {
-            let col = |k: usize| p[0] * vp[0][k] + p[1] * vp[1][k] + p[2] * vp[2][k] + vp[3][k];
-            [col(0), col(1), col(3)]
+        let fr = &self.cull;
+        let planes = if no_clip { 5 } else { 6 };
+        let mut tests = 0u32;
+        let whole = if res.radius >= 0.0 && res.parts.len() > 1 {
+            tests += 1;
+            fr.classify(&wc[0], res.radius * s, planes)
+        } else {
+            0
         };
-        // Sphere test: 1 = wholly outside a plane (culled), 2 = wholly inside all, 0 = both.
-        let test = |c: [f32; 3], radius: f32| -> u32 {
-            let [x, y, w] = clip(c);
-            let r = radius * s;
-            let d = [x - a[0] * w, -x - a[1] * w, y - a[2] * w, -y - a[3] * w];
-            if w + r <= near || (!no_clip && w - r >= far) || d[0] >= r * n[0] || d[1] >= r * n[1] || d[2] >= r * n[2] || d[3] >= r * n[3] {
-                return 1;
-            }
-            let inside = w - r > near && (no_clip || w + r < far) && d[0] <= -r * n[0] && d[1] <= -r * n[1] && d[2] <= -r * n[2] && d[3] <= -r * n[3];
-            if inside {
-                2
-            } else {
-                0
-            }
-        };
-        let whole = if res.radius >= 0.0 && res.parts.len() > 1 { test(wc[0], res.radius) } else { 0 };
         if whole == 1 {
+            if R3D_PROF {
+                self.prof.sphere_tests += tests;
+            }
             return 0;
         }
+        let first = self.vis.len();
         let mut sent = 0;
-        for (i, p) in res.parts.iter().enumerate() {
-            if whole == 0 && p.radius >= 0.0 && test(wc[i + 1], p.radius) == 1 {
-                continue;
+        for (i, (p, c)) in res.parts.iter().zip(&wc[1..]).enumerate() {
+            if whole == 0 && p.radius >= 0.0 {
+                tests += 1;
+                if fr.outside(c, p.radius * s, planes) {
+                    continue;
+                }
             }
             self.vis.push(i as u16);
             sent += p.tris as u32;
+        }
+        if R3D_PROF {
+            self.prof.sphere_tests += tests;
         }
         self.sent_tris += sent;
         (self.vis.len() - first) as u32
@@ -1095,46 +1196,22 @@ impl R3d {
     /// both: the water's alpha follows `50 + (tMx + tMz)·400` around its stored value), written
     /// into the mesh's vertex buffer once per frame (instances share the model-space result).
     /// The RSP may still be reading the previous frame's values: a wave one frame newer.
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[inline(never)]
     pub fn animate_modge(&mut self, mesh: MeshId, fc: u32, flags: u8) {
         let Some(res) = self.meshes.get_mut(mesh.0 as usize) else { return };
         if res.skinned || res.n_verts == 0 || flags & 3 == 0 {
             return;
         }
-        // SAFETY: `verts` points into a file kept in `self.files` for as long as the mesh.
-        let v = unsafe { core::slice::from_raw_parts_mut(res.verts as *mut u8, res.n_verts as usize * 16) };
-        let scale = res.pos_scale;
-        let st = res.modge.get_or_insert_with(|| {
-            let rd = |o: usize| i16::from_be_bytes([v[o], v[o + 1]]);
-            let n = res.n_verts as usize;
-            let (xs, xi) = distinct(&(0..n).map(|i| rd(i * 16) as f32 * scale).collect::<Vec<_>>());
-            let (zs, zi) = distinct(&(0..n).map(|i| rd(i * 16 + 4) as f32 * scale).collect::<Vec<_>>());
-            let base = (0..n)
-                .map(|i| {
-                    let o = i * 16;
-                    (xi[i], zi[i], rd(o + 2), rd(o + 12), rd(o + 14), v[o + 11])
-                })
-                .collect();
-            #[cfg(target_vendor = "nintendo64")]
-            crate::log!(
-                "r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, {}x{} distinct x/z, flags {})",
-                res.id, n, xs.len(), zs.len(), flags
-            );
-            // y += my / scale with my = 5·(sin + 1) = 5·S/1024: ky = 5 / scale / 1024 · 2^sh,
-            // the largest sh (≤ 30) that keeps S·ky (S ≤ ~2048) in an i32.
-            let k = 5.0 / scale as f64 / 1024.0;
-            let mut ky_sh = 30;
-            while ky_sh > 1 && k * (1u64 << ky_sh) as f64 * 2100.0 >= i32::MAX as f64 {
-                ky_sh -= 1;
-            }
-            let ky = libm::round(k * (1u64 << ky_sh) as f64) as i32;
-            let (xt, zt) = (alloc::vec![[0; 6]; xs.len()], alloc::vec![[0; 6]; zs.len()]);
-            let (xph, zph) = (xs.iter().map(|&x| modge_x_phases(x)).collect(), zs.iter().map(|&z| modge_z_phases(z)).collect());
-            alloc::boxed::Box::new(ModgeMesh { base, xph, zph, xt, zt, ky, ky_sh, frame: u32::MAX, flags: 0 })
-        });
+        if res.modge.is_none() {
+            res.modge = Some(Self::modge_init(res, flags));
+        }
+        let st = res.modge.as_deref_mut().unwrap();
         if st.frame == fc && st.flags == flags {
             return;
         }
+        let t0 = prof_ticks();
+        // SAFETY: `verts` points into a file kept in `self.files` for as long as the mesh.
+        let v = unsafe { core::slice::from_raw_parts_mut(res.verts as *mut u8, res.n_verts as usize * 16) };
         st.frame = fc;
         st.flags = flags;
         let tb = sin_q14();
@@ -1147,21 +1224,63 @@ impl R3d {
             *o = modge_z_terms(tb, ph, &tp, wave);
         }
         let (ky, ky_sh) = (st.ky, st.ky_sh);
+        let (xt, zt) = (&st.xt[..], &st.zt[..]);
         for (c, &(xi, zi, y0, s0, t0, a0)) in v.chunks_exact_mut(16).zip(st.base.iter()) {
-            let (px, pz) = (&st.xt[xi as usize], &st.zt[zi as usize]);
+            let (Some(px), Some(pz)) = (xt.get(xi as usize), zt.get(zi as usize)) else { continue };
             let (y, s, tt, a) = modge_vertex(px, pz, y0, s0, t0, a0, ky, ky_sh);
+            let c: &mut [u8; 16] = c.try_into().unwrap();
             if wave {
-                c[2..4].copy_from_slice(&y.to_be_bytes());
+                [c[2], c[3]] = y.to_be_bytes();
             }
             if modge {
-                c[12..14].copy_from_slice(&s.to_be_bytes());
-                c[14..16].copy_from_slice(&tt.to_be_bytes());
+                [c[12], c[13]] = s.to_be_bytes();
+                [c[14], c[15]] = tt.to_be_bytes();
                 if wave {
                     c[11] = a;
                 }
             }
         }
         Self::c_writeback(v);
+        if R3D_PROF {
+            self.prof.modge_ticks = self.prof.modge_ticks.wrapping_add(prof_ticks().wrapping_sub(t0));
+            self.prof.modge_runs += 1;
+        }
+    }
+
+    /// The per-vertex base data of a `MODGE`/`WAVE` mesh (first animation).
+    #[cold]
+    #[inline(never)]
+    fn modge_init(res: &MeshRes, flags: u8) -> alloc::boxed::Box<ModgeMesh> {
+        // SAFETY: as in `animate_modge`.
+        let v = unsafe { core::slice::from_raw_parts(res.verts as *const u8, res.n_verts as usize * 16) };
+        let scale = res.pos_scale;
+        let rd = |o: usize| i16::from_be_bytes([v[o], v[o + 1]]);
+        let n = res.n_verts as usize;
+        let (xs, xi) = distinct(&(0..n).map(|i| rd(i * 16) as f32 * scale).collect::<Vec<_>>());
+        let (zs, zi) = distinct(&(0..n).map(|i| rd(i * 16 + 4) as f32 * scale).collect::<Vec<_>>());
+        let base = (0..n)
+            .map(|i| {
+                let o = i * 16;
+                (xi[i], zi[i], rd(o + 2), rd(o + 12), rd(o + 14), v[o + 11])
+            })
+            .collect();
+        #[cfg(target_vendor = "nintendo64")]
+        crate::log!(
+            "r3d: animating MODGE/WAVE mesh {:08x} ({} vertices, {}x{} distinct x/z, flags {})",
+            res.id, n, xs.len(), zs.len(), flags
+        );
+        let _ = flags;
+        // y += my / scale with my = 5·(sin + 1) = 5·S/1024: ky = 5 / scale / 1024 · 2^sh,
+        // the largest sh (≤ 30) that keeps S·ky (S ≤ ~2048) in an i32.
+        let k = 5.0 / scale as f64 / 1024.0;
+        let mut ky_sh = 30;
+        while ky_sh > 1 && k * (1u64 << ky_sh) as f64 * 2100.0 >= i32::MAX as f64 {
+            ky_sh -= 1;
+        }
+        let ky = libm::round(k * (1u64 << ky_sh) as f64) as i32;
+        let (xt, zt) = (alloc::vec![[0; 6]; xs.len()], alloc::vec![[0; 6]; zs.len()]);
+        let (xph, zph) = (xs.iter().map(|&x| modge_x_phases(x)).collect(), zs.iter().map(|&z| modge_z_phases(z)).collect());
+        alloc::boxed::Box::new(ModgeMesh { base, xph, zph, xt, zt, ky, ky_sh, frame: u32::MAX, flags: 0 })
     }
 
     /// Before a mesh's first additive draw: its vertex colours split like the packer's
@@ -1170,7 +1289,16 @@ impl R3d {
     /// knows are additive (bank flag, `ada`/`wat_`/`xxa_` names); others are made additive at
     /// run time (the frontend's `slu_flbm` light beams: dark corner colours drawn unsplit
     /// were dark veils). A split colour has max 255, so splitting again changes nothing.
+    #[inline]
     pub fn ensure_additive(&mut self, mesh: MeshId) {
+        if self.meshes.get(mesh.0 as usize).is_some_and(|r| !r.add_split) {
+            self.split_additive(mesh);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn split_additive(&mut self, mesh: MeshId) {
         let Some(res) = self.meshes.get_mut(mesh.0 as usize) else { return };
         if res.add_split || res.skinned || res.n_verts == 0 {
             return;
@@ -1198,6 +1326,23 @@ impl R3d {
     /// culling, no copy). `slot` `u32::MAX` or `stamp` 0: no reuse.
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     pub fn draw_slot(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams, slot: u32, stamp: u32) {
+        if !R3D_PROF {
+            return self.draw_slot_inner(list, mesh, model, p, slot, stamp);
+        }
+        let (t0, h, v) = (prof_ticks(), self.cache_hits, self.view_hits);
+        self.draw_slot_inner(list, mesh, model, p, slot, stamp);
+        let dt = prof_ticks().wrapping_sub(t0);
+        if self.view_hits != v {
+            self.prof.view_ticks = self.prof.view_ticks.wrapping_add(dt);
+            self.prof.view_draws += 1;
+        } else if self.cache_hits == h {
+            self.prof.full_ticks = self.prof.full_ticks.wrapping_add(dt);
+            self.prof.full_draws += 1;
+        }
+    }
+
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    fn draw_slot_inner(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams, slot: u32, stamp: u32) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         self.queued_tris += res.tris;
         let pos_scale = res.pos_scale;
@@ -1365,8 +1510,16 @@ impl R3d {
 
     /// Queues a skinned mesh draw: one model → world matrix per bone (pre-order object
     /// index, as `xform_actor` returns them).
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     pub fn draw_skinned(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
+        let t0 = prof_ticks();
+        self.draw_skinned_inner(list, mesh, bones, p);
+        if R3D_PROF {
+            self.prof.skin_ticks = self.prof.skin_ticks.wrapping_add(prof_ticks().wrapping_sub(t0));
+            self.prof.skin_draws += 1;
+        }
+    }
+
+    fn draw_skinned_inner(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         if bones.is_empty() {
             return;

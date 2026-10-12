@@ -157,6 +157,7 @@ impl R3dLevel {
 
     /// The r3d texture of registry image `h` (aliased on first use, re-aliased when
     /// [`RenderCpu`] replaced the image's texture).
+    #[inline(never)]
     fn tex_for(&mut self, cpu: &RenderCpu, h: u32) -> Option<TexId> {
         let (c, gen) = cpu.texture_of(h);
         if c == 0 {
@@ -243,19 +244,10 @@ impl R3dLevel {
         // The draw order rarely changes between frames: try last frame's mesh of this slot.
         let mesh = match self.slot_mesh.get(slot) {
             Some(&(m, o, id)) if m == d.model && o == d.object => id,
-            _ => {
-                let Some(&mesh) = self.meshes.get(&(d.model, d.object)) else {
-                    if self.missing.insert((d.model, d.object)) {
-                        crate::log!("r3d: no mesh for model {:08x} object {} (frame {:?})", d.model, d.object, d.frame);
-                    }
-                    return;
-                };
-                if self.slot_mesh.len() <= slot {
-                    self.slot_mesh.resize(slot + 1, (0, 0, MeshId(u32::MAX)));
-                }
-                self.slot_mesh[slot] = (d.model, d.object, mesh);
-                mesh
-            }
+            _ => match self.lookup_mesh(d, slot) {
+                Some(m) => m,
+                None => return,
+            },
         };
         let override_tex = match d.override_tex {
             Some(h) => match self.tex_for(cpu, h.0) {
@@ -284,6 +276,31 @@ impl R3dLevel {
             }
         }
         self.rec.draws += 1;
+        if option_env!("F2N64_LOG_MODELS").is_some() || self.dump_next {
+            self.log_draw(d, list, mesh);
+        }
+    }
+
+    /// The mesh of a recorded draw (remembered for its slot), logging missing ones once.
+    #[cold]
+    #[inline(never)]
+    fn lookup_mesh(&mut self, d: &MeshDraw, slot: usize) -> Option<MeshId> {
+        let Some(&mesh) = self.meshes.get(&(d.model, d.object)) else {
+            if self.missing.insert((d.model, d.object)) {
+                crate::log!("r3d: no mesh for model {:08x} object {} (frame {:?})", d.model, d.object, d.frame);
+            }
+            return None;
+        };
+        if self.slot_mesh.len() <= slot {
+            self.slot_mesh.resize(slot + 1, (0, 0, MeshId(u32::MAX)));
+        }
+        self.slot_mesh[slot] = (d.model, d.object, mesh);
+        Some(mesh)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn log_draw(&mut self, d: &MeshDraw, list: List, mesh: MeshId) {
         if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {
             crate::log!("r3d: model {:08x} first drawn ({:?}, {} tris)", d.model, list, self.r.mesh_tris(mesh));
         }
