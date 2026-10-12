@@ -69,6 +69,17 @@ pub fn pick_fps(tick_us: u32, draw_us: u32, budget_us: u32) -> u32 {
     crate::pacing::pick_fps_mode(&PACED_FPS, tick_us, draw_us, budget_us, crate::pacing::VARIABLE, crate::pacing::MAX_FRAMES_PER_TICK)
 }
 
+/// `Game::phase_hook`: C0 ticks per simulation phase (`f2_game::simbench::phase`) in the
+/// current perf window, and the time of the last mark.
+static PHASES: [core::sync::atomic::AtomicU32; f2_game::simbench::phase::COUNT] = [const { core::sync::atomic::AtomicU32::new(0) }; f2_game::simbench::phase::COUNT];
+static PHASE_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn phase_hook(id: u32) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let t = ticks();
+    PHASES[id as usize].fetch_add(t.wrapping_sub(PHASE_LAST.swap(t, Relaxed)), Relaxed);
+}
+
 /// Rank of a pacing choice (0 = 60 fps ... 4 = unlimited / overloaded).
 fn fps_rank(f: u32) -> usize {
     PACED_FPS.iter().position(|&p| p == f).unwrap_or(PACED_FPS.len())
@@ -427,6 +438,7 @@ impl App {
     /// `CalcStringWidth` font metrics for the simulation (textover.c), from the fonts the
     /// renderer holds.
     fn install_game_hooks(&mut self) {
+        self.game.phase_hook = Some(phase_hook);
         if let Some(f) = self.game_fonts {
             let w = |f: &Font| (0..=255u8).map(|c| f.char_width(c).min(255) as u8).collect::<Vec<u8>>();
             self.game.textover.metrics = Some(f2_game::textover::FontMetrics { normal: w(self.r.font(f.normal)), small: w(self.r.font(f.small)) });
@@ -743,6 +755,7 @@ impl App {
             crate::ffi::n64_prof(3)
         };
         let variable = self.variable_step();
+        PHASE_LAST.store(ticks(), core::sync::atomic::Ordering::Relaxed);
         crate::pacing::tick(&mut self.game, TickInput { pads: [pad, 0, 0, 0] }, frames, variable);
         self.step_frames = frames;
         self.pace_frames += frames;
@@ -1307,6 +1320,15 @@ impl App {
 
     fn log_window(&mut self, span: u32) {
         let w = core::mem::take(&mut self.win);
+        {
+            use f2_game::simbench::phase::{COUNT, NAMES};
+            let mut s = String::new();
+            for i in 0..COUNT {
+                let us = ticks_to_us(PHASES[i].swap(0, core::sync::atomic::Ordering::Relaxed)) / w.ticks.max(1);
+                let _ = core::fmt::Write::write_fmt(&mut s, format_args!(" {} {}", NAMES[i], us));
+            }
+            log!("sim phases [{}] us/tick:{}", self.level_name, s);
+        }
         let (rsp, rdp) = rt::rcp_load();
         let ms = |t: u32| ticks_to_us(t) / 1000;
         let f = w.frames.max(1);
