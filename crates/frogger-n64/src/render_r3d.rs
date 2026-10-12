@@ -326,7 +326,10 @@ impl R3dLevel {
             },
             None => None,
         };
-        rt::audio_poll_due();
+        // Every 16th draw (the C call misses the I-cache; 16 draws take ~1 ms).
+        if slot % 16 == 15 {
+            rt::audio_poll_due();
+        }
 
         // Recorded only: queued to the RSP lists in one batch after the draw loop
         // (`R3d::run_queue`).
