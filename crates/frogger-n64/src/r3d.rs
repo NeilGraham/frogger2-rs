@@ -1231,9 +1231,30 @@ pub fn frame_uniform(v: &ViewParams) -> R3dFrame {
 }
 
 /// [`frame_uniform`] with the view x projection for normal (`no_clip` false) or sky draws.
+///
+/// Sky draws (far plane at `NO_CLIP_FAR`) carry clip-space X and Y divided by the guard
+/// factor G, the screen scale multiplied by G, and guard factor 1: the same projection and
+/// the same guard band on screen. With G applied by the RSP instead (magma's clip codes
+/// compare X with W * G and Z * G with W * G, all s15.16), W * G saturated beyond
+/// W = 32768 / G (5461 at G = 6; normal draws end at W = 1200): far sky vertices lost their
+/// guard flags and their screen coordinates saturated, and X/Y themselves saturated beyond
+/// ±32768 (the Space backgrounds: a scale-5 model with coordinates up to 6610) - spikes
+/// towards the screen corners, varying with the camera. W (MDX's integer `vz + DIST`
+/// divisor), Z and the near/far tests are unchanged.
 pub fn frame_uniform_vp(v: &ViewParams, no_clip: bool) -> R3dFrame {
     let mut fr = frame_uniform(v);
-    let vp = view_proj(v, no_clip);
+    let mut vp = view_proj(v, no_clip);
+    if no_clip {
+        let g = if v.guard == 0 { 4 } else { v.guard };
+        for row in vp.iter_mut() {
+            row[0] /= g as f32;
+            row[1] /= g as f32;
+        }
+        let s = (-8.0 * v.fov * v.proj_scale() * g as f32).clamp(-32768.0, 32767.0) as i16;
+        fr.vs[0] = s;
+        fr.vs[1] = s;
+        fr.guard = 1;
+    }
     for r in 0..4 {
         for c in 0..4 {
             let (i, f) = to_fixed(vp[r][c]);
@@ -2680,7 +2701,10 @@ pub fn emulate_vertex(u: &R3dDrawUniform, fr: &R3dFrame, guard: i32, pos: [i16; 
     // Clip-space s15.16 (the RSP clamps the accumulator high half to s16).
     let cs: [i64; 4] = core::array::from_fn(|c| sat(pos[0] as i64 * m(0, c) + pos[1] as i64 * m(1, c) + pos[2] as i64 * m(2, c) + m(3, c)));
     let (x, y, z, w) = (cs[0], cs[1], cs[2], cs[3]);
-    let gw = w * guard as i64;
+    // Clip codes: magma scales (X, Y, Z, W) by its clip factors (1, 1, G, G), saturating like
+    // the clip-space values, and compares X, Y, Z * G with W * G.
+    let gw = sat(w * guard as i64);
+    let zg = sat(z * guard as i64);
     let mut clip = 0u8;
     if x <= -gw {
         clip |= 1;
@@ -2688,7 +2712,7 @@ pub fn emulate_vertex(u: &R3dDrawUniform, fr: &R3dFrame, guard: i32, pos: [i16; 
     if y <= -gw {
         clip |= 2;
     }
-    if z <= -w {
+    if zg <= -gw {
         clip |= 4;
     }
     if x >= gw {
@@ -2697,7 +2721,7 @@ pub fn emulate_vertex(u: &R3dDrawUniform, fr: &R3dFrame, guard: i32, pos: [i16; 
     if y >= gw {
         clip |= 16;
     }
-    if z >= w {
+    if zg >= gw {
         clip |= 32;
     }
     let q = (w >> 16).max(1);
@@ -2829,6 +2853,60 @@ mod tests {
         let u = cross(f, r);
         let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         [[r[0], u[0], f[0], 0.0], [r[1], u[1], f[1], 0.0], [r[2], u[2], f[2], 0.0], [-dot(r, eye), -dot(u, eye), -dot(f, eye), 1.0]]
+    }
+
+    /// Sky draws (`no_clip`, far at `NO_CLIP_FAR`): vertices far away (W * guard beyond s15.16)
+    /// or with view-space x/y beyond ±32768 (the Space backgrounds: scale 5, coordinates up to
+    /// 6610) get the clip codes and screen positions of MDX's projection, instead of a far
+    /// flag (face dropped), a missing guard flag or a position saturated towards a corner.
+    #[test]
+    fn sky_vertices_project_like_mdx() {
+        let mut view = ViewParams::pc_default(320.0, 240.0);
+        view.view = look_at([30.0, 400.0, -500.0], [0.0, 0.0, 100.0]);
+        let fr = frame_uniform_vp(&view, true);
+        let mut far_view = view;
+        far_view.far = NO_CLIP_FAR;
+        let model: Mat4 = [[5.0, 0.0, 0.0, 0.0], [0.0, 5.0, 0.0, 0.0], [0.0, 0.0, 5.0, 0.0], [528.7, 285.7, 1170.0, 1.0]];
+        let u = draw_uniform(&model_scaled(&model, 1.0), &DrawParams::default());
+        let mv = mtx_cat(&model, &view.view);
+        let g = view.guard as f32;
+        let (mut drawn, mut big, mut deep, mut flagged) = (0, 0, 0, 0);
+        let mut seed = 777u32;
+        for _ in 0..4000 {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let p = [((seed >> 8) % 13220) as i16 - 6610, ((seed >> 4) % 13220) as i16 - 6610, ((seed >> 12) % 13220) as i16 - 6610];
+            let mp = p.map(|c| c as f32);
+            let v: [f32; 3] = core::array::from_fn(|c| mp[0] * mv[0][c] + mp[1] * mv[1][c] + mp[2] * mv[2][c] + mv[3][c]);
+            let (scr, _, clip, _) = emulate_vertex(&u, &fr, fr.guard as i32, p);
+            let w = v[2] + DIST;
+            let Some(e) = mdx_project(&far_view, v) else { continue };
+            // Boundary / integer-truncation rounding cases. Near the sky's far plane Z - W =
+            // (a - 1) W + b changes by only 0.00067 per unit of W (near 10, far 30000), below
+            // the s15.16 resolution of `a * W`: the far test is approximate within ~1000 units.
+            if (w - view.near).abs() < 0.01 || (w - NO_CLIP_FAR).abs() < 1000.0 || (v[2] - v[2].round()).abs() < 0.01 {
+                continue;
+            }
+            assert_eq!(clip & 0x24, 0, "{v:?}: near/far flag inside near/far");
+            let band = v[0].abs().max(v[1].abs()) / w;
+            if band > g * 1.001 {
+                assert_ne!(clip & 0x1B, 0, "{v:?}: outside the guard band, not flagged");
+                flagged += 1;
+                continue;
+            }
+            if band > g * 0.999 {
+                continue;
+            }
+            assert_eq!(clip, 0, "{v:?}: inside the guard band, flagged");
+            let (sx, sy) = (scr[0] as f32 / 4.0, scr[1] as f32 / 4.0);
+            // Half a pixel, plus the reciprocal's relative error off-screen (the guard band
+            // reaches ~1350 px from the centre).
+            let tol = |e: f32, c: f32| 0.5 + (e - c).abs() / 2048.0;
+            assert!((sx - e[0]).abs() <= tol(e[0], 160.0) && (sy - e[1]).abs() <= tol(e[1], 120.0), "{v:?}: rsp ({sx}, {sy}) mdx {e:?}");
+            drawn += 1;
+            big += (v[0].abs() > 32768.0 || v[1].abs() > 32768.0) as u32;
+            deep += (w > 32768.0 / g) as u32;
+        }
+        assert!(drawn > 500 && big > 20 && deep > 200 && flagged > 100, "drawn {drawn}, beyond ±32768 {big}, beyond W*G overflow {deep}, guard-flagged {flagged}");
     }
 
     #[test]

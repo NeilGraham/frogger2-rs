@@ -417,6 +417,8 @@ static void draw_inline(const r3d_group_t *g, const n64_r3d_draw_t *d) {
 static const n64_r3d_frame_t *cur_frame;
 static n64_r3d_frame_t frame_default;
 
+static uint32_t cur_guard;
+
 static void load_frame(const n64_r3d_frame_t *f) {
     n64_r3d_frame_t fr = *f;
     fr.clip_text = clip_text;
@@ -424,6 +426,13 @@ static void load_frame(const n64_r3d_frame_t *f) {
     fr.modge_text = modge_text;
     fr.modge_size = modge_size;
     mg_uniform_load_inline(u_frame, &fr);
+    /* The sky's frame carries clip-space X/Y divided by the guard factor and guard 1
+     * (r3d.rs frame_uniform_vp: W * guard overflows s15.16 at the sky's depths). */
+    uint32_t guard = f->guard ? f->guard : 4;
+    if (guard != cur_guard) {
+        mg_set_clip_factor(guard);
+        cur_guard = guard;
+    }
     cur_frame = f;
 }
 
@@ -431,7 +440,7 @@ void n64_r3d_begin_impl(const n64_r3d_frame_t *f) {
     frame_default = *f;
     mg_pipeline_bind(pipe);
     mg_set_geometry_flags(MG_GEOMETRY_FLAGS_Z_ENABLED | MG_GEOMETRY_FLAGS_TEX_ENABLED | MG_GEOMETRY_FLAGS_SHADE_ENABLED);
-    mg_set_clip_factor(f->guard ? f->guard : 4);
+    cur_guard = 0;
     load_frame(&frame_default);
     if (f->fog_rgba) rdpq_set_fog_color(color_from_packed32(f->fog_rgba));
     cur_tex = 0;
