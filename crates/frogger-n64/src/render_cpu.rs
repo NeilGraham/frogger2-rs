@@ -390,20 +390,25 @@ impl RenderCpu {
     fn add_quad(&self, b: &mut Built, seg: u8, q: &f2_engine::Quad2D, white: f2_engine::TexHandle) {
         let c = DrawCmd { blend: q.blend, depth: DepthMode::Off, tex: q.tex.unwrap_or(white), wrap: false, scene: false, first: 0, count: 0 };
         let state = self.state(&c, f2_engine::renderer::ALPHA_NONZERO);
+        let conv = colour_conv(state.blend);
+        let p = &q.pos;
+        // `as_rect` of `Quad2D::tl_vertices` without building them: the quad is a
+        // screen-aligned rectangle when its edges are (UVs and colour always line up).
+        if p[0][1] == p[1][1] && p[3][1] == p[2][1] && p[1][0] == p[2][0] && p[0][0] == p[3][0] {
+            let r = rect_of(p[0][0], p[1][0], q.uv[0], q.uv[2], p[0][1], p[3][1], q.uv[1], q.uv[3]);
+            b.rect(seg, &state, Rect { rgba: pack_colour(q.color.map(|c| c as f32 / 255.0), conv), ..r });
+            return;
+        }
         let mut tv = q.tl_vertices();
-        if let Some(f) = colour_conv(state.blend) {
+        if let Some(f) = conv {
             for v in &mut tv {
                 *v = converted(v, f);
             }
         }
-        if let Some(r) = as_rect(&tv) {
-            b.rect(seg, &state, r);
-        } else {
-            let mut ts = state;
-            ts.flags &= !ffi::PERSP;
-            for v in &tv {
-                b.vert(seg, &ts, vertex(v));
-            }
+        let mut ts = state;
+        ts.flags &= !ffi::PERSP;
+        for v in &tv {
+            b.vert(seg, &ts, vertex(v));
         }
     }
 
@@ -415,16 +420,12 @@ impl RenderCpu {
         while i < tris.len() {
             if rects && i + 1 < tris.len() {
                 let (p, q) = (&tris[i].v, &tris[i + 1].v);
-                let mut six = [p[0], p[1], p[2], q[0], q[1], q[2]];
+                let six = [&p[0], &p[1], &p[2], &q[0], &q[1], &q[2]];
                 if six[1].sz == six[0].sz && six[2].sz == six[0].sz && six[4].sz == six[0].sz {
-                    if let Some(f) = conv {
-                        for v in &mut six {
-                            *v = converted(v, f);
-                        }
-                    }
-                    if let Some(mut r) = as_rect(&six) {
-                        r.z = (six[0].sz * self.zk).clamp(0.0, 1.0);
-                        b.rect(seg, state, r);
+                    // (One colour before the split is one colour after it.)
+                    if let Some(r) = rect_geometry(six) {
+                        let z = (six[0].sz * self.zk).clamp(0.0, 1.0);
+                        b.rect(seg, state, Rect { rgba: pack_colour(six[0].color, conv), z, ..r });
                         i += 2;
                         continue;
                     }
@@ -747,11 +748,17 @@ fn vertex(v: &TlVertex) -> Vertex {
 /// `Renderer::build`'s quad pattern (v0 v1 v2, v2 v3 v0; TL TR BR BL) when it is a
 /// screen-aligned rectangle with one colour and aligned UVs.
 pub fn as_rect(q: &[TlVertex]) -> Option<Rect> {
+    let r = rect_geometry([&q[0], &q[1], &q[2], &q[3], &q[4], &q[5]])?;
+    Some(Rect { rgba: pack_colour(q[0].color, None), ..r })
+}
+
+/// [`as_rect`]'s test and rectangle (without the colour) on six vertex references.
+fn rect_geometry(q: [&TlVertex; 6]) -> Option<Rect> {
     let p = |v: &TlVertex| (v.sx, v.sy);
-    if p(&q[3]) != p(&q[2]) || p(&q[5]) != p(&q[0]) || q[3].uv != q[2].uv || q[5].uv != q[0].uv {
+    if p(q[3]) != p(q[2]) || p(q[5]) != p(q[0]) || q[3].uv != q[2].uv || q[5].uv != q[0].uv {
         return None;
     }
-    let (a, b, c, d) = (&q[0], &q[1], &q[2], &q[4]);
+    let (a, b, c, d) = (q[0], q[1], q[2], q[4]);
     let col = a.color;
     if b.color != col || c.color != col || d.color != col {
         return None;
@@ -763,16 +770,34 @@ pub fn as_rect(q: &[TlVertex]) -> Option<Rect> {
     if a.uv[1] != b.uv[1] || d.uv[1] != c.uv[1] || b.uv[0] != c.uv[0] || a.uv[0] != d.uv[0] {
         return None;
     }
-    let (mut x0, mut x1, mut s0, mut s1) = (a.sx, b.sx, a.uv[0], b.uv[0]);
+    Some(rect_of(a.sx, b.sx, a.uv[0], b.uv[0], a.sy, d.sy, a.uv[1], d.uv[1]))
+}
+
+/// The rectangle with x / s from `(x0, s0)` to `(x1, s1)` and y / t likewise, ordered so
+/// x0 < x1 and y0 < y1 (the texture coordinates follow, so mirrored quads flip).
+#[allow(clippy::too_many_arguments)]
+fn rect_of(mut x0: f32, mut x1: f32, mut s0: f32, mut s1: f32, mut y0: f32, mut y1: f32, mut t0: f32, mut t1: f32) -> Rect {
     if x0 > x1 {
         core::mem::swap(&mut x0, &mut x1);
         core::mem::swap(&mut s0, &mut s1);
     }
-    let (mut y0, mut y1, mut t0, mut t1) = (a.sy, d.sy, a.uv[1], d.uv[1]);
     if y0 > y1 {
         core::mem::swap(&mut y0, &mut y1);
         core::mem::swap(&mut t0, &mut t1);
     }
+    Rect { x0, y0, x1, y1, s0, t0, s1, t1, rgba: 0, z: 0.0 }
+}
+
+/// A vertex colour (0..1) with the batch's colour split `conv` as 0xRRGGBBAA.
+fn pack_colour(col: [f32; 4], conv: Option<fn(&mut Vertex)>) -> u32 {
+    let col = match conv {
+        Some(f) => {
+            let mut o = Vertex { r: col[0].clamp(0.0, 1.0), g: col[1].clamp(0.0, 1.0), b: col[2].clamp(0.0, 1.0), a: col[3].clamp(0.0, 1.0), ..Default::default() };
+            f(&mut o);
+            [o.r, o.g, o.b, o.a]
+        }
+        None => col,
+    };
     let c8 = col.map(|x| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u32);
-    Some(Rect { x0, y0, x1, y1, s0, t0, s1, t1, rgba: (c8[0] << 24) | (c8[1] << 16) | (c8[2] << 8) | c8[3], z: 0.0 })
+    (c8[0] << 24) | (c8[1] << 16) | (c8[2] << 8) | c8[3]
 }
