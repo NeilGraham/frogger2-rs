@@ -108,6 +108,9 @@ pub const LIST_ORDER: [List; NUM_LISTS] =
     [List::Background, List::Normal, List::Wrap, List::Xlu, List::Additive, List::Late, List::LateAdditive, List::Overlay];
 /// The PC frame lists (`DrawAllFrames` order; index = scene-file list number).
 pub const FRAME_LISTS: [List; 7] = [List::Normal, List::Wrap, List::Xlu, List::Additive, List::Late, List::LateAdditive, List::Overlay];
+/// Every list by its discriminant.
+const BY_INDEX: [List; NUM_LISTS] =
+    [List::Normal, List::Wrap, List::Xlu, List::Additive, List::Late, List::LateAdditive, List::Overlay, List::Background];
 
 impl List {
     /// Render state of the list (renderer.rs `build()` passes): blend, depth, wrap, alpha
@@ -249,6 +252,8 @@ struct Part {
 struct MeshRes {
     id: u32,
     parts: Vec<Part>,
+    /// Per part: bounding sphere centre and radius (`parts`' copy, dense for culling).
+    spheres: Vec<[f32; 4]>,
     group_crc: Vec<u32>,
     /// `group_crc` resolved through the texture registry at `tex_gen`.
     group_tex: Vec<u16>,
@@ -494,35 +499,92 @@ fn modge_vertex(px: &[u32; 3], pz: &[u32; 3], y0: i16, s0: i16, t0: i16, a0: u8,
 }
 
 /// Draw slot `i`'s last draw (see [`R3d::draw_slot`]): reusable while nothing it depends
-/// on changed. Boxed, so its uniforms stay put while the RSP reads them.
-struct SlotEntry {
-    /// `R3d::frame_no` of the draw (only the previous frame's are reused).
+/// on changed. 32 bytes (two D-cache lines) in one dense array; the uniforms, written only when
+/// they change, are in [`SlotUni`].
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Default)]
+struct Slot {
+    /// `R3d::frame_no` of the draw (only the previous frame's are reused; whether the view
+    /// changed since is `R3d::view_same`).
     frame: u32,
-    view_gen: u32,
-    mesh: u32,
     /// The model matrix's stamp (`MeshDraw::stamp`).
     stamp: u32,
-    params: [u32; 6],
-    sent: u32,
-    /// Visible parts in that frame's `vis` (`R3d::prev_vis` in the next frame).
-    vis_first: u32,
-    vis_count: u32,
-    /// The uniform, in a ring of three: a miss writes the next one, as the RSP may still
-    /// read the one of each of the two frames before (the CPU starts recording frame N
-    /// before waiting for a framebuffer, i.e. while N-2 and N-1 can still be in flight).
-    cur: usize,
-    u: [R3dDrawUniform; 3],
-    /// `u[cur]` is `base_u` with some fog (false after a draw that was wholly culled).
-    u_ok: bool,
-    /// Camera-independent part, valid for `stamp`/`mesh`/`params`: the uniform without fog,
-    /// the scale bound and the world-space sphere centres ([`world_spheres`]). A frame with
-    /// only a new view (the camera moved) re-culls from these and refreshes the fog.
-    base_u: R3dDrawUniform,
+    /// Camera-independent culling data, valid for `stamp`/`mesh`: the radius scale bound and
+    /// the world-space centre of the mesh's sphere. A frame with only a new view (the camera
+    /// moved) re-culls from these.
     s: f32,
-    wc: Vec<[f32; 3]>,
+    wc: [f32; 3],
+    mesh: u16,
+    /// Visible parts in that frame's `vis` (`R3d::prev_vis` in the next frame).
+    vis_first: u16,
+    vis_count: u16,
+    /// Interned parameters ([`R3d::intern_params`]; `PID_NONE`: not reusable).
+    pid: u8,
+    /// Current uniform of the ring ([`SlotUni::u`], bits 0-1) and `SLOT_*` bits.
+    cf: u8,
 }
 
-/// Bit pattern of a draw's parameters (cache key).
+/// `SlotUni::base` holds the draw's uniform without fog.
+const SLOT_BASE: u8 = 4;
+/// `SlotUni::u[cur]` is `base` with some fog fields.
+const SLOT_U: u8 = 8;
+/// ... and those are the no-fog fields ([`fog_fields`] without fog).
+const SLOT_U_NOFOG: u8 = 16;
+const SLOT_CUR: u8 = 3;
+
+/// A slot's uniforms: a ring of three (a change writes the next one, as the RSP may still read
+/// the one of each of the two frames before: the CPU starts recording frame N before waiting
+/// for a framebuffer, i.e. while N-2 and N-1 can still be in flight) and the fog-less base.
+#[derive(Clone, Copy, Default)]
+struct SlotUni {
+    u: [R3dDrawUniform; 3],
+    base: R3dDrawUniform,
+}
+
+/// Slots per [`SlotUni`] chunk (chunks never move: the RSP reads the uniforms in place).
+const SLOT_CHUNK: usize = 32;
+
+/// No draw slot (not reusable).
+const NO_SLOT: u16 = u16::MAX;
+/// Parameter ids `>= PID_NONE` are not stored in slots (the table is reset between frames
+/// when it grows past [`PID_RESET`]).
+const PID_NONE: u16 = 255;
+const PID_RESET: usize = 192;
+
+/// A model matrix's three columns (the fourth is 0, 0, 0, 1).
+type Model34 = [[f32; 3]; 4];
+const IDENTITY34: Model34 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]];
+
+fn to34(m: &Mat4) -> Model34 {
+    [[m[0][0], m[0][1], m[0][2]], [m[1][0], m[1][1], m[1][2]], [m[2][0], m[2][1], m[2][2]], [m[3][0], m[3][1], m[3][2]]]
+}
+fn to44(m: &Model34) -> Mat4 {
+    [[m[0][0], m[0][1], m[0][2], 0.0], [m[1][0], m[1][1], m[1][2], 0.0], [m[2][0], m[2][1], m[2][2], 0.0], [m[3][0], m[3][1], m[3][2], 1.0]]
+}
+
+/// A draw recorded during the game's draw loop ([`R3d::queue`]) and queued to the RSP lists by
+/// [`R3d::run_queue`] after it: the draw loop walks actors and models between two draws and
+/// evicts the renderer's data (and code) from the caches, so the per-draw work runs in one
+/// batch instead. 16 bytes: the model matrix goes to `R3d::slot_model` (only when its stamp
+/// changed) or `R3d::qmodels`, the parameters to `R3d::ptab`.
+#[derive(Clone, Copy)]
+struct QDraw {
+    /// Matrix stamp (rigid; with `NO_SLOT`: index into `qmodels`) or first bone in `qbones`
+    /// (skinned).
+    stamp: u32,
+    modge_frame: u32,
+    /// Draw slot (rigid) or bone count (skinned).
+    slot: u16,
+    mesh: u16,
+    pid: u16,
+    /// List (bits 0-2), `Q_SKINNED`.
+    lf: u8,
+    modge: u8,
+}
+
+const Q_SKINNED: u8 = 8;
+
+/// Bit pattern of a draw's parameters (cache key)./// Bit pattern of a draw's parameters (cache key).
 fn params_key(p: &DrawParams) -> [u32; 6] {
     let g = p.gouraud.map_or([u32::MAX; 3], |g| g.map(f32::to_bits));
     [p.alpha_mul.to_bits(), g[0], g[1], g[2], p.override_tex.map_or(0, |t| t.0 as u32 + 1), p.no_clip as u32 | (p.object_fog as u32) << 1]
@@ -571,34 +633,22 @@ impl Frustum {
         Frustum { p: [comb(1.0, 0.0, a[0]), comb(-1.0, 0.0, a[1]), comb(0.0, 1.0, a[2]), comb(0.0, -1.0, a[3]), nearp, farp] }
     }
 
-    /// Sphere test: 1 = wholly outside a plane (culled), 2 = wholly inside all, 0 = both.
-    /// `planes` = 5 without the far plane (`noClip`), else 6.
+    /// Sphere test: `None` = wholly outside a plane (culled), else the mask of the planes the
+    /// sphere straddles (0: wholly inside). `planes` = 5 without the far plane (`noClip`),
+    /// else 6.
     #[inline(always)]
-    fn classify(&self, c: &[f32; 3], r: f32, planes: usize) -> u32 {
-        let mut inside = true;
-        for p in &self.p[..planes] {
+    fn classify(&self, c: &[f32; 3], r: f32, planes: usize) -> Option<u32> {
+        let mut straddle = 0;
+        for (k, p) in self.p[..planes].iter().enumerate() {
             let d = c[0] * p[0] + c[1] * p[1] + c[2] * p[2] + p[3];
             if d >= r {
-                return 1;
+                return None;
             }
-            inside &= d < -r;
-        }
-        if inside {
-            2
-        } else {
-            0
-        }
-    }
-
-    /// Whether a sphere is wholly outside a plane (culled).
-    #[inline(always)]
-    fn outside(&self, c: &[f32; 3], r: f32, planes: usize) -> bool {
-        for p in &self.p[..planes] {
-            if c[0] * p[0] + c[1] * p[1] + c[2] * p[2] + p[3] >= r {
-                return true;
+            if d >= -r {
+                straddle |= 1 << k;
             }
         }
-        false
+        Some(straddle)
     }
 }
 
@@ -606,6 +656,9 @@ impl Frustum {
 fn enclosing_sphere(parts: &[Part]) -> ([f32; 3], f32) {
     if parts.is_empty() || parts.iter().any(|p| p.radius < 0.0) {
         return ([0.0; 3], -1.0);
+    }
+    if let [p] = parts {
+        return (p.center, p.radius);
     }
     let mut lo = [f32::MAX; 3];
     let mut hi = [f32::MIN; 3];
@@ -658,8 +711,9 @@ pub struct R3d {
     pub sent_tris: u32,
     /// Bumped when the view changes between frames (invalidates `cache`).
     view_gen: u32,
-    /// Per draw slot: the last draw queued in it.
-    slots: Vec<Option<alloc::boxed::Box<SlotEntry>>>,
+    /// Per draw slot: the last draw queued in it, and its uniforms (by chunk).
+    slots: Vec<Slot>,
+    slot_uni: Vec<alloc::boxed::Box<[SlotUni; SLOT_CHUNK]>>,
     /// The previous frame's `vis` (reused draws copy their parts from it).
     prev_vis: Vec<u16>,
     frame_no: u32,
@@ -676,10 +730,22 @@ pub struct R3d {
     size_classes: [(u32, u32); 3],
     size_all: (u32, u32),
     size_frames: u32,
-    wc_tmp: Vec<[f32; 3]>,
     /// `F2_Modge` commands of this frame (mesh, descriptor, size): queued at the flush, before
     /// the lists.
     modge_cmds: Vec<(u32, *const u8, u32)>,
+    /// Draws recorded since `begin_frame` ([`R3d::queue`]), bone matrices of the skinned ones,
+    /// model matrices of the ones without a slot.
+    q: Vec<QDraw>,
+    qbones: Vec<Mat4>,
+    qmodels: Vec<Model34>,
+    /// Per draw slot: the model matrix of the last (stamp, mesh) recorded in it.
+    slot_model: Vec<(u32, u16, Model34)>,
+    /// Interned draw parameters ([`R3d::intern_params`]) and their keys; the last id.
+    ptab: Vec<DrawParams>,
+    pkeys: Vec<[u32; 6]>,
+    plast: u16,
+    /// The view equals the previous frame's.
+    view_same: bool,
     /// Measurement (`F2N64_R3D_PROF=1`): C0 ticks and counts per phase, logged every 300 frames.
     pub prof: R3dProf,
 }
@@ -699,6 +765,9 @@ pub struct R3dProf {
     pub view_draws: u32,
     pub skin_ticks: u32,
     pub skin_draws: u32,
+    pub record_ticks: u32,
+    pub records: u32,
+    pub run_ticks: u32,
 }
 
 pub const R3D_PROF: bool = option_env!("F2N64_R3D_PROF").is_some();
@@ -792,34 +861,41 @@ pub fn model_scaled(model: &Mat4, pos_scale: f32) -> Mat4 {
     ]
 }
 
-/// The camera-independent half of culling a rigid mesh drawn with scaled model matrix `mp`
-/// ([`model_scaled`]): the radius scale bound (the X, Y, W columns of the view x projection
-/// are the orthonormal view rotation for the direction rows, so transformed spheres grow by
-/// at most the longest scaled model row) and, into `out`, the world-space centres of the
-/// whole-mesh sphere and of each part's.
-#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
-fn world_spheres(res: &MeshRes, mp: &Mat4, out: &mut Vec<[f32; 3]>) -> f32 {
+/// Bound of the radius scale of a scaled model matrix ([`model_scaled`]): the X, Y, W columns
+/// of the view x projection are the orthonormal view rotation for the direction rows, so
+/// transformed spheres grow by at most the longest scaled model row.
+#[inline]
+fn scale_bound(mp: &Mat4) -> f32 {
     let rn = |r: usize| mp[r][0] * mp[r][0] + mp[r][1] * mp[r][1] + mp[r][2] * mp[r][2];
-    let s = fast_sqrt(rn(0).max(rn(1)).max(rn(2))) * 1.0001;
-    let xf = |c: [f32; 3]| -> [f32; 3] { core::array::from_fn(|k| c[0] * mp[0][k] + c[1] * mp[1][k] + c[2] * mp[2][k] + mp[3][k]) };
-    out.clear();
-    out.push(xf(res.center));
-    out.extend(res.parts.iter().map(|p| xf(p.center)));
-    s
+    fast_sqrt(rn(0).max(rn(1)).max(rn(2))) * 1.0001
+}
+
+/// A point (stored position units) through a scaled model matrix.
+#[inline(always)]
+fn xf(mp: &Mat4, c: &[f32; 3]) -> [f32; 3] {
+    core::array::from_fn(|k| c[0] * mp[0][k] + c[1] * mp[1][k] + c[2] * mp[2][k] + mp[3][k])
 }
 
 /// Packs a scaled model matrix ([`model_scaled`]; lanes x, y, z of each row) and the draw's
 /// colour parameters into the `F2_DRAW` uniform.
-#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
 pub fn draw_uniform(m: &Mat4, p: &DrawParams) -> R3dDrawUniform {
-    let mut mtx_i = [0i16; 16];
-    let mut mtx_f = [0u16; 16];
+    let mut u = R3dDrawUniform::default();
+    draw_uniform_into(m, p, &mut u);
+    u
+}
+
+/// [`draw_uniform`] written in place (no fog).
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+pub fn draw_uniform_into(m: &Mat4, p: &DrawParams, out: &mut R3dDrawUniform) {
+    let (mtx_i, mtx_f) = (&mut out.mtx_i, &mut out.mtx_f);
     for r in 0..4 {
         for c in 0..3 {
             let (i, f) = to_fixed(m[r][c]);
             mtx_i[r * 4 + c] = i;
             mtx_f[r * 4 + c] = f;
         }
+        mtx_i[r * 4 + 3] = 0;
+        mtx_f[r * 4 + 3] = 0;
     }
     // c = c_in * mul + add in the shader's <<7 units; +0x7F bias rounds 255 back to 255.
     let am = (p.alpha_mul.clamp(0.0, 1.0) * 32767.0) as i16;
@@ -830,7 +906,7 @@ pub fn draw_uniform(m: &Mat4, p: &DrawParams) -> R3dDrawUniform {
             ([0, 0, 0, am], [c(g[0]), c(g[1]), c(g[2]), 0x7F])
         }
     };
-    R3dDrawUniform { mtx_i, mtx_f, cmul, cadd, fogc: [0; 4], fogm: [0xFF, 0, 0, 0] }
+    (out.cmul, out.cadd, out.fogc, out.fogm) = (cmul, cadd, [0; 4], [0xFF, 0, 0, 0]);
 }
 
 /// The RSP's fold (`F2FoldRow` in rsp_f2mdx.S) of a draw uniform's model rows with the
@@ -951,6 +1027,7 @@ impl R3d {
             sent_tris: 0,
             view_gen: 0,
             slots: Vec::new(),
+            slot_uni: Vec::new(),
             prev_vis: Vec::with_capacity(2048),
             frame_no: 1,
             cache_hits: 0,
@@ -959,8 +1036,15 @@ impl R3d {
             size_classes: [(0, 0); 3],
             size_all: (0, 0),
             size_frames: 0,
-            wc_tmp: Vec::new(),
             modge_cmds: Vec::new(),
+            q: Vec::with_capacity(512),
+            qbones: Vec::new(),
+            qmodels: Vec::new(),
+            slot_model: Vec::new(),
+            ptab: Vec::new(),
+            pkeys: Vec::new(),
+            plast: 0,
+            view_same: false,
             prof: R3dProf::default(),
         }
     }
@@ -1006,6 +1090,7 @@ impl R3d {
         let mut res = MeshRes {
             id: m.entry.id,
             parts: Vec::new(),
+            spheres: Vec::new(),
             group_crc: Vec::new(),
             group_tex: Vec::new(),
             tex_gen: 0,
@@ -1046,6 +1131,7 @@ impl R3d {
             }
         }
         (res.center, res.radius) = enclosing_sphere(&res.parts);
+        res.spheres = res.parts.iter().map(|p| [p.center[0], p.center[1], p.center[2], p.radius]).collect();
         Ok(res)
     }
 
@@ -1143,8 +1229,18 @@ impl R3d {
 
     /// Starts a frame (call after `rt::begin_frame`).
     pub fn begin_frame(&mut self, view: &ViewParams) {
-        if *view != self.view {
+        self.view_same = *view == self.view;
+        if !self.view_same {
             self.view_gen = self.view_gen.wrapping_add(1);
+        }
+        // The parameter table between frames: reset when large (slots keep ids < PID_NONE).
+        if self.pkeys.len() > PID_RESET {
+            self.pkeys.clear();
+            self.ptab.clear();
+            self.plast = 0;
+            for e in &mut self.slots {
+                e.frame = 0;
+            }
         }
         self.view = *view;
         self.frame_no = self.frame_no.wrapping_add(1);
@@ -1176,9 +1272,9 @@ impl R3d {
                 let us = |t: u32| t / 47 / p.frames;
                 #[cfg(target_vendor = "nintendo64")]
                 crate::log!(
-                    "r3dprof per frame: full {} draws {} us | view-only {} draws {} us | skinned {} {} us | cull {} calls {} tests {} us | modge {} runs {} us",
+                    "r3dprof per frame: full {} draws {} us | view-only {} draws {} us | skinned {} {} us | cull {} calls {} tests {} us | modge {} runs {} us | record {} x {} us | run_queue {} us",
                     p.full_draws / p.frames, us(p.full_ticks), p.view_draws / p.frames, us(p.view_ticks), p.skin_draws / p.frames, us(p.skin_ticks),
-                    p.cull_calls / p.frames, p.sphere_tests / p.frames, us(p.cull_ticks), p.modge_runs / p.frames, us(p.modge_ticks)
+                    p.cull_calls / p.frames, p.sphere_tests / p.frames, us(p.cull_ticks), p.modge_runs / p.frames, us(p.modge_ticks), p.records / p.frames, us(p.record_ticks), us(p.run_ticks)
                 );
                 let _ = (p, us);
                 self.prof = R3dProf::default();
@@ -1199,14 +1295,16 @@ impl R3d {
     }
 
     /// Culls a rigid mesh's batches against the screen and near/far with their bounding
-    /// spheres (world-space centres `wc` from [`world_spheres`], radius scale bound `s`),
-    /// pushing the visible part indices to `vis`. Conservative: a culled batch is one whose
-    /// every face MDX would reject (all vertices off-screen past one edge, or beyond
-    /// near/far), so the image is unchanged.
+    /// spheres (the mesh's sphere centre `wc` in world space, radius scale bound `s` of the
+    /// mesh's `model`), pushing the visible part indices to `vis`: first the whole mesh, then,
+    /// only if its sphere straddles planes, each part against those planes (moved into model
+    /// space: the parts lie inside the mesh's sphere, so the other planes cannot cull them).
+    /// Conservative: a culled batch is one whose every face MDX would reject (all vertices
+    /// off-screen past one edge, or beyond near/far), so the image is unchanged.
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
-    fn cull_world(&mut self, mesh: usize, wc: &[[f32; 3]], s: f32, no_clip: bool) -> u32 {
+    fn cull_world(&mut self, mesh: usize, wc: &[f32; 3], s: f32, model: &Model34, no_clip: bool) -> u32 {
         let t0 = prof_ticks();
-        let n = self.cull_world_inner(mesh, wc, s, no_clip);
+        let n = self.cull_world_inner(mesh, wc, s, model, no_clip);
         if R3D_PROF {
             self.prof.cull_ticks = self.prof.cull_ticks.wrapping_add(prof_ticks().wrapping_sub(t0));
             self.prof.cull_calls += 1;
@@ -1215,40 +1313,62 @@ impl R3d {
     }
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
-    fn cull_world_inner(&mut self, mesh: usize, wc: &[[f32; 3]], s: f32, no_clip: bool) -> u32 {
+    fn cull_world_inner(&mut self, mesh: usize, wc: &[f32; 3], s: f32, model: &Model34, no_clip: bool) -> u32 {
         let res = &self.meshes[mesh];
         let fr = &self.cull;
         let planes = if no_clip { 5 } else { 6 };
-        let mut tests = 0u32;
-        let whole = if res.radius >= 0.0 && res.parts.len() > 1 {
-            tests += 1;
-            fr.classify(&wc[0], res.radius * s, planes)
-        } else {
-            0
-        };
-        if whole == 1 {
-            if R3D_PROF {
-                self.prof.sphere_tests += tests;
-            }
-            return 0;
+        let n = res.spheres.len();
+        if R3D_PROF {
+            self.prof.sphere_tests += 1;
         }
+        let mask = if res.radius >= 0.0 {
+            match fr.classify(wc, res.radius * s, planes) {
+                None => return 0,
+                // Wholly inside, or a single part (its sphere is the mesh's): all visible.
+                Some(m) if m == 0 || n == 1 => {
+                    self.vis.extend(0..n as u16);
+                    return n as u32;
+                }
+                Some(m) => m,
+            }
+        } else {
+            (1 << planes) - 1
+        };
+        // The straddled planes in the mesh's stored position units: p · (c·M + t).
+        let mp = model_scaled(&to44(model), res.pos_scale);
+        let mut pm = [[0f32; 4]; 6];
+        let mut np = 0;
+        for (k, p) in fr.p[..planes].iter().enumerate() {
+            if mask & 1 << k != 0 {
+                let row = |r: usize| p[0] * mp[r][0] + p[1] * mp[r][1] + p[2] * mp[r][2];
+                pm[np] = [row(0), row(1), row(2), row(3) + p[3]];
+                np += 1;
+            }
+        }
+        let pm = &pm[..np];
         let first = self.vis.len();
-        let mut sent = 0;
-        for (i, (p, c)) in res.parts.iter().zip(&wc[1..]).enumerate() {
-            if whole == 0 && p.radius >= 0.0 {
+        let mut tests = 0;
+        for (i, sp) in res.spheres.iter().enumerate() {
+            if sp[3] >= 0.0 {
                 tests += 1;
-                if fr.outside(c, p.radius * s, planes) {
+                let r = sp[3] * s;
+                if pm.iter().any(|q| sp[0] * q[0] + sp[1] * q[1] + sp[2] * q[2] + q[3] >= r) {
                     continue;
                 }
             }
             self.vis.push(i as u16);
-            sent += p.tris as u32;
         }
         if R3D_PROF {
             self.prof.sphere_tests += tests;
         }
-        self.sent_tris += sent;
         (self.vis.len() - first) as u32
+    }
+
+    /// `W` (view depth - DIST) of a model matrix's origin.
+    #[inline]
+    fn origin_w34(&self, model: &Model34) -> f32 {
+        let vp = &self.vp;
+        model[3][0] * vp[0][3] + model[3][1] * vp[1][3] + model[3][2] * vp[2][3] + vp[3][3]
     }
 
     /// `W` (view depth - DIST) of a model matrix's origin.
@@ -1479,13 +1599,20 @@ impl R3d {
     /// (`MeshDraw::stamp`): when the previous frame's draw `slot` had the same mesh, stamp,
     /// parameters and view, its uniform and visible parts are reused (no conversion, no
     /// culling, no copy). `slot` `u32::MAX` or `stamp` 0: no reuse.
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     pub fn draw_slot(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams, slot: u32, stamp: u32) {
+        let pid = self.intern_params(p);
+        let slot = if slot >= NO_SLOT as u32 || stamp == 0 { NO_SLOT } else { slot as u16 };
+        self.draw_slot_pid(list, mesh, &to34(model), p, pid, slot, stamp);
+    }
+
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[allow(clippy::too_many_arguments)]
+    fn draw_slot_pid(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32) {
         if !R3D_PROF {
-            return self.draw_slot_inner(list, mesh, model, p, slot, stamp);
+            return self.draw_slot_inner(list, mesh, model, p, pid, slot, stamp);
         }
         let (t0, h, v) = (prof_ticks(), self.cache_hits, self.view_hits);
-        self.draw_slot_inner(list, mesh, model, p, slot, stamp);
+        self.draw_slot_inner(list, mesh, model, p, pid, slot, stamp);
         let dt = prof_ticks().wrapping_sub(t0);
         if self.view_hits != v {
             self.prof.view_ticks = self.prof.view_ticks.wrapping_add(dt);
@@ -1497,14 +1624,15 @@ impl R3d {
     }
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
-    fn draw_slot_inner(&mut self, list: List, mesh: MeshId, model: &Mat4, p: &DrawParams, slot: u32, stamp: u32) {
+    #[allow(clippy::too_many_arguments)]
+    fn draw_slot_inner(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         self.queued_tris += res.tris;
         let pos_scale = res.pos_scale;
         // Measurement (F2N64_MEASURE_SIZES=1): on-screen radius of the mesh's bounding
         // sphere (`p * M`, clip w).
         if option_env!("F2N64_MEASURE_SIZES").is_some() && res.radius >= 0.0 {
-            let m = &model_scaled(model, pos_scale);
+            let m = &model_scaled(&to44(model), pos_scale);
             let c = res.center;
             let wc = core::array::from_fn::<f32, 3, _>(|k| c[0] * m[0][k] + c[1] * m[1][k] + c[2] * m[2][k] + m[3][k]);
             let w = wc[0] * self.vp[0][3] + wc[1] * self.vp[1][3] + wc[2] * self.vp[2][3] + self.vp[3][3];
@@ -1521,120 +1649,122 @@ impl R3d {
                 }
             }
         }
-        let cached = slot != u32::MAX && stamp != 0;
-        let pk = if cached { params_key(p) } else { [0; 6] };
+        let center = res.center;
+        if slot == NO_SLOT {
+            // Not reusable: everything into this frame's arena.
+            let mp = model_scaled(&to44(model), pos_scale);
+            let (s, wc) = (scale_bound(&mp), xf(&mp, &center));
+            let vis_first = self.vis.len() as u32;
+            let n = self.cull_world(mesh.0 as usize, &wc, s, model, p.no_clip);
+            if n != 0 {
+                let mut u = draw_uniform(&mp, p);
+                let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w34(model) } else { 0.0 };
+                draw_fog(&mut u, &self.view, p, w0);
+                self.push_rec(list, mesh, p, u, vis_first, n);
+            }
+            return;
+        }
+        let i = slot as usize;
+        if self.slots.len() <= i {
+            self.grow_slots(i + 1);
+        }
         let prev = self.frame_no.wrapping_sub(1);
-        if cached {
-            let i = slot as usize;
-            if self.slots.len() <= i {
-                self.slots.resize_with(i + 1, || None);
+        let e = &mut self.slots[i];
+        let same = e.frame == prev && e.stamp == stamp && e.mesh as u32 == mesh.0 && e.pid as u16 == pid && pid < PID_NONE;
+        if same && self.view_same {
+            // Nothing changed: last frame's uniform and visible parts.
+            self.cache_hits += 1;
+            e.frame = self.frame_no;
+            if e.vis_count == 0 {
+                return;
             }
-            if let Some(e) = &mut self.slots[i] {
-                if e.frame == prev && e.stamp == stamp && e.mesh == mesh.0 && e.params == pk {
-                    if e.view_gen == self.view_gen {
-                        // Nothing changed: last frame's uniform and visible parts.
-                        self.cache_hits += 1;
-                        self.sent_tris += e.sent;
-                        e.frame = self.frame_no;
-                        if e.vis_count == 0 {
-                            return;
-                        }
-                        let vis_first = self.vis.len() as u32;
-                        self.vis.extend_from_slice(&self.prev_vis[e.vis_first as usize..(e.vis_first + e.vis_count) as usize]);
-                        e.vis_first = vis_first;
-                        let uptr: *const R3dDrawUniform = &e.u[e.cur];
-                        let n = e.vis_count;
-                        self.push_rec_ptr(list, mesh, p, uptr, vis_first, n);
-                        return;
-                    }
-                    // Only the view changed (the camera moved): re-cull from the cached
-                    // world-space spheres and refresh the fog; no matrix work.
-                    let mut e = self.slots[i].take().unwrap();
-                    self.view_hits += 1;
-                    let vis_first = self.vis.len() as u32;
-                    let sent0 = self.sent_tris;
-                    let vis_count = self.cull_world(mesh.0 as usize, &e.wc, e.s, p.no_clip);
-                    e.frame = self.frame_no;
-                    e.view_gen = self.view_gen;
-                    e.sent = self.sent_tris - sent0;
-                    e.vis_first = vis_first;
-                    e.vis_count = vis_count;
-                    if vis_count != 0 {
-                        let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(model) } else { 0.0 };
-                        let (fogc, fogm) = fog_fields(&self.view, p, w0);
-                        // The ring's current uniform is `base_u` with that frame's fog: with
-                        // the same fog it is this frame's too (no write, in flight or not).
-                        let cu = &e.u[e.cur];
-                        if !e.u_ok || cu.fogc != fogc || cu.fogm != fogm {
-                            e.cur = (e.cur + 1) % 3;
-                            let mut u = e.base_u;
-                            (u.fogc, u.fogm) = (fogc, fogm);
-                            e.u[e.cur] = u;
-                            e.u_ok = true;
-                        }
-                        let uptr: *const R3dDrawUniform = &e.u[e.cur];
-                        self.push_rec_ptr(list, mesh, p, uptr, vis_first, vis_count);
-                    }
-                    self.slots[i] = Some(e);
-                    return;
-                }
-            }
+            let (a, n, cur) = (e.vis_first as usize, e.vis_count as usize, (e.cf & SLOT_CUR) as usize);
+            let vis_first = self.vis.len() as u32;
+            e.vis_first = vis_first as u16;
+            self.vis.extend_from_slice(&self.prev_vis[a..a + n]);
+            let uptr: *const R3dDrawUniform = &self.slot_uni[i / SLOT_CHUNK][i % SLOT_CHUNK].u[cur];
+            self.push_rec_ptr(list, mesh, p, uptr, vis_first, n as u32);
+            return;
         }
-        let mp = model_scaled(model, pos_scale);
-        let mut wc = core::mem::take(&mut self.wc_tmp);
-        let s = world_spheres(&self.meshes[mesh.0 as usize], &mp, &mut wc);
+        let (wc, s) = if same {
+            // Only the view changed (the camera moved): re-cull from the cached sphere; no
+            // matrix work unless parts are tested.
+            self.view_hits += 1;
+            (e.wc, e.s)
+        } else {
+            let mp = model_scaled(&to44(model), pos_scale);
+            (xf(&mp, &center), scale_bound(&mp))
+        };
         let vis_first = self.vis.len() as u32;
-        let sent0 = self.sent_tris;
-        let vis_count = self.cull_world(mesh.0 as usize, &wc, s, p.no_clip);
-        let base_u = if vis_count != 0 || cached { draw_uniform(&mp, p) } else { R3dDrawUniform::default() };
-        let mut u = base_u;
-        if vis_count != 0 {
-            let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(model) } else { 0.0 };
-            draw_fog(&mut u, &self.view, p, w0);
-        }
-        if cached {
-            let (frame, view_gen, sent) = (self.frame_no, self.view_gen, self.sent_tris - sent0);
-            let e = self.slots[slot as usize].get_or_insert_with(|| {
-                alloc::boxed::Box::new(SlotEntry {
-                    frame: 0,
-                    view_gen: 0,
-                    mesh: 0,
-                    stamp: 0,
-                    params: [0; 6],
-                    sent: 0,
-                    vis_first: 0,
-                    vis_count: 0,
-                    cur: 0,
-                    u: [R3dDrawUniform::default(); 3],
-                    u_ok: false,
-                    base_u: R3dDrawUniform::default(),
-                    s: 0.0,
-                    wc: Vec::new(),
-                })
-            });
-            e.frame = frame;
-            e.view_gen = view_gen;
-            e.mesh = mesh.0;
+        let n = self.cull_world(mesh.0 as usize, &wc, s, model, p.no_clip);
+        let frame_no = self.frame_no;
+        let w0 = if n != 0 && p.object_fog && self.view.fog.is_some() { self.origin_w34(model) } else { 0.0 };
+        let (fogc, fogm) = fog_fields(&self.view, p, w0);
+        let nofog = self.view.fog.is_none() || p.no_clip;
+        let e = &mut self.slots[i];
+        if !same {
+            e.mesh = mesh.0 as u16;
             e.stamp = stamp;
-            e.params = pk;
-            e.sent = sent;
-            e.vis_first = vis_first;
-            e.vis_count = vis_count;
-            e.base_u = base_u;
+            e.pid = pid.min(PID_NONE) as u8;
+            e.wc = wc;
             e.s = s;
-            // The old centres' buffer becomes the next draw's scratch.
-            core::mem::swap(&mut e.wc, &mut wc);
-            e.u_ok = vis_count != 0;
-            if vis_count != 0 {
-                e.cur = (e.cur + 1) % 3;
-                e.u[e.cur] = u;
-                let uptr: *const R3dDrawUniform = &e.u[e.cur];
-                self.push_rec_ptr(list, mesh, p, uptr, vis_first, vis_count);
-            }
-        } else if vis_count != 0 {
-            self.push_rec(list, mesh, p, u, vis_first, vis_count);
+            e.cf &= SLOT_CUR;
         }
-        self.wc_tmp = wc;
+        e.frame = frame_no;
+        e.vis_first = vis_first as u16;
+        e.vis_count = n as u16;
+        if n == 0 {
+            return;
+        }
+        let su = &mut self.slot_uni[i / SLOT_CHUNK][i % SLOT_CHUNK];
+        if e.cf & SLOT_BASE == 0 {
+            draw_uniform_into(&model_scaled(&to44(model), pos_scale), p, &mut su.base);
+            e.cf = (e.cf & SLOT_CUR) | SLOT_BASE;
+        }
+        // The ring's current uniform is `base` with that frame's fog: with the same fog it is
+        // this frame's too (no write, in flight or not).
+        let mut cur = (e.cf & SLOT_CUR) as usize;
+        let keep = e.cf & SLOT_U != 0 && if nofog { e.cf & SLOT_U_NOFOG != 0 } else { su.u[cur].fogc == fogc && su.u[cur].fogm == fogm };
+        if !keep {
+            cur = if cur >= 2 { 0 } else { cur + 1 };
+            let u = &mut su.u[cur];
+            *u = su.base;
+            (u.fogc, u.fogm) = (fogc, fogm);
+            e.cf = cur as u8 | SLOT_BASE | SLOT_U | if nofog { SLOT_U_NOFOG } else { 0 };
+        }
+        let uptr: *const R3dDrawUniform = &su.u[cur];
+        self.push_rec_ptr(list, mesh, p, uptr, vis_first, n);
+    }
+
+    /// Makes room for `n` draw slots (uniform chunks are allocated whole and never move).
+    #[cold]
+    #[inline(never)]
+    fn grow_slots(&mut self, n: usize) {
+        self.slots.resize(n, Slot::default());
+        while self.slot_uni.len() * SLOT_CHUNK < n {
+            self.slot_uni.push(alloc::boxed::Box::new([SlotUni::default(); SLOT_CHUNK]));
+        }
+    }
+
+    /// The id of a draw's parameters in `ptab` (equal parameters, equal ids, within a frame
+    /// and, below `PID_NONE`, across frames until the table is reset).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    fn intern_params(&mut self, p: &DrawParams) -> u16 {
+        let key = params_key(p);
+        let last = self.plast as usize;
+        if self.pkeys.get(last) == Some(&key) {
+            return last as u16;
+        }
+        let id = match self.pkeys.iter().position(|k| *k == key) {
+            Some(i) => i,
+            None => {
+                self.pkeys.push(key);
+                self.ptab.push(*p);
+                self.pkeys.len() - 1
+            }
+        };
+        self.plast = id as u16;
+        id as u16
     }
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
@@ -1661,6 +1791,83 @@ impl R3d {
             vis_count,
         };
         self.lists[list as usize].push(rec);
+    }
+
+    /// Records a draw for [`run_queue`](Self::run_queue) (same order as immediate draws):
+    /// rigid (`mats[0]`, slot and stamp as in [`draw_slot`](Self::draw_slot); MODGE/WAVE
+    /// animation `modge` at `modge_frame` if it turns out visible) or skinned (`mats` = bones).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn queue(&mut self, list: List, mesh: MeshId, mats: &[Mat4], p: &DrawParams, skinned: bool, slot: u32, stamp: u32, modge: u8, modge_frame: u32) {
+        let Some(m0) = mats.first() else { return };
+        let pid = self.intern_params(p);
+        let (stamp, slot) = if skinned {
+            let first = self.qbones.len() as u32;
+            self.qbones.extend_from_slice(mats);
+            (first, mats.len().min(u16::MAX as usize) as u16)
+        } else if slot < NO_SLOT as u32 && stamp != 0 {
+            // The slot's model matrix, written only when its stamp or mesh changed (a stamp
+            // versions an actor's pose: its objects, and all landscape objects, share one).
+            let i = slot as usize;
+            if self.slot_model.len() <= i {
+                self.slot_model.resize(i + 1, (0, u16::MAX, IDENTITY34));
+            }
+            let sm = &mut self.slot_model[i];
+            if sm.0 != stamp || sm.1 != mesh.0 as u16 {
+                *sm = (stamp, mesh.0 as u16, to34(m0));
+            }
+            (stamp, slot as u16)
+        } else {
+            self.qmodels.push(to34(m0));
+            (self.qmodels.len() as u32 - 1, NO_SLOT)
+        };
+        self.q.push(QDraw { stamp, modge_frame, slot, mesh: mesh.0 as u16, pid, lf: list as u8 | if skinned { Q_SKINNED } else { 0 }, modge });
+    }
+
+    /// Queues the draws recorded with [`queue`](Self::queue) (call before [`flush`](Self::flush)).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    pub fn run_queue(&mut self) {
+        let t_run = prof_ticks();
+        let q = core::mem::take(&mut self.q);
+        for (k, d) in q.iter().enumerate() {
+            if k % 32 == 31 {
+                #[cfg(target_vendor = "nintendo64")]
+                crate::rt::audio_poll_due();
+            }
+            let list = BY_INDEX[(d.lf & 7) as usize];
+            let mesh = MeshId(d.mesh as u32);
+            let p = self.ptab[d.pid as usize];
+            if matches!(list, List::Additive | List::LateAdditive) {
+                self.ensure_additive(mesh);
+            }
+            if d.lf & Q_SKINNED != 0 {
+                let bones = core::mem::take(&mut self.qbones);
+                self.draw_skinned(list, mesh, &bones[d.stamp as usize..d.stamp as usize + d.slot as usize], &p);
+                self.qbones = bones;
+                continue;
+            }
+            // World-space landscape meshes (packer-baked key-0 transforms): identity.
+            let model = if self.mesh_is_world(mesh) {
+                IDENTITY34
+            } else if d.slot == NO_SLOT {
+                self.qmodels[d.stamp as usize]
+            } else {
+                self.slot_model[d.slot as usize].2
+            };
+            let pushed = self.pushed;
+            self.draw_slot_pid(list, mesh, &model, &p, d.pid, d.slot, if d.slot == NO_SLOT { 0 } else { d.stamp });
+            // MODGE/WAVE vertices only for meshes on screen (the RSP reads them at the flush).
+            if d.modge != 0 && self.pushed != pushed {
+                self.animate_modge(mesh, d.modge_frame, d.modge);
+            }
+        }
+        self.q = q;
+        self.q.clear();
+        self.qbones.clear();
+        self.qmodels.clear();
+        if R3D_PROF {
+            self.prof.run_ticks = self.prof.run_ticks.wrapping_add(prof_ticks().wrapping_sub(t_run));
+        }
     }
 
     /// Queues a skinned mesh draw: one model → world matrix per bone (pre-order object
@@ -1690,7 +1897,6 @@ impl R3d {
         }
         let res = &self.meshes[mesh.0 as usize];
         self.queued_tris += res.tris;
-        self.sent_tris += res.tris;
         let vis_first = self.vis.len() as u32;
         let n = res.parts.len();
         self.vis.extend(0..n as u16);
@@ -1751,6 +1957,7 @@ impl R3d {
             let res = &self.meshes[r.mesh as usize];
             for &pi in &self.vis[r.vis_first as usize..(r.vis_first + r.vis_count) as usize] {
                 let p = &res.parts[pi as usize];
+                self.sent_tris += p.tris as u32;
                 self.handle_scratch.push(p.handle);
                 self.tex_scratch.push(if r.tex_override != 0 { r.tex_override } else { res.group_tex[p.group as usize] });
             }
@@ -1839,6 +2046,9 @@ impl R3d {
             l.clear();
         }
         self.modge_cmds.clear();
+        self.q.clear();
+        self.qbones.clear();
+        self.qmodels.clear();
     }
 
     /// Drops everything queued this frame without drawing it.
@@ -1847,6 +2057,9 @@ impl R3d {
             l.clear();
         }
         self.modge_cmds.clear();
+        self.q.clear();
+        self.qbones.clear();
+        self.qmodels.clear();
         self.vis.clear();
         // Mesh ids are reused after a reset: forget the reusable draws.
         self.slots.clear();
@@ -2126,6 +2339,104 @@ mod tests {
         r.begin_frame(&view);
         r.draw_slot(List::Normal, ids[0], &model, &DrawParams::default(), 0, 7);
         assert_eq!(r.cache_hits, 0);
+    }
+
+    /// Draws recorded with `queue` and run after the draw loop give the immediate draws' lists.
+    #[test]
+    fn queued_draws_match_immediate_ones() {
+        let bytes = super::cull_tests::terrain();
+        let mut view = ViewParams::pc_default(320.0, 240.0);
+        view.view = camera_view([0.0, 300.0, -700.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let m1: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [10.0, 0.0, 20.0, 1.0]];
+        let m2: Mat4 = [[0.0, 0.0, -1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [-40.0, 5.0, 60.0, 1.0]];
+        let pg = DrawParams { gouraud: Some([0.5, 0.25, 1.0]), alpha_mul: 0.75, object_fog: true, ..Default::default() };
+        let po = DrawParams { override_tex: Some(TexId(3)), no_clip: true, ..Default::default() };
+        let draws: [(List, &Mat4, DrawParams, u32, u32); 4] =
+            [(List::Normal, &m1, DrawParams::default(), 0, 5), (List::Xlu, &m2, pg, 1, 6), (List::Background, &m1, po, u32::MAX, 0), (List::Additive, &m2, pg, 2, 7)];
+        let lists = |r: &R3d| -> Vec<Vec<(Vec<u16>, R3dDrawUniform, u32, u16, u16, bool)>> {
+            r.lists
+                .iter()
+                .map(|l| {
+                    l.iter()
+                        .map(|d| {
+                            let u = if d.uptr.is_null() { r.uni[r.uni_frame][d.u as usize] } else { unsafe { *d.uptr } };
+                            (r.vis[d.vis_first as usize..(d.vis_first + d.vis_count) as usize].to_vec(), u, d.mesh, d.tex_override, d.n_bones, d.no_clip)
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        let mut a = R3d::new();
+        let ia = [a.load_file(bytes.clone()).unwrap()[0], a.load_file(bytes.clone()).unwrap()[0]];
+        let mut b = R3d::new();
+        let ib = [b.load_file(bytes.clone()).unwrap()[0], b.load_file(bytes).unwrap()[0]];
+        for f in 0..4 {
+            a.begin_frame(&view);
+            b.begin_frame(&view);
+            for (k, (list, m, p, slot, stamp)) in draws.iter().enumerate() {
+                a.draw_slot(*list, ia[0], m, p, *slot, *stamp);
+                b.queue(*list, ib[0], &[**m], p, false, *slot, *stamp, 0, 0);
+                if k == 1 {
+                    a.draw_skinned(List::Xlu, ia[0], &[m1, m2], &pg);
+                    b.queue(List::Xlu, ib[0], &[m1, m2], &pg, true, 0, 0, 0, 0);
+                }
+            }
+            // One pose (stamp) for two objects that swap slots between frames.
+            let (x, y) = if f % 2 == 0 { (0, 1) } else { (1, 0) };
+            for (k, slot) in [(x, 10), (y, 11)] {
+                let m = [&m1, &m2][k];
+                a.draw_slot(List::Normal, ia[k], m, &DrawParams::default(), slot, 99);
+                b.queue(List::Normal, ib[k], &[*m], &DrawParams::default(), false, slot, 99, 0, 0);
+            }
+            b.run_queue();
+            assert_eq!(lists(&a), lists(&b));
+            a.flush(|_| {});
+            b.flush(|_| {});
+        }
+    }
+
+    /// A slot draw whose view (or model) changed queues exactly what a fresh draw would.
+    #[test]
+    fn view_only_draws_match_fresh_ones() {
+        let bytes = super::cull_tests::terrain();
+        let snapshot = |r: &R3d| -> (Vec<u16>, Vec<R3dDrawUniform>) {
+            let us =
+                r.lists[List::Normal as usize].iter().map(|d| if d.uptr.is_null() { r.uni[r.uni_frame][d.u as usize] } else { unsafe { *d.uptr } }).collect();
+            (r.vis.clone(), us)
+        };
+        let mut r = R3d::new();
+        let ids = r.load_file(bytes.clone()).unwrap();
+        let cams = [
+            ([0.0, 300.0, -700.0], [0.0, 0.0, 0.0]),
+            ([30.0, 290.0, -650.0], [10.0, 0.0, 20.0]),
+            ([500.0, 120.0, 500.0], [-200.0, 0.0, 0.0]),
+            ([-50.0, 211.0, 1181.0], [-50.0, 0.0, 1025.0]),
+            ([0.0, 60.0, 0.0], [300.0, 0.0, 300.0]),
+        ];
+        let models: [Mat4; 2] = [
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [10.0, 0.0, 20.0, 1.0]],
+            [[0.0, 0.0, -1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [-40.0, 5.0, 60.0, 1.0]],
+        ];
+        let mut views = 0;
+        for (k, (src, at)) in cams.iter().cycle().take(12).enumerate() {
+            let mut view = ViewParams::pc_default(320.0, 240.0);
+            view.view = camera_view(*src, *at, [0.0, 1.0, 0.0]);
+            // Model (stamp) changes every fourth frame.
+            let (model, stamp) = (&models[k / 4 % 2], 1 + (k / 4) as u32);
+            let p = DrawParams { alpha_mul: 0.5, ..Default::default() };
+            let mut fresh = R3d::new();
+            let fids = fresh.load_file(bytes.clone()).unwrap();
+            fresh.begin_frame(&view);
+            fresh.draw(List::Normal, fids[0], model, &p);
+            r.begin_frame(&view);
+            r.draw_slot(List::Normal, ids[0], model, &p, 3, stamp);
+            assert_eq!(snapshot(&r), snapshot(&fresh), "frame {k}");
+            views += r.view_hits;
+            r.flush(|_| {});
+            fresh.flush(|_| {});
+            assert_eq!(r.sent_tris, fresh.sent_tris);
+        }
+        assert!(views >= 6, "{views} view-only draws");
     }
 
     #[test]

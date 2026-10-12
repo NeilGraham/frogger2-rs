@@ -215,7 +215,7 @@ impl R3dLevel {
     }
 
     /// Queues one recorded mesh draw ([`MeshBackend`] side of the draw loop).
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     fn record(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
         let t0 = rt::ticks();
 
@@ -223,9 +223,13 @@ impl R3dLevel {
         self.slot += 1;
         self.record_inner(cpu, d, mats, slot as usize);
         self.rec.queue_ticks = self.rec.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
+        if crate::r3d::R3D_PROF {
+            self.r.prof.record_ticks = self.r.prof.record_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
+            self.r.prof.records += 1;
+        }
     }
 
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     fn record_inner(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]], slot: usize) {
         let Some(mut list) = list_of(d.frame) else { return };
         if d.no_clip && list == List::Normal {
@@ -256,25 +260,12 @@ impl R3dLevel {
             },
             None => None,
         };
-        if matches!(list, List::Additive | List::LateAdditive) {
-            self.r.ensure_additive(mesh);
-        }
         rt::audio_poll_due();
 
+        // Recorded only: queued to the RSP lists in one batch after the draw loop
+        // (`R3d::run_queue`).
         let p = crate::r3d::DrawParams { alpha_mul: d.alpha_mul, gouraud: d.gouraud, override_tex, no_clip: d.no_clip, object_fog: d.object_fog };
-        if d.object == MESH_SKIN {
-            self.r.draw_skinned(list, mesh, mats, &p);
-        } else if let Some(m) = mats.first() {
-            // World-space landscape meshes (packer-baked key-0 transforms): identity.
-            const IDENTITY: [[f32; 4]; 4] = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
-            let m = if self.r.mesh_is_world(mesh) { &IDENTITY } else { m };
-            let pushed = self.r.pushed;
-            self.r.draw_slot(list, mesh, m, &p, slot as u32, d.stamp);
-            // MODGE/WAVE vertices only for meshes on screen (the RSP reads them at the flush).
-            if d.modge != 0 && self.r.pushed != pushed {
-                self.r.animate_modge(mesh, d.modge_frame, d.modge);
-            }
-        }
+        self.r.queue(list, mesh, mats, &p, d.object == MESH_SKIN, slot as u32, d.stamp, d.modge, d.modge_frame);
         self.rec.draws += 1;
         if option_env!("F2N64_LOG_MODELS").is_some() || self.dump_next {
             self.log_draw(d, list, mesh);
@@ -338,6 +329,9 @@ impl R3dLevel {
                 cpu.draw_segment(seg);
             }
         } else {
+            let tq = rt::ticks();
+            self.r.run_queue();
+            st.queue_ticks = st.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(tq));
             let tf = rt::ticks();
             let seg0 = cpu.stats.submit_ticks;
             self.r.flush(|l| {
@@ -387,7 +381,7 @@ impl R3dBackend {
 }
 
 impl MeshBackend for R3dBackend {
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     fn mesh(&mut self, _view: &View, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
         // SAFETY: see `new`.
         unsafe { (*self.lvl).record(&*self.cpu, d, mats) }
