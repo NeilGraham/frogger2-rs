@@ -66,7 +66,13 @@ pub struct R3dLevel {
     /// This frame's counters while recording.
     rec: R3dFrameStats,
     /// Per registry entry: (image, its texture generation, crc) last mapped.
-    synced: Vec<(u32, u32, u32)>,
+    synced: Vec<(u32, u32, u32, u16)>,
+    /// Entries whose shown image can change (animated: 2+ frames).
+    dyn_entries: Vec<u32>,
+    /// Images shown by the other entries: (image, its N64 texture generation last seen, first
+    /// and count of its entries in `stat_users`).
+    stat_imgs: Vec<(u32, u32, u32, u32)>,
+    stat_users: Vec<u32>,
     seen: alloc::collections::BTreeSet<u32>,
 }
 
@@ -116,6 +122,9 @@ impl R3dLevel {
             rec: R3dFrameStats::default(),
             seen: Default::default(),
             synced: Vec::new(),
+            dyn_entries: Vec::new(),
+            stat_imgs: Vec::new(),
+            stat_users: Vec::new(),
         }
     }
 
@@ -127,6 +136,9 @@ impl R3dLevel {
         self.img.clear();
         self.missing.clear();
         self.synced.clear();
+        self.dyn_entries.clear();
+        self.stat_imgs.clear();
+        self.stat_users.clear();
     }
 
     pub fn num_meshes(&self) -> usize {
@@ -175,23 +187,77 @@ impl R3dLevel {
 
     /// Points every texture CRC at the image the registry currently shows for it.
     /// Only entries whose shown image (or that image's N64 texture) changed since the last
-    /// call are looked at again (animated textures, procedural / render-to-texture images).
+    /// call are looked at again (animated textures, procedural / render-to-texture images):
+    /// per frame the animated entries and the generations of the images the others show
+    /// (`TexEntry::current` changes only in `update_animating_textures`, for entries with
+    /// 2+ frames); everything when the registry's size changed.
     pub fn sync_textures(&mut self, reg: &TextureRegistry, cpu: &RenderCpu) {
-        if self.synced.len() > reg.entries.len() {
-            self.synced.clear();
+        if self.synced.len() != reg.entries.len() {
+            self.sync_all(reg, cpu);
+            return;
         }
-        self.synced.resize(reg.entries.len(), (u32::MAX, u32::MAX, 0));
-        for (i, e) in reg.entries.iter().enumerate() {
-            let img = e.current.map_or(u32::MAX, |h| h.0);
-            let gen = if img == u32::MAX { 0 } else { cpu.texture_of(img).1 };
-            if self.synced[i].0 == img && self.synced[i].1 == gen && self.synced[i].2 == e.crc {
-                continue;
+        for k in 0..self.dyn_entries.len() {
+            let i = self.dyn_entries[k] as usize;
+            self.sync_entry(reg, cpu, i);
+        }
+        for k in 0..self.stat_imgs.len() {
+            let (img, gen, first, n) = self.stat_imgs[k];
+            let g = cpu.texture_of(img).1;
+            if g != gen {
+                self.stat_imgs[k].1 = g;
+                for u in first..first + n {
+                    let i = self.stat_users[u as usize] as usize;
+                    self.sync_entry(reg, cpu, i);
+                }
             }
-            self.synced[i] = (img, gen, e.crc);
-            let t = e.current.and_then(|h| self.tex_for(cpu, h.0));
-            self.r.map_texture(e.crc, t);
-            rt::audio_poll_due();
         }
+    }
+
+    /// Every entry, and the lists of the per-frame checks.
+    #[cold]
+    #[inline(never)]
+    fn sync_all(&mut self, reg: &TextureRegistry, cpu: &RenderCpu) {
+        self.synced.clear();
+        for e in &reg.entries {
+            let cid = self.r.crc_id(e.crc);
+            self.synced.push((u32::MAX, u32::MAX, e.crc, cid));
+        }
+        self.dyn_entries.clear();
+        let mut stat: Vec<(u32, u32)> = Vec::new();
+        for (i, e) in reg.entries.iter().enumerate() {
+            self.sync_entry(reg, cpu, i);
+            if e.frames.len() > 1 {
+                self.dyn_entries.push(i as u32);
+            } else if let Some(h) = e.current {
+                stat.push((h.0, i as u32));
+            }
+        }
+        stat.sort_unstable();
+        self.stat_imgs.clear();
+        self.stat_users.clear();
+        for (img, i) in stat {
+            match self.stat_imgs.last_mut() {
+                Some(l) if l.0 == img => l.3 += 1,
+                _ => self.stat_imgs.push((img, cpu.texture_of(img).1, self.stat_users.len() as u32, 1)),
+            }
+            self.stat_users.push(i);
+        }
+    }
+
+    /// Re-points entry `i`'s CRC if its shown image or that image's texture changed.
+    fn sync_entry(&mut self, reg: &TextureRegistry, cpu: &RenderCpu, i: usize) {
+        let e = &reg.entries[i];
+        let img = e.current.map_or(u32::MAX, |h| h.0);
+        let gen = if img == u32::MAX { 0 } else { cpu.texture_of(img).1 };
+        let (simg, sgen, scrc, cid) = self.synced[i];
+        if simg == img && sgen == gen && scrc == e.crc {
+            return;
+        }
+        let cid = if scrc == e.crc { cid } else { self.r.crc_id(e.crc) };
+        self.synced[i] = (img, gen, e.crc, cid);
+        let t = e.current.and_then(|h| self.tex_for(cpu, h.0));
+        self.r.map_texture_id(cid, e.crc, t);
+        rt::audio_poll_due();
     }
 
     /// Starts recording a frame's meshes with the renderer's view (call before

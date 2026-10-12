@@ -546,6 +546,8 @@ const NO_SLOT: u16 = u16::MAX;
 /// when it grows past [`PID_RESET`]).
 const PID_NONE: u16 = 255;
 const PID_RESET: usize = 192;
+/// Buckets of the parameter hash (power of two, > 2 x `PID_NONE`).
+const PHASH: usize = 512;
 
 /// A model matrix's three columns (the fourth is 0, 0, 0, 1).
 type Model34 = [[f32; 3]; 4];
@@ -790,6 +792,8 @@ pub struct R3d {
     ptab: Vec<DrawParams>,
     pkeys: Vec<[u32; 6]>,
     plast: u16,
+    /// Hash of `pkeys` (id + 1, 0 = empty; ids < `PID_NONE` only).
+    phash: alloc::boxed::Box<[u16; PHASH]>,
     /// The view equals the previous frame's.
     view_same: bool,
     /// Measurement (`F2N64_R3D_PROF=1`): C0 ticks and counts per phase, logged every 300 frames.
@@ -1099,6 +1103,7 @@ impl R3d {
             ptab: Vec::new(),
             pkeys: Vec::new(),
             plast: 0,
+            phash: alloc::boxed::Box::new([0; PHASH]),
             view_same: false,
             prof: R3dProf::default(),
         }
@@ -1270,6 +1275,30 @@ impl R3d {
         }
     }
 
+    /// The dense id of a texture CRC, for [`map_texture_id`](Self::map_texture_id).
+    pub fn crc_id(&mut self, crc: u32) -> u16 {
+        self.crc_slot(crc)
+    }
+
+    /// [`map_texture`](Self::map_texture) of a CRC with its dense id ([`crc_id`]
+    /// (Self::crc_id)): an array compare when nothing changed.
+    pub fn map_texture_id(&mut self, cid: u16, crc: u32, tex: Option<TexId>) {
+        let h = tex.map_or(0, |t| t.0);
+        // `crc_tex` mirrors `tex_by_crc` (0 = unmapped).
+        if self.crc_tex[cid as usize] == h {
+            return;
+        }
+        self.crc_tex[cid as usize] = h;
+        match tex {
+            Some(t) => {
+                self.tex_by_crc.insert(crc, t.0);
+            }
+            None => {
+                self.tex_by_crc.remove(&crc);
+            }
+        }
+    }
+
     /// Points `crc` at texture handle `h` (registry and dense table).
     fn set_crc(&mut self, crc: u32, h: u16) {
         self.tex_by_crc.insert(crc, h);
@@ -1325,6 +1354,7 @@ impl R3d {
         // The parameter table between frames: reset when large (slots keep ids < PID_NONE).
         if self.pkeys.len() > PID_RESET {
             self.pkeys.clear();
+            self.phash.fill(0);
             self.ptab.clear();
             self.plast = 0;
             for e in &mut self.slots {
@@ -1857,12 +1887,24 @@ impl R3d {
         if self.pkeys.get(last).is_some_and(eq) {
             return last as u16;
         }
-        let id = match self.pkeys.iter().position(eq) {
-            Some(i) => i,
-            None => {
-                self.pkeys.push(key);
-                self.ptab.push(*p);
-                self.pkeys.len() - 1
+        // Open addressing over ids < PID_NONE (fading actors give many distinct alphas: a
+        // linear search over the table cost ~6 ms per frame in Lab 1). Shifts and xors
+        // only: an integer multiply costs ~25 cycles here.
+        let mut h = (key[0] ^ key[0] >> 9 ^ key[0] >> 17 ^ key[1] ^ key[1] >> 13 ^ (key[2] ^ key[3]) >> 7 ^ key[4] << 3 ^ key[5] << 1) as usize;
+        let id = loop {
+            h &= PHASH - 1;
+            match self.phash[h] {
+                0 => {
+                    let id = self.pkeys.len();
+                    self.pkeys.push(key);
+                    self.ptab.push(*p);
+                    if id < PID_NONE as usize {
+                        self.phash[h] = id as u16 + 1;
+                    }
+                    break id;
+                }
+                e if eq(&self.pkeys[e as usize - 1]) => break e as usize - 1,
+                _ => h += 1,
             }
         };
         self.plast = id as u16;
@@ -1967,11 +2009,8 @@ impl R3d {
     pub fn run_queue(&mut self) {
         let t_run = prof_ticks();
         let q = core::mem::take(&mut self.q);
-        for (k, d) in q.iter().enumerate() {
-            if k % 32 == 31 {
-                #[cfg(target_vendor = "nintendo64")]
-                crate::rt::audio_poll_due();
-            }
+        // No audio polls in here: the recording (draw loop) and the CPU batches after it poll.
+        for d in q.iter() {
             let list = BY_INDEX[(d.lf & 7) as usize];
             let mesh = MeshId(d.mesh as u32);
             let p = DrawParams {
@@ -2562,6 +2601,27 @@ mod tests {
             a.flush(|_| {});
             b.flush(|_| {});
         }
+    }
+
+    /// Equal parameters get equal ids (below `PID_NONE`), different ones different ids.
+    #[test]
+    fn interned_params() {
+        let mut r = R3d::new();
+        let ps: Vec<DrawParams> = (0..400)
+            .map(|i| DrawParams { alpha_mul: i as f32 / 400.0, object_fog: i % 3 == 0, gouraud: (i % 7 == 0).then_some([0.5, i as f32, 1.0]), ..Default::default() })
+            .collect();
+        let ids: Vec<u16> = ps.iter().map(|p| r.intern_params(p)).collect();
+        for (k, p) in ps.iter().enumerate().rev() {
+            let id = r.intern_params(p);
+            if ids[k] < PID_NONE {
+                assert_eq!(id, ids[k]);
+            }
+            assert_eq!(params_key(&r.ptab[id as usize]), params_key(p));
+        }
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 400);
     }
 
     /// The flush resolves each visible part's texture through the registry as it is at the
