@@ -995,3 +995,58 @@ Draws per frame by on-screen radius (draws / their triangles):
 them saves per-object CPU work, but only if the test comes before that work. Order chosen:
 per-object CPU cost first (unchanged objects skip their draw work), then the small-object skip
 on its cached transforms, then the simulation (19-22 ms in Space/Lab).
+
+## 30 fps push (2026-10-12): benchmark, first fixes, audio
+
+Benchmark boot `F2N64_BOOT="level-hop W L"` (arcade level, the frog hops up/right/down/left
+every 32 game frames after 3 s: the camera moves every frame, so view-dependent caches are
+exercised) and `tools/n64/bench.sh NAME "level-hop W L"` (build, ares run, per-window
+summary, `sim phases` line: µs per tick per `f2_game::simbench::phase`, logged by the game
+itself through `Game::phase_hook`). ares v148, Expansion Pak, stock clock.
+
+Baselines at `ed3e8ce`/`34c6a58` (median 5 s window, hopping):
+
+| level | fps | sim / frame | draw / frame | r3d queue | CPU 2D submit | Game::tick | actordraw phase |
+|---|---|---|---|---|---|---|---|
+| Garden 1 (0-0) | 15.4 (`cc1988b`) → 16.8 | 15 ms | 45 → 40 ms | 18.7 → 15 ms | 5 → 4 ms | 11.5 ms | 6.2 ms |
+| Ancients 1 (1-0) | 19.0 | 12 | 36 | 11.9 | 3 | 9.5 | 5.0 |
+| Space 1 (2-0) | 10.2 | 21 | 71 | 24.2 | 11 (155 CPU tris) | 17.8 | 7.9 |
+| City (3-0) | 39.8 | 6 | 16 | 5.4 | 2 | 4.7 | 2.3 |
+| Subterranean 1 (4-0) | 12.6 | 19 | 55 | 16.6 | 7 | 15.1 | 9.0 |
+| Lab 1 (5-0) | 10.6 | 18 | 68 | 24.0 | 10 (160 CPU tris) | 13.8 | 7.6 |
+| Halloween 1 (6-0) | 13.5 | 16 | 53 | 20.8 | 6 | 13.5 | 6.0 |
+| Retro 1 (7-0) | 28.7 | 10 | 22 | 7.9 | 2 | 8.4 | 4.8 |
+| frontend (8-0) | 16.5 | 12 | 44 | 13.7 | 7 | 8.8 | 5.0 |
+
+A 30 fps frame is 33.3 ms for one variable-timestep tick (2 game frames) + audio + drawing.
+
+### Fixes (commit `f45845f`)
+- **Water (`R3d::animate_modge`) was ~7.4 ms/frame** in Garden 1 for 7 meshes / ~770
+  vertices: f32 with Rust's saturating float→int casts (compare/branch sequences around every
+  `trunc.w.s`) and ~2000 table sines. Now integer: phases as `u32` turns, a Q14 sine table,
+  nested sines through phase lookups, Q10 sums; host test `modge_matches_pc_terms` against
+  the f64 PC formula (s/t within 1/1024 texel, alpha ±2, y ≤ 0.6 world units). And only
+  meshes whose draw was queued (after culling) are animated. Still ~3 ms (memory + per-vertex
+  multiplies): next step handed to the r3d work (direct lookups of summed phases).
+- Camera-only r3d redraws reuse the slot's ring uniform when the fog fields are unchanged
+  (validity flag `u_ok`: never a uniform of an older matrix); the cached world-sphere `Vec`
+  is swapped instead of copied (`memcpy` from `draw_slot` was ~1 ms/frame).
+- HUD icons (64×64 / 128×128 RGBA32 drawn 32–35 px wide) missed the TMEM-copy fast path by
+  a few pixels and took the multi-load `rdpq_tex_blit` (~0.45 ms each, 1.4 ms/frame): the
+  copy may now be magnified up to 1.25×.
+
+### Audio (commit `34c6a58`)
+New `audio:` log line = CPU time inside mixer polls per second. Garden 1: **106 ms/s
+(10.6 % of the CPU)**, of which the ULC music ~95 ms/s (`F2N64_CFLAGS=-DF2N64_NO_MUSIC`:
+7–12 ms/s). Music was 44.1 kHz but the mixer outputs 32 kHz, so decoding + resampling the top
+27 % was wasted; re-encoded at 32 kHz (same 128 kbps, same ROM size): **83 ms/s**. Remaining
+split (instrumented libdragon copy, not committed): ULC coefficient decode ~18 ms/s, its
+synchronous per-block ROM reads ~9 ms/s (`read()` of `max_block_size` per 1024-sample block),
+effects fetch ~8 ms/s, per-round channel bookkeeping (frequency sync, volumes, RSP commands)
+~25 ms/s. Mixer channel count (24 vs 12) made no difference. Tried: libdragon built with
+`-DNDEBUG` (asserts are compiled in everywhere: no NDEBUG in n64.mk) — the ROM ran but an RSP
+DMA landed on the stack and frames stalled (an assertion with a side effect somewhere);
+dropped. `-ftrivial-auto-var-init=uninitialized` for libdragon: no measurable change.
+MIDI instead of the recorded music was considered (owner question) and rejected: the PC
+soundtrack is mixed audio, a transcription would be a different arrangement through a
+generic soundfont, and the synth's voices would cost mixer time too.
