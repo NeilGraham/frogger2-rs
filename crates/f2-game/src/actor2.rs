@@ -119,6 +119,9 @@ pub struct Actor2 {
     /// objects per actor), in `AddObjectsSpritesToSpriteList` order, with the model id they
     /// belong to. `TransformObject` positions them (`view.rs`).
     pub obj_sprites: Option<(u32, Vec<Option<crate::ids::SpriteId>>)>,
+    /// Phase 3S2: the object sprites' last placements (a cache, not state; see
+    /// [`crate::view::SpriteCache`]).
+    pub spr_cache: crate::view::SpriteCache,
 }
 
 crate::ser_order!(Actor2, "Actor2", Actor2Wire {
@@ -139,7 +142,7 @@ crate::ser_order!(Actor2, "Actor2", Actor2Wire {
     dff_clipping: i8,
     #[serde(default)]
     obj_sprites: Option<(u32, Vec<Option<crate::ids::SpriteId>>)>,
-});
+} skip { spr_cache });
 
 /// Arena of actors; freed slots stay `None` until the next level.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -614,7 +614,8 @@ fn copy_placement(p: &mut MdxPlacement, pos: SVector, size: f2_math::FVector, q:
 /// [`invalidate`](Self::invalidate) it** (`copy_actor`, `xform_new_actor`; a new actor
 /// starts invalid); debug builds check each reuse against a fresh computation.
 ///
-/// `root_valid`: the actor's [`RootCache`] was filled with the current placement.
+/// `root_valid` / `spr_valid`: the actor's [`RootCache`] / [`SpriteCache`] was filled with
+/// the current placement.
 /// `copy_valid`: `placement.{pos, scale, q_rot}` are what `CopyActorList` made of the
 /// actor's `position`/`size`/`qRot` copies `src_*` (it then skips the float conversions
 /// while they are unchanged). [`invalidate`](Self::invalidate) clears all three.
@@ -624,6 +625,7 @@ pub struct SphereCache {
     valid: bool,
     root_valid: bool,
     copy_valid: bool,
+    pub(crate) spr_valid: bool,
     model: u32,
     generation: u32,
     centre: Vec3,
@@ -639,6 +641,34 @@ impl SphereCache {
         self.valid = false;
         self.root_valid = false;
         self.copy_valid = false;
+        self.spr_valid = false;
+    }
+}
+
+/// Phase 3S2: an actor's object-sprite placements from `TransformObject` (`transform_actor_sprites`):
+/// per sprite callback (index, `pos` x/y/z, `scaleX`, `scaleY` as stored, `xlu`) for the
+/// model + table generation, `animated` and `animTime` bits in the key and the placement at
+/// the time (`SphereCache::spr_valid`). Not game state (never serialized, compared or
+/// printed); debug builds check every reuse.
+#[derive(Clone, Default)]
+pub struct SpriteCache {
+    model: u32,
+    generation: u32,
+    animated: bool,
+    time: u32,
+    vals: Vec<(u32, [i16; 5], u8)>,
+}
+
+impl PartialEq for SpriteCache {
+    /// A cache: equal whatever it holds.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl core::fmt::Debug for SpriteCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SpriteCache")
     }
 }
 
@@ -1214,7 +1244,9 @@ impl Game {
         let a = &a2.actor.actual_actor;
         let Some(mid) = a.object_controller else { return };
         // After `ChangeModel` the controller is the shared bank model (NULL sprite pointers).
-        let Some(ptrs) = a2.obj_sprites.as_ref().filter(|(m, _)| *m == mid).map(|(_, p)| p) else { return };
+        if !a2.obj_sprites.as_ref().is_some_and(|(m, _)| *m == mid) {
+            return;
+        }
         let Some(model) = self.models.get(mid) else { return };
         if !model.xform_tree.iter().any(|x| x.has_sprites) {
             return;
@@ -1223,21 +1255,44 @@ impl Game {
         let time = a.animation.as_ref().map_or(0.0, |x| x.anim_time);
         let p = a.placement;
         let draw = self.view.draw_this_objects_sprites;
-        let top = actor_top(p.pos, &p.q_rot);
-        let (sprites, model) = (&mut self.sprite, model.clone());
-        let mut next = 0;
-        transform_object_sprites(&model.xform_tree, &top, [1.0; 3], &p, animated, time, &mut next, &mut |i, pos, sx, sy, xlu| {
-            let Some(Some(sid)) = ptrs.get(i) else { return };
-            let sp = sprites.get_mut(*sid);
+        // Phase 3S2: the sprite placements are a function of the model, `animTime` and the
+        // placement; while those are unchanged the last ones are applied again.
+        let generation = self.models.generation();
+        let c = &a2.spr_cache;
+        let hit = a.sphere.spr_valid && c.model == mid && c.generation == generation && c.animated == animated && c.time == time.to_bits();
+        let compute = |vals: &mut Vec<(u32, [i16; 5], u8)>| {
+            vals.clear();
+            let top = actor_top(p.pos, &p.q_rot);
+            let mut next = 0;
+            transform_object_sprites(&model.xform_tree, &top, [1.0; 3], &p, animated, time, &mut next, &mut |i, pos, sx, sy, xlu| {
+                vals.push((i as u32, [ftol16(pos[0]), ftol16(pos[1]), ftol16(pos[2]), ftol16(sx), ftol16(sy)], xlu));
+            });
+        };
+        let a2 = &mut self.actor2.actors[id];
+        if !hit {
+            let mut vals = core::mem::take(&mut a2.spr_cache.vals);
+            compute(&mut vals);
+            a2.spr_cache = SpriteCache { model: mid, generation, animated, time: time.to_bits(), vals };
+            a2.actor.actual_actor.sphere.spr_valid = true;
+        } else if cfg!(debug_assertions) {
+            let mut vals = Vec::new();
+            compute(&mut vals);
+            assert!(vals == a2.spr_cache.vals, "stale SpriteCache for actor {id:?}");
+        }
+        let a2 = &self.actor2.actors[id];
+        let Some((_, ptrs)) = a2.obj_sprites.as_ref() else { return };
+        for &(i, [x, y, z, sx, sy], xlu) in &a2.spr_cache.vals {
+            let Some(Some(sid)) = ptrs.get(i as usize) else { continue };
+            let sp = self.sprite.get_mut(*sid);
             sp.draw = draw as i8;
             sp.g = (draw.wrapping_mul(0xff)) as u8;
-            sp.scale_x = ftol16(sx);
-            sp.scale_y = ftol16(sy);
+            sp.scale_x = sx;
+            sp.scale_y = sy;
             sp.a = xlu;
             sp.offset_x = -16;
             sp.offset_y = -16;
-            sp.pos = SVector { vx: ftol16(pos[0]), vy: ftol16(pos[1]), vz: ftol16(pos[2]), pad: 0 };
-        });
+            sp.pos = SVector { vx: x, vy: y, vz: z, pad: 0 };
+        }
     }
 
     /// Render-only (reads the state, changes nothing): the object sprites of actor `id` as
