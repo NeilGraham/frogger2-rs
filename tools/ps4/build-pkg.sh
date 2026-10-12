@@ -74,7 +74,7 @@ TITLE="${F2_PS4_TITLE:-$TITLE}"
 [ ${#TITLE_ID} -eq 9 ] && [ ${#LABEL} -eq 16 ] || { echo "title ID must be 9 and label 16 characters" >&2; exit 2; }
 CONTENT_ID="IV0000-${TITLE_ID}_00-${LABEL}"
 # Package version (param.sfo "XX.YY"); bump for updates over an installed copy.
-VERSION="${F2_PS4_VERSION:-01.02}"
+VERSION="${F2_PS4_VERSION:-01.03}"
 
 CLANG="$(command -v clang-18 || command -v clang)"
 LLD="$(command -v ld.lld-18 || command -v ld.lld)"
