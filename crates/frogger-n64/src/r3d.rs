@@ -782,6 +782,8 @@ pub struct R3d {
     qbones: Vec<Mat4>,
     qmodels: Vec<Model34>,
     qgouraud: Vec<[f32; 3]>,
+    /// MODGE/WAVE meshes found visible by `run_queue` (animated after its loop).
+    modge_todo: Vec<(MeshId, u32, u8)>,
     /// Per draw slot: the model matrix of the last (stamp, mesh) recorded in it.
     slot_model: Vec<(u32, u16, Model34)>,
     /// Interned draw parameters ([`R3d::intern_params`]) and their keys; the last id.
@@ -1092,6 +1094,7 @@ impl R3d {
             qbones: Vec::new(),
             qmodels: Vec::new(),
             qgouraud: Vec::new(),
+            modge_todo: Vec::new(),
             slot_model: Vec::new(),
             ptab: Vec::new(),
             pkeys: Vec::new(),
@@ -2003,9 +2006,16 @@ impl R3d {
             self.draw_slot_pid(list, mesh, unsafe { &*model }, &p, pid, d.slot, if d.slot == NO_SLOT { 0 } else { d.stamp });
             // MODGE/WAVE vertices only for meshes on screen (the RSP reads them at the flush).
             if d.modge != 0 && self.pushed != pushed {
-                self.animate_modge(mesh, d.modge_frame, d.modge);
+                self.modge_todo.push((mesh, d.modge_frame, d.modge));
             }
         }
+        // After the loop: its code would evict the loop's from the I-cache.
+        let todo = core::mem::take(&mut self.modge_todo);
+        for &(mesh, fc, flags) in &todo {
+            self.animate_modge(mesh, fc, flags);
+        }
+        self.modge_todo = todo;
+        self.modge_todo.clear();
         self.q = q;
         self.q.clear();
         self.qbones.clear();
@@ -2018,6 +2028,7 @@ impl R3d {
 
     /// Queues a skinned mesh draw: one model → world matrix per bone (pre-order object
     /// index, as `xform_actor` returns them).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     pub fn draw_skinned(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         let t0 = prof_ticks();
         self.draw_skinned_inner(list, mesh, bones, p);
@@ -2027,6 +2038,7 @@ impl R3d {
         }
     }
 
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn draw_skinned_inner(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         if bones.is_empty() {
@@ -2034,12 +2046,15 @@ impl R3d {
         }
         // Per-object fog depth: `W` of the root bone's origin (only needed with fog).
         let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w(&bones[0]) } else { 0.0 };
+        let (fogc, fogm) = fog_fields(&self.view, p, w0);
         let pos_scale = res.pos_scale;
-        let first = self.uni[self.uni_frame].len() as u32;
-        for b in bones {
-            let mut u = draw_uniform(&model_scaled(b, pos_scale), p);
-            draw_fog(&mut u, &self.view, p, w0);
-            self.uni[self.uni_frame].push(u);
+        let arena = &mut self.uni[self.uni_frame];
+        let first = arena.len() as u32;
+        // Converted in place (no 96-byte temporaries).
+        arena.resize(first as usize + bones.len(), R3dDrawUniform::default());
+        for (b, u) in bones.iter().zip(&mut arena[first as usize..]) {
+            draw_uniform_into(&model_scaled(b, pos_scale), p, u);
+            (u.fogc, u.fogm) = (fogc, fogm);
         }
         let res = &self.meshes[mesh.0 as usize];
         self.queued_tris += res.tris;
