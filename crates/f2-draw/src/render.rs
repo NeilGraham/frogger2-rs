@@ -94,6 +94,9 @@ fn lerp_snap(prev: Option<&Snap>, cur: Snap, alpha: f32) -> Snap {
 
 // ------------------------------------------------------------------ level scene
 
+/// An engine actor with its model id and that model's `LevelScene::models` entry.
+pub type ActorSlot = (u32, (usize, usize), Actor);
+
 /// Renderer-side data of the loaded level (`LevelAssets`).
 pub struct LevelScene {
     pub world: u32,
@@ -108,7 +111,7 @@ pub struct LevelScene {
     pub clear: [f64; 4],
     /// Engine actor per game actor slot (keyframe search hints persist across frames), with
     /// its model id and that model's `models` entry (looked up once, not every frame).
-    pub actors: Vec<Option<(u32, (usize, usize), Actor)>>,
+    pub actors: Vec<Option<ActorSlot>>,
     /// Stand-in frog while `CreateFrogger` is not ported (drawn on the player start tile).
     pub placeholder_frog: Option<((usize, usize), Actor)>,
 }
