@@ -242,7 +242,8 @@ pub enum LoadError {
 /// sphere) or one texture group of a skinned mesh (never culled).
 struct Part {
     handle: u16,
-    group: u16,
+    /// The group texture's dense CRC id (`R3d::crc_tex`).
+    cid: u16,
     tris: u16,
     /// Bounding sphere in stored position units (radius < 0: never culled).
     center: [f32; 3],
@@ -252,17 +253,12 @@ struct Part {
 struct MeshRes {
     id: u32,
     parts: Vec<Part>,
-    /// Per part: bounding sphere centre and radius (`parts`' copy, dense for culling).
-    spheres: Vec<[f32; 4]>,
-    group_crc: Vec<u32>,
-    /// `group_crc` resolved through the texture registry at `tex_gen`.
-    group_tex: Vec<u16>,
-    tex_gen: u32,
     pos_scale: f32,
     skinned: bool,
     tris: u32,
-    /// Sphere enclosing every part's sphere (radius < 0: some part is never culled, or the
-    /// mesh is skinned): tested first, so wholly visible / invisible meshes skip the parts.
+    /// Sphere enclosing every part's sphere (parts without one are never culled; radius < 0:
+    /// no part has one, e.g. skinned meshes): tested first, so wholly visible / invisible
+    /// meshes skip the parts.
     center: [f32; 3],
     radius: f32,
     /// The mesh's vertices in its loaded file (16 bytes each, big-endian), read by the RSP's
@@ -565,46 +561,85 @@ fn to44(m: &Model34) -> Mat4 {
 /// A draw recorded during the game's draw loop ([`R3d::queue`]) and queued to the RSP lists by
 /// [`R3d::run_queue`] after it: the draw loop walks actors and models between two draws and
 /// evicts the renderer's data (and code) from the caches, so the per-draw work runs in one
-/// batch instead. 16 bytes: the model matrix goes to `R3d::slot_model` (only when its stamp
-/// changed) or `R3d::qmodels`, the parameters to `R3d::ptab`.
+/// batch instead. 24 bytes: the model matrix goes to `R3d::slot_model` (only when its stamp
+/// changed) or `R3d::qmodels`.
 #[derive(Clone, Copy)]
 struct QDraw {
     /// Matrix stamp (rigid; with `NO_SLOT`: index into `qmodels`) or first bone in `qbones`
     /// (skinned).
     stamp: u32,
     modge_frame: u32,
+    alpha: f32,
     /// Draw slot (rigid) or bone count (skinned).
     slot: u16,
     mesh: u16,
-    pid: u16,
-    /// List (bits 0-2), `Q_SKINNED`.
+    /// [`TexId`] + 1 (0: none).
+    ovr: u16,
+    /// Index + 1 into `qgouraud` (0: none).
+    gour: u16,
+    /// List (bits 0-2) and `Q_*` bits.
     lf: u8,
     modge: u8,
 }
 
 const Q_SKINNED: u8 = 8;
+const Q_NO_CLIP: u8 = 16;
+const Q_OBJECT_FOG: u8 = 32;
 
-/// Bit pattern of a draw's parameters (cache key)./// Bit pattern of a draw's parameters (cache key).
+/// Bit pattern of a draw's parameters (cache key).
 fn params_key(p: &DrawParams) -> [u32; 6] {
     let g = p.gouraud.map_or([u32::MAX; 3], |g| g.map(f32::to_bits));
     [p.alpha_mul.to_bits(), g[0], g[1], g[2], p.override_tex.map_or(0, |t| t.0 as u32 + 1), p.no_clip as u32 | (p.object_fog as u32) << 1]
 }
 
+/// A part as the flush needs it (`R3d::gparts`).
+#[derive(Clone, Copy)]
+struct GPart {
+    handle: u16,
+    cid: u16,
+    tris: u16,
+}
+
+/// A queued draw of a frame list (16 bytes on the N64).
 struct DrawRec {
-    /// Index of the draw's uniform in the current frame's arena, or (`ARENA_NONE`) the
-    /// uniform at `uptr` (a slot entry's).
-    u: u32,
+    /// The uniform at `uptr` (a slot's), or (null) the current frame's arena entry `u`.
     uptr: *const R3dDrawUniform,
-    mesh: u32,
+    u: u16,
+    /// The mesh's first part in `R3d::gparts` (`MeshHot::sph`).
+    p0: u16,
     tex_override: u16,
+    /// Visible parts: `R3d::vis[vis_first..vis_first + vis_count]` (indices into `parts`).
+    vis_first: u16,
+    vis_count: u16,
     /// Skinned: the bone uniforms are `u..u + n_bones` of the arena (0: rigid).
-    n_bones: u16,
+    n_bones: u8,
     /// Drawn with the sky's projection (`noClip`: far plane at `NO_CLIP_FAR`).
     no_clip: bool,
-    /// Visible parts: `R3d::vis[vis_first..vis_first + vis_count]` (indices into `parts`).
-    vis_first: u32,
-    vis_count: u32,
 }
+
+/// The per-draw data of a mesh in one 32-byte record (`R3d::mhot`, parallel to `meshes`).
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Default)]
+struct MeshHot {
+    /// Sphere enclosing every part's sphere ([`MeshRes::center`]; radius < 0: none).
+    center: [f32; 3],
+    radius: f32,
+    pos_scale: f32,
+    tris: u32,
+    /// The parts' spheres: `R3d::spheres[sph..sph + n]`.
+    sph: u32,
+    n: u16,
+    /// `MH_*` bits.
+    flags: u8,
+    _pad: u8,
+}
+
+/// World-space positions (drawn with an identity model matrix).
+const MH_WORLD: u8 = 1;
+/// Vertex colours split for the additive approximation.
+const MH_ADD_SPLIT: u8 = 2;
+/// Some part has no bounding sphere (never culled).
+const MH_OPEN: u8 = 4;
 
 /// Per-frame constants of the bounding-sphere test (see [`R3d::draw`]): world-space planes
 /// `p · (x, y, z, 1)` scaled so that a sphere of radius `r` is wholly outside a plane when
@@ -652,17 +687,19 @@ impl Frustum {
     }
 }
 
-/// A sphere enclosing every part's bounding sphere (radius < 0 if a part has none).
+/// A sphere enclosing the bounding spheres of the parts that have one (radius < 0 if none
+/// has; parts without a sphere are never culled).
 fn enclosing_sphere(parts: &[Part]) -> ([f32; 3], f32) {
-    if parts.is_empty() || parts.iter().any(|p| p.radius < 0.0) {
+    let parts: Vec<&Part> = parts.iter().filter(|p| p.radius >= 0.0).collect();
+    if parts.is_empty() {
         return ([0.0; 3], -1.0);
     }
-    if let [p] = parts {
+    if let [p] = parts[..] {
         return (p.center, p.radius);
     }
     let mut lo = [f32::MAX; 3];
     let mut hi = [f32::MIN; 3];
-    for p in parts {
+    for p in &parts {
         for k in 0..3 {
             lo[k] = lo[k].min(p.center[k] - p.radius);
             hi[k] = hi[k].max(p.center[k] + p.radius);
@@ -684,14 +721,20 @@ pub struct R3d {
     /// F2NM files (meshes and textures point into them).
     files: Vec<Vec<u8>>,
     tex_by_crc: BTreeMap<u32, u16>,
-    /// Bumped whenever `tex_by_crc` changes (meshes re-resolve their group textures).
-    tex_gen: u32,
+    /// Dense ids of the group texture CRCs and each one's current texture (0: none).
+    crc_id: BTreeMap<u32, u16>,
+    crc_tex: Vec<u16>,
+    /// Per part of every mesh (index = `MeshHot::sph` + part): command block, texture, size.
+    gparts: Vec<GPart>,
     /// Per-frame uniform arenas, cycled over 3 frames (the RSP reads a frame's uniforms by
     /// DMA while the CPU already queues the next one; triple-buffered display = at most 2
     /// frames in flight).
     uni: [Vec<R3dDrawUniform>; 3],
     uni_frame: usize,
     meshes: Vec<MeshRes>,
+    /// Per mesh: the per-draw data; the parts' bounding spheres of all meshes.
+    mhot: Vec<MeshHot>,
+    spheres: Vec<[f32; 4]>,
     lists: [Vec<DrawRec>; NUM_LISTS],
     vis: Vec<u16>,
     handle_scratch: Vec<u16>,
@@ -738,6 +781,7 @@ pub struct R3d {
     q: Vec<QDraw>,
     qbones: Vec<Mat4>,
     qmodels: Vec<Model34>,
+    qgouraud: Vec<[f32; 3]>,
     /// Per draw slot: the model matrix of the last (stamp, mesh) recorded in it.
     slot_model: Vec<(u32, u16, Model34)>,
     /// Interned draw parameters ([`R3d::intern_params`]) and their keys; the last id.
@@ -768,6 +812,9 @@ pub struct R3dProf {
     pub record_ticks: u32,
     pub records: u32,
     pub run_ticks: u32,
+    pub flush_rust: u32,
+    pub flush_state: u32,
+    pub flush_draws: u32,
 }
 
 pub const R3D_PROF: bool = option_env!("F2N64_R3D_PROF").is_some();
@@ -1009,10 +1056,14 @@ impl R3d {
         R3d {
             files: Vec::new(),
             tex_by_crc: BTreeMap::new(),
-            tex_gen: 1,
+            crc_id: BTreeMap::new(),
+            crc_tex: Vec::new(),
+            gparts: Vec::new(),
             uni: [Vec::with_capacity(512), Vec::with_capacity(512), Vec::with_capacity(512)],
             uni_frame: 0,
             meshes: Vec::new(),
+            mhot: Vec::new(),
+            spheres: Vec::new(),
             lists: Default::default(),
             vis: Vec::with_capacity(2048),
             handle_scratch: Vec::with_capacity(2048),
@@ -1040,6 +1091,7 @@ impl R3d {
             q: Vec::with_capacity(512),
             qbones: Vec::new(),
             qmodels: Vec::new(),
+            qgouraud: Vec::new(),
             slot_model: Vec::new(),
             ptab: Vec::new(),
             pkeys: Vec::new(),
@@ -1071,13 +1123,24 @@ impl R3d {
             if h == 0 {
                 return Err(LoadError::Full);
             }
-            self.tex_by_crc.insert(t.crc, h as u16);
+            self.set_crc(t.crc, h as u16);
         }
-        self.tex_gen += 1;
         for i in 0..f.n_meshes() {
             let m = f.mesh(i).map_err(LoadError::Format)?;
             let res = self.register_mesh(&m)?;
             ids.push(MeshId(self.meshes.len() as u32));
+            self.mhot.push(MeshHot {
+                center: res.center,
+                radius: res.radius,
+                pos_scale: res.pos_scale,
+                tris: res.tris,
+                sph: self.spheres.len() as u32,
+                n: res.parts.len() as u16,
+                flags: if res.world { MH_WORLD } else { 0 } | if res.parts.iter().any(|p| p.radius < 0.0) { MH_OPEN } else { 0 },
+                _pad: 0,
+            });
+            self.spheres.extend(res.parts.iter().map(|p| [p.center[0], p.center[1], p.center[2], p.radius]));
+            self.gparts.extend(res.parts.iter().map(|p| GPart { handle: p.handle, cid: p.cid, tris: p.tris }));
             self.meshes.push(res);
         }
         // The Vec's heap buffer does not move when the Vec itself is moved.
@@ -1090,10 +1153,6 @@ impl R3d {
         let mut res = MeshRes {
             id: m.entry.id,
             parts: Vec::new(),
-            spheres: Vec::new(),
-            group_crc: Vec::new(),
-            group_tex: Vec::new(),
-            tex_gen: 0,
             pos_scale: m.entry.pos_scale(),
             skinned,
             tris: m.entry.n_tris,
@@ -1105,7 +1164,7 @@ impl R3d {
             world: m.entry.is_world(),
             add_split: false,
         };
-        let add = |cmds: &[u8], group: usize, tris: u16, center: [f32; 3], radius: f32| -> Result<Part, LoadError> {
+        let add = |cmds: &[u8], cid: u16, tris: u16, center: [f32; 3], radius: f32| -> Result<Part, LoadError> {
             let desc = ffi::R3dGroupDesc {
                 verts: m.vertices.as_ptr(),
                 cmds: cmds.as_ptr() as *const u32,
@@ -1117,21 +1176,21 @@ impl R3d {
             if h == 0 {
                 return Err(LoadError::Full);
             }
-            Ok(Part { handle: h as u16, group: group as u16, tris, center, radius })
+            Ok(Part { handle: h as u16, cid, tris, center, radius })
         };
+        let cids: Vec<u16> = m.groups().map(|g| self.crc_slot(g.tex_crc)).collect();
         for (gi, g) in m.groups().enumerate() {
-            res.group_crc.push(g.tex_crc);
+            let cid = cids[gi];
             if skinned || g.batch_count == 0 {
-                res.parts.push(add(m.group_cmd_bytes(&g), gi, g.n_tris, [0.0; 3], -1.0)?);
+                res.parts.push(add(m.group_cmd_bytes(&g), cid, g.n_tris, [0.0; 3], -1.0)?);
             } else {
                 for b in m.group_batches(&g) {
                     let c = b.center.map(|v| v as f32);
-                    res.parts.push(add(m.batch_cmd_bytes(&b), gi, b.n_tris, c, b.radius as f32)?);
+                    res.parts.push(add(m.batch_cmd_bytes(&b), cid, b.n_tris, c, b.radius as f32)?);
                 }
             }
         }
         (res.center, res.radius) = enclosing_sphere(&res.parts);
-        res.spheres = res.parts.iter().map(|p| [p.center[0], p.center[1], p.center[2], p.radius]).collect();
         Ok(res)
     }
 
@@ -1168,10 +1227,17 @@ impl R3d {
             ffi::n64_r3d_reset(m.tex, m.groups)
         };
         self.discard();
+        if let Some(h) = self.mhot.get(m.meshes) {
+            self.spheres.truncate(h.sph as usize);
+            self.gparts.truncate(h.sph as usize);
+        }
+        self.mhot.truncate(m.meshes);
         self.meshes.truncate(m.meshes);
         self.files.truncate(m.files);
         self.tex_by_crc.retain(|_, h| (*h as u32) < m.tex);
-        self.tex_gen += 1;
+        for (crc, &id) in &self.crc_id {
+            self.crc_tex[id as usize] = self.tex_by_crc.get(crc).copied().unwrap_or(0);
+        }
     }
 
     /// An r3d texture sampling main.c texture `tex`'s TMEM-sized surface (power-of-two
@@ -1190,13 +1256,34 @@ impl R3d {
         if self.tex_by_crc.get(&crc).copied() == tex.map(|t| t.0) {
             return;
         }
-        let changed = match tex {
-            Some(t) => self.tex_by_crc.insert(crc, t.0) != Some(t.0),
-            None => self.tex_by_crc.remove(&crc).is_some(),
-        };
-        if changed {
-            self.tex_gen += 1;
+        match tex {
+            Some(t) => self.set_crc(crc, t.0),
+            None => {
+                self.tex_by_crc.remove(&crc);
+                if let Some(&id) = self.crc_id.get(&crc) {
+                    self.crc_tex[id as usize] = 0;
+                }
+            }
         }
+    }
+
+    /// Points `crc` at texture handle `h` (registry and dense table).
+    fn set_crc(&mut self, crc: u32, h: u16) {
+        self.tex_by_crc.insert(crc, h);
+        if let Some(&id) = self.crc_id.get(&crc) {
+            self.crc_tex[id as usize] = h;
+        }
+    }
+
+    /// The dense id of a group texture CRC (`crc_tex[id]` follows the registry).
+    fn crc_slot(&mut self, crc: u32) -> u16 {
+        if let Some(&id) = self.crc_id.get(&crc) {
+            return id;
+        }
+        let id = self.crc_tex.len() as u16;
+        self.crc_id.insert(crc, id);
+        self.crc_tex.push(self.tex_by_crc.get(&crc).copied().unwrap_or(0));
+        id
     }
 
     /// The packer id of a registered mesh.
@@ -1210,8 +1297,7 @@ impl R3d {
     }
     /// Points a CRC at another texture (animated textures: `TextureRegistry::current`).
     pub fn set_texture(&mut self, crc: u32, tex: TexId) {
-        self.tex_by_crc.insert(crc, tex.0);
-        self.tex_gen += 1;
+        self.set_crc(crc, tex.0);
     }
     /// Mesh with packer id `id` (first match).
     pub fn find_mesh(&self, id: u32) -> Option<MeshId> {
@@ -1272,9 +1358,9 @@ impl R3d {
                 let us = |t: u32| t / 47 / p.frames;
                 #[cfg(target_vendor = "nintendo64")]
                 crate::log!(
-                    "r3dprof per frame: full {} draws {} us | view-only {} draws {} us | skinned {} {} us | cull {} calls {} tests {} us | modge {} runs {} us | record {} x {} us | run_queue {} us",
+                    "r3dprof per frame: full {} draws {} us | view-only {} draws {} us | skinned {} {} us | cull {} calls {} tests {} us | modge {} runs {} us | record {} x {} us | run_queue {} us | flush: rust {} us, C states {} us, C draws {} us",
                     p.full_draws / p.frames, us(p.full_ticks), p.view_draws / p.frames, us(p.view_ticks), p.skin_draws / p.frames, us(p.skin_ticks),
-                    p.cull_calls / p.frames, p.sphere_tests / p.frames, us(p.cull_ticks), p.modge_runs / p.frames, us(p.modge_ticks), p.records / p.frames, us(p.record_ticks), us(p.run_ticks)
+                    p.cull_calls / p.frames, p.sphere_tests / p.frames, us(p.cull_ticks), p.modge_runs / p.frames, us(p.modge_ticks), p.records / p.frames, us(p.record_ticks), us(p.run_ticks), us(p.flush_rust), us(p.flush_state), us(p.flush_draws)
                 );
                 let _ = (p, us);
                 self.prof = R3dProf::default();
@@ -1314,16 +1400,26 @@ impl R3d {
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn cull_world_inner(&mut self, mesh: usize, wc: &[f32; 3], s: f32, model: &Model34, no_clip: bool) -> u32 {
-        let res = &self.meshes[mesh];
+        let res = &self.mhot[mesh];
         let fr = &self.cull;
         let planes = if no_clip { 5 } else { 6 };
-        let n = res.spheres.len();
+        let n = res.n as usize;
         if R3D_PROF {
             self.prof.sphere_tests += 1;
         }
         let mask = if res.radius >= 0.0 {
             match fr.classify(wc, res.radius * s, planes) {
-                None => return 0,
+                None if res.flags & MH_OPEN == 0 => return 0,
+                None => {
+                    // Only the parts without a sphere.
+                    let first = self.vis.len();
+                    for (i, sp) in self.spheres[res.sph as usize..res.sph as usize + n].iter().enumerate() {
+                        if sp[3] < 0.0 {
+                            self.vis.push(i as u16);
+                        }
+                    }
+                    return (self.vis.len() - first) as u32;
+                }
                 // Wholly inside, or a single part (its sphere is the mesh's): all visible.
                 Some(m) if m == 0 || n == 1 => {
                     self.vis.extend(0..n as u16);
@@ -1348,7 +1444,7 @@ impl R3d {
         let pm = &pm[..np];
         let first = self.vis.len();
         let mut tests = 0;
-        for (i, sp) in res.spheres.iter().enumerate() {
+        for (i, sp) in self.spheres[res.sph as usize..res.sph as usize + n].iter().enumerate() {
             if sp[3] >= 0.0 {
                 tests += 1;
                 let r = sp[3] * s;
@@ -1389,7 +1485,7 @@ impl R3d {
 
     /// Whether `mesh` is stored in world space (draw it with an identity model matrix).
     pub fn mesh_is_world(&self, mesh: MeshId) -> bool {
-        self.meshes.get(mesh.0 as usize).is_some_and(|m| m.world)
+        self.mhot.get(mesh.0 as usize).is_some_and(|m| m.flags & MH_WORLD != 0)
     }
 
     /// `PCCalcModgeValues` on a rigid mesh's vertices at frame `fc` (`flags` bit 0 MODGE:
@@ -1556,7 +1652,7 @@ impl R3d {
     /// were dark veils). A split colour has max 255, so splitting again changes nothing.
     #[inline]
     pub fn ensure_additive(&mut self, mesh: MeshId) {
-        if self.meshes.get(mesh.0 as usize).is_some_and(|r| !r.add_split) {
+        if self.mhot.get(mesh.0 as usize).is_some_and(|r| r.flags & MH_ADD_SPLIT == 0) {
             self.split_additive(mesh);
         }
     }
@@ -1569,6 +1665,7 @@ impl R3d {
             return;
         }
         res.add_split = true;
+        self.mhot[mesh.0 as usize].flags |= MH_ADD_SPLIT;
         // SAFETY: as in `animate_modge`.
         let v = unsafe { core::slice::from_raw_parts_mut(res.verts as *mut u8, res.n_verts as usize * 16) };
         for c in v.chunks_exact_mut(16) {
@@ -1626,7 +1723,7 @@ impl R3d {
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     #[allow(clippy::too_many_arguments)]
     fn draw_slot_inner(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32) {
-        let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
+        let Some(res) = self.mhot.get(mesh.0 as usize) else { return };
         self.queued_tris += res.tris;
         let pos_scale = res.pos_scale;
         // Measurement (F2N64_MEASURE_SIZES=1): on-screen radius of the mesh's bounding
@@ -1748,14 +1845,16 @@ impl R3d {
 
     /// The id of a draw's parameters in `ptab` (equal parameters, equal ids, within a frame
     /// and, below `PID_NONE`, across frames until the table is reset).
-    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn intern_params(&mut self, p: &DrawParams) -> u16 {
         let key = params_key(p);
+        // Compared word by word (an array `==` calls memcmp).
+        let eq = |k: &[u32; 6]| k[0] == key[0] && k[1] == key[1] && k[2] == key[2] && k[3] == key[3] && k[4] == key[4] && k[5] == key[5];
         let last = self.plast as usize;
-        if self.pkeys.get(last) == Some(&key) {
+        if self.pkeys.get(last).is_some_and(eq) {
             return last as u16;
         }
-        let id = match self.pkeys.iter().position(|k| *k == key) {
+        let id = match self.pkeys.iter().position(eq) {
             Some(i) => i,
             None => {
                 self.pkeys.push(key);
@@ -1771,7 +1870,7 @@ impl R3d {
     fn push_rec_ptr(&mut self, list: List, mesh: MeshId, p: &DrawParams, uptr: *const R3dDrawUniform, vis_first: u32, vis_count: u32) {
         self.pushed = self.pushed.wrapping_add(1);
         let rec =
-            DrawRec { u: u32::MAX, uptr, mesh: mesh.0, tex_override: p.override_tex.map_or(0, |t| t.0), n_bones: 0, no_clip: p.no_clip, vis_first, vis_count };
+            DrawRec { u: 0, uptr, p0: self.mhot[mesh.0 as usize].sph as u16, tex_override: p.override_tex.map_or(0, |t| t.0), n_bones: 0, no_clip: p.no_clip, vis_first: vis_first as u16, vis_count: vis_count as u16 };
         self.lists[list as usize].push(rec);
     }
 
@@ -1781,14 +1880,14 @@ impl R3d {
         let arena = &mut self.uni[self.uni_frame];
         arena.push(u);
         let rec = DrawRec {
-            u: arena.len() as u32 - 1,
+            u: (arena.len() - 1) as u16,
             uptr: core::ptr::null(),
-            mesh: mesh.0,
+            p0: self.mhot[mesh.0 as usize].sph as u16,
             tex_override: p.override_tex.map_or(0, |t| t.0),
             n_bones: 0,
             no_clip: p.no_clip,
-            vis_first,
-            vis_count,
+            vis_first: vis_first as u16,
+            vis_count: vis_count as u16,
         };
         self.lists[list as usize].push(rec);
     }
@@ -1796,32 +1895,68 @@ impl R3d {
     /// Records a draw for [`run_queue`](Self::run_queue) (same order as immediate draws):
     /// rigid (`mats[0]`, slot and stamp as in [`draw_slot`](Self::draw_slot); MODGE/WAVE
     /// animation `modge` at `modge_frame` if it turns out visible) or skinned (`mats` = bones).
+    /// Runs inside the game's draw loop, between unrelated code: kept small (the I-cache is
+    /// refilled for it at every call).
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     #[allow(clippy::too_many_arguments)]
     pub fn queue(&mut self, list: List, mesh: MeshId, mats: &[Mat4], p: &DrawParams, skinned: bool, slot: u32, stamp: u32, modge: u8, modge_frame: u32) {
         let Some(m0) = mats.first() else { return };
-        let pid = self.intern_params(p);
+        if skinned || p.gouraud.is_some() || slot >= NO_SLOT as u32 || stamp == 0 {
+            return self.queue_rare(list, mesh, mats, p, skinned, slot, stamp, modge, modge_frame);
+        }
+        // The slot's model matrix, written only when its stamp or mesh changed (a stamp
+        // versions an actor's pose: its objects, and all landscape objects, share one).
+        let i = slot as usize;
+        match self.slot_model.get_mut(i) {
+            Some(sm) if sm.0 == stamp && sm.1 == mesh.0 as u16 => {}
+            Some(sm) => *sm = (stamp, mesh.0 as u16, to34(m0)),
+            None => self.grow_slot_model(i, stamp, mesh, m0),
+        }
+        let lf = list as u8 | if p.no_clip { Q_NO_CLIP } else { 0 } | if p.object_fog { Q_OBJECT_FOG } else { 0 };
+        let ovr = p.override_tex.map_or(0, |t| t.0 + 1);
+        self.q.push(QDraw { stamp, modge_frame, alpha: p.alpha_mul, slot: slot as u16, mesh: mesh.0 as u16, ovr, gour: 0, lf, modge });
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow_slot_model(&mut self, i: usize, stamp: u32, mesh: MeshId, m0: &Mat4) {
+        self.slot_model.resize(i + 1, (0, u16::MAX, IDENTITY34));
+        self.slot_model[i] = (stamp, mesh.0 as u16, to34(m0));
+    }
+
+    /// [`queue`](Self::queue) of skinned draws, draws with Gouraud colours and draws without
+    /// a slot.
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn queue_rare(&mut self, list: List, mesh: MeshId, mats: &[Mat4], p: &DrawParams, skinned: bool, slot: u32, stamp: u32, modge: u8, modge_frame: u32) {
+        let gour = match p.gouraud {
+            None => 0,
+            Some(g) => {
+                self.qgouraud.push(g);
+                self.qgouraud.len() as u16
+            }
+        };
         let (stamp, slot) = if skinned {
             let first = self.qbones.len() as u32;
             self.qbones.extend_from_slice(mats);
             (first, mats.len().min(u16::MAX as usize) as u16)
         } else if slot < NO_SLOT as u32 && stamp != 0 {
-            // The slot's model matrix, written only when its stamp or mesh changed (a stamp
-            // versions an actor's pose: its objects, and all landscape objects, share one).
             let i = slot as usize;
             if self.slot_model.len() <= i {
                 self.slot_model.resize(i + 1, (0, u16::MAX, IDENTITY34));
             }
             let sm = &mut self.slot_model[i];
             if sm.0 != stamp || sm.1 != mesh.0 as u16 {
-                *sm = (stamp, mesh.0 as u16, to34(m0));
+                *sm = (stamp, mesh.0 as u16, to34(&mats[0]));
             }
             (stamp, slot as u16)
         } else {
-            self.qmodels.push(to34(m0));
+            self.qmodels.push(to34(&mats[0]));
             (self.qmodels.len() as u32 - 1, NO_SLOT)
         };
-        self.q.push(QDraw { stamp, modge_frame, slot, mesh: mesh.0 as u16, pid, lf: list as u8 | if skinned { Q_SKINNED } else { 0 }, modge });
+        let lf = list as u8 | if skinned { Q_SKINNED } else { 0 } | if p.no_clip { Q_NO_CLIP } else { 0 } | if p.object_fog { Q_OBJECT_FOG } else { 0 };
+        let ovr = p.override_tex.map_or(0, |t| t.0 + 1);
+        self.q.push(QDraw { stamp, modge_frame, alpha: p.alpha_mul, slot, mesh: mesh.0 as u16, ovr, gour, lf, modge });
     }
 
     /// Queues the draws recorded with [`queue`](Self::queue) (call before [`flush`](Self::flush)).
@@ -1836,7 +1971,14 @@ impl R3d {
             }
             let list = BY_INDEX[(d.lf & 7) as usize];
             let mesh = MeshId(d.mesh as u32);
-            let p = self.ptab[d.pid as usize];
+            let p = DrawParams {
+                alpha_mul: d.alpha,
+                gouraud: if d.gour == 0 { None } else { Some(self.qgouraud[d.gour as usize - 1]) },
+                override_tex: if d.ovr == 0 { None } else { Some(TexId(d.ovr - 1)) },
+                no_clip: d.lf & Q_NO_CLIP != 0,
+                object_fog: d.lf & Q_OBJECT_FOG != 0,
+            };
+            let pid = self.intern_params(&p);
             if matches!(list, List::Additive | List::LateAdditive) {
                 self.ensure_additive(mesh);
             }
@@ -1847,15 +1989,18 @@ impl R3d {
                 continue;
             }
             // World-space landscape meshes (packer-baked key-0 transforms): identity.
-            let model = if self.mesh_is_world(mesh) {
-                IDENTITY34
+            // By reference: most draws never read it (camera-only changes of whole meshes).
+            let model: *const Model34 = if self.mesh_is_world(mesh) {
+                &IDENTITY34
             } else if d.slot == NO_SLOT {
-                self.qmodels[d.stamp as usize]
+                &self.qmodels[d.stamp as usize]
             } else {
-                self.slot_model[d.slot as usize].2
+                &self.slot_model[d.slot as usize].2
             };
             let pushed = self.pushed;
-            self.draw_slot_pid(list, mesh, &model, &p, d.pid, d.slot, if d.slot == NO_SLOT { 0 } else { d.stamp });
+            // SAFETY: `qmodels` and `slot_model` are only changed by `queue`, not while the
+            // queue runs.
+            self.draw_slot_pid(list, mesh, unsafe { &*model }, &p, pid, d.slot, if d.slot == NO_SLOT { 0 } else { d.stamp });
             // MODGE/WAVE vertices only for meshes on screen (the RSP reads them at the flush).
             if d.modge != 0 && self.pushed != pushed {
                 self.animate_modge(mesh, d.modge_frame, d.modge);
@@ -1865,6 +2010,7 @@ impl R3d {
         self.q.clear();
         self.qbones.clear();
         self.qmodels.clear();
+        self.qgouraud.clear();
         if R3D_PROF {
             self.prof.run_ticks = self.prof.run_ticks.wrapping_add(prof_ticks().wrapping_sub(t_run));
         }
@@ -1901,14 +2047,15 @@ impl R3d {
         let n = res.parts.len();
         self.vis.extend(0..n as u16);
         let rec = DrawRec {
-            u: first,
+            u: first as u16,
             uptr: core::ptr::null(),
-            mesh: mesh.0,
+            p0: self.mhot[mesh.0 as usize].sph as u16,
             tex_override: p.override_tex.map_or(0, |t| t.0),
-            n_bones: bones.len().min(u16::MAX as usize) as u16,
+            // Bone uniforms only for skinned meshes (a rigid one draws with the first).
+            n_bones: if res.skinned { bones.len().min(u8::MAX as usize) as u8 } else { 0 },
             no_clip: p.no_clip,
-            vis_first,
-            vis_count: n as u32,
+            vis_first: vis_first as u16,
+            vis_count: n as u16,
         };
         self.lists[list as usize].push(rec);
     }
@@ -1933,6 +2080,11 @@ impl R3d {
             self.flush_list(list);
             after(list);
         }
+        if R3D_PROF {
+            let c = self.stats();
+            self.prof.flush_state = self.prof.flush_state.wrapping_add(c.ticks_state);
+            self.prof.flush_draws = self.prof.flush_draws.wrapping_add(c.ticks_draws);
+        }
         // `vis` stays until the next `begin_frame` (reused draws copy from it).
     }
 
@@ -1942,45 +2094,45 @@ impl R3d {
         if recs.is_empty() {
             return;
         }
-        // Group textures through the registry (re-resolved only after registry changes).
-        for r in recs.iter() {
-            let res = &mut self.meshes[r.mesh as usize];
-            if res.tex_gen != self.tex_gen {
-                res.group_tex = res.group_crc.iter().map(|c| self.tex_by_crc.get(c).copied().unwrap_or(0)).collect();
-                res.tex_gen = self.tex_gen;
-            }
-        }
+        let t_fl = prof_ticks();
         // Resolve handles and textures first (the draw structs point into the scratch arrays).
         self.handle_scratch.clear();
         self.tex_scratch.clear();
-        for r in recs {
-            let res = &self.meshes[r.mesh as usize];
-            for &pi in &self.vis[r.vis_first as usize..(r.vis_first + r.vis_count) as usize] {
-                let p = &res.parts[pi as usize];
-                self.sent_tris += p.tris as u32;
-                self.handle_scratch.push(p.handle);
-                self.tex_scratch.push(if r.tex_override != 0 { r.tex_override } else { res.group_tex[p.group as usize] });
-            }
-        }
         self.draw_scratch.clear();
-        let mut off = 0;
+        let (vis, gparts, crc_tex) = (&self.vis, &self.gparts, &self.crc_tex);
+        let mut sent = 0;
         for r in recs {
-            let res = &self.meshes[r.mesh as usize];
-            let n = r.vis_count as usize;
+            let off = self.handle_scratch.len();
+            let parts = &gparts[r.p0 as usize..];
+            for &pi in &vis[r.vis_first as usize..r.vis_first as usize + r.vis_count as usize] {
+                let p = parts[pi as usize];
+                sent += p.tris as u32;
+                self.handle_scratch.push(p.handle);
+                self.tex_scratch.push(if r.tex_override != 0 { r.tex_override } else { crc_tex[p.cid as usize] });
+            }
             let u: *const R3dDrawUniform = if r.uptr.is_null() { &self.uni[self.uni_frame][r.u as usize] } else { r.uptr };
-            let skinned = r.n_bones > 0 && res.skinned;
+            let skinned = r.n_bones > 0;
             self.draw_scratch.push(R3dDraw {
                 u,
-                groups: self.handle_scratch[off..].as_ptr(),
-                texs: self.tex_scratch[off..].as_ptr(),
-                n_groups: n as u32,
+                // Filled in below (the scratch arrays may still grow).
+                groups: off as *const u16,
+                texs: core::ptr::null(),
+                n_groups: r.vis_count as u32,
                 bones: if skinned { u } else { core::ptr::null() },
-                n_bones: if skinned { r.n_bones as u32 } else { 0 },
+                n_bones: r.n_bones as u32,
                 frame: if r.no_clip { &self.frame_noclip } else { core::ptr::null() },
             });
-            off += n;
+        }
+        self.sent_tris += sent;
+        for d in &mut self.draw_scratch {
+            let off = d.groups as usize;
+            d.groups = self.handle_scratch[off..].as_ptr();
+            d.texs = self.tex_scratch[off..].as_ptr();
         }
         let state = list.state(self.view.bilinear, self.view.fog.is_some());
+        if R3D_PROF {
+            self.prof.flush_rust = self.prof.flush_rust.wrapping_add(prof_ticks().wrapping_sub(t_fl));
+        }
         #[cfg(target_vendor = "nintendo64")]
         unsafe {
             ffi::n64_r3d_draw_list(&state, self.draw_scratch.as_ptr(), self.draw_scratch.len() as u32)
@@ -2049,6 +2201,7 @@ impl R3d {
         self.q.clear();
         self.qbones.clear();
         self.qmodels.clear();
+        self.qgouraud.clear();
     }
 
     /// Drops everything queued this frame without drawing it.
@@ -2060,6 +2213,7 @@ impl R3d {
         self.q.clear();
         self.qbones.clear();
         self.qmodels.clear();
+        self.qgouraud.clear();
         self.vis.clear();
         // Mesh ids are reused after a reset: forget the reusable draws.
         self.slots.clear();
@@ -2353,14 +2507,14 @@ mod tests {
         let po = DrawParams { override_tex: Some(TexId(3)), no_clip: true, ..Default::default() };
         let draws: [(List, &Mat4, DrawParams, u32, u32); 4] =
             [(List::Normal, &m1, DrawParams::default(), 0, 5), (List::Xlu, &m2, pg, 1, 6), (List::Background, &m1, po, u32::MAX, 0), (List::Additive, &m2, pg, 2, 7)];
-        let lists = |r: &R3d| -> Vec<Vec<(Vec<u16>, R3dDrawUniform, u32, u16, u16, bool)>> {
+        let lists = |r: &R3d| -> Vec<Vec<(Vec<u16>, R3dDrawUniform, u16, u16, u8, bool)>> {
             r.lists
                 .iter()
                 .map(|l| {
                     l.iter()
                         .map(|d| {
                             let u = if d.uptr.is_null() { r.uni[r.uni_frame][d.u as usize] } else { unsafe { *d.uptr } };
-                            (r.vis[d.vis_first as usize..(d.vis_first + d.vis_count) as usize].to_vec(), u, d.mesh, d.tex_override, d.n_bones, d.no_clip)
+                            (r.vis[d.vis_first as usize..(d.vis_first + d.vis_count) as usize].to_vec(), u, d.p0, d.tex_override, d.n_bones, d.no_clip)
                         })
                         .collect()
                 })
@@ -2392,6 +2546,47 @@ mod tests {
             assert_eq!(lists(&a), lists(&b));
             a.flush(|_| {});
             b.flush(|_| {});
+        }
+    }
+
+    /// The flush resolves each visible part's texture through the registry as it is at the
+    /// flush (remapped and unmapped CRCs, overrides).
+    #[test]
+    fn flush_resolves_textures() {
+        let bytes = super::cull_tests::terrain();
+        let f = File::parse(&bytes).unwrap();
+        let mv = f.mesh(0).unwrap();
+        let part_crc: Vec<u32> = mv.groups().flat_map(|g| core::iter::repeat_n(g.tex_crc, g.batch_count as usize)).collect();
+        let mut view = ViewParams::pc_default(320.0, 240.0);
+        view.view = camera_view([0.0, 900.0, -10.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let mut r = R3d::new();
+        let ids = r.load_file(bytes.clone()).unwrap();
+        for (k, (remap, ovr)) in [(None, None), (Some((8, Some(TexId(5)))), None), (Some((9, None)), None), (None, Some(TexId(3)))].into_iter().enumerate() {
+            if let Some((crc, t)) = remap {
+                r.map_texture(crc, t);
+            }
+            r.begin_frame(&view);
+            r.draw_slot(List::Normal, ids[0], &IDENTITY, &DrawParams { override_tex: ovr, ..Default::default() }, 0, 1);
+            let vis: Vec<u16> = r.vis.clone();
+            r.flush(|_| {});
+            let d = &r.draw_scratch;
+            assert_eq!(d.len(), 1);
+            let texs = unsafe { core::slice::from_raw_parts(d[0].texs, d[0].n_groups as usize) };
+            let want: Vec<u16> = vis
+                .iter()
+                .map(|&pi| match ovr {
+                    Some(t) => t.0,
+                    None => r.tex_by_crc.get(&part_crc[pi as usize]).copied().unwrap_or(0),
+                })
+                .collect();
+            assert!(vis.len() > 10, "{}", vis.len());
+            assert_eq!(texs, &want[..], "step {k}");
+            if k == 1 {
+                assert!(texs.contains(&5));
+            }
+            if k == 2 {
+                assert!(texs.contains(&0));
+            }
         }
     }
 

@@ -405,7 +405,10 @@ void n64_r3d_begin_impl(const n64_r3d_frame_t *f) {
 void n64_state_invalidate(void);
 void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draws, uint32_t n) {
     if (!n) return;
+    uint32_t t0 = TICKS_READ();
     apply_list(st);
+    uint32_t t1 = TICKS_READ();
+    stats.ticks_state += t1 - t0;
     /* CPU batches (main.c) may have loaded TMEM since the last list. */
     cur_tex = 0;
     cur_list_flags = st->flags;
@@ -434,6 +437,7 @@ void n64_r3d_draw_list_impl(const n64_r3d_list_t *st, const n64_r3d_draw_t *draw
         }
         stats.draws++;
     }
+    stats.ticks_draws += TICKS_READ() - t1;
     n64_state_invalidate();
 }
 

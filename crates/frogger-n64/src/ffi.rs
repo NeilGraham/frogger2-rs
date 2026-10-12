@@ -194,6 +194,9 @@ pub struct R3dStats {
     pub draws: u32,
     pub groups: u32,
     pub tex_loads: u32,
+    /// C0 ticks in the list render states / the per-draw loop.
+    pub ticks_state: u32,
+    pub ticks_draws: u32,
 }
 
 /// Joypad buttons (`joypad_buttons_t.raw`, big-endian bitfield: A is bit 15).

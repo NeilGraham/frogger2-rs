@@ -133,6 +133,7 @@ typedef struct {
 
 typedef struct {
     uint32_t draws, groups, tex_loads;
+    uint32_t ticks_state, ticks_draws; /* C0 ticks: list render states, draw loop */
 } n64_r3d_stats_t;
 
 /* Rust -> C */

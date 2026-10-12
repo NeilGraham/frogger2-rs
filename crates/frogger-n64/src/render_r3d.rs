@@ -217,16 +217,16 @@ impl R3dLevel {
     /// Queues one recorded mesh draw ([`MeshBackend`] side of the draw loop).
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     fn record(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
-        let t0 = rt::ticks();
-
         let slot = self.slot;
         self.slot += 1;
-        self.record_inner(cpu, d, mats, slot as usize);
-        self.rec.queue_ticks = self.rec.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
-        if crate::r3d::R3D_PROF {
-            self.r.prof.record_ticks = self.r.prof.record_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
-            self.r.prof.records += 1;
+        if !crate::r3d::R3D_PROF {
+            // Not timed: the draw loop's time includes recording (`r3d queue` is the batch).
+            return self.record_inner(cpu, d, mats, slot as usize);
         }
+        let t0 = rt::ticks();
+        self.record_inner(cpu, d, mats, slot as usize);
+        self.r.prof.record_ticks = self.r.prof.record_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
+        self.r.prof.records += 1;
     }
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
