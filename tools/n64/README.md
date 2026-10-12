@@ -72,6 +72,12 @@ listed libdragon functions, `HOT_C`): the VR4300's 16 KiB I-cache is direct-mapp
 link-order placement made the same frame cost 2.6 or 9.6 ms after unrelated edits. Rust
 functions join a region with `#[cfg_attr(target_vendor = "nintendo64", link_section =
 ".text.f2hot_q")]`; keep each region under 16 KiB (`__f2_hot_*` symbols in the map).
+After them come the simulation's loop regions (§3S2): `.text.f2hot_s` (the per-actor pass,
+`Game::copy_and_draw_actors`; keep it under 16 KiB), `.text.f2hot_e` (enemy loop) and
+`.text.f2hot_p` (platform loop, `iquat_slerp`/`make_unit`); f2-game/f2-math tag functions
+with `#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ...)]`
+(their `forbid(unsafe_code)` is `deny` on the N64 only). `build/f2.ld` is regenerated when
+the Makefile changes.
 `build.sh` also localises compiler-builtins' weak `memcpy`/`memset`/… so everything links
 newlib's.
 
@@ -113,6 +119,7 @@ USA data: 36 MiB ROM.
 | `F2N64_LOG_MODELS=1` | log each model the first time r3d draws it |
 | `F2N64_ONLY_MODEL` / `F2N64_SKIP_MODEL` | comma-separated hex model ids: draw only / never these (bisecting render bugs) |
 | `F2N64_TUNE` | with `simbench`: experiment masks run one after another in the same ROM (`f2_game::simbench::tune`), e.g. `"0 1"` |
+| `F2N64_TUNE_AB` | in the game: `f2_game::simbench::TUNE` alternates between 0 and this mask every 5 s perf window (A/B of experiment code in one ROM, so both sides have the same code layout); the `sim phases` line prints `tune` and the phase `sum`. With `tools/n64/bench.sh`, `BENCH_PHASE_LINES=N` prints the last N `sim phases` lines |
 
 Log lines (debugf → `C:\f2-n64test\run.txt`): `perf [W-L] ...` every 5 s (fps, sim ticks/s,
 dropped ticks, per-frame sim and draw time split into draw loop / textures / CPU batches /

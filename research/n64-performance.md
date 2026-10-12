@@ -995,3 +995,109 @@ Draws per frame by on-screen radius (draws / their triangles):
 them saves per-object CPU work, but only if the test comes before that work. Order chosen:
 per-object CPU cost first (unchanged objects skip their draw work), then the small-object skip
 on its cached transforms, then the simulation (19-22 ms in Space/Lab).
+
+## 3S2: simulation tick on the VR4300, second round (2026-10-12)
+
+Branch `worktree-agent-aa400f32a70aac672` (from `ed3e8ce`). Goal: `Game::tick` in Garden 1
+while hopping from ~11.5 ms toward 7 ms, bit-identical. Result: **Garden 1 11.7 -> 8.6 ms,
+Lab 1 14.3 -> 9.9 ms, Space 1 18.0 -> 14.6 ms** (-27 / -31 / -19 %); not the 7 ms.
+
+### Method
+- `tools/n64/bench.sh NAME "level-hop W L" 40` (ares v148, 5 s windows; numbers = a steady
+  window). `level-hop` now ignores the real pad: a stray host key (ares' keyboard pad)
+  paused the game in the first runs (`mode 9`), so earlier "hopping" numbers may be mixed.
+- **Same-ROM A/B** (`F2N64_TUNE_AB=mask`): the experiment is gated on
+  `f2_game::simbench::tune(bit)` and the ROM alternates per window, so both sides have the
+  same code layout. Between builds the same code moves by up to ±10 % per phase from I-cache
+  placement alone (actordraw 3.5-4.0 ms with identical sim code), so single-build
+  comparisons of small changes are meaningless.
+- Probes: temporary extra `simbench::phase` marks inside the actor pass (copy / cull /
+  xform parts; the hook call itself perturbs the I-cache, use for proportions only), the
+  profiler (`profile-sim`) and i686 callgrind with the VR4300 cache geometry
+  (`--D1=8192,1,16 --I1=16384,1,32`) for D-cache misses per function.
+- Parity after every change: the three demo traces and all 102 `f2-parity check --corpus
+  all` Rust traces sha1-identical to the `ed3e8ce` ones; f2-game tests in debug (the caches
+  assert every reuse there); simbench end-of-run checksums equal before/after **and N64 =
+  host** (`F2N64_DATA=prep F2N64_FEATURES=simbench`; the SWAR filters run big-endian there).
+
+### Result (`level-hop`, µs per tick by phase; fps of the same run)
+
+| level | | tick | actordraw | enemies | platforms | draw2d | draw3d | loop-rest | frogs | specfx | fps |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Garden 1 (0-0) | before | 11 700 | 6 070 | 1 980 | 820 | 990 | 290 | 665 | 545 | 235 | 16.7 |
+| | after | 8 560 | 3 745 | 1 590 | 800 | 765 | 155 | 645 | 530 | 215 | 16.9 |
+| Lab 1 (5-0) | before | 14 300 | 7 880 | 2 550 | 700 | 1 030 | 580 | 850 | 400 | 185 | 10.4 |
+| | after | 9 900 | 4 760 | 2 210 | 690 | 610 | 235 | 825 | 330 | 190 | 11.3 |
+| Space 1 (2-0) | before | 18 000 | 8 020 | 3 200 | 1 800 | 1 990 | 430 | 710 | 385 | 1 100-1 300 | 10.3 |
+| | after | 14 600 | 5 850 | 2 850 | 1 800 | 1 130 | 245 | 755 | 420 | 1 200 | 10.0 |
+
+simbench on the N64 (fixed 60 Hz step, no rendering, mean µs/tick, same checksums):
+
+| | frontend | 0-0 | 2-0 | 2-2 | 4-1 | 6-0 | demo 0-0 | demo 1-0 | demo 6-1 | sum |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| before | 8 631 | 9 557 | 16 432 | 15 886 | 13 511 | 11 870 | 10 046 | 8 162 | 13 212 | 107 307 |
+| after | 7 109 | 8 179 | 14 743 | 13 909 | 11 336 | 10 294 | 8 553 | 6 897 | 10 257 | 91 277 |
+
+**The frame rate barely moved**: in the same runs the draw side's `r3d queue` went from
+14.4 to 15-17 ms (Garden) and 21 to 24 ms (Space). That is code placement too: the draw
+loop's non-region functions move whenever anything before them changes size, and across
+the builds of this round the same draw code took 14.4-19.8 ms in Garden. The draw side
+needs its own hot-function regions (or the per-frame draw code in fewer, contiguous
+places) before sim savings show up as fps.
+
+### What changed (each commit parity-verified as above)
+1. **I-cache regions for the simulation loops** (`tools/n64/Makefile`, after the draw
+   regions): `.text.f2hot_s` = the per-actor pass (`copy_and_draw_actors`, `copy_actor`,
+   `actor_list_draw_one`, `xform_actor`, root transform, key search, slerp, `mtx_cat`,
+   bounding box, `update_anims`; 15.9 KiB), `.text.f2hot_e` = the enemy loop,
+   `.text.f2hot_p` = the platform loop + `iquat_slerp`/`make_unit`. Before, `copy_actor`
+   and `sphere_visible` sat on the same I-cache lines and evicted each other for every
+   actor: Garden actordraw 6.2 -> 3.9 ms, enemies -0.4 ms; Space platforms 2.4 -> 1.8 ms
+   (when `iquat_slerp` happened to collide). The biggest single win of the round.
+2. **Per-actor caches** (`view.rs`; fields of `MdxActor`/`Actor2` listed in `ser_order!`'s
+   new `skip {}`: never serialized, `PartialEq` always true, `Debug` constant, so state,
+   checksums and traces are untouched; a deserialized actor starts invalid):
+   - `SphereCache`: `CopyActorList`'s integer sources (position/size/qRot): unchanged
+     sources skip the ten int->float conversions and compares (A/B -200 µs); the culling
+     sphere's world centre and radius (quaternion matrix + transform) while the placement
+     and model are unchanged (-0.4 ms); a valid entry also proves the model exists (no
+     `ModelTable` lookup). Placed before the placement, so an unchanged culled actor reads
+     ~9 cache lines and never the placement floats.
+   - `RootCache`: the root object's key indices and object matrix while model, `animTime`
+     bits, start keys and placement are unchanged (A/B -120 µs).
+   - `SpriteCache`: object-sprite placements under the same key, reapplied to the sprites.
+   - One `SphereCache::invalidate()` clears all of them; **every write of
+     `MdxPlacement::{pos, q_rot, scale}` must call it** (today: `copy_actor`,
+     `xform_new_actor`; new actors start invalid). Debug builds recompute and assert on
+     every reuse (the f2-game tests and debug demo runs exercise it).
+3. **Procedural textures eight pixels at a time** (exact SWAR: 16-bit lanes in a `u64`,
+   biased subtraction for the clamp, row ends kept, zero/circular padding): water ripples,
+   fire/candle/steam smoothing, forcefield; references kept under `cfg(test)`, equal on
+   4 000 random/extreme buffers. Blit in place without bounds checks. Garden draw2d 990 ->
+   770 µs, Space 2.0 -> 1.1 ms, Lab 1.0 -> 0.6 ms.
+4. Small: frog head matrix path in a fixed array and the head name borrowed (no
+   `String` clone + `Vec` per tick); script `If` sub-paths on the stack; the sprite
+   rotation walk without an id snapshot.
+
+### Tried and reverted
+- Integer-only `util_sqrt` (equal to the float one for all 2^32 inputs, test kept out):
+  **+1.0 ms/tick** in A/B. The VR4300 (MIPS III) has no CLZ, so `leading_zeros` is a
+  software sequence; the FPU path is cheaper. (3S's `leading_zeros` in `MakeUnit` may be
+  worth re-checking the same way.)
+- `opt-level = "s"` for f2-game: 8.5 -> 10.5 ms.
+- Closed-form `translate·I`, `R·T`, `scale·M`, `I·M` (exact incl. signed zeros; 300 000
+  random cases): A/B 0 (as 3S found).
+- Reusing sphere / bounding-box results while the view is bit-identical (a view epoch): A/B
+  0 while hopping (the camera moves every tick); it would only help an idle camera.
+
+### Where the time is now / next candidates
+- Actor pass (Garden 3.7 ms, 116 actors, ~20 drawn): culled actors cost ~9 D-cache lines
+  each (copy + sphere + flags); drawn animated actors the keyframe/slerp/bounding-box maths
+  (Lab: animated sprite objects ~0.9 ms). Further: a compact hot side array (would need
+  every writer of position/size/qRot to update it), or fewer bytes per actor.
+- Enemies/platforms (1.6 + 0.8 ms Garden; 2.9 + 1.8 ms Space): scattered memory (actor,
+  path node, tile per entity: ~660 D-cache misses per tick for Garden's 45 platforms on
+  callgrind) and region `e` is 25 KiB (> I-cache): splitting the rarely executed parts
+  (`process_attached_effects`' effect creation) out would bring it under 16 KiB.
+- Once per tick code (frogs, loop-rest, events ~1.3 ms) is mostly I-cache misses of
+  straight-line code; only less code helps.

@@ -1,6 +1,8 @@
 # libdragon ROM link for the Frogger 2 N64 port. Driven by tools/n64/build.sh:
 #   make -C target/n64 -f tools/n64/Makefile CSRC=<crates/frogger-n64/csrc> RUST_LIB=<lib.a>
 # Produces frogger2.z64 in the current directory (target/n64).
+# This Makefile (f2.ld is regenerated when its hot-region list changes).
+F2_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 BUILD_DIR = build
 SOURCE_DIR = $(CSRC)
 N64_MKDFS_ROOT = filesystem
@@ -47,7 +49,7 @@ HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rs
 	mg_bind_vertex_buffer data_cache_hit_writeback rspq_flush_internal __rspq_deferred_poll \
 	n64_draw_tris_impl apply_state rdpq_triangle rdpq_triangle_rsp __rdpq_write8 \
 	__rdpq_autosync_change memcpy memset
-$(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld
+$(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld $(F2_MAKEFILE)
 	@mkdir -p $(BUILD_DIR)
 	@awk -v hot="$(HOT_C)" 'BEGIN { n = split(hot, h, " ") } \
 		!done && $$0 ~ /^[ \t]*\*\(\.text\)[ \t]*$$/ { \
