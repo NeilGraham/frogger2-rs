@@ -189,6 +189,7 @@ impl R3dLevel {
             self.synced[i] = (img, gen, e.crc);
             let t = e.current.and_then(|h| self.tex_for(cpu, h.0));
             self.r.map_texture(e.crc, t);
+            rt::audio_poll_due();
         }
     }
 
@@ -266,6 +267,7 @@ impl R3dLevel {
         if matches!(list, List::Additive | List::LateAdditive) {
             self.r.ensure_additive(mesh);
         }
+        rt::audio_poll_due();
         if d.modge != 0 {
             self.r.animate_modge(mesh, d.modge_frame, d.modge);
         }

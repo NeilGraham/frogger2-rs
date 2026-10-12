@@ -170,8 +170,27 @@ void n64_music_vol_impl(uint32_t vol_permille) {
     mixer_ch_set_vol(MUSIC_CH, v, v);
 }
 
+/* Longest time between two polls (C0 ticks) since n64_audio_gap_take: the music buffer
+ * holds 300 ms, longer gaps are audible dropouts. */
+static uint32_t audio_last_poll, audio_max_gap;
+
 void n64_audio_poll_impl(void) {
+    uint32_t now = TICKS_READ();
+    if (audio_last_poll && now - audio_last_poll > audio_max_gap) audio_max_gap = now - audio_last_poll;
+    audio_last_poll = now;
     if (audio_can_write()) mixer_try_play();
+}
+
+/* n64_audio_poll_impl if 40 ms have passed since the last poll: cheap enough for loops that
+ * can run long once (a level's first frame uploads all its textures). */
+void n64_audio_poll_due_impl(void) {
+    if (TICKS_READ() - audio_last_poll > TICKS_FROM_MS(40)) n64_audio_poll_impl();
+}
+
+uint32_t n64_audio_gap_take_impl(void) {
+    uint32_t g = audio_max_gap;
+    audio_max_gap = 0;
+    return g;
 }
 
 /* ---- RSP / RDP load: a 2 kHz timer samples whether the RSP is running (not halted:
@@ -420,11 +439,16 @@ void *n64_file_read_impl(const char *path, uint32_t *len) {
     if (!f) return NULL;
     uint8_t *p = memalign(16, sz > 0 ? (size_t)sz : 1);
     assertf(p, "Out of memory reading %s (%d bytes; pool %lu/%d KiB)", path, sz, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
+    /* 32 KiB at a time with the music topped up in between: a level's large files (texture
+     * banks, compressed) take a few hundred ms to read and inflate, longer than the audio
+     * buffer (300 ms): the music dropped out while loading. */
     int got = 0;
     while (got < sz) {
-        int n = fread(p + got, 1, sz - got, f);
+        int want = sz - got < 32768 ? sz - got : 32768;
+        int n = fread(p + got, 1, want, f);
         if (n <= 0) break;
         got += n;
+        n64_audio_poll_impl();
     }
     fclose(f);
     if (len) *len = (uint32_t)got;

@@ -78,6 +78,8 @@
     RUST_TO_C n64_fmv_play
     RUST_TO_C n64_rcp_load
     RUST_TO_C n64_save_read
+    RUST_TO_C n64_audio_gap_take
+    RUST_TO_C n64_audio_poll_due
     RUST_TO_C n64_save_write
 
 # void f2n64_call(void (*fn)(void)) - C -> Rust.

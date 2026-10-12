@@ -185,6 +185,7 @@ pub fn unload_level_render() {
     if !ARMED.swap(false, core::sync::atomic::Ordering::Relaxed) {
         return;
     }
+    let t0 = rt::ticks();
     if let Some(l) = LEVEL.lock().as_mut() {
         l.scene = None;
         l.page_canvas = None;
@@ -192,7 +193,8 @@ pub fn unload_level_render() {
         l.gfx.free_from(keep);
         #[cfg(not(feature = "render-cpu"))]
         l.r3d.unload();
-        log!("app: level render assets freed for the next load");
+        log!("app: level render assets freed for the next load ({} ms)", rt::ticks_to_us(rt::ticks().wrapping_sub(t0)) / 1000);
+        rt::audio_poll();
     }
 }
 
@@ -256,6 +258,8 @@ pub struct App {
     pad_script: Option<(u32, &'static [(u32, u16)])>,
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
+    /// Start of the level load in progress (load step timing).
+    load_t0: u32,
     /// FPS counter: frames and start of the current second, the last second's count.
     fps_count: (u32, u32, u32),
     /// Frame pacing: running averages (C0 ticks, x16 fixed point) of a simulation tick
@@ -321,6 +325,7 @@ impl App {
             settings_test: false,
             pad_script: None,
             level_quit: None,
+            load_t0: 0,
             fps_count: (0, 0, 0),
             avg_tick: 0,
             avg_draw: 0,
@@ -478,7 +483,14 @@ impl App {
     fn heap_step(&self, what: &str) {
         let (live, _) = rt::rust_heap();
         let h = rt::heap_stats();
-        log!("heap step [{}] after {what}: rust live {} KiB, libdragon used {} KiB", self.level_name, live / 1024, h.used / 1024);
+        log!(
+            "heap step [{}] after {what}: rust live {} KiB, libdragon used {} KiB; at {} ms, longest audio gap {} ms",
+            self.level_name,
+            live / 1024,
+            h.used / 1024,
+            ticks_to_us(ticks().wrapping_sub(self.load_t0)) / 1000,
+            rt::audio_gap_take_ms()
+        );
     }
 
     fn heap_log(&mut self, what: &str) {
@@ -511,6 +523,10 @@ impl App {
         }
         self.level_name = format!("{world}-{level}");
         self.level_peak = (0, 0);
+        self.load_t0 = t0;
+        // The audio gap so far covers the simulation's side of the load (InitLevel reading
+        // the level's files) and any FMV before it.
+        self.heap_step("the game's level setup");
         // Free the previous level's renderer side first (RDRAM).
         ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
         if let Some(l) = lv().as_mut() {
@@ -521,6 +537,7 @@ impl App {
         self.rebuild_renderer();
         self.audio.free_samples();
         rt::reset_peak();
+        self.heap_step("freeing the last level");
         // Textures first: the NTX bank files are the largest single blocks of a level and
         // need contiguous free memory, which the many small allocations of the object banks
         // and meshes fragment.

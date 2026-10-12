@@ -174,9 +174,8 @@ pub fn fonts(ctx: &Ctx) -> Result<(Vec<RawAsset>, Vec<String>)> {
         let Ok(data) = f2_formats::fla::maybe_decompress(raw) else { continue };
         let Ok(bank) = f2_formats::texture::TexBank::parse(&data) else { continue };
         let textures: Vec<_> = bank.textures.into_iter().filter(|t| t.name.as_bytes().starts_with(b"prc")).collect();
-        if textures.is_empty() {
-            continue;
-        }
+        // Written even when empty: without a .prc the runtime falls back to reading the whole
+        // NTX bank to find none (system.ntx, 290 KB: ~250 ms per level load; titles.ntx ~440).
         nprc += textures.len();
         let data = postcard::to_allocvec(&f2_formats::texture::TexBank { textures, anims: Vec::new() }).map_err(|e| e.to_string())?;
         let stem = p.file_stem().unwrap().to_string_lossy().to_lowercase();

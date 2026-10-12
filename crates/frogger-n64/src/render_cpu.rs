@@ -316,6 +316,7 @@ impl RenderCpu {
                 }
                 self.convert_image_ex(i, img, true);
             }
+            rt::audio_poll_due();
         }
     }
 

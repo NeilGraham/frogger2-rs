@@ -254,6 +254,18 @@ pub fn audio_poll() {
     unsafe { ffi::n64_audio_poll() }
 }
 
+/// [`audio_poll`] if 40 ms have passed since the last poll (for loops that can run long).
+#[inline]
+pub fn audio_poll_due() {
+    unsafe { ffi::n64_audio_poll_due() }
+}
+
+/// The longest time between two audio polls (any, the C side's included) since the last
+/// call, in ms (the music buffer holds 300: longer gaps are audible dropouts).
+pub fn audio_gap_take_ms() -> u32 {
+    ticks_to_us(unsafe { ffi::n64_audio_gap_take() }) / 1000
+}
+
 /// C0 ticks the last [`begin_frame`] waited for a free framebuffer (the RSP/RDP and VI
 /// still busy with earlier frames).
 pub static FB_WAIT: AtomicU32 = AtomicU32::new(0);

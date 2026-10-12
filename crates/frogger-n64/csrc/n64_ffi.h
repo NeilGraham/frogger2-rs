@@ -167,6 +167,8 @@ uint32_t n64_sfx_channels(void);
 uint32_t n64_sfx_freq(uint32_t handle);            /* native rate of an opened sample, Hz */
 uint32_t n64_rcp_load(void);                       /* RSP busy permille | RDP busy permille << 16 since the last call */
 uint32_t n64_fmv_play(const char *path);           /* blocking video playback; 0 = missing */
+void n64_audio_poll_due(void); /* n64_audio_poll if 40 ms have passed since the last */
+uint32_t n64_audio_gap_take(void); /* longest gap between audio polls (C0 ticks) since the last call */
 uint32_t n64_save_read(void *dst, uint32_t off, uint32_t len);   /* SRAM[off..] -> dst; returns len or 0 */
 uint32_t n64_save_write(const void *src, uint32_t off, uint32_t len); /* src -> SRAM[off..]; returns len or 0 */                   /* first sfx channel << 8 | count */
 void n64_sfx_play(uint32_t handle, uint32_t ch, const n64_voice_t *v);

@@ -270,7 +270,10 @@ impl<S: AssetStore> DataSource for N64Data<S> {
     fn object_bank(&self, path: &str) -> Option<Result<ObjectBank, String>> {
         let p = norm_path(path) + OBJBANK_SUFFIX;
         let bytes = self.load(&p)?;
-        Some(postcard::from_bytes(&bytes).map_err(|e| format!("{p}: {e}")))
+        let r = postcard::from_bytes(&bytes).map_err(|e| format!("{p}: {e}"));
+        #[cfg(target_vendor = "nintendo64")]
+        crate::rt::audio_poll();
+        Some(r)
     }
 
     fn texture_bank(&self, path: &str) -> Option<Result<TexBank, String>> {
