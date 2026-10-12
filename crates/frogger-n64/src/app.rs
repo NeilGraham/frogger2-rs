@@ -52,13 +52,15 @@ pub const MAX_TICKS_PER_FRAME: u32 = 6;
 /// Frame rates the pacing picks from (frames shown per second, divisors of 60).
 pub const PACED_FPS: [u32; 4] = [60, 30, 20, 15];
 
-/// Frame pacing: the highest of [`PACED_FPS`] at which the simulation keeps real time
-/// (60 ticks/s) and the frames fit into `budget_us` per second, from running averages of the
-/// cost of a tick and of a frame; 0 (no limit: as fast as possible, ticks beyond
-/// [`MAX_TICKS_PER_FRAME`] dropped) if even the lowest does not fit (`App::pace` adds
-/// hysteresis and requires a stable choice before switching).
+/// Frame pacing: the highest of [`PACED_FPS`] at which the simulation keeps real time and
+/// the frames fit into `budget_us` per second, from running averages of the cost of a tick
+/// and of a frame; 0 (no limit: as fast as possible) if even the lowest does not fit
+/// (`App::pace` adds hysteresis and requires a stable choice before switching).
+/// Fixed timestep: 60 ticks a second whatever the frame rate. Variable timestep
+/// ([`crate::pacing::VARIABLE`]): one tick per shown frame (covering `60 / fps` game frames, at
+/// most [`crate::pacing::MAX_FRAMES_PER_TICK`]), so a frame costs a tick plus the drawing.
 pub fn pick_fps(tick_us: u32, draw_us: u32, budget_us: u32) -> u32 {
-    PACED_FPS.iter().copied().find(|&f| 60 * tick_us as u64 + f as u64 * draw_us as u64 <= budget_us as u64).unwrap_or(0)
+    crate::pacing::pick_fps_mode(&PACED_FPS, tick_us, draw_us, budget_us, crate::pacing::VARIABLE, crate::pacing::MAX_FRAMES_PER_TICK)
 }
 
 /// Rank of a pacing choice (0 = 60 fps ... 4 = unlimited / overloaded).

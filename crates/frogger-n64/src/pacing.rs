@@ -91,9 +91,42 @@ pub fn alpha(acc: u32, tick: u32, frames: u32) -> f32 {
     (acc as f32 / (tick * frames.max(1)) as f32).clamp(0.0, 1.0)
 }
 
+/// [`crate::app::pick_fps`] for a given timestep mode: the first of `rates` that fits.
+pub fn pick_fps_mode(rates: &[u32], tick_us: u32, draw_us: u32, budget_us: u32, variable: bool, max_frames_per_tick: u32) -> u32 {
+    let (t, d) = (tick_us as u64, draw_us as u64);
+    rates
+        .iter()
+        .copied()
+        .find(|&f| {
+            let f = f as u64;
+            if variable {
+                60 / f <= max_frames_per_tick as u64 && f * (t + d) <= budget_us as u64
+            } else {
+                60 * t + f * d <= budget_us as u64
+            }
+        })
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_cap_counts_one_tick_per_frame() {
+        const R: [u32; 4] = [60, 30, 20, 15];
+        // City (ares): tick 7.0 ms, frame 23.7 ms: 20 fps (30 would need 921 ms/s), not the
+        // 15 the 60-ticks-a-second model picked.
+        assert_eq!(pick_fps_mode(&R, 6962, 23716, 900_000, true, 4), 20);
+        // ... it could not climb back from 15: under the old model even 20 misses the 800 ms
+        // "faster" threshold; counted per frame it fits.
+        assert_eq!(pick_fps_mode(&R, 6962, 23716, 800_000, false, 4), 15);
+        assert_eq!(pick_fps_mode(&R, 6962, 23716, 800_000, true, 4), 20);
+        // 15 fps is the lowest the 4-frames-per-tick cap keeps in real time.
+        assert_eq!(pick_fps_mode(&R, 11_000, 40_000, 900_000, true, 4), 15);
+        assert_eq!(pick_fps_mode(&R, 11_000, 40_000, 900_000, true, 3), 0);
+        assert_eq!(pick_fps_mode(&R, 4_000, 10_000, 900_000, true, 4), 60);
+    }
 
     #[test]
     fn plans() {

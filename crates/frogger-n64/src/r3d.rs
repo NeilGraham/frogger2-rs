@@ -287,11 +287,22 @@ fn sin_table() -> &'static [f32; 1025] {
 /// `PCCalcModgeValues`' `sinf`/`cosf`.
 #[inline]
 fn fast_sin(t: &[f32; 1025], x: f32) -> f32 {
+    // 32-bit integer maths only (64-bit remainders and libm's floorf are software on the
+    // VR4300 build): floor via truncation, index wrapped by mask.
     let p = x * (1024.0 / core::f32::consts::TAU);
-    let fl = libm::floorf(p);
-    let i = (fl as i64).rem_euclid(1024) as usize;
-    let f = p - fl;
-    t[i] + (t[i + 1] - t[i]) * f
+    let mut i = p as i32;
+    if (i as f32) > p {
+        i -= 1;
+    }
+    let f = p - i as f32;
+    let k = (i & 1023) as usize;
+    t[k] + (t[k + 1] - t[k]) * f
+}
+
+/// `roundf` (half away from zero) to i32 without libm.
+#[inline]
+fn round_i32(v: f32) -> i32 {
+    (v + if v >= 0.0 { 0.5 } else { -0.5 }) as i32
 }
 
 /// Draw slot `i`'s last draw (see [`R3d::draw_slot`]): reusable while nothing it depends
@@ -974,19 +985,19 @@ impl R3d {
             let mz = (cosf(x * (1.5 / 49.0) + cosf(z * (1.3 / 29.0) + t * (2.0 / 66.0)) + t * (1.5 / 66.0)) + 1.0) * 0.1;
             if wave {
                 let my = (sinf(z * (1.2 / 26.0) + cosf(x * (1.3 / 49.0) + t * (1.0 / 26.0)) + t * (1.0 / 26.0)) + 1.0) * 5.0;
-                let y = libm::roundf(y0 as f32 + my * inv).clamp(-32768.0, 32767.0) as i16;
+                let y = round_i32(y0 as f32 + my * inv).clamp(-32768, 32767) as i16;
                 v[o + 2..o + 4].copy_from_slice(&y.to_be_bytes());
             }
             if modge {
-                let s = libm::roundf(s0 as f32 + mx * 0.4 * 1024.0).clamp(-32768.0, 32767.0) as i16;
-                let tt = libm::roundf(t0 as f32 + mz * 0.4 * 1024.0).clamp(-32768.0, 32767.0) as i16;
+                let s = round_i32(s0 as f32 + mx * 0.4 * 1024.0).clamp(-32768, 32767) as i16;
+                let tt = round_i32(t0 as f32 + mz * 0.4 * 1024.0).clamp(-32768, 32767) as i16;
                 v[o + 12..o + 14].copy_from_slice(&s.to_be_bytes());
                 v[o + 14..o + 16].copy_from_slice(&tt.to_be_bytes());
                 if wave {
                     // PC: alpha = 50 + (tMx+tMz)·400 (130 on average); scaled around the stored
                     // alpha so additive-split corner colours keep their factor.
                     let k = (50.0 + (mx + mz) * 400.0) / 130.0;
-                    v[o + 11] = libm::roundf(a0 as f32 * k).clamp(0.0, 255.0) as u8;
+                    v[o + 11] = round_i32(a0 as f32 * k).clamp(0, 255) as u8;
                 }
             }
         }
