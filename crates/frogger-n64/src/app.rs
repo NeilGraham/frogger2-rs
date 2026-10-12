@@ -84,13 +84,19 @@ const N64_FONT_BASE: f32 = WIDTH as f32 / 640.0;
 /// frontend like the PC executable, progress from the SRAM save: a new player's story book
 /// starts the training level), `frontend-trained` (testing: the training level marked done,
 /// as a save after it would have it), `save-test` (frontend, and the save block written to
-/// SRAM right after boot: the next boot must report it loaded) or `level W L` (straight into
-/// an arcade level).
+/// SRAM right after boot: the next boot must report it loaded), `level W L` (straight into
+/// an arcade level), `story N` (story mode at `storySequence[N]`, with its FMV) or
+/// `story-finish N` (testing: `story N`, the level completed after 4 s and the results
+/// screens pressed through, into the next story level) or `frontend-start` (testing: the
+/// frontend with Start pressed on the title screen, into the hub).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Boot {
     Frontend { trained: bool },
     SaveTest,
     Level(u32, u32),
+    Story(u32),
+    StoryFinish(u32),
+    FrontendStart,
 }
 
 impl Boot {
@@ -99,6 +105,9 @@ impl Boot {
         let mut it = s.split_whitespace();
         match (it.next(), it.next().and_then(|w| w.parse().ok()), it.next().and_then(|l| l.parse().ok())) {
             (Some("level"), Some(w), Some(l)) => Boot::Level(w, l),
+            (Some("story"), Some(n), _) => Boot::Story(n),
+            (Some("story-finish"), Some(n), _) => Boot::StoryFinish(n),
+            (Some("frontend-start"), _, _) => Boot::FrontendStart,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
             (Some("save-test"), _, _) => Boot::SaveTest,
             _ => Boot::Frontend { trained: false },
@@ -222,6 +231,10 @@ pub struct App {
     book_font: Option<Font>,
     last_mode: i32,
     last_pad: u16,
+    /// `Boot::StoryFinish`: frames since boot while it is driving the game.
+    autofinish: Option<u32>,
+    /// `Boot::FrontendStart`: frames spent on the title screen.
+    autostart: Option<u32>,
     /// Frame pacing: running averages (C0 ticks, x16 fixed point) of a simulation tick
     /// incl. audio polling and of a frame's drawing; the limit in force and a candidate.
     avg_tick: u32,
@@ -277,6 +290,8 @@ impl App {
             book_font: None,
             last_mode: -1,
             last_pad: 0,
+            autofinish: None,
+            autostart: None,
             avg_tick: 0,
             avg_draw: 0,
             fps_limit: 0,
@@ -302,9 +317,17 @@ impl App {
             Boot::SaveTest => {
                 app.game.save_game();
             }
+            Boot::FrontendStart => app.autostart = Some(0),
             Boot::Level(w, l) => {
                 log!("app: booting straight into level {w}-{l}");
                 app.game.start_arcade(w, l);
+            }
+            Boot::Story(n) | Boot::StoryFinish(n) => {
+                log!("app: booting straight into story level {n}");
+                app.game.start_story(n);
+                if matches!(boot, Boot::StoryFinish(_)) {
+                    app.autofinish = Some(0);
+                }
             }
         }
         app.dispatch_effects();
@@ -623,7 +646,8 @@ impl App {
         unsafe {
             crate::ffi::n64_prof(3)
         };
-        crate::pacing::tick(&mut self.game, TickInput { pads: [pad, 0, 0, 0] }, frames);
+        let variable = self.variable_step();
+        crate::pacing::tick(&mut self.game, TickInput { pads: [pad, 0, 0, 0] }, frames, variable);
         self.step_frames = frames;
         self.pace_frames += frames;
         #[cfg(feature = "profile-sim")]
@@ -897,6 +921,12 @@ impl App {
 
     // ------------------------------------------------------------ frame
 
+    /// Variable timestep ([`crate::pacing::VARIABLE`]) unless a demo is playing: demos replay
+    /// recorded pads frame by frame and only follow the original path in 60 Hz steps.
+    fn variable_step(&self) -> bool {
+        crate::pacing::VARIABLE && self.game.game_state.mode as u32 != f2_game::define::mode::DEMO_MODE
+    }
+
     /// One iteration of the main loop: catch the simulation up with real time, then draw.
     pub fn frame(&mut self) {
         let t0 = ticks();
@@ -904,10 +934,39 @@ impl App {
         self.last = t0;
         // Phase 3T (`pacing.rs`): one tick of k frames when behind (variable timestep), or up
         // to MAX_TICKS_PER_FRAME 60 Hz ticks (F2N64_TIMESTEP=fixed).
-        let plan = crate::pacing::plan(&mut self.acc, TICK, MAX_TICKS_PER_FRAME);
+        let variable = self.variable_step();
+        let plan = crate::pacing::plan(&mut self.acc, TICK, MAX_TICKS_PER_FRAME, variable);
         self.dropped_ticks += plan.dropped as u64;
         let (n, k) = (plan.ticks, plan.frames);
-        let pad = input::psx_pad(rt::pad(0));
+        let mut pad = input::psx_pad(rt::pad(0));
+        if let Some(c) = &mut self.autofinish {
+            *c += 1;
+            if *c == 240 {
+                log!("app: story-finish: completing the level");
+                // As saving the last baby: the end-of-level timer, then `StartLevelComplete`.
+                self.game.babyfrog.babies_saved = self.game.map.num_babies as u32;
+                self.game.game.end_level_timer.init(1);
+            }
+            // Results screens (name entry included): Start then X, pressed for 10 frames every 40.
+            if *c > 300 && *c % 40 < 10 {
+                pad |= if *c % 80 < 40 { f2_game::levplay::PAD_START } else { f2_game::levplay::PAD_CROSS };
+            }
+            if *c > 1500 {
+                self.autofinish = None;
+            }
+        }
+        if let Some(c) = &mut self.autostart {
+            use f2_game::define::mode::{FRONTEND_MODE, STARTUP_MODE};
+            let m = self.game.game_state.mode as u32;
+            if m == STARTUP_MODE {
+                *c += 1;
+                if *c > 30 && *c % 60 < 10 {
+                    pad |= f2_game::levplay::PAD_START;
+                }
+            } else if m == FRONTEND_MODE && *c > 0 {
+                self.autostart = None;
+            }
+        }
         for i in 0..n {
             self.tick(pad, i + 1 == n, k);
             self.acc -= (k * TICK).min(self.acc);

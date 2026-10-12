@@ -116,3 +116,47 @@ fn garden1_demo_replays_to_completion() {
     assert_ne!(g.frogmove.curr_tile[0], start_tile);
     assert!(g.collect.garib_list.count < garibs, "no garib collected");
 }
+
+/// Deaths (dead-timer starts) replaying the Garden 1 attract demo in ticks of `k` 60 Hz
+/// frames, and the frog's tile after the replay.
+fn garden1_demo_deaths(data: &DirData, k: u32) -> (u32, u32) {
+    let mut g = Game::new();
+    g.rng.rseed = 144420441;
+    g.init_demo_level(0, 0, data).unwrap();
+    g.frame_count += 1;
+    let (mut deaths, mut was_dead, mut ticks) = (0, false, 0);
+    while !g.levplay.demo_finished && ticks < 5000 {
+        if k == 1 {
+            g.tick(TickInput::default());
+        } else {
+            g.tick_frames(TickInput::default(), k);
+        }
+        g.take_effects();
+        let dead = g.frogger.player[0].dead.time != 0;
+        if dead && !was_dead {
+            deaths += 1;
+        }
+        was_dead = dead;
+        ticks += 1;
+    }
+    (deaths, g.frogmove.curr_tile[0].map_or(u32::MAX, |t| t.0))
+}
+
+/// The recorded demo pads are per 60 Hz frame: replayed in 60 Hz steps Frogger does not die;
+/// multi-frame steps (a console's variable timestep) drift off the path, so hosts must
+/// replay demos in fixed steps (frogger-n64 `App::variable_step`).
+#[test]
+fn garden1_demo_needs_fixed_steps() {
+    let Some(dir) = game_dir() else { return };
+    let data = DirData(dir);
+    if data.read("DEMOS\\RECORD-0-0.KEY").is_none() {
+        eprintln!("skipping: no demo file");
+        return;
+    }
+    let fixed = garden1_demo_deaths(&data, 1);
+    eprintln!("garden 1 demo, 60 Hz steps: {fixed:?} (deaths, final tile)");
+    assert_eq!(fixed.0, 0, "fixed 60 Hz steps");
+    for k in [2, 3, 4] {
+        eprintln!("garden 1 demo, {k} frames per tick: {:?}", garden1_demo_deaths(&data, k));
+    }
+}

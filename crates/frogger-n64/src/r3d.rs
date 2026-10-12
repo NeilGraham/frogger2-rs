@@ -267,6 +267,8 @@ struct MeshRes {
     modge: Option<alloc::boxed::Box<ModgeMesh>>,
     /// World-space positions (`mesh_flags::WORLD`): drawn with an identity model matrix.
     world: bool,
+    /// Vertex colours split for the additive approximation ([`R3d::ensure_additive`]).
+    add_split: bool,
 }
 
 /// Base data of a `MODGE`/`WAVE` mesh's vertices and the frame they were last animated for.
@@ -751,6 +753,7 @@ impl R3d {
             n_verts: m.entry.n_verts as u32,
             modge: None,
             world: m.entry.is_world(),
+            add_split: false,
         };
         let add = |cmds: &[u8], group: usize, tris: u16, center: [f32; 3], radius: f32| -> Result<Part, LoadError> {
             let desc = ffi::R3dGroupDesc {
@@ -1051,6 +1054,27 @@ impl R3d {
                     v[o + 11] = round_i32(a0 as f32 * k).clamp(0, 255) as u8;
                 }
             }
+        }
+        Self::c_writeback(v);
+    }
+
+    /// Before a mesh's first additive draw: its vertex colours split like the packer's
+    /// `additive_corner` (`rgb / max`, `a * max`; the additive variant textures are split the
+    /// same way, so `colour * alpha` is the PC's additive term). The packer splits objects it
+    /// knows are additive (bank flag, `ada`/`wat_`/`xxa_` names); others are made additive at
+    /// run time (the frontend's `slu_flbm` light beams: dark corner colours drawn unsplit
+    /// were dark veils). A split colour has max 255, so splitting again changes nothing.
+    pub fn ensure_additive(&mut self, mesh: MeshId) {
+        let Some(res) = self.meshes.get_mut(mesh.0 as usize) else { return };
+        if res.add_split || res.skinned || res.n_verts == 0 {
+            return;
+        }
+        res.add_split = true;
+        // SAFETY: as in `animate_modge`.
+        let v = unsafe { core::slice::from_raw_parts_mut(res.verts as *mut u8, res.n_verts as usize * 16) };
+        for c in v.chunks_exact_mut(16) {
+            let s = f2_n64fmt::bank::additive_corner([c[8], c[9], c[10], c[11]]);
+            c[8..12].copy_from_slice(&s);
         }
         Self::c_writeback(v);
     }

@@ -56,9 +56,11 @@ pub struct Plan {
 
 /// Plans an iteration from `acc` (real time owed, in C0 COUNT ticks; `tick` per 60 Hz frame)
 /// and removes the dropped time from `acc`. The caller subtracts `frames * tick` per tick run.
-pub fn plan(acc: &mut u32, tick: u32, max_fixed_ticks: u32) -> Plan {
+/// `variable`: [`VARIABLE`], except where the simulation must step exactly 60 Hz frames
+/// (demo playback replays recorded per-frame pads: fixed, slow motion when behind).
+pub fn plan(acc: &mut u32, tick: u32, max_fixed_ticks: u32, variable: bool) -> Plan {
     let owed = *acc / tick;
-    let (ticks, frames, dropped) = if VARIABLE {
+    let (ticks, frames, dropped) = if variable {
         match owed {
             0 => (0, 1, 0),
             n => {
@@ -74,10 +76,10 @@ pub fn plan(acc: &mut u32, tick: u32, max_fixed_ticks: u32) -> Plan {
     Plan { ticks, frames, dropped }
 }
 
-/// Runs one simulation tick of `frames` 60 Hz frames.
+/// Runs one simulation tick of `frames` 60 Hz frames (`variable` as for [`plan`]).
 #[inline]
-pub fn tick(game: &mut Game, input: TickInput, frames: u32) {
-    if VARIABLE {
+pub fn tick(game: &mut Game, input: TickInput, frames: u32, variable: bool) {
+    if variable {
         game.tick_frames(input, frames);
     } else {
         game.tick(input);
@@ -132,13 +134,13 @@ mod tests {
     fn plans() {
         let t = 100;
         let mut acc = 50;
-        assert_eq!(plan(&mut acc, t, 6), Plan { ticks: 0, frames: 1, dropped: 0 });
+        assert_eq!(plan(&mut acc, t, 6, VARIABLE), Plan { ticks: 0, frames: 1, dropped: 0 });
         if VARIABLE {
             let mut acc = 250;
-            assert_eq!(plan(&mut acc, t, 6), Plan { ticks: 1, frames: 2, dropped: 0 });
+            assert_eq!(plan(&mut acc, t, 6, VARIABLE), Plan { ticks: 1, frames: 2, dropped: 0 });
             assert_eq!(acc, 250);
             let mut acc = 1050;
-            let p = plan(&mut acc, t, 6);
+            let p = plan(&mut acc, t, 6, VARIABLE);
             assert_eq!(p, Plan { ticks: 1, frames: MAX_FRAMES_PER_TICK, dropped: 10 - MAX_FRAMES_PER_TICK });
             assert_eq!(acc, 1050 - p.dropped * t);
         }

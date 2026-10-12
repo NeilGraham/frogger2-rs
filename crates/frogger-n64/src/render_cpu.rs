@@ -456,6 +456,22 @@ impl RenderCpu {
     fn overlay(&mut self, tv: &[TlVertex], state: &State, st: &mut FrameStats) {
         self.rects.clear();
         self.verts.clear();
+        // Additive: the colour split of `additive_colour` (main.c draws the rects and
+        // triangles from the texture's additive variant).
+        let split;
+        let tv = if state.blend == ffi::BLEND_ADD {
+            split = tv
+                .iter()
+                .map(|v| {
+                    let mut o = vertex(v);
+                    additive_colour(&mut o);
+                    TlVertex { color: [o.r, o.g, o.b, o.a], ..*v }
+                })
+                .collect::<Vec<_>>();
+            &split[..]
+        } else {
+            tv
+        };
         let flush_tris = |s: &mut Self, st: &mut FrameStats| {
             if !s.verts.is_empty() {
                 let mut ts = *state;

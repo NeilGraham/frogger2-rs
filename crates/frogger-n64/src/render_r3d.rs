@@ -256,6 +256,9 @@ impl R3dLevel {
             },
             None => None,
         };
+        if matches!(list, List::Additive | List::LateAdditive) {
+            self.r.ensure_additive(mesh);
+        }
         if d.modge != 0 {
             self.r.animate_modge(mesh, d.modge_frame, d.modge);
         }

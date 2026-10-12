@@ -265,7 +265,11 @@ void n64_panic_impl(const char *msg, uint32_t len) {
  * has no contiguous hole for the next level's big files and asset_load/malloc fails (seen
  * on hardware and in ares: frontend -> level -> frontend). Blocks >= BIG_MIN come from this
  * pool, reserved at boot while the heap is clean (first fit, address-ordered, coalescing);
- * the main heap keeps the small blocks. Both fall back to the other on failure. */
+ * the main heap keeps the small blocks. Both fall back to the other on failure, small blocks
+ * included: a full main heap with pool space left must not be out of memory (seen in ares
+ * and on hardware: attract demos frontend -> level -> frontend -> Halloween 2, main heap
+ * 5506/5518 KiB in use with ~950 KiB of the pool free). */
+static uint32_t big_small_fallbacks;
 #define BIG_MIN (32 * 1024)
 #define BIG_POOL (2560 * 1024)
 typedef struct big_blk { uint32_t size; uint32_t free; struct big_blk *next; uint32_t pad[13]; } big_blk; /* 64 bytes: payloads 64-byte aligned (surfaces, video buffers) */
@@ -328,7 +332,12 @@ void *__wrap_memalign(size_t align, size_t size) {
         debugf("bigpool: %lu bytes do not fit (used %lu KiB of %d), using the main heap\n", (unsigned long)size, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
     }
     void *p = __real_memalign(align < 8 ? 8 : align, size ? size : 1);
-    if (!p && size >= 1024 && align <= 64) p = big_alloc(size); /* main heap full: try the pool */
+    if (!p && align <= 64) { /* main heap full: try the pool */
+        p = big_alloc(size ? size : 1);
+        if (p && size < BIG_MIN && (big_small_fallbacks++ & 1023) == 0)
+            debugf("bigpool: main heap full, small blocks from the pool (%lu so far, pool %lu KiB used)\n",
+                   (unsigned long)big_small_fallbacks, (unsigned long)(big_used / 1024));
+    }
     return p;
 }
 
@@ -357,7 +366,7 @@ void *__wrap_realloc(void *ptr, size_t size) {
         return n;
     }
     void *r = __real_realloc(ptr, size);
-    if (!r && size >= 1024) {
+    if (!r && size) {
         void *n = big_alloc(size);
         if (n) { memcpy(n, ptr, malloc_usable_size(ptr)); __real_free(ptr); }
         return n;
@@ -365,7 +374,21 @@ void *__wrap_realloc(void *ptr, size_t size) {
     return r;
 }
 
-void *n64_alloc_impl(uint32_t size, uint32_t align) { return memalign(align < 8 ? 8 : align, size ? size : 1); }
+void *n64_alloc_impl(uint32_t size, uint32_t align) {
+    void *p = memalign(align < 8 ? 8 : align, size ? size : 1);
+    if (!p) {
+        /* The allocator's own view (heap stats count free holes as free). */
+        extern char *__heap_end, *__heap_top;
+        extern int __heap_total_size, __heap_top_allocated_size;
+        struct mallinfo m = mallinfo();
+        debugf("malloc: arena %d KiB, in use %d KiB, free holes %d KiB (%d chunks), top chunk %d KiB; "
+               "sbrk end %p top %p (%ld KiB left), top-allocated %d KiB, heap %d KiB; pool %lu/%d KiB\n",
+               m.arena / 1024, m.uordblks / 1024, m.fordblks / 1024, m.ordblks, m.keepcost / 1024,
+               __heap_end, __heap_top, (long)(__heap_top - __heap_end) / 1024, __heap_top_allocated_size / 1024,
+               __heap_total_size / 1024, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
+    }
+    return p;
+}
 
 void n64_free_impl(void *ptr) { free(ptr); }
 
@@ -1006,6 +1029,25 @@ static int draw_one_rect(const n64_rect_t *r, const n64_state_t *st, bool tex, c
     }
     const surface_t *s = &tx->full[0];
     float w = tx->width, h = s->height;
+    if (st->blend == N64_BLEND_ADD) {
+        /* Additive: the alpha-blended variant (see make_add_variant), one TMEM-sized image. */
+        const surface_t *a = n64_tex_add_surface(st->tex);
+        if (!a) return 2;
+        float s0 = r->s0 * a->width, s1 = r->s1 * a->width, t0 = r->t0 * a->height, t1 = r->t1 * a->height;
+        if (rect_fast(tx, a, r->x0, r->y0, r->x1, r->y1, s0, t0, s1, t1)) return 9;
+        rect_tmem = NULL;
+        bool fx = s1 < s0, fy = t1 < t0;
+        float sa = fx ? s1 : s0, sb = fx ? s0 : s1, ta = fy ? t1 : t0, tb = fy ? t0 : t1;
+        int is0 = (int)(sa + 0.5f), it0 = (int)(ta + 0.5f), is1 = (int)(sb + 0.5f), it1 = (int)(tb + 0.5f);
+        if (is1 <= is0 || it1 <= it0) return 2;
+        use_tlut(tx, a, 0);
+        rdpq_tex_blit(a, r->x0, r->y0, &(rdpq_blitparms_t){
+            .s0 = is0, .t0 = it0, .width = is1 - is0, .height = it1 - it0, .flip_x = fx, .flip_y = fy,
+            .scale_x = (r->x1 - r->x0) / (is1 - is0), .scale_y = (r->y1 - r->y0) / (it1 - it0),
+            .filtering = (st->flags & N64_BILINEAR) != 0,
+        });
+        return 0;
+    }
     float s0 = r->s0 * w, s1 = r->s1 * w, t0 = r->t0 * h, t1 = r->t1 * h;
     bool fx = s1 < s0, fy = t1 < t0;
     float sa = fx ? s1 : s0, sb = fx ? s0 : s1, ta = fy ? t1 : t0, tb = fy ? t0 : t1;
