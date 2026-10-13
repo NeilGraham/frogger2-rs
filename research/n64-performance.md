@@ -1447,3 +1447,165 @@ Same benchmark (`tools/n64/bench.sh m3-wW "level-hop W 0" 40`, clean build, last
 Lab 1's last window is a game over (mode 0), so its row uses the earlier windows. Garden draw
 phases (µs/frame): actors0 7.8 ms, actors1 1.6, shadows 0.9, sprites 1.0, overlays 1.2,
 refill 0.4, snapshot 0.5. Host tests pass. Screenshots: `target/n64/bench-m3/` (not in the repo).
+
+## 3A: audio, 2D submit and frame stability (2026-10-12)
+
+Branch `worktree-agent-a34484d17ec254d7b` (from `350099b`). Scope: the per-frame CPU outside
+the simulation and the 3D draw loop — the mixer, the CPU 2D batches (`render_cpu.rs`, the 2D
+half of `csrc/main.c`), frame-time spikes and the frame limit.
+
+### Before / after (ares v148, `level-hop W 0`, 40 s, last 3 windows; mean of 3 code layouts)
+Every row is the mean over three builds that differ only by `-DF2N64_CODEPAD=0/1024/3072`
+(padding at the end of the hot flush region): a single build's fps moves by up to 10 % with
+code layout alone (below). Before = `350099b` with libdragon-3p, after = this branch with
+libdragon-3a at `1007c9d` (`6545f29`'s perspective-triangle change measured separately).
+
+| level | fps | mixer CPU | mixer / frame | CPU-side submit (C tris + rects) | worst frame |
+|---|---|---|---|---|---|
+| Garden 1 | 28.0 → **28.7** | 101 → **47 ms/s** | 3.6 → **1.6 ms** | 1 ms (1.5 → 1.3 ms) | 36 → 36 ms |
+| Space 1 | 16.3 → **17.0** | 122 → **56 ms/s** | 7.5 → **3.3 ms** | 3–4 → 3 ms (4.3 → 3.4 ms) | 62 → 61 ms |
+| Lab 1 | 17.3 → **19.0** | 131 → **65 ms/s** | 7.6 → **3.4 ms** | 3 → 2 ms (3.5 → 2.8 ms) | 124 → 75 ms (first gameplay window) |
+| frontend (8-0) | 23.8 → **25.5** | 128 → **58 ms/s** | 5.4 → **2.3 ms** | 3 → 2 ms (3.4 → 2.7 ms with `6545f29`) | 44 → 43 ms |
+
+Lab's last windows include the game over and the frontend load; its gameplay windows after:
+18.2–19.5 fps; the game-over → frontend load frame 670 → 575 ms. The perf line's `audio poll`
+(only the poll after each tick: the 1.0 / 2.1 / 2.8 ms quoted for this task) is now 0.5 / 1.3 /
+1.5 ms per tick in Garden / Space / Lab; the whole mixer cost is the new `audio N us/frame`
+field and the `audio:` line.
+
+### Audio (libdragon-3a, `tools/n64/libdragon-3a.sh`)
+`-DF2N64_AUDIO_PROF` (libdragon's own mixer profile slots, enabled with `profile_init` +
+`__mixer_profile_init`) showed per Lab frame (55 ms, 8.3 ms in the mixer) 18 mixer rounds,
+where a round may be 512 samples: ~110 samples per round. Cause: a streamed channel's round is
+capped by the contiguous window its sample ring can hand the RSP, computed from the fixed
+128-unit margin — for the 16-bit stereo ULC music (one unit = one sample) 111 samples at
+32 kHz, although ULC rings already carry a 1024-sample mirrored tail. The per-channel
+bookkeeping of every round (frequency sync, window fetch, volume ramps, MIX_CHANNEL commands;
+10–12 channels in Lab) ran ~290 times a second instead of ~63.
+- **Round cap from the ring's real mirrored tail** (`mixer_refresh_max_ns`, and the matching
+  `samplebuffer_get` assert): Lab 157 → 85 ms/s, Garden 110 → 56 ms/s. The mixed stream is the
+  same (the ucode already mixes 512-sample rounds for every other channel; the window mirror
+  copies up to the tail size, which ULC rings allocate anyway).
+- **ULC read-ahead**: the decoder did `lseek` + `read(max_block_size)` per 1024-sample block
+  (~150 µs of synchronous PI each, ~3x the average block). Now a 4 KiB window of ROM addresses
+  in a cached buffer, refilled by `dma_read_async` once less than half is left ahead; blocks
+  are decoded in place. `ulc_io` 144 → 73 µs per Garden frame, PI wait 179 → 6 µs. Checked with
+  a self-test build comparing every block with the old read (1536 blocks in Garden and in the
+  frontend, 0 mismatches; `F2_ULC_RA_CHECK` in the patch).
+- Left (Lab, 3.9 ms per 52 ms frame): ULC coefficient unpacking ~0.9 ms (≈530 µs per stereo
+  block; the RSP does the IMDCT), the VADPCM effects' sample buffers ~0.7 ms and prefetch
+  0.45 ms, MIX_CHANNEL / volumes 0.75 ms, round preparation 0.25 ms. The effect voices are
+  what separates Lab (10 voices, all audible: the new `(N silent)` count is 0) from Garden (3).
+
+### 2D submit
+Space's 90–100 CPU triangles: 44 are the ground shadows (`ai_circle`, 22 projected quads), 56
+the additive lightning (`electric.bmp`), 4 the HUD clock; its ~57 rects are coins, the
+copper/chrome sprites and the HUD. A CPU triangle cost ~27 µs (3 x TRIANGLE_DATA + TRIANGLE,
+nine float → int conversions per vertex, cold `Tri` loads).
+- **Triangle-data slot reuse** (`fast_tri_shared`): the rdpq overlay keeps its three
+  TRIANGLE_DATA slots in its saved DMEM state and the triangle command only sorts pointers to
+  them, so a vertex already in a slot is not sent again (a quad's second triangle sends one).
+  Space 294 → 190 vertices converted per frame; with a per-vertex colour cache (four
+  float → int conversions and the additive split's divisions) C-side triangles 2.7 → 2.1 ms.
+- **Perspective CPU triangles** (`6545f29`): `rdpq_triangle_rsp`'s w / 1-w conversion copied
+  (`f2_s16_16`), so non-tiled triangles with rhw ≠ 1 skip the float vertex + libdragon set-up
+  as well: frontend 2.7 → 2.0 ms.
+- Rects: primitive colour / depth only when they change within a batch.
+- `update_argb4444` (procedural refill) wrote each texel as an swl/swr pair (RGBA32) or two
+  byte stores (RGBA16) through `[u8; N]` chunks; now one aligned word store (two RGBA16 texels
+  per store).
+- `draw_segment` polled the mixer unconditionally every 16 batches, so a whole mixer refill
+  (1–3 ms) could be booked as "CPU-side submit"; now `audio_poll_due` (the 40 ms rule).
+
+The ≤ 1 ms target is not reached in Space / Lab / frontend. Left: ~20 µs per CPU triangle and
+~15–25 µs per rect — libdragon's command building, not memory (`rdpq_set_prim_color` alone
+costs 256 CPU cycles, `-DF2N64_MEMBENCH`) — plus `RenderCpu::build` (~1 ms in Space, cold
+`Tri` reads). Next step: the shadows and the lightning as RSP geometry (they are world-space
+quads the CPU projects today; f2-draw / r3d, outside this slice).
+
+### Frame stability: spike sources
+New diagnostics: `spike` lines (a main-loop period > 50 ms and > 1.5x the running average, or
+the first frame after a load, with its breakdown), `slow cpu batch` (> 2 ms), `cpu texture`
+(conversions), `display` (vblanks each image stayed on screen). Found (Lab hopping, frontend):
+- **First use of a texture in a CPU batch converts it on the CPU**: the HUD clock's 128x128 CI8
+  hand / head → their downscaled copies (35 ms each: with a 3.8 ms glyph batch the 124 ms Lab
+  frame), an effect's IA8 64x64 additive variant (8 ms), r3d's TMEM copies of ~40 64x64 CI8
+  textures at level start (~2.4 ms each). `tex_fetch` per texel was ~2 µs. Now per-format decode
+  tables (16 / 256 values), word loads/stores, SWAR box sums and exact reciprocal divisions
+  (same texels; the division identities checked exhaustively on the host), and the small copy
+  shares r3d's identical TMEM copy: clock 35 → 6 ms, additive variant 8 → 5 ms, the Lab spike
+  124 → 73–77 ms. Still ~0.4 µs per CI8 texel; doing these conversions at level load (or in the
+  pack) would remove the rest.
+- **Text appearing**: glyph sub-rect uploads of the 214-texel-wide font atlases miss the
+  upload-block cache (2.5–5.6 ms for 12–32 new glyphs). A sub-rect seen once is now uploaded
+  directly (second-chance admission) instead of being recorded as an rspq block that evicts a
+  block in use; the batches are still 2.4–3 ms (the uploads themselves).
+- **The story book** (frontend / game over): the 256x256 page texture is drawn as triangles
+  through TMEM tiles, 64 tiles x 2 triangles, each with an upload, clipping and `rdpq_triangle`:
+  ~16 ms per frame while the book is shown, 55–125 ms in its first frame. Not changed (not
+  gameplay). Next: a tile-major loop over the batch (one upload per tile), 62x31 tiles (TMEM is
+  full at 63x32 with the filter border: 45 instead of 64 tiles), the fast vertex path.
+- **Level transitions**: the game-over → frontend frame is the frontend's level load inside
+  `Game::tick` (~480 ms) plus 52 ms of texture conversion (was 122) in its first draw.
+- Steady state: mixer refills no longer pile into one frame's submit; in gameplay the longest
+  main-loop period (`longest loop` in the perf line) is the worst frame + ≤ 3 ms.
+
+### Frame limit (30 / 20 fps setting)
+`display_set_fps_limit(30)` shows frames only on every 2nd vblank at a fixed phase: with 3
+framebuffers the average rate holds (it does not fall to 20 fps), but a frame that misses its
+slot by a millisecond leaves the previous image up for 4 vblanks (66 ms). Garden with the limit
+(`-DF2N64_FLIP_LIBDRAGON`, `F2N64_FRAME_LIMIT=30`): per 5 s, 132–136 images shown 2 vblanks and
+7–9 shown 4. Now (default) the display flips on any vblank (`display_set_fps_limit(0)`), and
+the RDP-done callback or a vblank handler hands a finished frame to `display_show` no earlier
+than 2 vblanks after the last flip (3 at 20 fps): a late frame costs one vblank (50 ms) and the
+cadence continues from there. Same Garden test: 104–110 images shown 2 vblanks, 27–30 shown 3,
+none 4 (that build ran at 27 instead of 28.5 fps for code-layout reasons, hence more late
+frames). The trade: when the frame time hovers around 33 ms, a few 66 ms holds become more
+frequent 50 ms ones; an isolated late frame is always better off. FMV playback still sets its
+own limit, and the game's is restored after it.
+
+### Measurement notes
+- **Code layout moves a build by up to 10 %**: the same commit padded by 0 / 1024 / 2048 /
+  3072 bytes (`-DF2N64_CODEPAD`): Space 16.4 / 15.9 / 15.5 / 17.5 fps (actors0 14.6 / 13.5 /
+  11.9 / 11.3 ms); Garden 27.6 / 28.8 / 29.8 fps (0 / 1024 / 3072). This branch's first full run
+  looked 2 fps slower than its audio-only commit in Garden for that reason (an old build padded
+  by the same 2.3 KB was not slower). Compare builds over several layouts (`F2N64_PADX` for
+  data, `CODEPAD` for code).
+- ares v148 memory costs (`-DF2N64_MEMBENCH`, CPU cycles per access in a loop): uncached
+  32/64-bit store 5 / 4, uncached load 5, cached access with a line miss every 4 words ~22.
+  Real hardware has much slower uncached accesses, so trading uncached for cached accesses can
+  look worse in ares than it is on the console (the scratch experiments below).
+
+### Tried and dropped
+- ULC coefficient unpacking with the bit cursor in registers and a magnitude table (host test:
+  identical over 96 M coefficients): no gain (581 vs 580 µs per Garden frame); decoding into a
+  cached scratch + memcpy: slower in ares (807 µs). The loop is already ~24 cycles per
+  coefficient.
+- Column-sum scratch arrays for the texture box filters: slower in ares (D-cache conflicts).
+- Preloading (resident) VADPCM effects: Lab opens 26 looped samples (~850 KB as VADPCM) and the
+  frontend runs at 5.1 of 5.4 MB of heap; small loops are already pinned in their ring by the
+  mixer.
+- Muting silent voices: none of Lab's 10 voices is silent.
+
+### Quality trade-offs measured (not shipped; owner's call)
+- Mixer output at 22.05 kHz instead of 32 kHz (`-DF2N64_AUDIO_RATE=22050`): mixer CPU Lab
+  77 → 74 ms/s, Garden 46 → 42 (−5–8 %); with the music re-encoded at 22 kHz the ULC unpacking
+  would drop by another ~30 % of ~17 ms/s. It loses everything above 11 kHz in the music for
+  ≤ 1 % of the CPU: **not recommended**.
+- Mono or lower-bitrate music: ULC unpacking is ~17 ms/s for 128 kbps stereo and scales with
+  the coded coefficients; halving it saves ≤ 1 % of the CPU: **not recommended**.
+- The effect voices (~5 ms/s each in Lab) are the remaining audio lever; a voice cap below the
+  game's would change which sounds play (parity): not proposed.
+
+### Risks
+- libdragon-3a is a third patched prefix (`~/opt/n64root-3a`); builds without it still work (a
+  NOTE is printed; the mixer then costs ~2x the CPU). The round-cap change relies on a ring's
+  mirrored tail being at least the window it hands out (true for every waveform: the tail is
+  `max(128, append_units)` units); libdragon's asserts (compiled in) checked it in every run.
+- The ULC read-ahead is one static 4 KiB window (one ULC stream at a time: the music; a second
+  stream stays correct, refilling on every switch).
+- Triangle-data slot reuse depends on the rdpq overlay keeping TRIANGLE_DATA in its saved state
+  and the triangle command not modifying it (true at the pinned 39d0d60); the slots are
+  forgotten at each batch and after any `rdpq_triangle`.
+- Paced flips call `display_show` from the RDP-done interrupt (as `rdpq_detach_show` does) or
+  from a vblank handler; `-DF2N64_FLIP_LIBDRAGON` restores the old path.
