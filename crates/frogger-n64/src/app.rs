@@ -142,6 +142,9 @@ pub enum Boot {
     MemTour(u32),
     LevelBookTest,
     GameOverBookTest,
+    /// Testing: a PC recording (`rom:/replay.txt`, `frogger --practice W L --record`) played
+    /// back and checked against its checksums (`replay.rs`).
+    Replay,
 }
 
 impl Boot {
@@ -162,6 +165,7 @@ impl Boot {
             (Some("gameover-book-test"), _, _) => Boot::GameOverBookTest,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
             (Some("save-test"), _, _) => Boot::SaveTest,
+            (Some("replay"), _, _) => Boot::Replay,
             _ => Boot::Frontend { trained: false },
         }
     }
@@ -331,6 +335,8 @@ pub struct App {
     settings_test: bool,
     /// Test boots: pad presses after the hub is up, as (frames, pad) steps; (frame, steps).
     pad_script: Option<(u32, &'static [(u32, u16)])>,
+    /// `Boot::Replay`: the recording being played (one 60 Hz tick of its pads per game frame).
+    replay: Option<crate::replay::Replay>,
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
     /// [`App::free_last_level`] ran for the load in progress (before its video).
@@ -417,6 +423,7 @@ impl App {
             menu_release: false,
             settings_test: false,
             pad_script: None,
+            replay: None,
             level_quit: None,
             tour: None,
             last_level_freed: false,
@@ -436,6 +443,10 @@ impl App {
         f2_draw::overlay::set_button_prompts(vec![('X', "A".into()), ('C', "B".into()), ('S', "Z".into()), ('T', "C-Up".into())]);
         let mut cfg = SessionConfig::new(app.data.clone());
         cfg.save_data = crate::save::load();
+        if boot == Boot::Replay {
+            // As the PC recording's session: no save.
+            cfg.save_data = None;
+        }
         log!("app: save game {}", if cfg.save_data.is_some() { "loaded from SRAM" } else { "not found (new player)" });
         let t0 = ticks();
         app.game = Game::new_session(cfg);
@@ -516,6 +527,19 @@ impl App {
                 app.game.start_arcade(w, l);
                 app.hop_bench = Some(0);
             }
+            Boot::Replay => {
+                let r = rt::file_read("rom:/replay.txt").ok_or_else(|| String::from("rom:/replay.txt not found"));
+                match r.and_then(|b| crate::replay::Replay::parse(&String::from_utf8_lossy(&b))) {
+                    Ok(r) => {
+                        log!("replay: practice {}-{}, {} ticks", r.world, r.level, r.end);
+                        // As the PC's `--practice` (`App::start_choice`): the frontend session first.
+                        app.game.start_frontend();
+                        app.game.start_arcade(r.world, r.level);
+                        app.replay = Some(r);
+                    }
+                    Err(e) => log!("REPLAY FAILED: {e}"),
+                }
+            }
             Boot::Story(n) | Boot::StoryFinish(n) => {
                 log!("app: booting straight into story level {n}");
                 app.game.start_story(n);
@@ -526,6 +550,10 @@ impl App {
         }
         app.dispatch_effects();
         app.process_level_loads();
+        let start = app.replay.as_mut().and_then(|r| Some(r.check(0, r.start_hash()?, app.game.checksum())));
+        if let Some(c) = start {
+            app.replay_report(c);
+        }
         app.heap_log("boot");
         #[cfg(feature = "profile")]
         unsafe {
@@ -1349,7 +1377,36 @@ impl App {
     /// Variable timestep ([`crate::pacing::VARIABLE`]) unless a demo is playing: demos replay
     /// recorded pads frame by frame and only follow the original path in 60 Hz steps.
     fn variable_step(&self) -> bool {
-        crate::pacing::VARIABLE && self.game.game_state.mode as u32 != f2_game::define::mode::DEMO_MODE
+        // A replay ticks as the PC does (`tick_frames(.., 1)`).
+        let replay = self.replay.as_ref().is_some_and(|r| !r.done());
+        replay || crate::pacing::VARIABLE && self.game.game_state.mode as u32 != f2_game::define::mode::DEMO_MODE
+    }
+
+    /// Logs a replay check, the parts that differ on a desync, and the end of the replay.
+    fn replay_report(&mut self, c: crate::replay::Check) {
+        use crate::replay::Check;
+        let Some(r) = &self.replay else { return };
+        match c {
+            Check::None => {}
+            Check::Ok(t) => log!("replay: tick {t} checksum ok"),
+            Check::Desync(t, want, got) => {
+                log!("REPLAY DESYNC at tick {t}: checksum {got:016x}, the PC had {want:016x}");
+                let rec = r.parts_at(t).unwrap_or("");
+                for (name, h) in self.game.checksum_parts() {
+                    let pc = rec.split_whitespace().find_map(|p| p.strip_prefix(name).and_then(|p| p.strip_prefix('=')));
+                    let ours = format!("{h:016x}");
+                    if pc != Some(ours.as_str()) {
+                        log!("replay: part {name} differs: n64 {ours}, pc {}", pc.unwrap_or("?"));
+                    }
+                }
+            }
+        }
+        if r.done() {
+            match r.desync {
+                None => log!("replay done: {} ticks, all {} checksums match", r.tick, r.checks_ok),
+                Some((t, _, _)) => log!("replay done: {} ticks, {} checksums matched, first desync at tick {t}", r.tick, r.checks_ok),
+            }
+        }
     }
 
     /// One iteration of the main loop: catch the simulation up with real time, then draw.
@@ -1362,7 +1419,13 @@ impl App {
         let variable = self.variable_step();
         let plan = crate::pacing::plan(&mut self.acc, TICK, MAX_TICKS_PER_FRAME, variable);
         self.dropped_ticks += plan.dropped as u64;
-        let (mut n, k) = (plan.ticks, plan.frames);
+        let (mut n, mut k) = (plan.ticks, plan.frames);
+        if self.replay.as_ref().is_some_and(|r| !r.done()) {
+            // The recording's 60 Hz ticks, one per game frame owed (slower than real time
+            // when the frame takes longer than MAX_TICKS_PER_FRAME ticks).
+            n = (n * k).min(MAX_TICKS_PER_FRAME);
+            k = 1;
+        }
         // Testing (F2N64_FREEZE=N or N/M): the simulation stops after N game frames of each
         // level and the same scene is drawn from then on; with /M it then advances one tick
         // every M drawn frames (render bugs: scene-dependent or timing).
@@ -1488,7 +1551,19 @@ impl App {
         }
         let before = self.win;
         for i in 0..n {
-            self.tick(pad, i + 1 == n, k);
+            let replay_pad = self.replay.as_mut().filter(|r| !r.done()).map(|r| r.pad());
+            let mode = self.game.game_state.mode;
+            let replaying = replay_pad.is_some();
+            self.tick(replay_pad.unwrap_or(pad), i + 1 == n, k);
+            if replaying {
+                let game = &self.game;
+                let r = self.replay.as_mut().unwrap();
+                let c = r.after_tick(|| game.checksum());
+                if game.game_state.mode != mode {
+                    log!("replay: tick {} mode {}", r.tick, game.game_state.mode);
+                }
+                self.replay_report(c);
+            }
             self.acc -= (k * TICK).min(self.acc);
             let tp = ticks();
             rt::audio_poll();

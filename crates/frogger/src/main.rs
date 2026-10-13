@@ -12,7 +12,8 @@
 //! N frogs, `--demo W L` a recorded demo, `--video NAME` one FMV. Headless without a level option loads Garden 1.
 //! `--pad-script FILE` drives player 1's pad: lines `TICK BUTTONS` hold the buttons
 //! (`cross+up`, `none`, or a hex mask) from that tick on; `TICK shot FILE.png` writes a
-//! screenshot before that tick (headless).
+//! screenshot before that tick (headless). `--record FILE` with `--practice W L` records
+//! the session for the N64 replay boot (pads + state checksums, `record.rs`).
 //!
 //! Online play (`docs/NETPLAY.md`): `frogger --host [--port N] [--host-addr IP] --multi W L N`
 //! hosts an N-player match and prints a join code; `frogger --join CODE` joins it. With
@@ -33,7 +34,7 @@ mod present;
 
 #[cfg(test)]
 use frogger::render;
-use frogger::{app, data, gameplay, netplay, padscript};
+use frogger::{app, data, gameplay, netplay, padscript, record};
 
 use app::{App, NetRequest, Step};
 use f2_audio::AudioEngine;
@@ -73,6 +74,7 @@ struct Args {
     prompts_ps: bool,
     screenshot_rebind: bool,
     pad_script: Option<PathBuf>,
+    record: Option<PathBuf>,
     video: Option<String>,
     save: Option<PathBuf>,
     dev_unlock: bool,
@@ -94,6 +96,7 @@ fn usage() -> ! {
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
          \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
+         \x20      [--record FILE]  (with --practice W L: pads + checksums for the N64 replay)\n\
          online: --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS | --join CODE  [--pad-seed S (headless)]\n\
          mods: [--mods ID,ID...] [--mod ID]... (default: config [mods] enabled; \"\" = none) [--mods-dir DIR]\n\
          practice: [--practice WORLD LEVEL | --story CHAPTER] (level select through a game session)\n\
@@ -134,6 +137,7 @@ fn parse_args() -> Args {
         prompts_ps: false,
         screenshot_rebind: false,
         pad_script: None,
+        record: None,
         video: None,
         save: None,
         dev_unlock: false,
@@ -232,6 +236,7 @@ fn parse_args() -> Args {
             }
             "--screenshot-rebind" => a.screenshot_rebind = true,
             "--pad-script" => a.pad_script = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--record" => a.record = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -408,6 +413,7 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
         Some(p) => Some(padscript::PadScript::load(p)?),
         None => None,
     };
+    app.record = args.record.as_deref().map(record::Recorder::create).transpose()?;
     let frames = app.pad_script.as_ref().map_or(args.frames as u64, |s| (args.frames as u64).max(s.last_tick() + 1));
     app.push_steps(steps);
     let kb = f2_platform::KeyboardState::default();
@@ -531,6 +537,7 @@ struct Host {
     mute: bool,
     hud_probe: bool,
     pad_script: Option<padscript::PadScript>,
+    record: Option<record::Recorder>,
     save_path: PathBuf,
     dev_unlock: bool,
     steps: Vec<Step>,
@@ -707,6 +714,7 @@ impl WindowApp for Host {
                 app.editor_mods = Some(self.editor_setup.0.clone());
                 app.editor_cmds = std::mem::take(&mut self.editor_setup.1);
                 app.pad_script = self.pad_script.take();
+                app.record = self.record.take();
                 app.save_path = Some(self.save_path.clone());
                 if self.dev_unlock {
                     app.save_data = Some(dev_unlock_save());
@@ -1003,6 +1011,7 @@ fn run_window(data: data::Data, mut cfg: Config, args: &Args, steps: Vec<Step>, 
             Some(p) => Some(padscript::PadScript::load(p)?),
             None => None,
         },
+        record: args.record.as_deref().map(record::Recorder::create).transpose()?,
         save_path: args.save.clone().unwrap_or_else(|| f2_platform::paths::save_dir().join("savegame.dat")),
         dev_unlock: args.dev_unlock,
         present: None,

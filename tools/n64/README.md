@@ -39,6 +39,26 @@ Use your own `N64TEST` directory and ROM name when other agents run ares at the 
 (the default `C:\f2-n64test\frogger2.*` files are shared). Design and numbers:
 `research/n64-performance.md` (phase 2R), format: `docs/n64-model-format.md`.
 
+## Replays (PC recording -> N64)
+A play session recorded on the PC replays in ares tick for tick, checked against the PC's
+state checksums (`Game::checksum`, every 60 ticks): real play, not a scripted test.
+```sh
+frogger --practice 0 0 --mods "" --record garden1.txt     # PC: play, close the window when done
+frogger --headless --practice 0 0 --frames N --pad-script garden1.txt --record check.txt   # optional: PC re-check
+F2N64_BOOT=replay F2N64_KEEP_DFS=1 F2N64_REPLAY=garden1.txt tools/n64/build.sh
+tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 600 -stopon "replay done|REPLAY DESYNC"
+```
+- The recording (`crates/frogger/src/record.rs`) is a `--pad-script` with `# h TICK HEX`
+  checksum lines, their parts (`# p`), and `# mode TICK M` lines (3 = level complete).
+  While recording, the PC session matches the N64's: authentic options with the console and
+  settings-menu flags, no save, no mods, the default language.
+- The ROM (`src/replay.rs`) starts the level as the PC's `--practice` does, runs one 60 Hz
+  `tick_frames(.., 1)` per game frame owed (at most `MAX_TICKS_PER_FRAME`; slower than real time
+  when frames are slow), and logs `replay: tick T checksum ok`, `replay: tick T mode M`,
+  `REPLAY DESYNC at tick T` with the differing parts, and `replay done: ...`.
+- First result: a 100 s Garden 1 run (level complete at tick 3621) replayed with all 101
+  checksums equal (2026-10-13).
+
 ## Prerequisites
 - libdragon **preview** (pinned `39d0d60`) + its toolchain at `N64_INST`
   (default `~/opt/n64root/opt/libdragon`: GCC 16 `mips64-elf`, `mkdfs`, `mkasset`, `n64tool`…).
@@ -120,7 +140,8 @@ USA data: 36 MiB ROM.
 
 | env | effect |
 |---|---|
-| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L`, `story N` (story mode at `storySequence[N]`, FMV first), `story-finish N` (testing: `story N`, level completed after 4 s, results pressed through), `frontend-start` (testing: Start pressed on the title), `settings-test` (testing: then the settings page open, FPS counter on, 30 fps limit), `book-test` (testing: then Right, Up: the story book open), `book-select-test [N]` (testing: chapters 1..N open, FMVs skipped, title pressed through quickly, the book, select at once), `mem-tour [STEP]` (testing, memory: every story level then the retro levels 7-0..7-9, each left after 240 frames by Quit, a game over or straight into the next in turn; `mem` lines at every load, research/n64-memory.md "Level heap"), `level-book-test` (testing: story Garden 1 with its FMV, Quit to the frontend after 300 frames, then Right, Up), `gameover-book-test` (testing: story Gold Mine, game over after 300 frames, then the book) |
+| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L`, `story N` (story mode at `storySequence[N]`, FMV first), `story-finish N` (testing: `story N`, level completed after 4 s, results pressed through), `frontend-start` (testing: Start pressed on the title), `settings-test` (testing: then the settings page open, FPS counter on, 30 fps limit), `book-test` (testing: then Right, Up: the story book open), `book-select-test [N]` (testing: chapters 1..N open, FMVs skipped, title pressed through quickly, the book, select at once), `mem-tour [STEP]` (testing, memory: every story level then the retro levels 7-0..7-9, each left after 240 frames by Quit, a game over or straight into the next in turn; `mem` lines at every load, research/n64-memory.md "Level heap"), `level-book-test` (testing: story Garden 1 with its FMV, Quit to the frontend after 300 frames, then Right, Up), `gameover-book-test` (testing: story Gold Mine, game over after 300 frames, then the book), `replay` (testing: plays `rom:/replay.txt`, a PC recording, see "Replays") |
+| `F2N64_REPLAY` | a PC recording copied to `rom:/replay.txt` for `F2N64_BOOT=replay` (see "Replays"); builds without it carry none |
 | `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` / `profile-draw` (sample inside `Game::tick` / `App::draw` only), `game-log` (the simulation's `Effect::Log`), `render-cpu` (phase-2G CPU renderer), `prep-data` (set by `F2N64_DATA=prep`), `simbench` (no game: runs the `f2_game::simbench` scenarios, logs per-tick times, phases and state checksums; research/n64-performance.md §3S) |
 | `F2N64_DATA` | `pack` (default) or `prep` (phase-2G loose files) |
 | `F2N64_CFLAGS=-DF2N64_NO_TRIS` | measurement: r3d does all its CPU work but sends no triangles (the ceiling of polygon reduction; touch `csrc/r3d.c` to rebuild) |

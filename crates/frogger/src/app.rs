@@ -155,6 +155,8 @@ pub struct App {
     pub save_data: Option<Vec<u8>>,
     /// `--pad-script`: sets `pad_override` at the scripted ticks.
     pub pad_script: Option<crate::padscript::PadScript>,
+    /// `--record`: records the session for the N64 replay (and gives it the N64's options).
+    pub record: Option<crate::record::Recorder>,
     /// The texture last copied onto the arcade screen (`menus.arcade_screen_copy`) and
     /// the source image it came from.
     arcade_copied: Option<(String, TexHandle)>,
@@ -337,6 +339,7 @@ impl App {
             save_path: None,
             save_data: None,
             pad_script: None,
+            record: None,
             arcade_copied: None,
             net: None,
             net_t0: Instant::now(),
@@ -749,6 +752,10 @@ impl App {
         cfg.scripts = self.data.scripts.clone(); // P7b
         cfg.options = self.game_options();
         cfg.language = settings::lang_index(&self.cfg.language);
+        if self.record.is_some() {
+            // The N64 replay's session: no save, no mods, the default language.
+            cfg = f2_game::session::SessionConfig { options: crate::record::n64_options(), ..f2_game::session::SessionConfig::new(cfg.data) };
+        }
         cfg
     }
 
@@ -768,6 +775,9 @@ impl App {
         // Offline play: the "Settings" entries of the pause menus / Extras (never online:
         // matches use `fresh_game`'s authentic options).
         o.settings_menu = self.settings_menu;
+        if self.record.is_some() {
+            return crate::record::n64_options();
+        }
         o
     }
 
@@ -829,6 +839,9 @@ impl App {
         }
         self.dispatch_effects();
         self.process_level_loads();
+        if let (Some(r), LevelChoice::Arcade(w, l)) = (&mut self.record, c) {
+            r.start(w, l, &self.game);
+        }
         // A fresh level: no interpolation from the previous scene.
         self.prev.clear();
         self.prev_cam = None;
@@ -1297,6 +1310,9 @@ impl App {
         self.update_game_view();
         if self.game.backdrop.tiled_backdrop.is_some() {
             self.tile_scroll.step(self.game.game_speed);
+        }
+        if let Some(r) = &mut self.record {
+            r.tick(pads[0], &self.game);
         }
     }
 

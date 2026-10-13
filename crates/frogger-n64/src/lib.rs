@@ -23,6 +23,7 @@ pub mod kernels;
 pub mod ntx;
 pub mod pacing; // phase 3T: variable timestep
 pub mod r3d;
+pub mod replay; // PC recording playback (F2N64_BOOT=replay)
 pub mod save;
 pub mod settings;
 pub mod texconv;

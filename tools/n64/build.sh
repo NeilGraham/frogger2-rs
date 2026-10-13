@@ -28,7 +28,8 @@
 #      F2_MUSIC_DIR (default $F2_GAME_DIR/../music), F2N64_MUSIC (track numbers, default
 #      "02 09 10 12": Garden, frontend, level complete), F2N64_BOOT (e.g. "level 0 0" to
 #      boot straight into Garden 1), F2N64_KEEP_DFS=1 (reuse the last filesystem),
-#      F2N64_FEATURES (crate features: profile = sampling profiler, game-log).
+#      F2N64_FEATURES (crate features: profile = sampling profiler, game-log),
+#      F2N64_REPLAY=FILE (a PC recording for F2N64_BOOT=replay, as rom:/replay.txt).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
@@ -165,6 +166,13 @@ else
     done
     rm -rf "$out/mkasset" "$out/wav"
     echo "   filesystem: $(du -sk "$fs" | cut -f1) KiB"
+fi
+# F2N64_REPLAY=FILE: a PC recording (frogger --practice W L --record FILE) as rom:/replay.txt
+# for F2N64_BOOT=replay; other builds carry none.
+rm -f "$fs/replay.txt"
+if [ -n "${F2N64_REPLAY:-}" ]; then
+    cp "$F2N64_REPLAY" "$fs/replay.txt"
+    echo "   replay: $F2N64_REPLAY ($(stat -c %s "$fs/replay.txt") bytes)"
 fi
 
 echo "== [4/5] libdragon link + ROM"
