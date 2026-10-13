@@ -182,6 +182,7 @@ void n64_sfx_close(uint32_t handle);
 uint32_t n64_sfx_channels(void);
 uint32_t n64_sfx_freq(uint32_t handle);            /* native rate of an opened sample, Hz */
 uint32_t n64_rcp_load(void);                       /* RSP busy permille | RDP busy permille << 16 since the last call */
+void n64_flip_stats(uint32_t *hist);                /* flips by vblanks the last image was shown (6 entries: [1..4], [5] = 5+); resets */
 uint32_t n64_fmv_play(const char *path);           /* blocking video playback; 0 = missing */
 void n64_audio_poll_due(void); /* n64_audio_poll if 40 ms have passed since the last */
 uint32_t n64_audio_gap_take(void); /* longest gap between audio polls (C0 ticks) since the last call */

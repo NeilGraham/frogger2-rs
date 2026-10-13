@@ -175,6 +175,8 @@ mod mixer {
         uid: u32,
         rate: u32,
         freq: u32,
+        /// Playing at zero volume (an ambient loop out of range: `UpdateLoopingSample`).
+        silent: bool,
     }
 
     /// Voices on the mixer's sound-effect channels plus the music stream.
@@ -311,7 +313,7 @@ mod mixer {
             let id = self.next_id;
             self.next_id = self.next_id.wrapping_add(1).max(1);
             rt::sfx_play(s.handle, self.first + i as u32, v);
-            self.chans[i] = Some(Chan { id, uid, rate: s.rate, freq });
+            self.chans[i] = Some(Chan { id, uid, rate: s.rate, freq, silent: false });
             self.plays += 1;
             Some(id)
         }
@@ -367,8 +369,9 @@ mod mixer {
             let c = self.chans[i].unwrap();
             let vol = volume.wrapping_mul(self.sfx_volume) / MAX_SOUND_VOL;
             let freq = pitch_to_freq(pitch, c.rate, c.freq).min(MAX_FREQ);
-            let v = voice(vol, pos, radius, &self.listener, freq).unwrap_or(Voice { lvol: 0.0, rvol: 0.0, freq: freq as f32 });
-            self.chans[i] = Some(Chan { freq, ..c });
+            let audible = voice(vol, pos, radius, &self.listener, freq);
+            let v = audible.unwrap_or(Voice { lvol: 0.0, rvol: 0.0, freq: freq as f32 });
+            self.chans[i] = Some(Chan { freq, silent: audible.is_none(), ..c });
             rt::ch_set(self.first + i as u32, &v);
         }
 
@@ -412,6 +415,11 @@ mod mixer {
 
         pub fn active(&self) -> usize {
             self.chans.iter().filter(|c| c.is_some()).count()
+        }
+
+        /// Voices playing at zero volume.
+        pub fn silent(&self) -> usize {
+            self.chans.iter().filter(|c| c.is_some_and(|c| c.silent)).count()
         }
     }
 }

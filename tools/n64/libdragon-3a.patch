@@ -1,0 +1,211 @@
+diff -ruN -x build -x '*.a' -x '*.o' -x '*.d' -x libdragon.version -x .git libdragon-3p/src/audio/mixer.c libdragon-3a/src/audio/mixer.c
+--- libdragon-3p/src/audio/mixer.c	2026-10-10 22:10:34.002313421 -0600
++++ libdragon-3a/src/audio/mixer.c	2026-10-12 17:43:30.721687344 -0600
+@@ -311,6 +311,9 @@
+ 	profile_register(PS_MIXER_ADVANCE,"advance", 2);
+ 	profile_register(PS_MIXER_SEEK,   "ch_seek", 3);
+ 	profile_register(PS_MIXER_PREFETCH,"prefetch", 2);
++	profile_register(PS_ULC_IO,       "ulc_io", 5);
++	profile_register(PS_ULC_DECODE,   "ulc_decode", 5);
++	profile_register(PS_ULC_COEF,     "ulc_coef", 6);
+ }
+ 
+ static inline uint32_t mixer_bit(int ch) { return 1u << ch; }
+@@ -1923,7 +1926,12 @@
+ 	int bps_fx64 = (vadpcm ? 0 : (c->flags & CH_FLAGS_BPS_SHIFT)) + MIXER_FX64_FRAC;
+ 	int ub = Mixer.ch_buf[ch].unit_bytes;
+ 	int overread = (MIXER_LOOP_OVERREAD + ub - 1) / ub;
+-	int max_wlen = MAX(SAMPLEBUFFER_MARGIN_UNITS - overread - 1, 1);
++	// F2 (3A): the contiguous window is the ring's mirrored tail, which block
++	// codecs (ULC: 1024 samples) enlarge: with the fixed 128-unit margin a
++	// 32 kHz ULC stream capped every round at 111 samples (~290 rounds/s of
++	// per-channel bookkeeping instead of ~63).
++	int margin = MAX(Mixer.ch_buf[ch].margin_units, SAMPLEBUFFER_MARGIN_UNITS);
++	int max_wlen = MAX(margin - overread - 1, 1);
+ 	uint64_t units = vadpcm ? (uint64_t)max_wlen * 16 : (uint64_t)max_wlen;
+ 	int ns = (int)((units << bps_fx64) / c->step);
+ 	c->max_round_ns = MIN(MAX(ns, 1), MIXER_MAX_SAMPLES_PER_ROUND);
+diff -ruN -x build -x '*.a' -x '*.o' -x '*.d' -x libdragon.version -x .git libdragon-3p/src/audio/mixer_internal.h libdragon-3a/src/audio/mixer_internal.h
+--- libdragon-3p/src/audio/mixer_internal.h	2026-10-10 22:10:34.002313421 -0600
++++ libdragon-3a/src/audio/mixer_internal.h	2026-10-12 17:43:30.721687344 -0600
+@@ -38,6 +38,9 @@
+ 	PS_MIXER_ADVANCE,   ///< mixer_advance
+ 	PS_MIXER_SEEK,      ///< mixer_ch_seek
+ 	PS_MIXER_PREFETCH,  ///< mixer_prefetch_next
++	PS_ULC_IO,          ///< ULC: compressed block reads
++	PS_ULC_DECODE,      ///< ULC: coefficient unpacking (CPU)
++	PS_ULC_COEF,        ///< ULC: ulc_decode_coeffs only
+ };
+ 
+ /**
+diff -ruN -x build -x '*.a' -x '*.o' -x '*.d' -x libdragon.version -x .git libdragon-3p/src/audio/samplebuffer.c libdragon-3a/src/audio/samplebuffer.c
+--- libdragon-3p/src/audio/samplebuffer.c	2026-10-10 22:10:34.006197987 -0600
++++ libdragon-3a/src/audio/samplebuffer.c	2026-10-12 17:38:56.824070817 -0600
+@@ -265,7 +265,7 @@
+ 		*wlen = len;
+ 
+ 	int slot = samplebuffer_slot(buf, rel);
+-	assertf(*wlen <= SAMPLEBUFFER_MARGIN_UNITS || slot + *wlen <= ring,
++	assertf(*wlen <= buf->margin_units || slot + *wlen <= ring,
+ 		"samplebuffer_get: window %x not contiguous (slot=%x size=%x)", *wlen, slot, ring);
+ 
+ 	// Window straddles the wrap: mirror the leading units into the margin so
+diff -ruN -x build -x '*.a' -x '*.o' -x '*.d' -x libdragon.version -x .git libdragon-3p/src/audio/wav64_ulc.c libdragon-3a/src/audio/wav64_ulc.c
+--- libdragon-3p/src/audio/wav64_ulc.c	2026-10-10 22:10:34.010082556 -0600
++++ libdragon-3a/src/audio/wav64_ulc.c	2026-10-12 17:49:52.972426743 -0600
+@@ -41,6 +41,7 @@
+  */
+ 
+ #include <stdint.h>
++#include <string.h>
+ #include <assert.h>
+ #include <stdlib.h>
+ #include <stdalign.h>
+@@ -52,7 +53,10 @@
+ #include "samplebuffer.h"
+ #include "n64sys.h"
+ #include "rspq.h"
++#include "dma.h"
+ #include "utils.h"
++#include "profile.h"
++#include "mixer_internal.h"
+ 
+ /** @brief Fixed transform block size (samples).
+  *
+@@ -347,7 +351,9 @@
+         uint16_t decimation_pattern = ulc_decimation_patterns[window_ctrl >> 4];
+         do {
+             int sb_size = ULC_BLOCK_SIZE >> (decimation_pattern & 0x7);
++            PROFILE_SCOPE(PS_ULC_COEF) {
+             ulc_decode_coeffs(channel_buffer + coeff_offset, sb_size, &src, &size);
++            }
+ 
+             // Get + update overlap size and limit to that of the last subblock
+             int overlap = sb_size;
+@@ -487,7 +493,88 @@
+     state->block_index = 0;
+ }
+ 
+-static void waveform_ulc_load_block(wav64_t *wav, const wav64_header_ulc_t *ext, const ulc_state_t *state, uint8_t *input) {
++/* F2 (3A): read-ahead cache of compressed ULC bytes. The reference read
++ * max_block_size bytes per 1024-sample block with a synchronous lseek + read
++ * (~150 us each in ares, ~3x the average block). The cache maps a window of ROM
++ * addresses to a cached buffer, refilled by an asynchronous PI DMA once less
++ * than half of it is left ahead, so the decoder rarely waits for the PI. ROM is
++ * read-only, so the window needs no invalidation when the stream changes. */
++#define ULC_RA_SIZE 4096
++static uint8_t alignas(16) ulc_ra_buf[ULC_RA_SIZE];
++static uint32_t ulc_ra_rom;     ///< ROM address of ulc_ra_buf[0] (16-byte aligned)
++static uint32_t ulc_ra_valid;   ///< Bytes valid from ulc_ra_buf[0]
++static uint32_t ulc_ra_pend;    ///< Bytes valid once the pending DMA is done
++static uint64_t ulc_ra_ticket;  ///< Pending DMA (0 = none)
++
++static void ulc_ra_sync(void) {
++    if (ulc_ra_ticket) {
++        dma_wait_finished(ulc_ra_ticket);
++        ulc_ra_ticket = 0;
++        ulc_ra_valid = ulc_ra_pend;
++    }
++}
++
++/* Moves the window to start at `base` (16-aligned) keeping the overlap, and
++ * reads [valid, min(ULC_RA_SIZE, end - base)) from ROM. */
++static void ulc_ra_refill(uint32_t base, uint32_t end, bool async) {
++    uint32_t keep = 0;
++    if (base >= ulc_ra_rom && base < ulc_ra_rom + ulc_ra_valid) {
++        keep = ulc_ra_rom + ulc_ra_valid - base;
++        if (base != ulc_ra_rom)
++            memmove(ulc_ra_buf, ulc_ra_buf + (base - ulc_ra_rom), keep);
++    }
++    ulc_ra_rom = base;
++    ulc_ra_valid = keep;
++    uint32_t want = MIN((uint32_t)ULC_RA_SIZE, end - base);
++    want = ROUND_UP(want, 16) > ULC_RA_SIZE ? want : ROUND_UP(want, 16);
++    if (want <= keep) {
++        ulc_ra_pend = keep;
++        return;
++    }
++    uint32_t n = want - keep;
++    // Dirty lines from the memmove must not be written back over the DMA.
++    data_cache_hit_writeback_invalidate(ulc_ra_buf + keep, ROUND_UP(n, 16));
++    ulc_ra_pend = want;
++    ulc_ra_ticket = dma_read_async(ulc_ra_buf + keep, base + keep, n);
++    if (!async)
++        ulc_ra_sync();
++}
++
++static const uint8_t *waveform_ulc_load_block(wav64_t *wav, const wav64_header_ulc_t *ext, const ulc_state_t *state, uint8_t *input) {
++    uint32_t rom = wav->st->rom_base;
++    if (rom && ext->seek_table_offset) {
++        uint32_t stream = rom + wav->st->base_offset;
++        uint32_t end = stream + ext->seek_table_offset;
++        uint32_t a = stream + state->stream_offset;
++        uint32_t need = MIN((uint32_t)ext->max_block_size, end - a);
++        if (need <= ULC_RA_SIZE - 16) {
++            if (a < ulc_ra_rom || a + need > ulc_ra_rom + ulc_ra_valid) {
++                ulc_ra_sync();
++                if (a < ulc_ra_rom || a + need > ulc_ra_rom + ulc_ra_valid)
++                    ulc_ra_refill(a & ~15u, end, false);
++            }
++            const uint8_t *p = ulc_ra_buf + (a - ulc_ra_rom);
++            // Less than half the window left ahead: refill in the background.
++            if (!ulc_ra_ticket && ulc_ra_rom + ulc_ra_valid < end &&
++                ulc_ra_rom + ulc_ra_valid - (a + need) < ULC_RA_SIZE / 2) {
++                uint32_t keep_from = a & ~15u;
++                ulc_ra_refill(keep_from, end, true);
++                p = ulc_ra_buf + (a - ulc_ra_rom);
++            }
++#ifdef F2_ULC_RA_CHECK
++            {
++                static uint32_t checked, bad;
++                lseek(wav->st->current_fd, wav->st->base_offset + state->stream_offset, SEEK_SET);
++                data_cache_hit_writeback_invalidate(input, ext->max_block_size);
++                int got = read(wav->st->current_fd, input, need);
++                if (got != (int)need || memcmp(input, p, need)) bad++;
++                if (++checked % 256 == 0) debugf("ULC RA check: %lu blocks, %lu mismatches\n", checked, bad);
++            }
++#endif
++            return p;
++        }
++    }
++
+     lseek(wav->st->current_fd, wav->st->base_offset + state->stream_offset, SEEK_SET);
+ 
+     // read() can DMA directly into this cached stack buffer. Invalidate it
+@@ -495,6 +582,7 @@
+     data_cache_hit_writeback_invalidate(input, ext->max_block_size);
+     int size = read(wav->st->current_fd, input, ext->max_block_size);
+     assertf(size > 0, "wav64: %s: ULC read past end", wav->wave.name);
++    return input;
+ }
+ 
+ static void waveform_ulc_read(void *ctx, samplebuffer_t *sbuf, int wpos, int wlen, bool seeking) {
+@@ -537,8 +625,8 @@
+             // coefficient reconstruction or transforms. This happens entirely
+             // on the cpu.
+             while (state->block_index < target_block) {
+-                waveform_ulc_load_block(wav, ext, state, input);
+-                int bits = ulc_skip_block(state, input);
++                const uint8_t *blk = waveform_ulc_load_block(wav, ext, state, input);
++                int bits = ulc_skip_block(state, blk);
+                 state->stream_offset += DIVIDE_CEIL(bits, 8);
+                 state->block_index++;
+             }
+@@ -556,9 +644,15 @@
+     for (int i = 0; i < blocks_len; i++) {
+         assertf(state->block_index < ext->blocks_len, "wav64: %s: ULC blocks exhausted: %lu/%lu", wav->wave.name, state->block_index, ext->blocks_len);
+ 
+-        waveform_ulc_load_block(wav, ext, state, input);
++        const uint8_t *blk;
++        PROFILE_SCOPE(PS_ULC_IO) {
++        blk = waveform_ulc_load_block(wav, ext, state, input);
++        }
+         int preroll_index = i < preroll_blocks ? i : -1;
+-        int bits = ulc_decode_block(state, dst, input, clear_lap, preroll_index);
++        int bits;
++        PROFILE_SCOPE(PS_ULC_DECODE) {
++        bits = ulc_decode_block(state, dst, blk, clear_lap, preroll_index);
++        }
+         state->stream_offset += DIVIDE_CEIL(bits, 8);
+         state->block_index++;
+ 

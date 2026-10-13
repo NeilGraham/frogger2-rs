@@ -215,14 +215,40 @@ impl RenderCpu {
         }
         // Straight into the texture's (uncached) texels: one store per texel.
         let desc = TexDesc { width: side, height: side, fmt, pixels: core::ptr::null() };
+        // Whole-word stores: through `[u8; N]` chunks (alignment 1) the compiler wrote each
+        // texel as an swl/swr pair (RGBA32) or two byte stores (RGBA16), each one an uncached
+        // RDRAM access. The texels are 64-byte aligned (`surface_alloc`); the fallback keeps
+        // any other buffer correct.
         rt::tex_update_with(h, &desc, |out| {
             if fmt == texconv::FMT_RGBA32 {
-                for (o, &c) in out.as_chunks_mut::<4>().0.iter_mut().zip(s) {
-                    *o = texconv::argb4444_to_rgba32(c).to_be_bytes();
+                // SAFETY: plain integers, any bit pattern is valid.
+                let (head, words, _) = unsafe { out.align_to_mut::<u32>() };
+                if head.is_empty() {
+                    for (o, &c) in words.iter_mut().zip(s) {
+                        *o = texconv::argb4444_to_rgba32(c).to_be();
+                    }
+                } else {
+                    for (o, &c) in out.as_chunks_mut::<4>().0.iter_mut().zip(s) {
+                        *o = texconv::argb4444_to_rgba32(c).to_be_bytes();
+                    }
                 }
             } else {
-                for (o, &c) in out.as_chunks_mut::<2>().0.iter_mut().zip(s) {
-                    *o = texconv::argb4444_to_rgba16(c).to_be_bytes();
+                // Two texels per store.
+                // SAFETY: as above.
+                let (head, words, tail) = unsafe { out.align_to_mut::<u32>() };
+                if head.is_empty() {
+                    let (pairs, last) = s.as_chunks::<2>();
+                    for (o, c) in words.iter_mut().zip(pairs) {
+                        let w = (texconv::argb4444_to_rgba16(c[0]) as u32) << 16 | texconv::argb4444_to_rgba16(c[1]) as u32;
+                        *o = w.to_be();
+                    }
+                    if let (Some(&c), Some(t)) = (last.first(), tail.first_chunk_mut::<2>()) {
+                        *t = texconv::argb4444_to_rgba16(c).to_be_bytes();
+                    }
+                } else {
+                    for (o, &c) in out.as_chunks_mut::<2>().0.iter_mut().zip(s) {
+                        *o = texconv::argb4444_to_rgba16(c).to_be_bytes();
+                    }
                 }
             }
         })
@@ -469,6 +495,7 @@ impl RenderCpu {
         let mut n = 0;
         for bt in b.batches.iter().filter(|bt| bt.seg as usize == seg) {
             let (a, e) = (bt.first as usize, bt.first as usize + bt.count as usize);
+            let tb = ticks();
             match bt.kind {
                 Kind::Rects => {
                     rt::draw_rects(&b.rects[a..e], &bt.state);
@@ -487,9 +514,15 @@ impl RenderCpu {
                     st.tris += bt.count;
                 }
             }
+            let dt = ticks().wrapping_sub(tb);
+            if dt > rt::TICKS_PER_SEC / 500 {
+                crate::log!("slow cpu batch (Rust side): seg {seg} {:?} x{} tex {} flags {:x} blend {}: {} us", bt.kind, bt.count, bt.state.tex, bt.state.flags, bt.state.blend, rt::ticks_to_us(dt));
+            }
             n += 1;
+            // Only when due (40 ms): an unconditional poll here ran the mixer whenever the AI
+            // wanted data, which put ~1 ms of audio into this segment's submit time.
             if n % 16 == 0 {
-                rt::audio_poll();
+                rt::audio_poll_due();
             }
         }
         st.submit_ticks += ticks().wrapping_sub(t0);

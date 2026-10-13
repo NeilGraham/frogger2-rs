@@ -23,7 +23,7 @@
 # (streamed from ROM) and the music tracks F2N64_MUSIC into 22 kHz VADPCM wav64; mkasset
 # LZ4-compresses the bigger files (asset_load decompresses them transparently).
 #
-# Env: N64_INST (default ~/opt/n64root-3p/opt/libdragon if built, else ~/opt/n64root/opt/libdragon), RUST_TOOLCHAIN (default nightly),
+# Env: N64_INST (default ~/opt/n64root-3a/opt/libdragon if built, else -3p, else ~/opt/n64root/opt/libdragon), RUST_TOOLCHAIN (default nightly),
 #      F2_GAME_DIR (rendition game/ dir; default <repo>/game-data/usa/game),
 #      F2_MUSIC_DIR (default $F2_GAME_DIR/../music), F2N64_MUSIC (track numbers, default
 #      "02 09 10 12": Garden, frontend, level complete), F2N64_BOOT (e.g. "level 0 0" to
@@ -32,12 +32,19 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-# The phase-3P libdragon variant (tools/n64/libdragon-3p.sh: 2 x 32 KiB rspq ring) when
-# installed, else the stock one.
-if [ -z "${N64_INST:-}" ] && [ -f "$HOME/opt/n64root-3p/opt/libdragon/mips64-elf/lib/libdragon.a" ]; then
-    N64_INST="$HOME/opt/n64root-3p/opt/libdragon"
+# The phase-3A libdragon variant (tools/n64/libdragon-3a.sh: 3P + mixer/ULC audio patch) when
+# installed, else the phase-3P one (tools/n64/libdragon-3p.sh: 2 x 32 KiB rspq ring), else
+# the stock one.
+if [ -z "${N64_INST:-}" ]; then
+    for v in 3a 3p; do
+        if [ -f "$HOME/opt/n64root-$v/opt/libdragon/mips64-elf/lib/libdragon.a" ]; then
+            N64_INST="$HOME/opt/n64root-$v/opt/libdragon"
+            break
+        fi
+    done
 fi
 export N64_INST="${N64_INST:-$HOME/opt/n64root/opt/libdragon}"
+case "$N64_INST" in *n64root-3a*) ;; *) echo "NOTE: libdragon without the 3A audio patch at $N64_INST (the mixer costs ~2x the CPU; tools/n64/libdragon-3a.sh)" >&2 ;; esac
 grep -q "LOWPRI_BUFFER_SIZE   0x2000" "$N64_INST/mips64-elf/include/rspq_constants.h" 2>/dev/null ||
     echo "NOTE: stock libdragon at $N64_INST (2 x 2 KiB rspq ring: the CPU waits for the RSP; tools/n64/libdragon-3p.sh)" >&2
 toolchain="${RUST_TOOLCHAIN:-nightly}"

@@ -32,7 +32,8 @@ for l in sys.stdin:
     g = lambda p: (re.search(p, l).group(1) if re.search(p, l) else "?")
     print(g(r"=> ([\d.]+) fps"), "fps | sim", g(r"sim (\d+) ms"), "draw", g(r"draw (\d+) ms"), "loop", g(r"draw loop (\d+) ms"),
           "submit", g(r"CPU-side submit (\d+) ms"), "queue", g(r"r3d queue (\d+) us"), "flush", g(r"flush (\d+) us"),
-          "| tick", g(r"Game::tick (\d+) us"), "poll", g(r"audio poll (\d+) us"), "worst", g(r"worst frame (\d+) ms"))
+          "| tick", g(r"Game::tick (\d+) us"), "poll", g(r"audio poll (\d+) us"), "audio/frame", g(r"audio (\d+) us/frame"),
+          "worst", g(r"worst frame (\d+) ms"), "maxloop", g(r"longest loop (\d+) ms"))
 '
 grep -E "^sim phases" "$out/$name.txt" | tail -"${BENCH_PHASE_LINES:-1}" || true
 echo "log: $out/$name.txt  elf: $out/$name.elf  shot: $out/$name.png"

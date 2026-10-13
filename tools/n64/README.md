@@ -48,6 +48,13 @@ Use your own `N64TEST` directory and ROM name when other agents run ares at the 
   alone). `build.sh` uses `~/opt/n64root-3p/opt/libdragon` when it exists (override with
   `N64_INST`) and prints a NOTE with the stock ring (the CPU then waits for the RSP: ~7 ms
   per Garden frame). After switching prefixes, `rm -rf target/n64/build` (C objects).
+- Recommended (phase 3A): `tools/n64/libdragon-3a.sh` = the 3P variant plus
+  `libdragon-3a.patch` (mixer rounds sized by the ring's real mirrored tail: the 32 kHz ULC
+  music no longer caps every round at 111 samples; ULC compressed blocks read ahead by
+  asynchronous PI DMA; profile slots `ulc_io` / `ulc_decode` / `ulc_coef`), in its own copies
+  `~/opt/n64root-3a` and `~/opt/libdragon-3a`. The mixer then costs about half the CPU
+  (research/n64-performance.md §3A). `build.sh` prefers `-3a`, then `-3p`, then the stock
+  prefix, and prints a NOTE without the 3A patch.
 - Rust nightly with `rust-src`: `rustup toolchain install nightly --component rust-src`.
 - ares (v148 tested) on the Windows side, reached through WSL interop.
 
@@ -116,6 +123,12 @@ USA data: 36 MiB ROM.
 | `F2N64_CFLAGS=-DF2N64_NO_MUSIC` | measurement: no music (the `audio:` log line shows the mixer's CPU time per second; ULC music at 32 kHz is most of it) |
 | `F2N64_R3D_PROF=1` | measurement: r3d per-phase timers (full / camera-only draws, culling, water, recording, batch, flush parts), `r3dprof` line every 150 frames |
 | `F2N64_PADX=N` | measurement: N bytes of padding before the `R3d` struct (samples data layouts; research/n64-performance.md §3R) |
+| `F2N64_CFLAGS=-DF2N64_CODEPAD=N` | measurement: N bytes of padding at the end of the hot flush region (everything after it moves: samples code layouts; one build's fps can be 10 % off, §3A) |
+| `F2N64_CFLAGS=-DF2N64_AUDIO_PROF` | measurement: libdragon's mixer profile slots (fetch, sample buffers, ULC I/O / decode, volumes, rspq, ...) dumped every 5 s (needs the 3A libdragon for the ULC slots) |
+| `F2N64_CFLAGS=-DF2N64_AUDIO_RATE=N` | measurement: mixer output rate (default 32000) |
+| `F2N64_CFLAGS=-DF2N64_MEMBENCH` | measurement: at boot, CPU cycles per uncached / cached access and per `rdpq_set_prim_color` (`membench` line) |
+| `F2N64_CFLAGS=-DF2N64_FLIP_LIBDRAGON` | frame limit (30 / 20 fps setting) through `display_set_fps_limit` (fixed vblank phase) instead of the paced flips (§3A) |
+| `F2N64_FRAME_LIMIT=30` / `20` / `0` | testing: the frame limit at boot whatever the SRAM settings say |
 | `F2N64_MODGE_CHECK=1` | testing: every 64 frames, compare the RSP's MODGE/WAVE vertices with the bit-exact CPU model (logged) |
 | `F2N64_MODGE_CPU=1` | testing: animate MODGE/WAVE meshes on the CPU instead of the RSP |
 | `F2N64_CVT_CHECK=1` | testing: at boot, check the shader's float -> s15.16 matrix conversion against `to_fixed` (logged) |
@@ -137,6 +150,15 @@ paths, texture upload cache), `perf [W-L] ...` every 5 s (fps, sim ticks/s,
 dropped ticks, per-frame sim and draw time split into draw loop / textures / CPU batches /
 framebuffer wait, RSP and RDP busy %, `Game::tick` µs, audio poll µs, CPU triangles, r3d
 draws / triangles queued and sent / batches / texture loads, audio voices, music),
+`spike [W-L] mode M: ...` (phase 3A: a main-loop period over 50 ms and 1.5x the running
+average — or the first frame after a load — with its breakdown: sim, ticks, draw loop, refill,
+texture uploads, CPU batches, r3d, framebuffer wait, mixer time; at most 8 per 5 s window),
+`slow cpu batch: ...` (a CPU batch over 2 ms: count, texture size/format, blend, rect paths;
+plus the Rust-side line with the segment), `cpu texture: ...` (a CPU texture conversion —
+TMEM / downscaled copy, additive variant — over 0.2–0.5 ms), `display [W-L]: N flips, the
+previous image shown 1 vblank xA, 2 xB, ...` every 5 s (how long each image stayed on screen),
+`audio: N polls/s, N us/s in polls` (all mixer time, the C main loop's polls included; the perf
+line's `audio N us/frame` is the same per frame, its `audio poll` only the poll after each tick),
 `app: frame pacing N fps` (phase 3P: `display_set_fps_limit` from the running tick/frame
 costs, see `App::pace`; `pacing N fps` in the perf line, 0 = unlimited), the perf line's
 `r3d queue`/`flush` µs (queue = the batch after the draw loop; the per-draw recording is part of the draw loop, §3R) and `(N reused)` draws, `heap [W-L] ...` (Rust live/peak, libdragon heap used/total, N64 texture bytes; level peak on
@@ -170,7 +192,10 @@ The pause menus (in levels and in the frontend) have a **Settings** item
 (`GameOptions::settings_menu`; the frontend pause menu's quit item reads "Quit" and soft-resets
 to the start-up logos, `GameOptions::console`). The page (`src/settings.rs`) has:
 - **FPS counter** On/Off (bottom right, frames shown in the last second);
-- **Frame limit** Off / 30 / 20 fps (`display_set_fps_limit`; Off = as fast as possible);
+- **Frame limit** Off / 30 / 20 fps (Off = as fast as possible; 30 / 20: a finished frame is
+  shown no earlier than 2 / 3 vblanks after the last one, so a late frame holds the previous
+  image one extra vblank, not until the next 30 / 20 Hz slot — phase 3A; the old
+  `display_set_fps_limit` behaviour with `-DF2N64_FLIP_LIBDRAGON`);
 - **Controls** "A hop, B tongue" (standard) or "B hop, A tongue" (A/B swapped for the game; the
   page itself always uses A = change, B = back).
 

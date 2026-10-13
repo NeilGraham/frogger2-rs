@@ -82,6 +82,7 @@
     RUST_TO_C n64_sfx_freq
     RUST_TO_C n64_fmv_play
     RUST_TO_C n64_rcp_load
+    RUST_TO_C n64_flip_stats
     RUST_TO_C n64_save_read
     RUST_TO_C n64_audio_gap_take
     RUST_TO_C n64_audio_poll_due
