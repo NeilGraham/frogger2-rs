@@ -17,6 +17,12 @@ N64_ROM_SAVETYPE = sram256k
 CFLAGS += -I$(CSRC) -I$(BUILD_DIR)
 # Measurement switches from the environment (e.g. F2N64_CFLAGS=-DF2N64_NO_TRIS).
 CFLAGS += $(F2N64_CFLAGS)
+# No home directory or user name in the ROM (assert texts, backtraces): paths relative to the
+# repo (crates/...) and libdragon's install (libdragon/...). GCC lets the last match win.
+F2_ROOT := $(abspath $(CSRC)/../../..)
+F2_PATHMAP := -ffile-prefix-map=$(HOME)=~ -ffile-prefix-map=$(abspath $(N64_INST))=libdragon -ffile-prefix-map=$(F2_ROOT)/=
+CFLAGS += $(F2_PATHMAP)
+ASFLAGS += $(F2_PATHMAP)
 
 # RSP ucodes (rsp_*.S are assembled as RSP code by n64.mk).
 RSP_OBJS = $(BUILD_DIR)/rsp_f2mdx.o $(BUILD_DIR)/rsp_f2clip.o $(BUILD_DIR)/rsp_f2modge.o

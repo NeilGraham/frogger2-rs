@@ -85,6 +85,10 @@ After them come the simulation's loop regions (§3S2): `.text.f2hot_s` (the per-
 with `#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ...)]`
 (their `forbid(unsafe_code)` is `deny` on the N64 only). `build/f2.ld` is regenerated when
 the Makefile changes.
+Paths in the ROM (panic and assert texts, the crash screen's backtraces) carry no home
+directory or user name: `build.sh` remaps Rust's (`crates/...`, `/rust/...`, `/cargo/...`), the
+Makefile C/asm's (`-ffile-prefix-map`), and `libdragon-3a.sh` builds libdragon the same way
+(re-run it once on an older install). Check: `n64symdump target/n64/build/frogger2.elf.sym | grep -c /home/` → 0.
 `build.sh` also localises compiler-builtins' weak `memcpy`/`memset`/… so everything links
 newlib's.
 

@@ -12,7 +12,8 @@
 #   instead of a synchronous lseek + read of max_block_size per 1024-sample block;
 # - profile slots ulc_io / ulc_decode / ulc_coef (main.c F2N64_AUDIO_PROF dumps them);
 # - videoconv64: x264 reference frames from VCONV64_H264_REF (f2-n64pack passes 1: the H.264
-#   decoder's picture buffers shrink from ~1 MiB to ~230 KiB while a video plays).
+#   decoder's picture buffers shrink from ~1 MiB to ~230 KiB while a video plays);
+# - built with -ffile-prefix-map: no home directory in the ROM's backtrace data.
 # build.sh prefers ~/opt/n64root-3a, then ~/opt/n64root-3p, then the stock prefix; after
 # switching prefixes, rm -rf target/n64/build.
 set -euo pipefail
@@ -27,7 +28,10 @@ if [ ! -d "$HOME/opt/libdragon-3a" ]; then
 fi
 export N64_INST="$HOME/opt/n64root-3a/opt/libdragon"
 make -C "$HOME/opt/libdragon-3a" clean >/dev/null
-make -C "$HOME/opt/libdragon-3a" -j"$(nproc)" libdragon
+# Headers inlined from the install (newlib's sys/lock.h, ...) as libdragon/... in the debug
+# info behind the crash screen's backtraces: no home directory in the ROM. (libdragon's
+# Makefile appends to CFLAGS from the environment.)
+CFLAGS="-ffile-prefix-map=$N64_INST=libdragon -ffile-prefix-map=$HOME=~" make -C "$HOME/opt/libdragon-3a" -j"$(nproc)" libdragon
 make -C "$HOME/opt/libdragon-3a" install
 make -C "$HOME/opt/libdragon-3a/tools" -j"$(nproc)" videoconv64
 cp "$HOME/opt/libdragon-3a/tools/videoconv64/videoconv64" "$N64_INST/bin/videoconv64"

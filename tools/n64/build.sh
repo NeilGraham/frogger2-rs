@@ -72,6 +72,12 @@ features="${F2N64_FEATURES:-}"
 [ $r3dtest = 1 ] && features="$features r3d-test"
 echo "== [1/5] Rust staticlib ($profile; features:${features:- none})"
 # F2N64_BOOT is read at compile time (option_env!).
+# Source paths in panic messages, assert texts and the debug info behind the crash screen's
+# backtraces: relative to the repo (crates/...), the standard library and crates.io sources
+# under /rust and /cargo (absolute, so tools do not join them onto a crate's directory), no
+# home directory or user name in the ROM. rustc lets the last matching mapping win.
+sysroot_src="$(rustc "+$toolchain" --print sysroot)/lib/rustlib/src/rust"
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=~ --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry/src=/cargo --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/git/checkouts=/cargo-git --remap-path-prefix=$sysroot_src=/rust --remap-path-prefix=$root/="
 cargo "+$toolchain" build --manifest-path "$root/crates/frogger-n64/Cargo.toml" \
     --config "$here/cargo-config.toml" \
     --target "$here/mips-nintendo64-none.json" \
