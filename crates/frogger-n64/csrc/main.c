@@ -660,6 +660,14 @@ void mem_main_end(void) {
 /* One `mem` log line: both heaps, and the level heap's blocks by lifetime. `check`: also
  * list the blocks that earlier loads left behind (which must not exist). */
 void n64_mem_report_impl(const char *tag, uint32_t len, uint32_t check) {
+    if (check & 4) { /* during play: counters only (the block walk below takes ~4 ms) */
+        debugf("mem [%.*s]: level heap %lu KiB used (peak %lu) of %lu, %lu free runs | main heap %d KiB used (peak %d) | "
+               "fallbacks: play->level %lu, level->main %lu | stack below its 64 KiB: %lu KiB of %d\n",
+               (int)len, tag, (unsigned long)(pool_used / 1024), (unsigned long)(pool_peak / 1024), (unsigned long)(pool_size / 1024),
+               (unsigned long)pool_runs, mem_main_used / 1024, mem_main_peak / 1024, (unsigned long)mem_fallback_play,
+               (unsigned long)mem_fallback_level, (unsigned long)(stack_guard_used() / 1024), (int)(stack_guard_size / 1024));
+        return;
+    }
     uint32_t cur = 0, cur_n = 0, old = 0, old_n = 0, play = 0, play_n = 0;
     for (pb *b = (pb *)pool_base; b && (uint8_t *)b < pool_end - 16; b = pb_next(b)) {
         if (!(b->size & PB_USED)) continue;

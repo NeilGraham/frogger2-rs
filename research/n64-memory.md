@@ -172,6 +172,17 @@ numbers in the `mem` lines. If more room is needed, the candidates, largest firs
 - the `Game` text and overlay pools;
 - ULC music and audio buffers.
 
+### Frame rate (A/B against `43e65e1`, `tools/n64/bench.sh`, level-hop, 4 windows of 5 s)
+| scene | old fps | new fps | longest main-loop period old → new |
+|---|---:|---:|---:|
+| Garden 1 | 37.9 | 37.8 | 29–30 → 29–31 ms |
+| Subterranean 1 | 30.0 | 31.1 | 36–37 → 35–36 ms |
+| Ancients 3 | 34.6 | 35.8 | 32 → 31 ms |
+
+The first version walked the whole level heap (5,000+ blocks) in the 5-second perf `mem` line:
+a ~4 ms hitch per window. The periodic line now prints counters only. The full walk (with the
+LEFT OVER check) runs only at the end of a load.
+
 ### Fast iteration
 `tools/n64/run-ares.sh ROM -- -delay 600 -stopon "mem-tour done"`:
 - A crash (`ASSERTION FAILED` / `CPU EXCEPTION` / `RUST PANIC` in the log) stops the run at once,

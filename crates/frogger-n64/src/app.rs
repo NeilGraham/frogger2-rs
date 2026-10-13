@@ -655,7 +655,7 @@ impl App {
             lv().as_ref().map_or(0, |l| l.gfx.tex_bytes) / 1024
         );
         self.level_peak = (self.level_peak.0.max(peak), self.level_peak.1.max(h.used));
-        rt::mem_report(&self.level_name, false);
+        rt::mem_report_quick(&self.level_name);
     }
 
     // ------------------------------------------------------------ levels

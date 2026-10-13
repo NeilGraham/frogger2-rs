@@ -108,6 +108,11 @@ pub fn mem_report(tag: &str, check: bool) {
     unsafe { ffi::n64_mem_report(tag.as_ptr(), tag.len() as u32, check as u32) }
 }
 
+/// A cheap `mem` line (counters only, no block walk): for the periodic perf log.
+pub fn mem_report_quick(tag: &str) {
+    unsafe { ffi::n64_mem_report(tag.as_ptr(), tag.len() as u32, 4) }
+}
+
 /// [`mem_report`], then the stack guard is repainted: later reports show the stack's depth
 /// from here on.
 pub fn mem_report_stack_restart(tag: &str) {
