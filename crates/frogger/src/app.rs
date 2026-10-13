@@ -1319,7 +1319,9 @@ impl App {
             self.tile_scroll.step(self.game.game_speed);
         }
         if let Some(r) = &mut self.record {
-            r.tick(pads[0], &self.game);
+            if r.tick(pads[0], &self.game) != crate::record::Outcome::Recording {
+                self.requests.quit = true;
+            }
         }
     }
 
