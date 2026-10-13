@@ -152,7 +152,7 @@ impl Boot {
 }
 
 /// Frame-time accounting over a logging window.
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct Window {
     frames: u32,
     /// Inside `Game::tick` only / in `audio_poll` between ticks.
@@ -187,6 +187,10 @@ struct Window {
     refill: u32,
     snap: u32,
     host2d: u32,
+    /// Mixer polls (all of them, the C main loop's included) and the longest main-loop
+    /// period (frame end to frame end, so the C polls between frames count).
+    audio: u32,
+    max_period: u32,
 }
 
 /// The renderer side of the loaded level, outside [`App`] so the data source can free it
@@ -311,6 +315,12 @@ pub struct App {
     avg_draw: u32,
     fps_limit: u32,
     fps_cand: (u32, u32),
+    /// Spike log: end of the last frame, `rt::audio_ticks_total` then, running average of
+    /// the main-loop period (C0 ticks x16), spikes logged in this window.
+    last_end: u32,
+    audio_mark: u32,
+    avg_period: u32,
+    spikes: u32,
 }
 
 fn load_font(d: &N64Data<Store>, p: &str) -> Option<Font> {
@@ -378,6 +388,10 @@ impl App {
             avg_draw: 0,
             fps_limit: 0,
             fps_cand: (0, 0),
+            last_end: 0,
+            audio_mark: 0,
+            avg_period: 0,
+            spikes: 0,
         };
         app.rebuild_renderer();
         f2_draw::overlay::set_button_prompts(vec![('X', "A".into()), ('C', "B".into()), ('S', "Z".into()), ('T', "C-Up".into())]);
@@ -388,6 +402,10 @@ impl App {
         app.game = Game::new_session(cfg);
         app.game.set_game_options(f2_game::enhance::GameOptions { console: true, settings_menu: true, ..f2_game::enhance::GameOptions::AUTHENTIC });
         app.settings = crate::settings::Settings::load();
+        // F2N64_FRAME_LIMIT=30|20|0 (build time, measurement): the frame limit whatever SRAM says.
+        if let Some(v) = option_env!("F2N64_FRAME_LIMIT").and_then(|v| v.trim().parse::<u8>().ok()) {
+            app.settings.frame_limit = v;
+        }
         log!("app: settings {:?}", app.settings);
         app.apply_settings();
         app.install_game_hooks();
@@ -1267,6 +1285,7 @@ impl App {
                 }
             }
         }
+        let before = self.win;
         for i in 0..n {
             self.tick(pad, i + 1 == n, k);
             self.acc -= (k * TICK).min(self.acc);
@@ -1281,13 +1300,25 @@ impl App {
         if !self.loaded {
             self.pace(n, t1.wrapping_sub(t0), t2.wrapping_sub(t1));
         }
+        let audio_now = rt::audio_ticks_total();
+        let audio = audio_now.wrapping_sub(self.audio_mark);
+        self.audio_mark = audio_now;
+        let period = t2.wrapping_sub(self.last_end);
+        let first = self.last_end == 0;
+        self.last_end = t2;
         if core::mem::take(&mut self.loaded) {
             self.win = Window::default();
             self.pace_frames = 0;
             self.win_start = t2;
+            self.avg_period = 0;
             return;
         }
+        if !first {
+            self.spike_check(&before, n, k, period, t1.wrapping_sub(t0), t2.wrapping_sub(t1), audio);
+        }
         let w = &mut self.win;
+        w.audio += audio;
+        w.max_period = w.max_period.max(period);
         w.frames += 1;
         w.ticks += n;
         w.sim += t1.wrapping_sub(t0);
@@ -1314,6 +1345,52 @@ impl App {
         if span >= 5 * TICKS_PER_SEC {
             self.log_window(span);
         }
+    }
+
+    /// Frame-time spikes: a main-loop period over 50 ms and 1.5x the running average (both)
+    /// is logged with its breakdown (`spike` lines, at most 8 per perf window), to find what
+    /// lands in one frame (texture uploads, audio refills, level streaming, allocations).
+    /// `before`: the window counters before this frame's ticks.
+    fn spike_check(&mut self, before: &Window, n: u32, k: u32, period: u32, sim: u32, draw: u32, audio: u32) {
+        let avg = self.avg_period >> 4;
+        self.avg_period = if self.avg_period == 0 { period << 4 } else { self.avg_period - (self.avg_period >> 4) + period };
+        // (No average yet: the first frame after a level load, often the slowest.)
+        if period < TICKS_PER_SEC / 20 || (avg != 0 && period < avg + avg / 2) || self.spikes >= 8 {
+            return;
+        }
+        self.spikes += 1;
+        let st = lv().as_ref().map(|l| l.gfx.stats).unwrap_or_default();
+        let w = &self.win;
+        let d = |a: u32, b: u32| ticks_to_us(a.wrapping_sub(b)) / 100;
+        let f = |x: u32| alloc::format!("{}.{}", x / 10, x % 10);
+        #[cfg(not(feature = "render-cpu"))]
+        let (q, fl) = lv().as_ref().map_or((0, 0), |l| (l.r3d.stats.queue_ticks, l.r3d.stats.flush_ticks));
+        #[cfg(feature = "render-cpu")]
+        let (q, fl) = (0, 0);
+        log!(
+            "spike [{}] mode {}: {} ms (average {} ms): sim {} ({} tick(s) x {} frames, Game::tick {}, polls {}, snapshot {}), draw {} (loop {}, refill {}, textures {}, build {}, submit {}, r3d queue {} flush {}, fb wait {}), audio {} ms in polls, rest {}",
+            self.level_name,
+            self.game.game_state.mode,
+            f(ticks_to_us(period) / 100),
+            f(ticks_to_us(avg) / 100),
+            f(ticks_to_us(sim) / 100),
+            n,
+            k,
+            f(d(w.game_tick, before.game_tick)),
+            f(d(w.poll, before.poll)),
+            f(d(w.snap, before.snap)),
+            f(ticks_to_us(draw) / 100),
+            f(d(w.draw_loop, before.draw_loop)),
+            f(d(w.refill, before.refill)),
+            f(d(w.upload, before.upload)),
+            f(ticks_to_us(st.build_ticks) / 100),
+            f(ticks_to_us(st.submit_ticks) / 100),
+            f(ticks_to_us(q) / 100),
+            f(ticks_to_us(fl) / 100),
+            f(ticks_to_us(rt::FB_WAIT.load(core::sync::atomic::Ordering::Relaxed)) / 100),
+            f(ticks_to_us(audio) / 100),
+            f(ticks_to_us(period.saturating_sub(sim + draw)) / 100),
+        );
     }
 
     /// Frame pacing ([`pick_fps`]): updates the running costs with this frame's `n` ticks
@@ -1360,6 +1437,7 @@ impl App {
 
     fn log_window(&mut self, span: u32) {
         let w = core::mem::take(&mut self.win);
+        self.spikes = 0;
         {
             use core::sync::atomic::Ordering::Relaxed;
             use f2_game::simbench::phase::{COUNT, NAMES};
@@ -1397,7 +1475,7 @@ impl App {
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms, pacing {} fps; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws ({} reused, {} view-only), {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms (longest loop {} ms), audio {} us/frame, pacing {} fps; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws ({} reused, {} view-only), {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -1418,6 +1496,8 @@ impl App {
             ticks_to_us(w.r3d_queue / f),
             ticks_to_us(w.r3d_flush / f),
             ms(w.max_frame),
+            ms(w.max_period),
+            ticks_to_us(w.audio / f),
             self.fps_limit,
             rsp / 10,
             rsp % 10,
@@ -1439,6 +1519,18 @@ impl App {
             self.audio.missing,
             self.audio.music_track,
             self.audio.music_playing()
+        );
+        let fl = rt::flip_stats();
+        log!(
+            "display [{}]: {} flips, the previous image shown 1 vblank x{}, 2 x{}, 3 x{}, 4 x{}, 5+ x{} (frame limit {})",
+            self.level_name,
+            fl[1..].iter().sum::<u32>(),
+            fl[1],
+            fl[2],
+            fl[3],
+            fl[4],
+            fl[5],
+            self.fps_limit
         );
         self.heap_log("running");
         // Phase 3T: game time vs wall clock (variable timestep: one tick may cover k frames).

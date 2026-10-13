@@ -202,6 +202,14 @@ pub fn sfx_open(path: &str, looped: bool) -> u32 {
 }
 
 /// RSP and RDP busy fractions (permille) since the last call.
+/// Display flips since the last call by how many vblanks the previous image was shown:
+/// `[_, 1, 2, 3, 4, 5+]` (index 0 unused); resets.
+pub fn flip_stats() -> [u32; 6] {
+    let mut h = [0u32; 6];
+    unsafe { ffi::n64_flip_stats(h.as_mut_ptr()) };
+    h
+}
+
 pub fn rcp_load() -> (u32, u32) {
     let v = unsafe { ffi::n64_rcp_load() };
     (v & 0xFFFF, v >> 16)
@@ -277,7 +285,6 @@ pub fn audio_poll() {
 
 /// [`audio_poll`] if 40 ms have passed since the last poll (for loops that can run long).
 #[inline]
-#[inline]
 pub fn audio_poll_due() {
     // The C side's `n64_audio_poll_due` test, inline: called per draw in the hot loops.
     unsafe extern "C" {
@@ -288,6 +295,16 @@ pub fn audio_poll_due() {
     if ticks().wrapping_sub(last) > TICKS_PER_SEC / 1000 * 40 {
         audio_poll();
     }
+}
+
+/// C0 ticks spent in mixer polls since boot (wrapping; the C side's polls included).
+#[inline]
+pub fn audio_ticks_total() -> u32 {
+    unsafe extern "C" {
+        static audio_ticks_total: u32;
+    }
+    // SAFETY: a plain u32 the C side updates on this (only) thread.
+    unsafe { core::ptr::read_volatile(&raw const audio_ticks_total) }
 }
 
 /// The longest time between two audio polls (any, the C side's included) since the last

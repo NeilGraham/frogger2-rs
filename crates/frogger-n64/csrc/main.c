@@ -14,6 +14,7 @@
 #define SFX_CH0 2
 
 static surface_t zbuf;
+void n64_set_fps_limit_impl(uint32_t fps);
 /* Frame pacing (app.rs, n64_set_fps_limit): frames shown at most this often (0 = no limit). */
 static uint32_t fps_limit;
 static surface_t *last_fb;
@@ -47,6 +48,7 @@ typedef struct {
 } tex_t;
 static int cur_tlut_mode = -1; /* TLUT mode currently set in the SOM (-1 = unknown) */
 static void make_add_variant(tex_t *t);
+static void slow_batch(const char *what, uint32_t n, const n64_state_t *st, uint32_t ticks, uint32_t wait, const uint32_t *paths0);
 static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride);
 static tex_t textures[MAX_TEXTURES]; /* handle 0 = none */
 static uint32_t tex_hint = 1;
@@ -181,6 +183,9 @@ uint32_t audio_last_poll; /* read by Rust (rt::audio_poll_due) */
 static uint32_t audio_max_gap;
 
 static uint32_t audio_polls, audio_ticks, audio_t0;
+/* C0 ticks spent in mixer polls since boot (wraps): read by Rust (rt::audio_ticks_total) for
+ * the per-frame audio cost in the perf and spike logs. */
+uint32_t audio_ticks_total;
 void n64_audio_poll_impl(void) {
     uint32_t now = TICKS_READ();
     if (audio_last_poll && now - audio_last_poll > audio_max_gap) audio_max_gap = now - audio_last_poll;
@@ -188,7 +193,9 @@ void n64_audio_poll_impl(void) {
     if (!audio_t0) audio_t0 = now;
     audio_polls++;
     if (audio_can_write()) mixer_try_play();
-    audio_ticks += TICKS_READ() - now;
+    uint32_t spent = TICKS_READ() - now;
+    audio_ticks += spent;
+    audio_ticks_total += spent;
     if (now - audio_t0 > TICKS_FROM_MS(5000)) {
         /* CPU time of the mixer (incl. music decoding) per second of real time. */
         debugf("audio: %lu polls/s, %lu us/s in polls\n", audio_polls * 1000 / TICKS_TO_MS(now - audio_t0), TICKS_TO_US(audio_ticks) * 1000 / TICKS_TO_MS(now - audio_t0));
@@ -263,7 +270,7 @@ uint32_t n64_fmv_play_impl(const char *path) {
     fmv_play(path, &p);
     rspq_wait();
     if (rspq_set_lowpri_window) rspq_set_lowpri_window(0);
-    display_set_fps_limit(fps_limit); /* the game's frame pacing */
+    n64_set_fps_limit_impl(fps_limit); /* the game's frame pacing */
     mixer_ch_set_limits(FMV_CH, 16, 48000, 0);
     mixer_ch_set_limits(FMV_CH + 1, 16, 48000, 0);
     cur_kind = -1;
@@ -666,7 +673,8 @@ void n64_tex_free_impl(uint32_t h) {
     /* The RDP may still read the surfaces of queued commands. */
     rspq_wait();
     tex_t *t = &textures[h];
-    if ((t->own_small || !t->small_is_full) && t->small.buffer != t->full[0].buffer) surface_free(&t->small);
+    if ((t->own_small || !t->small_is_full) && t->small.buffer != t->full[0].buffer && !(t->has_tmem && t->small.buffer == t->tmem.buffer))
+        surface_free(&t->small);
     if (t->has_addv) surface_free(&t->addv);
     if (t->has_tmem) surface_free(&t->tmem);
     free_full(t);
@@ -731,7 +739,13 @@ static void tex_fetch(const tex_t *t, const surface_t *s, int x, int y, uint32_t
 static surface_t downscale_rgba32(tex_t *t, const surface_t *s);
 
 static void make_small_variant(tex_t *t) {
-    t->small = downscale_rgba32(t, &t->full[0]);
+    uint32_t t0 = TICKS_READ();
+    /* The TMEM copy r3d asked for is the same downscale of the same image: share it. */
+    if (t->has_tmem && t->small_is_full && t->small.buffer == t->full[0].buffer) t->small = t->tmem;
+    else t->small = downscale_rgba32(t, &t->full[0]);
+    uint32_t dt = TICKS_READ() - t0;
+    if (dt > TICKS_FROM_US(200))
+        debugf("cpu texture: downscaled copy of %dx%d fmt %d in %lu us\n", t->full[0].width, t->full[0].height, (int)surface_get_format(&t->full[0]), (unsigned long)TICKS_TO_US(dt));
     t->own_small = true;
     t->small_is_full = false;
 }
@@ -751,13 +765,55 @@ const surface_t *n64_tex_tmem_surface(uint32_t h) {
     tex_t *t = &textures[h];
     if (fits_tmem_block(&t->small)) return &t->small;
     if (!t->has_tmem) {
+        uint32_t t0 = TICKS_READ();
         t->tmem = downscale_rgba32(t, &t->small);
         t->has_tmem = true;
+        uint32_t dt = TICKS_READ() - t0;
+        if (dt > TICKS_FROM_US(200))
+            debugf("cpu texture: TMEM copy of %dx%d fmt %d (%d) in %lu us\n", t->small.width, t->small.height, (int)surface_get_format(&t->small), (int)h, (unsigned long)TICKS_TO_US(dt));
     }
     return &t->tmem;
 }
 
 /* A box-downscaled RGBA32 copy of surface s of texture t, at most 1024 texels. */
+/* Texel decoding for the CPU-side conversions (downscaled copies, additive variants), as
+ * tex_fetch but packed RGBA8 (r << 24 | g << 16 | b << 8 | a): 4- and 8-bit formats through
+ * a table of their 16 / 256 values (tex_fetch per value), RGBA16 through a 5-bit table.
+ * tex_fetch per texel (a switch, divisions, byte loads) cost ~2 us per texel: 35 ms for the
+ * HUD clock's 128x128 CI8 hand on its first draw. */
+typedef struct { tex_format_t f; bool four, byte; uint32_t lut[256]; } px_decoder_t;
+static inline uint32_t pack_px(const uint32_t px[4]) { return px[0] << 24 | px[1] << 16 | px[2] << 8 | px[3]; }
+static void px_decoder_init(px_decoder_t *d, const tex_t *t, const surface_t *s) {
+    d->f = surface_get_format(s);
+    d->four = d->f == FMT_CI4 || d->f == FMT_IA4 || d->f == FMT_I4;
+    d->byte = d->f == FMT_CI8 || d->f == FMT_IA8 || d->f == FMT_I8;
+    if (d->four || d->byte) {
+        uint8_t one[2] = {0, 0};
+        surface_t probe = surface_make_linear(one, d->f, 1, 1);
+        for (int v = 0; v < (d->four ? 16 : 256); v++) {
+            uint32_t px[4];
+            one[0] = d->four ? (uint8_t)(v << 4) : (uint8_t)v;
+            tex_fetch(t, &probe, 0, 0, px);
+            d->lut[v] = pack_px(px);
+        }
+    } else if (d->f != FMT_RGBA32 && d->f != FMT_IA16) {
+        for (int v = 0; v < 32; v++) d->lut[v] = v * 255 / 31;
+    }
+}
+static inline uint32_t px_decode(const px_decoder_t *d, const tex_t *t, const surface_t *s, const uint8_t *row, int x) {
+    if (d->four) return d->lut[(row[x / 2] >> ((x & 1) ? 0 : 4)) & 15];
+    if (d->byte) return d->lut[row[x]];
+    /* Whole-texel loads: converted surfaces are uncached, one access per texel (big endian:
+     * the byte order of the texel). */
+    if (d->f == FMT_RGBA32) {
+        if (!((uintptr_t)row & 3)) return ((const uint32_t *)row)[x];
+        return (uint32_t)row[x * 4] << 24 | row[x * 4 + 1] << 16 | row[x * 4 + 2] << 8 | row[x * 4 + 3];
+    }
+    uint32_t v = ((uintptr_t)row & 1) ? (uint32_t)(row[x * 2] << 8) | row[x * 2 + 1] : ((const uint16_t *)row)[x];
+    if (d->f == FMT_IA16) return (v >> 8) * 0x01010100u | (v & 255);
+    return d->lut[(v >> 11) & 31] << 24 | d->lut[(v >> 6) & 31] << 16 | d->lut[(v >> 1) & 31] << 8 | ((v & 1) ? 255 : 0);
+}
+
 static surface_t downscale_rgba32(tex_t *t, const surface_t *s) {
     int w = s->width, h = s->height, sx = 1, sy = 1;
     while ((w / sx) * (h / sy) > 1024) {
@@ -765,23 +821,67 @@ static surface_t downscale_rgba32(tex_t *t, const surface_t *s) {
     }
     int nw = w / sx > 0 ? w / sx : 1, nh = h / sy > 0 ? h / sy : 1;
     surface_t d = surface_alloc(FMT_RGBA32, nw, nh);
-    for (int y = 0; y < nh; y++)
+    px_decoder_t dec; /* (stack: no .bss for rare conversions) */
+    px_decoder_init(&dec, t, s);
+    if ((dec.four || dec.byte) && nw * sx == w && nh * sy == h && sx * sy <= 256) {
+        /* Palette / intensity formats, whole boxes (the usual case): table lookups summed
+         * two channels per 32-bit add (16-bit lanes: at most 256 * 255). */
+        int sh = __builtin_ctz(sx * sy);
+        const uint32_t *lut = dec.lut;
+        const bool four = dec.four;
+        int lsx = __builtin_ctz(sx);
+        for (int y = 0; y < nh; y++) {
+            uint32_t *o = (uint32_t *)((uint8_t *)d.buffer + y * d.stride);
+            for (int x = 0; x < nw; x++) {
+                uint32_t rb = 0, ga = 0;
+                for (int yy = y * sy; yy < (y + 1) * sy; yy++) {
+                    const uint8_t *row = (const uint8_t *)s->buffer + yy * s->stride;
+                    for (int xx = x << lsx; xx < (x + 1) << lsx; xx++) {
+                        uint32_t p = four ? lut[(row[xx >> 1] >> ((xx & 1) ? 0 : 4)) & 15] : lut[row[xx]];
+                        rb += (p >> 8) & 0x00FF00FF; /* r, b */
+                        ga += p & 0x00FF00FF;        /* g, a */
+                    }
+                }
+                o[x] = ((rb >> 16 >> sh) & 255) << 24 | ((ga >> 16 >> sh) & 255) << 16 | ((rb & 0xFFFF) >> sh) << 8 | ((ga & 0xFFFF) >> sh);
+            }
+        }
+        return d;
+    }
+    for (int y = 0; y < nh; y++) {
+        uint32_t *o = (uint32_t *)((uint8_t *)d.buffer + y * d.stride);
         for (int x = 0; x < nw; x++) {
-            uint32_t acc[4] = {0, 0, 0, 0}, n = 0, px[4];
-            for (int yy = y * sy; yy < (y + 1) * sy && yy < h; yy++)
+            uint32_t acc[4] = {0, 0, 0, 0}, n = 0;
+            for (int yy = y * sy; yy < (y + 1) * sy && yy < h; yy++) {
+                const uint8_t *row = (const uint8_t *)s->buffer + yy * s->stride;
                 for (int xx = x * sx; xx < (x + 1) * sx && xx < w; xx++) {
-                    tex_fetch(t, s, xx, yy, px);
-                    for (int k = 0; k < 4; k++) acc[k] += px[k];
+                    uint32_t p = px_decode(&dec, t, s, row, xx);
+                    acc[0] += p >> 24; acc[1] += (p >> 16) & 255; acc[2] += (p >> 8) & 255; acc[3] += p & 255;
                     n++;
                 }
-            uint8_t *o = (uint8_t *)d.buffer + y * d.stride + x * 4;
-            for (int k = 0; k < 4; k++) o[k] = n ? acc[k] / n : 0;
+            }
+            /* One 32-bit store per texel (the buffer is uncached); n is a power of two
+             * except at clipped edges. */
+            uint32_t q[4];
+            if (n && !(n & (n - 1))) {
+                int sh = __builtin_ctz(n);
+                for (int k = 0; k < 4; k++) q[k] = acc[k] >> sh;
+            } else {
+                for (int k = 0; k < 4; k++) q[k] = n ? acc[k] / n : 0;
+            }
+            o[x] = pack_px(q);
         }
+    }
     return d;
 }
 
 static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride);
-static void make_add_variant(tex_t *t) { make_add_variant_from(t, NULL, 0); }
+static void make_add_variant(tex_t *t) {
+    uint32_t t0 = TICKS_READ();
+    make_add_variant_from(t, NULL, 0);
+    uint32_t dt = TICKS_READ() - t0;
+    if (dt > TICKS_FROM_US(500))
+        debugf("cpu texture: additive variant of %dx%d fmt %d in %lu us\n", t->small.width, t->small.height, (int)surface_get_format(&t->small), (unsigned long)TICKS_TO_US(dt));
+}
 
 /* `src` (optional): the small surface's texels in cached memory (`src_stride` bytes per
  * row; the procedural refill's source), read instead of the uncached surface. */
@@ -813,10 +913,13 @@ static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride
             uint32_t *dst = (uint32_t *)(dbase + y * t->addv.stride);
             for (int x = 0; x < nw; x++) {
                 uint32_t r, g, b, a;
+                /* One load per texel when aligned (the surfaces are uncached). */
                 if (sf == FMT_RGBA32) {
-                    r = row[x * 4]; g = row[x * 4 + 1]; b = row[x * 4 + 2]; a = row[x * 4 + 3];
+                    uint32_t p = ((uintptr_t)row & 3) ? (uint32_t)row[x * 4] << 24 | row[x * 4 + 1] << 16 | row[x * 4 + 2] << 8 | row[x * 4 + 3]
+                                                      : ((const uint32_t *)row)[x];
+                    r = p >> 24; g = (p >> 16) & 255; b = (p >> 8) & 255; a = p & 255;
                 } else {
-                    uint32_t v = (row[x * 2] << 8) | row[x * 2 + 1];
+                    uint32_t v = ((uintptr_t)row & 1) ? (uint32_t)(row[x * 2] << 8) | row[x * 2 + 1] : ((const uint16_t *)row)[x];
                     r = ((v >> 11) & 31) * 255 / 31; g = ((v >> 6) & 31) * 255 / 31; b = ((v >> 1) & 31) * 255 / 31;
                     a = (v & 1) ? 255 : 0;
                 }
@@ -836,24 +939,84 @@ static void make_add_variant_from(tex_t *t, const void *src, uint32_t src_stride
         t->has_addv = true;
         return;
     }
+    bool small_fmt = sf == FMT_CI4 || sf == FMT_CI8 || sf == FMT_IA4 || sf == FMT_IA8 || sf == FMT_I4 || sf == FMT_I8;
+    if (sx == 1 && sy == 1 && !src && small_fmt) {
+        /* Palette / intensity formats (NTX textures): the general path's result for each of
+         * the 16 or 256 texel values, then one table lookup and one 32-bit store per texel.
+         * The general path took ~5 us per texel (three divisions, four uncached byte
+         * stores): a 6-8 ms stall on an effect's first additive use. Same values. */
+        bool four = sf == FMT_CI4 || sf == FMT_IA4 || sf == FMT_I4;
+        uint32_t lut[256];
+        uint8_t one[2];
+        surface_t probe = surface_make_linear(one, sf, 1, 1);
+        for (int v = 0; v < (four ? 16 : 256); v++) {
+            one[0] = four ? (uint8_t)(v << 4) : (uint8_t)v;
+            uint32_t px[4];
+            tex_fetch(t, &probe, 0, 0, px);
+            uint32_t r = px[0] * px[3] / 255, g = px[1] * px[3] / 255, b = px[2] * px[3] / 255;
+            uint32_t m = r > g ? (r > b ? r : b) : (g > b ? g : b);
+            lut[v] = m ? (r * 255 / m) << 24 | (g * 255 / m) << 16 | (b * 255 / m) << 8 | m : 0;
+        }
+        uint8_t *dbase = (uint8_t *)t->addv.buffer;
+        for (int y = 0; y < nh; y++) {
+            const uint8_t *row = (const uint8_t *)s->buffer + y * s->stride;
+            uint32_t *dst = (uint32_t *)(dbase + y * t->addv.stride);
+            if (four)
+                for (int x = 0; x < nw; x++) dst[x] = lut[(row[x / 2] >> ((x & 1) ? 0 : 4)) & 15];
+            else
+                for (int x = 0; x < nw; x++) dst[x] = lut[row[x]];
+        }
+        t->has_addv = true;
+        return;
+    }
+    px_decoder_t dec;
+    px_decoder_init(&dec, t, s);
+    /* Palette / intensity formats: the premultiplied channels per texel value (no multiply
+     * per texel: ~25 cycles each in ares). */
+    uint32_t prem[3][256];
+    bool table = dec.four || dec.byte;
+    if (table)
+        for (int v = 0; v < (dec.four ? 16 : 256); v++) {
+            uint32_t p = dec.lut[v], a = p & 255;
+            prem[0][v] = (p >> 24) * a; prem[1][v] = ((p >> 16) & 255) * a; prem[2][v] = ((p >> 8) & 255) * a;
+        }
     for (int y = 0; y < nh; y++) {
-        uint8_t *dst = (uint8_t *)t->addv.buffer + y * t->addv.stride;
+        uint32_t *dst = (uint32_t *)((uint8_t *)t->addv.buffer + y * t->addv.stride);
         for (int x = 0; x < nw; x++) {
             uint32_t acc[4] = {0, 0, 0, 0}, n = 0;
-            for (int yy = y * sy; yy < (y + 1) * sy && yy < h; yy++)
+            for (int yy = y * sy; yy < (y + 1) * sy && yy < h; yy++) {
+                const uint8_t *row = (const uint8_t *)s->buffer + yy * s->stride;
                 for (int xx = x * sx; xx < (x + 1) * sx && xx < w; xx++) {
-                    uint32_t px[4];
-                    tex_fetch(t, s, xx, yy, px);
-                    uint32_t r = px[0], g = px[1], b = px[2], a = px[3];
+                    if (table) {
+                        uint32_t v = dec.four ? (row[xx / 2] >> ((xx & 1) ? 0 : 4)) & 15 : row[xx];
+                        acc[0] += prem[0][v]; acc[1] += prem[1][v]; acc[2] += prem[2][v]; n++;
+                        continue;
+                    }
+                    uint32_t p = px_decode(&dec, t, s, row, xx);
+                    uint32_t r = p >> 24, g = (p >> 16) & 255, b = (p >> 8) & 255, a = p & 255;
                     /* premultiplied accumulation: what the additive mode adds is rgb*a */
                     acc[0] += r * a; acc[1] += g * a; acc[2] += b * a; n++;
                 }
-            uint32_t r = acc[0] / (255 * n), g = acc[1] / (255 * n), b = acc[2] / (255 * n);
+            }
+            uint32_t r, g, b;
+            if (n && !(n & (n - 1))) {
+                /* x / (255 n) = (x >> log2 n) / 255, and y / 255 = (y * 0x8081) >> 23 for
+                 * y <= 255 * 255 (exact, as the fast path above). */
+                int sh = __builtin_ctz(n);
+                r = ((acc[0] >> sh) * 0x8081) >> 23; g = ((acc[1] >> sh) * 0x8081) >> 23; b = ((acc[2] >> sh) * 0x8081) >> 23;
+            } else {
+                r = acc[0] / (255 * n), g = acc[1] / (255 * n), b = acc[2] / (255 * n);
+            }
             uint32_t m = r > g ? (r > b ? r : b) : (g > b ? g : b);
-            dst[x * 4 + 0] = m ? r * 255 / m : 0;
-            dst[x * 4 + 1] = m ? g * 255 / m : 0;
-            dst[x * 4 + 2] = m ? b * 255 / m : 0;
-            dst[x * 4 + 3] = m;
+            uint32_t o = m;
+            if (m) {
+                /* r * 255 / m by reciprocal (exact: numerators < 2^16, as the fast path). */
+                uint64_t k = (uint64_t)(0xFFFFFFFFu / m) + 1;
+                o |= (uint32_t)(((uint64_t)(r * 255) * k) >> 32) << 24;
+                o |= (uint32_t)(((uint64_t)(g * 255) * k) >> 32) << 16;
+                o |= (uint32_t)(((uint64_t)(b * 255) * k) >> 32) << 8;
+            }
+            dst[x] = o;
         }
     }
     t->has_addv = true;
@@ -910,7 +1073,7 @@ typedef struct {
 static upc_entry_t upc[UPC_N];
 #define UPC_RETIRE 64
 static struct { rspq_block_t *blk; uint32_t frame; } upc_retired[UPC_RETIRE];
-static uint32_t upc_nretired, upc_frame, st_upc_hits, st_upc_misses;
+static uint32_t upc_nretired, upc_frame, st_upc_hits, st_upc_misses, st_upc_direct;
 
 static void upc_collect(void) {
     uint32_t k = 0;
@@ -937,9 +1100,26 @@ static void tex_upload_cached(rdpq_tile_t tile, const surface_t *s, bool wrap, i
             return;
         }
     }
+    st_upc_misses++;
+    rdpq_texparms_t parms = {0};
+    if (wrap) parms.s.repeats = parms.t.repeats = REPEAT_INFINITE;
+    /* Second chance: a sub-rect seen for the first time (a glyph of new text) is uploaded
+     * directly; recording it as a block (and evicting a block in use) only pays off when it
+     * comes back. */
+    static uint32_t ghost[32];
+    static uint8_t ghost_i;
+    uint32_t gk = hsh * 2654435761u + (uint32_t)(x1 - x0) * 40503u + (uint32_t)(y1 - y0);
+    bool seen = false;
+    for (int g = 0; g < 32; g++)
+        if (ghost[g] == gk) { seen = true; ghost[g] = 0; break; }
+    if (!seen) {
+        ghost[ghost_i++ & 31] = gk;
+        st_upc_direct++;
+        rdpq_tex_upload_sub(tile, s, &parms, x0, y0, x1, y1);
+        return;
+    }
     static uint8_t rr;
     upc_entry_t *e = &set[rr++ & 3];
-    st_upc_misses++;
     if (e->blk) {
         if (upc_nretired == UPC_RETIRE) {
             rspq_wait(); /* everything recorded so far has run: free all */
@@ -950,8 +1130,6 @@ static void tex_upload_cached(rdpq_tile_t tile, const surface_t *s, bool wrap, i
         upc_retired[upc_nretired++].frame = upc_frame;
         e->blk = NULL;
     }
-    rdpq_texparms_t parms = {0};
-    if (wrap) parms.s.repeats = parms.t.repeats = REPEAT_INFINITE;
     rspq_block_begin();
     rdpq_tex_upload_sub(tile, s, &parms, x0, y0, x1, y1);
     e->blk = rspq_block_end();
@@ -1076,7 +1254,7 @@ static int clip_axis(n64_vertex_t *in, int n, n64_vertex_t *out, int axis, float
 /* CPU-triangle statistics (logged every 300 presented frames). */
 extern volatile uint32_t rspq_wait_ticks;
 static uint32_t st_tri_ticks, st_rect_ticks, st_rects, st_tri_wait, st_rect_wait, st_wait0;
-static uint32_t st_calls, st_src_tris, st_rdpq_tris, st_tiled_src, st_tiled_uploads, st_frames;
+static uint32_t st_calls, st_src_tris, st_rdpq_tris, st_tiled_src, st_tiled_uploads, st_frames, st_fast_vtx;
 
 static void draw_tri_tiled(const rdpq_trifmt_t *f, const tex_t *tx, const n64_vertex_t *v, uint32_t flags) {
     const surface_t *s = &tx->full[0];
@@ -1178,6 +1356,7 @@ static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_sta
 void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
     uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
     draw_tris_inner(v, ntris, st);
+    if (TICKS_READ() - t0 > TICKS_FROM_MS(2)) slow_batch("triangles (vertices)", ntris, st, TICKS_READ() - t0, rspq_wait_ticks - w0, NULL);
     st_tri_ticks += TICKS_READ() - t0;
     st_tri_wait += rspq_wait_ticks - w0;
 }
@@ -1230,29 +1409,45 @@ static inline void tl_vertex(n64_vertex_t *o, const float *v, float zk, uint32_t
  * 1.0 = 0x10000 here). Vertex conversion as tl_vertex + tri_one. */
 void __rdpq_autosync_use(uint32_t res);
 #define F2_TRI_DATA_LEN 32 /* ROUND_UP((2+1+1+3)*4, 16) */
+/* fast_vtx's colour cache (valid within one n64_draw_tl_tris call: same blend mode) and
+ * the source vertex of each of the RSP's three triangle-data slots (fast_tri_shared). */
+static uint32_t col_key[4], col_rgba;
+static bool col_ok;
+static const float *slot_src[3];
 static inline void fast_vtx(int i, const float *v, const tri_setup_t *su, float zk, uint32_t blend, bool zb, bool tex) {
     int16_t x = floorf(v[0] * 4.0f);
     int16_t y = floorf(v[1] * 4.0f);
     int16_t z = zb ? (int16_t)(clamp01(v[2] * zk) * 0x7FFF) : 0;
-    float r = clamp01(v[4]), g = clamp01(v[5]), b = clamp01(v[6]), a = clamp01(v[7]);
-    if (blend == N64_BLEND_ADD) {
-        float m = r > g ? r : g;
-        if (b > m) m = b;
-        if (m > 0.0f) {
-            r /= m;
-            g /= m;
-            b /= m;
-            a *= m;
-        } else {
-            a = 0.0f;
+    /* Neighbouring vertices mostly share their colour (a shadow or sprite quad): its
+     * conversion (four float -> int casts, the additive split's divisions) is reused. */
+    const uint32_t *cw = (const uint32_t *)(v + 4);
+    uint32_t rgba;
+    if (col_ok && cw[0] == col_key[0] && cw[1] == col_key[1] && cw[2] == col_key[2] && cw[3] == col_key[3]) {
+        rgba = col_rgba;
+    } else {
+        float r = clamp01(v[4]), g = clamp01(v[5]), b = clamp01(v[6]), a = clamp01(v[7]);
+        if (blend == N64_BLEND_ADD) {
+            float m = r > g ? r : g;
+            if (b > m) m = b;
+            if (m > 0.0f) {
+                r /= m;
+                g /= m;
+                b /= m;
+                a *= m;
+            } else {
+                a = 0.0f;
+            }
+        } else if (blend == N64_BLEND_SUB) {
+            float m = r > g ? r : g;
+            if (b > m) m = b;
+            a = m;
+            r = g = b = 0.0f;
         }
-    } else if (blend == N64_BLEND_SUB) {
-        float m = r > g ? r : g;
-        if (b > m) m = b;
-        a = m;
-        r = g = b = 0.0f;
+        rgba = ((uint32_t)(r * 255.0f) << 24) | ((uint32_t)(g * 255.0f) << 16) | ((uint32_t)(b * 255.0f) << 8) | (uint32_t)(a * 255.0f);
+        col_key[0] = cw[0]; col_key[1] = cw[1]; col_key[2] = cw[2]; col_key[3] = cw[3];
+        col_rgba = rgba;
+        col_ok = true;
     }
-    uint32_t rgba = ((uint32_t)(r * 255.0f) << 24) | ((uint32_t)(g * 255.0f) << 16) | ((uint32_t)(b * 255.0f) << 8) | (uint32_t)(a * 255.0f);
     int16_t s = 0, t = 0;
     int32_t w = 0;
     if (tex) {
@@ -1268,7 +1463,21 @@ static inline void fast_vtx(int i, const float *v, const tri_setup_t *su, float 
     rspq_write(RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE_DATA, F2_TRI_DATA_LEN * i, (x << 16) | (y & 0xFFFF), (z << 16), rgba, (s << 16) | (t & 0xFFFF), w, w);
 }
 
-static void fast_tri(const tri_setup_t *su, const float *v, float zk, uint32_t blend) {
+/* The fields of a TlVertex that fast_vtx reads (x y z rhw r g b a s t), bitwise. */
+static inline bool same_vtx(const float *a, const float *b) {
+    const uint32_t *x = (const uint32_t *)a, *y = (const uint32_t *)b;
+    for (int k = 0; k < 10; k++)
+        if (x[k] != y[k]) return false;
+    return true;
+}
+
+/* One affine triangle as rdpq_triangle_rsp would send it (fast_vtx), reusing the RSP's
+ * triangle-data slots that already hold one of its vertices (a quad's second triangle shares
+ * two with its first). The triangle command reads the three slots (saved state of the rdpq
+ * overlay, kept across overlay switches) and only sorts pointers to them, so a slot stays
+ * valid until it is overwritten, and vertex order does not matter (no culling): the RDP
+ * receives the same triangle (its vertices possibly in another order). */
+static void fast_tri_shared(const tri_setup_t *su, const float *v, float zk, uint32_t blend) {
     const rdpq_trifmt_t *fmt = su->f;
     bool tex = fmt->tex_offset >= 0, zb = fmt->z_offset >= 0;
     uint32_t res = AUTOSYNC_PIPE;
@@ -1283,9 +1492,23 @@ static void fast_tri(const tri_setup_t *su, const float *v, float zk, uint32_t b
         cmd_id |= 0x1;
         rdp_words += 2;
     }
-    fast_vtx(0, v, su, zk, blend, zb, tex);
-    fast_vtx(1, v + 12, su, zk, blend, zb, tex);
-    fast_vtx(2, v + 24, su, zk, blend, zb, tex);
+    const float *nv[3] = {v, v + 12, v + 24};
+    bool used[3] = {false, false, false}, have[3] = {false, false, false};
+    for (int i = 0; i < 3; i++)
+        for (int k = 0; k < 3; k++)
+            if (!used[k] && slot_src[k] && same_vtx(slot_src[k], nv[i])) {
+                used[k] = have[i] = true;
+                break;
+            }
+    for (int i = 0; i < 3; i++) {
+        if (have[i]) continue;
+        int k = 0;
+        while (used[k]) k++;
+        fast_vtx(k, nv[i], su, zk, blend, zb, tex);
+        slot_src[k] = nv[i];
+        used[k] = true;
+        st_fast_vtx++;
+    }
     rdpq_write(rdp_words, RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE, 0xC000 | (cmd_id << 8) | (fmt->tex_tile & 7));
     st_rdpq_tris++;
 }
@@ -1296,33 +1519,59 @@ void n64_draw_tl_tris_impl(const n64_tl_batch_t *b, const n64_state_t *st) {
         tri_setup_t su = tri_begin(b->ntris, st);
         const uint8_t *p = b->tris;
         n64_vertex_t t[3];
+        col_ok = false;
+        slot_src[0] = slot_src[1] = slot_src[2] = NULL;
         for (uint32_t k = 0; k < b->ntris; k++, p += b->stride) {
             const float *v = (const float *)p;
             /* rhw = 1 (the sprites, shadows and effects): straight to the RSP command. */
             if (su.mode != 2 && v[3] == 1.0f && v[15] == 1.0f && v[27] == 1.0f) {
-                fast_tri(&su, v, b->zk, st->blend);
+                fast_tri_shared(&su, v, b->zk, st->blend);
                 continue;
             }
+            /* rdpq_triangle loads all three slots itself. */
+            slot_src[0] = slot_src[1] = slot_src[2] = NULL;
             tl_vertex(&t[0], v, b->zk, st->blend);
             tl_vertex(&t[1], v + 12, b->zk, st->blend);
             tl_vertex(&t[2], v + 24, b->zk, st->blend);
             tri_one(&su, t);
         }
     }
+    if (TICKS_READ() - t0 > TICKS_FROM_MS(2)) slow_batch("triangles", b->ntris, st, TICKS_READ() - t0, rspq_wait_ticks - w0, NULL);
     st_tri_ticks += TICKS_READ() - t0;
     st_tri_wait += rspq_wait_ticks - w0;
 }
 
 static void draw_rects_inner(const n64_rect_t *r, uint32_t n, const n64_state_t *st);
-void n64_draw_rects_impl(const n64_rect_t *r, uint32_t n, const n64_state_t *st) {
-    uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
-    st_rects += n;
-    draw_rects_inner(r, n, st);
-    st_rect_ticks += TICKS_READ() - t0;
-    st_rect_wait += rspq_wait_ticks - w0;
+static uint32_t st_rect_path[16];
+
+/* A CPU batch that took over 2 ms (spike hunting): what it drew. */
+static void slow_batch(const char *what, uint32_t n, const n64_state_t *st, uint32_t ticks, uint32_t wait, const uint32_t *paths0) {
+    const tex_t *t = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used ? &textures[st->tex] : NULL;
+    debugf("slow cpu batch: %lu %s, %lu us (rspq wait %lu us), tex %lu", (unsigned long)n, what, (unsigned long)TICKS_TO_US(ticks), (unsigned long)TICKS_TO_US(wait), (unsigned long)st->tex);
+    if (t)
+        debugf(" (%dx%d fmt %d, %d chunk(s), small %dx%d%s%s%s)", t->width, t->full[0].height, (int)surface_get_format(&t->full[0]), t->nfull,
+            t->small.width, t->small.height, t->per_tile ? ", per-tile palettes" : "", t->has_addv ? ", additive variant" : "", t->tile3d ? ", tiled" : "");
+    debugf(" blend %lu flags %lx", (unsigned long)st->blend, (unsigned long)st->flags);
+    if (paths0) {
+        debugf(", paths");
+        for (int i = 0; i < 16; i++)
+            if (st_rect_path[i] != paths0[i]) debugf(" %d:%lu", i, (unsigned long)(st_rect_path[i] - paths0[i]));
+    }
+    debugf("\n");
 }
 
-static uint32_t st_rect_path[16];
+void n64_draw_rects_impl(const n64_rect_t *r, uint32_t n, const n64_state_t *st) {
+    uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
+    uint32_t paths0[16];
+    memcpy(paths0, st_rect_path, sizeof paths0);
+    st_rects += n;
+    draw_rects_inner(r, n, st);
+    uint32_t dt = TICKS_READ() - t0;
+    st_rect_ticks += dt;
+    st_rect_wait += rspq_wait_ticks - w0;
+    if (dt > TICKS_FROM_MS(2)) slow_batch("rects", n, st, dt, rspq_wait_ticks - w0, paths0);
+}
+
 /* Draws [x0,x1)x[y0,y1) from texels s0..s1 / t0..t1 of `s` (s1 < s0 / t1 < t0 = flipped)
  * when `s` fits TMEM; false = use the blit path. */
 static bool rect_fast(const tex_t *tx, const surface_t *s, float x0, float y0, float x1, float y1, float s0, float t0, float s1, float t1) {
@@ -1356,7 +1605,6 @@ static bool rect_sub(const tex_t *tx, const surface_t *s, const n64_rect_t *r, i
 
 /* One rect of draw_rects_inner; returns the path taken (statistics). */
 static int draw_one_rect(const n64_rect_t *r, const n64_state_t *st, bool tex, const tex_t *tx) {
-    rdpq_set_prim_color(color_from_packed32(r->rgba));
     if (!tex) {
         rdpq_fill_rectangle(r->x0, r->y0, r->x1, r->y1);
         return 1;
@@ -1462,34 +1710,106 @@ static void draw_rects_inner(const n64_rect_t *r, uint32_t n, const n64_state_t 
     bool tex = st->tex && st->tex < MAX_TEXTURES && textures[st->tex].used;
     const tex_t *tx = tex ? &textures[st->tex] : NULL;
     bool zt = (st->flags & N64_ZTEST) != 0;
+    /* Primitive colour and depth only when they change within the batch (the coins of a
+     * row share both). */
+    uint32_t last_rgba = 0;
+    int32_t last_z = -1;
     for (uint32_t k = 0; k < n; k++, r++) {
         if (zt) {
             float z = r->z < 0.0f ? 0.0f : r->z > 1.0f ? 1.0f : r->z;
-            rdpq_set_prim_depth_raw((uint16_t)(z * 0x7FFF), 0);
+            int32_t zi = (uint16_t)(z * 0x7FFF);
+            if (zi != last_z) rdpq_set_prim_depth_raw((uint16_t)zi, 0);
+            last_z = zi;
         }
+        if (k == 0 || r->rgba != last_rgba) rdpq_set_prim_color(color_from_packed32(r->rgba));
+        last_rgba = r->rgba;
         int path = draw_one_rect(r, st, tex, tx);
         st_rect_path[path & 15]++;
     }
 }
 
 
+/* ---- frame limit (30 / 20 fps settings): a minimum interval between flips ----
+ * libdragon's display_set_fps_limit shows frames only on every 2nd (30 fps) / 3rd (20 fps)
+ * vblank at a fixed phase: a frame ready 1 ms after such a vblank waits for the next one,
+ * so the previous image stays 66 ms (an instant 15 fps) for a frame that took 34 ms.
+ * Instead the display shows every vblank (limit 0) and a finished frame is handed to
+ * display_show no earlier than its turn: at least `pace_vblanks` vblanks after the last
+ * flip, else at the first vblank where it may flip; a late frame then costs one vblank
+ * (50 ms), and the cadence re-forms behind it. The CPU still runs up to the same number of
+ * framebuffers ahead (display_get waits for a free one). F2N64_CFLAGS=-DF2N64_FLIP_LIBDRAGON
+ * (build time) keeps display_set_fps_limit. */
+#ifndef F2N64_FLIP_LIBDRAGON
+#define PACED_FLIPS 1
+#else
+#define PACED_FLIPS 0
+#endif
+static volatile uint32_t vb_count, flip_vb, pace_vblanks;
+static surface_t *volatile pace_pend[3];
+static volatile int pace_npend;
+/* Display statistics: vblanks between two changes of the shown framebuffer. */
+static volatile uint32_t vb_origin, vb_since_flip, flip_hist[6];
+
+void rdpq_detach_cb(void (*cb)(void *), void *arg);
+static void pace_show(surface_t *s) {
+    display_show(s);
+    flip_vb = vb_count + 1; /* (display's own vblank handler has run: visible at the next) */
+}
+
+/* RDP finished a frame (interrupt context). */
+static void pace_rdp_done(void *arg) {
+    if (pace_npend == 0 && vb_count + 1 >= flip_vb + pace_vblanks) pace_show((surface_t *)arg);
+    else if (pace_npend < 3) pace_pend[pace_npend++] = (surface_t *)arg;
+    else pace_show((surface_t *)arg); /* cannot happen with 3 framebuffers */
+}
+
+/* Installed after display_init: runs after libdragon's display handler in each vblank. */
+static void pace_vblank(void *arg) {
+    vb_count++;
+    if (pace_npend && vb_count + 1 >= flip_vb + pace_vblanks) {
+        pace_show(pace_pend[0]);
+        pace_pend[0] = pace_pend[1];
+        pace_pend[1] = pace_pend[2];
+        pace_npend--;
+    }
+    uint32_t o = *VI_ORIGIN;
+    vb_since_flip++;
+    if (o != vb_origin) {
+        vb_origin = o;
+        flip_hist[vb_since_flip < 5 ? vb_since_flip : 5]++;
+        vb_since_flip = 0;
+    }
+}
+
+/* Flips since the last call by the number of vblanks the previous image was shown (index
+ * 1..4, 5 = 5 or more); resets. */
+void n64_flip_stats_impl(uint32_t *out) {
+    disable_interrupts();
+    for (int i = 0; i < 6; i++) {
+        out[i] = flip_hist[i];
+        flip_hist[i] = 0;
+    }
+    enable_interrupts();
+}
+
 void n64_present_impl(void) {
     upc_frame++;
     if (upc_nretired) upc_collect();
     if (++st_frames == 300) {
-        debugf("cputri: per frame %lu calls, %lu source tris (%lu tiled), %lu rdpq triangles, %lu tile uploads, tris %lu us (wait %lu); %lu rects %lu us (wait %lu); all rspq waits %lu us; apply_state %lu us (%lu mode resets, tri tex uploads %lu us)\n", st_calls / 300, st_src_tris / 300, st_tiled_src / 300, st_rdpq_tris / 300, st_tiled_uploads / 300, TICKS_TO_US(st_tri_ticks) / 300, TICKS_TO_US(st_tri_wait) / 300, st_rects / 300, TICKS_TO_US(st_rect_ticks) / 300, TICKS_TO_US(st_rect_wait) / 300, TICKS_TO_US(rspq_wait_ticks - st_wait0) / 300, TICKS_TO_US(st_mode_ticks) / 300, st_modes / 300, TICKS_TO_US(st_tex_ticks) / 300);
+        debugf("cputri: per frame %lu calls, %lu source tris (%lu tiled), %lu rdpq triangles (%lu vertices converted), %lu tile uploads, tris %lu us (wait %lu); %lu rects %lu us (wait %lu); all rspq waits %lu us; apply_state %lu us (%lu mode resets, tri tex uploads %lu us)\n", st_calls / 300, st_src_tris / 300, st_tiled_src / 300, st_rdpq_tris / 300, st_fast_vtx / 300, st_tiled_uploads / 300, TICKS_TO_US(st_tri_ticks) / 300, TICKS_TO_US(st_tri_wait) / 300, st_rects / 300, TICKS_TO_US(st_rect_ticks) / 300, TICKS_TO_US(st_rect_wait) / 300, TICKS_TO_US(rspq_wait_ticks - st_wait0) / 300, TICKS_TO_US(st_mode_ticks) / 300, st_modes / 300, TICKS_TO_US(st_tex_ticks) / 300);
         debugf("cputri: rect paths (sum over 300 frames; draw_one_rect return codes):");
         for (int i = 0; i < 16; i++) if (st_rect_path[i]) debugf(" %d:%lu", i, (unsigned long)st_rect_path[i]);
-        debugf("; texture upload cache per frame: %lu hits, %lu misses\n", st_upc_hits / 300, st_upc_misses / 300);
-        st_upc_hits = st_upc_misses = 0;
+        debugf("; texture upload cache per frame: %lu hits, %lu misses (%lu uploaded directly)\n", st_upc_hits / 300, st_upc_misses / 300, st_upc_direct / 300);
+        st_upc_hits = st_upc_misses = st_upc_direct = 0;
         memset(st_rect_path, 0, sizeof st_rect_path);
         st_mode_ticks = st_modes = st_tex_ticks = 0;
         st_tri_wait = st_rect_wait = 0; st_wait0 = rspq_wait_ticks;
         st_tri_ticks = st_rect_ticks = st_rects = 0;
-        st_frames = st_calls = st_src_tris = st_rdpq_tris = st_tiled_src = st_tiled_uploads = 0;
+        st_frames = st_calls = st_src_tris = st_rdpq_tris = st_tiled_src = st_tiled_uploads = st_fast_vtx = 0;
     }
     if (!attached) return;
-    rdpq_detach_show();
+    if (pace_vblanks) rdpq_detach_cb(pace_rdp_done, last_fb);
+    else rdpq_detach_show();
     attached = false;
 }
 
@@ -1497,7 +1817,13 @@ void n64_rdp_wait_impl(void) { rspq_wait(); }
 
 void n64_set_fps_limit_impl(uint32_t fps) {
     fps_limit = fps;
-    display_set_fps_limit(fps);
+    if (PACED_FLIPS) {
+        float hz = display_get_refresh_rate();
+        pace_vblanks = fps ? (uint32_t)(hz / fps + 0.5f) : 0;
+        display_set_fps_limit(0);
+    } else {
+        display_set_fps_limit(fps);
+    }
 }
 
 /* ---- sampling profiler (feature `profile`): a 2 kHz timer interrupt records the
@@ -1629,7 +1955,15 @@ uint32_t n64_probe_c_impl(uint32_t kind, uint32_t n) {
 
 static void floor_selftest(void);
 
+#ifdef F2N64_CODEPAD
+/* Measurement: F2N64_CFLAGS=-DF2N64_CODEPAD=N bytes of padding at the end of the hot flush
+ * region, to sample code layouts (everything after it moves). */
+__attribute__((section(".text.f2hot_f"), noinline)) void f2_layout_pad(void) { __asm__ volatile(".space %0" :: "i"(F2N64_CODEPAD)); }
+#endif
 int main(void) {
+#ifdef F2N64_CODEPAD
+    if (get_memory_size() == 1) f2_layout_pad();
+#endif
     debug_init_isviewer();
     debug_init_usblog();
     debugf("frogger-n64: libdragon host up, RDRAM %d KiB\n", get_memory_size() / 1024);
@@ -1659,11 +1993,31 @@ int main(void) {
 
     timer_init();
     new_timer(TIMER_TICKS(TICKS_PER_SECOND / 2000), TF_CONTINUOUS, load_cb);
+    vi_install_vblank_handler(pace_vblank, NULL);
 
     /* After the boot-time allocations (framebuffers, z-buffer, audio, RSP queues), which live
      * for the whole run, so the pool holds only per-level and transient large blocks. */
     big_init();
     floor_selftest();
+#ifdef F2N64_MEMBENCH
+    {
+        /* Memory access costs in this emulator / console (cycles per access). */
+        static uint32_t cbuf[4096] __attribute__((aligned(16)));
+        volatile uint32_t *ub = (volatile uint32_t *)UncachedAddr(malloc_uncached(16384));
+        uint32_t t0, sum = 0;
+        t0 = TICKS_READ(); for (int i = 0; i < 4096; i++) ub[i] = i; uint32_t a = TICKS_READ() - t0;
+        t0 = TICKS_READ(); for (int i = 0; i < 4096; i++) sum += ub[i]; uint32_t b = TICKS_READ() - t0;
+        t0 = TICKS_READ(); for (int i = 0; i < 4096; i++) cbuf[i] = i; uint32_t c = TICKS_READ() - t0;
+        t0 = TICKS_READ(); for (int i = 0; i < 4096; i++) cbuf[i] = i; uint32_t d = TICKS_READ() - t0;
+        t0 = TICKS_READ(); for (int i = 0; i < 4096; i++) sum += cbuf[i]; uint32_t e = TICKS_READ() - t0;
+        volatile uint64_t *ub64 = (volatile uint64_t *)ub;
+        t0 = TICKS_READ(); for (int i = 0; i < 2048; i++) ub64[i] = i; uint32_t f = TICKS_READ() - t0;
+        t0 = TICKS_READ(); for (int i = 0; i < 1024; i++) rdpq_set_prim_color(RGBA32(i, 0, 0, 255)); rspq_wait(); uint32_t g = TICKS_READ() - t0;
+        /* COP0 Count runs at half the CPU clock: x2 for CPU cycles. */
+        debugf("membench (CPU cycles per op): uncached store %lu, uncached load %lu, cached store (cold) %lu, (warm) %lu, cached load %lu, uncached 64-bit store %lu, rdpq_set_prim_color %lu [sum %lu]\n",
+               a * 2 / 4096, b * 2 / 4096, c * 2 / 4096, d * 2 / 4096, e * 2 / 4096, f * 2 / 2048, g * 2 / 1024, sum);
+    }
+#endif
 #ifdef F2N64_AUDIO_PROF
     /* libdragon's mixer profile slots (PROFILE_SCOPE is compiled in): dumped every 5 s. */
     extern void __mixer_profile_init(void);
