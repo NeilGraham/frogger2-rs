@@ -221,7 +221,9 @@ void n64_audio_poll_impl(void) {
     audio_last_poll = now;
     if (!audio_t0) audio_t0 = now;
     audio_polls++;
+#ifndef F2N64_NO_MIXER /* testing: no mixer rounds at all (no RSP audio work) */
     if (audio_can_write()) mixer_try_play();
+#endif
     uint32_t spent = TICKS_READ() - now;
     audio_ticks += spent;
     audio_ticks_total += spent;

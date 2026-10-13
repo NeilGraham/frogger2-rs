@@ -1886,3 +1886,28 @@ fps: first measurement this push → after 3S2/3E/3R → now.
 Lab 1's last window contains the game-over load (565 ms frame), excluded above. No assertions
 or panics in the sweep; host tests pass. Open: Space/Lab/frontend still above 33 ms; the
 Space 3 game-over → frontend out-of-memory risk (3D2); 2D submit (3A); book overlay (3A).
+
+## Stretched-triangle slivers after audio preemption (2026-10-13)
+Symptom: thin triangles from the top-left corner of the screen to scene vertices, drawn over
+everything, a few frames at a time (worst at the start of Lab 2 "Research Facility", also near
+the camera elsewhere). The PC build does not show them.
+
+Diagnosis (`F2N64_FREEZE`, `-DF2N64_NO_MIXER`, see tools/n64/README.md): in one frozen scene
+the sliver came and went (2-3 shots in 20, different triangles each time), so a race, not
+geometry (every F2NM batch only uses the cache slots it loads: `rmodels::batch_tests`). With
+no mixer rounds: 0 in 32. Mechanism: the mixer/ULC run as high-priority rspq bursts that can
+preempt the magma queue between a group's vertex load and its triangles. rspq then reloads the
+magma *core* overlay, whose IMEM overlay region holds the stock bootstrap; a triangle needing
+guard-band clipping before the next vertex load enters the core's `_MG_CLIPPING`, which loads
+`MG_CLIPPING_TEXT` = libdragon's stock clipper. That clipper clips near-plane faces MDX drops
+and projects new vertices with magma's viewport (never set here: screen 0,0, z 0).
+
+Fix: `n64_r3d_init` points `MG_CLIPPING_TEXT`/`_SIZE` in `rsp_magma`'s data image (what rspq
+reloads) at `rsp_f2clip` (asserted to replace the stock value; DMEM offset from the Makefile's
+`r3d_rsp_syms.h`). Frozen scene with audio: 0 in 40 shots; level start unfrozen: 0 in 32.
+
+Cost: none (one pointer). `bench.sh NAME "level-hop W 0" 40`, last 4 windows, before → after:
+Garden 1 36.8 → 37.9 fps, Ancients 1 43.1 → 43.5, Space 1 23.7 → 24.3, City 59.8 → 59.8,
+Subterranean 1 30.4 → 30.7, Lab 1 (first two windows) 25.9 → 27.0, Lab 2 (`5 1`) 28.0 → 28.4,
+Halloween 1 36.3 → 37.3, Retro 1 59.8 → 59.8, frontend 30.9 → 31.2; r3d flush 0.1-0.3 ms
+lower everywhere. `mem-tour`: all 26 steps, no ALLOC FAILED, stack guard untouched.

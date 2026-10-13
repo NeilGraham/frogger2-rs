@@ -208,3 +208,62 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use f2_n64fmt::{Cmd, File};
+
+    /// Every retail bank's F2NM batches are self-contained vertex-cache fills: each triangle
+    /// uses slots its own batch loaded (and that a later odd-count pair write has not
+    /// clobbered), inside the 49-slot cache (48 + the pair overrun).
+    #[test]
+    fn batches_only_use_their_own_slots() {
+        let Some(r) = crate::ctx::find_rendition(Path::new(env!("CARGO_MANIFEST_DIR"))) else { return };
+        let mut checked = 0usize;
+        let mut bad = Vec::new();
+        for e in std::fs::read_dir(r.join("game/objects")).unwrap() {
+            let p = e.unwrap().path();
+            if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dll")) {
+                continue;
+            }
+            let (_, f2nm, _) = convert_one(&p).unwrap();
+            let f = File::parse(&f2nm.data).unwrap();
+            for mi in 0..f.n_meshes() {
+                let m = f.mesh(mi).unwrap();
+                for bi in 0..m.entry.n_batches as usize {
+                    let b = m.batch(bi);
+                    let mut valid = [false; 64];
+                    for w in m.batch_cmd_bytes(&b).chunks(4) {
+                        match Cmd::decode(u32::from_be_bytes([w[0], w[1], w[2], w[3]])).unwrap() {
+                            Cmd::Load { first, count, slot } => {
+                                let (s, n) = (slot as usize, count as usize);
+                                assert!((first as usize + n) <= m.entry.n_verts as usize);
+                                if s + n + (n & 1) > 49 {
+                                    bad.push(format!("{} mesh {mi:x} batch {bi}: load slot {s} count {n} beyond the cache", p.display()));
+                                }
+                                valid[s..s + n].fill(true);
+                                if n & 1 == 1 {
+                                    valid[s + n] = false;
+                                }
+                            }
+                            Cmd::Tri(t) => {
+                                checked += 1;
+                                if t.iter().any(|&s| !valid[s as usize]) {
+                                    bad.push(format!("{} mesh {mi:x} ({:08x}) batch {bi}: tri {t:?} uses a slot not loaded", p.display(), m.entry.id));
+                                }
+                            }
+                            Cmd::Bone(_) => {}
+                        }
+                    }
+                }
+            }
+        }
+        for b in bad.iter().take(30) {
+            eprintln!("{b}");
+        }
+        assert!(bad.is_empty(), "{} bad triangles/loads of {checked}", bad.len());
+        eprintln!("checked {checked} triangles");
+        assert!(checked > 10000);
+    }
+}

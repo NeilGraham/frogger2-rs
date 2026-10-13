@@ -302,6 +302,9 @@ pub struct App {
     level_peak: (u32, u32),
     /// A level loaded during this frame: its time is not frame time.
     loaded: bool,
+    /// Game frames simulated since the last level load (`F2N64_FREEZE`).
+    level_frames: u32,
+    freeze_drawn: u32,
     /// Phase 3T (`pacing.rs`): 60 Hz frames covered by the last tick, and game frames
     /// simulated in this perf window.
     step_frames: u32,
@@ -398,6 +401,8 @@ impl App {
             level_name: String::from("boot"),
             level_peak: (0, 0),
             loaded: false,
+            level_frames: 0,
+            freeze_drawn: 0,
             step_frames: 1,
             pace_frames: 0,
             book_font: None,
@@ -857,6 +862,7 @@ impl App {
         self.acc = 0;
         self.last = ticks();
         self.loaded = true;
+        self.level_frames = 0;
     }
 
     /// The banks' F2NM render meshes into r3d; returns the banks without their render
@@ -1356,7 +1362,22 @@ impl App {
         let variable = self.variable_step();
         let plan = crate::pacing::plan(&mut self.acc, TICK, MAX_TICKS_PER_FRAME, variable);
         self.dropped_ticks += plan.dropped as u64;
-        let (n, k) = (plan.ticks, plan.frames);
+        let (mut n, k) = (plan.ticks, plan.frames);
+        // Testing (F2N64_FREEZE=N or N/M): the simulation stops after N game frames of each
+        // level and the same scene is drawn from then on; with /M it then advances one tick
+        // every M drawn frames (render bugs: scene-dependent or timing).
+        if let Some(s) = option_env!("F2N64_FREEZE") {
+            let (a, m) = s.split_once('/').unwrap_or((s, "0"));
+            let (a, m) = (a.parse::<u32>().unwrap_or(0), m.parse::<u32>().unwrap_or(0));
+            if self.level_frames >= a {
+                self.freeze_drawn += 1;
+                n = if m > 0 && self.freeze_drawn % m == 0 { 1 } else { 0 };
+                if n > 0 {
+                    log!("app: freeze step at level frame {}", self.level_frames);
+                }
+            }
+            self.level_frames += n * k;
+        }
         // Test boots' scripted presses count as the real pad (the settings page reads it too).
         let mut script = 0u16;
         if let (None, Some((f, steps))) = (self.autostart, &mut self.pad_script) {

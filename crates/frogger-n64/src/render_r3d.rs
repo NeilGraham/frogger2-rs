@@ -427,7 +427,6 @@ impl R3dLevel {
         cpu.build(r, clear);
         if self.dump_next {
             cpu.dump(&r.textures);
-            self.dump_next = false;
         }
         let t0 = rt::ticks();
         let c = clear.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u32);
@@ -451,6 +450,7 @@ impl R3dLevel {
                 }
                 m
             });
+            self.dump_next = false;
             st.queue_ticks = st.queue_ticks.wrapping_add(rt::ticks().wrapping_sub(tq));
             st.draws = self.r.drawn;
             let tf = rt::ticks();

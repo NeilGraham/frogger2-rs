@@ -29,8 +29,8 @@ RSP_OBJS = $(BUILD_DIR)/rsp_f2mdx.o $(BUILD_DIR)/rsp_f2clip.o $(BUILD_DIR)/rsp_f
 
 all: frogger2.z64
 
-# IMEM offset of each ucode's magma overlay text (_MG_OVERLAY), for r3d.c.
-$(BUILD_DIR)/r3d_rsp_syms.h: $(RSP_OBJS)
+# IMEM offset of each ucode's magma overlay text (_MG_OVERLAY), DMEM addresses, for r3d.c.
+$(BUILD_DIR)/r3d_rsp_syms.h: $(RSP_OBJS) $(F2_MAKEFILE)
 	@echo "    [SYMS] $@"
 	@{ for u in rsp_f2mdx rsp_f2clip rsp_f2modge; do \
 		a=$$($(N64_NM) $(BUILD_DIR)/$$u.elf | awk '$$3 == "_MG_OVERLAY" { print $$1 }'); \
@@ -41,7 +41,9 @@ $(BUILD_DIR)/r3d_rsp_syms.h: $(RSP_OBJS)
 	e=$$($(N64_NM) $(BUILD_DIR)/rsp_f2modge.elf | awk '$$3 == "F2_ModgeEntry" { print $$1 }'); \
 	echo "#define RSP_F2MODGE_ENTRY_OFFSET (0x$$e - 0x$$a)"; \
 	m=$$($(N64_NM) $(BUILD_DIR)/rsp_f2mdx.elf | awk '$$3 == "F2_MTX_I" { print $$1 }'); \
-	echo "#define RSP_F2MDX_F2_MTX_I_DMEM (0x$$m & 0xFFF)"; } > $@
+	echo "#define RSP_F2MDX_F2_MTX_I_DMEM (0x$$m & 0xFFF)"; \
+	c=$$($(N64_NM) $(BUILD_DIR)/rsp_f2mdx.elf | awk '$$3 == "MG_CLIPPING_TEXT" { print $$1 }'); \
+	echo "#define RSP_F2MDX_MG_CLIPPING_TEXT_DMEM (0x$$c & 0xFFF)"; } > $@
 
 $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 

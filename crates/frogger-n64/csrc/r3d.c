@@ -115,6 +115,23 @@ void n64_r3d_init_impl(void) {
     assertf(u_frame->size == offsetof(n64_r3d_frame_t, guard), "F2_FRAME size %lu", u_frame->size);
     assertf(RSP_F2MDX_MG_OVERLAY_OFFSET == RSP_F2CLIP_MG_OVERLAY_OFFSET, "magma core text differs between ucodes");
     get_overlay_text(&rsp_f2clip, RSP_F2CLIP_MG_OVERLAY_OFFSET, &clip_text, &clip_size);
+    /* The magma core's own clipping bootstrap must load rsp_f2clip too. rspq reloads the core
+     * overlay (text and data from rsp_magma) whenever another overlay ran in between, e.g. a
+     * high-priority audio burst (mixer, ULC) between a group's vertex load and its triangles;
+     * until the next vertex load reloads rsp_f2mdx, a triangle that needs clipping enters the
+     * core's _MG_CLIPPING, which loads MG_CLIPPING_TEXT: libdragon's stock clipper. That one
+     * clips near-plane faces MDX drops and projects with magma's viewport (unset here: new
+     * vertices at screen 0,0 with z 0), drawn as slivers from the top-left corner over
+     * everything. The core's data image is what rspq reloads, so the pointer is patched there. */
+    {
+        extern rsp_ucode_t rsp_magma, rsp_magma_clipping;
+        uint32_t stock_text, stock_size;
+        get_overlay_text(&rsp_magma_clipping, RSP_F2CLIP_MG_OVERLAY_OFFSET, &stock_text, &stock_size);
+        uint32_t *w = (uint32_t *)UncachedAddr(rsp_magma.data + RSP_F2MDX_MG_CLIPPING_TEXT_DMEM);
+        assertf(w[0] == stock_text, "magma MG_CLIPPING_TEXT not at DMEM 0x%x (%08lx, stock %08lx)", RSP_F2MDX_MG_CLIPPING_TEXT_DMEM, w[0], stock_text);
+        w[0] = clip_text;
+        w[1] = clip_size;
+    }
     assertf(RSP_F2MDX_MG_OVERLAY_OFFSET == RSP_F2MODGE_MG_OVERLAY_OFFSET, "magma core text differs (modge overlay)");
     assertf(RSP_F2MODGE_ENTRY_OFFSET == 16, "F2_ModgeEntry at overlay +%d", RSP_F2MODGE_ENTRY_OFFSET);
     get_overlay_text(&rsp_f2modge, RSP_F2MODGE_MG_OVERLAY_OFFSET, &modge_text, &modge_size);

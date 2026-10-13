@@ -146,6 +146,8 @@ USA data: 36 MiB ROM.
 | `F2N64_MEASURE_SIZES=1` | measurement: log r3d draws/triangles per on-screen radius class (< 1, 1.5, 3 px) every 300 frames |
 | `F2N64_NO_BACKEND=1` | measurement: the draw loop records meshes into the sink and drops them (no r3d): its own CPU cost alone (`draw phases` line) |
 | `F2N64_KEEP_DFS=1` | skip the data step (reuse `target/n64/filesystem`) |
+| `F2N64_FREEZE=N` or `N/M` | testing: the simulation stops after N game frames of each level and the same scene is drawn from then on (`/M`: then one tick every M drawn frames, logged `app: freeze step`); tells scene-dependent render bugs (every frame) from races (some frames) |
+| `F2N64_CFLAGS=-DF2N64_NO_MIXER` | testing: no mixer rounds at all (no audio RSP work, silent): rules the audio's high-priority RSP bursts in or out of a bug |
 | `F2N64_DUMP_FRAME=N` or `A-B` | log frame N's (or frames A..=B's) CPU draw commands and r3d draws (frames counted per level) |
 | `F2N64_LOG_MODELS=1` | log each model the first time r3d draws it |
 | `F2N64_ONLY_MODEL` / `F2N64_SKIP_MODEL` | comma-separated hex model ids: draw only / never these (bisecting render bugs) |
