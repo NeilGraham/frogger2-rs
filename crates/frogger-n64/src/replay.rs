@@ -3,22 +3,35 @@
 //! the recorded `Game::checksum`s (tools/n64/README.md "Replays").
 //!
 //! The file is a pad script: `TICK 0xMASK` lines hold player 1's pads from that tick on;
-//! `# f2rec 1 practice W L` names the level, `# h TICK HEX` is the checksum after TICK ticks,
-//! `# p TICK name=HEX ...` its parts, `# end TICK` the last tick recorded.
+//! `# f2rec 1 practice W L` / `# f2rec 1 story N` says how the session starts, `# h TICK HEX`
+//! is the checksum after TICK ticks, `# p TICK name=HEX ...` its parts, `# n TICK 0xMASK` the
+//! best-time name entry's input at TICK, `# end TICK` the last tick recorded.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// How the recorded session starts (after the frontend session, as the PC's `start_choice`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Start {
+    #[default]
+    None,
+    /// `--practice W L`: an arcade level.
+    Practice(u32, u32),
+    /// `--story N`: story mode at `storySequence[N]`, on through the next levels.
+    Story(u32),
+}
+
 #[derive(Debug, Default)]
 pub struct Replay {
-    pub world: u32,
-    pub level: u32,
+    pub start: Start,
     /// `(tick, pad)` changes in tick order.
     pads: Vec<(u64, u16)>,
     /// `(ticks done, checksum)` in tick order.
     hashes: Vec<(u64, u64)>,
     /// `(ticks done, "name=hex ...")`.
     parts: Vec<(u64, String)>,
+    /// `(tick, edges)`: the best-time name entry's input (`psx_name_entry_frame`).
+    names: Vec<(u64, u16)>,
     /// The last tick to play (`# end`, else the last pad or checksum line).
     pub end: u64,
     /// Ticks played.
@@ -43,7 +56,6 @@ pub enum Check {
 impl Replay {
     pub fn parse(text: &str) -> Result<Replay, String> {
         let mut r = Replay::default();
-        let mut have_level = false;
         let mut end = None;
         for (n, line) in text.lines().enumerate() {
             let err = |m: &str| alloc::format!("replay line {}: {m}", n + 1);
@@ -52,13 +64,18 @@ impl Replay {
                 let mut it = c.split_whitespace();
                 match it.next() {
                     Some("f2rec") => {
-                        let (_ver, kind, w, l) = (it.next(), it.next(), it.next(), it.next());
-                        if kind != Some("practice") {
-                            return Err(err("only `practice W L` recordings"));
-                        }
-                        r.world = w.and_then(|s| s.parse().ok()).ok_or_else(|| err("bad world"))?;
-                        r.level = l.and_then(|s| s.parse().ok()).ok_or_else(|| err("bad level"))?;
-                        have_level = true;
+                        let (_ver, kind) = (it.next(), it.next());
+                        let mut num = || it.next().and_then(|s| s.parse().ok()).ok_or_else(|| err("bad number"));
+                        r.start = match kind {
+                            Some("practice") => Start::Practice(num()?, num()?),
+                            Some("story") => Start::Story(num()?),
+                            _ => return Err(err("unknown start (practice W L / story N)")),
+                        };
+                    }
+                    Some("n") => {
+                        let t = it.next().and_then(|s| s.parse().ok()).ok_or_else(|| err("bad tick"))?;
+                        let m = it.next().and_then(|s| s.strip_prefix("0x")).and_then(|s| u16::from_str_radix(s, 16).ok()).ok_or_else(|| err("bad mask"))?;
+                        r.names.push((t, m));
                     }
                     Some("h") => {
                         let t = it.next().and_then(|s| s.parse().ok()).ok_or_else(|| err("bad tick"))?;
@@ -84,7 +101,7 @@ impl Replay {
             let m = it.next().and_then(|s| s.strip_prefix("0x")).and_then(|s| u16::from_str_radix(s, 16).ok()).ok_or_else(|| err("bad pad mask"))?;
             r.pads.push((t, m));
         }
-        if !have_level {
+        if r.start == Start::None {
             return Err(String::from("replay: no `# f2rec` header"));
         }
         r.pads.sort_by_key(|p| p.0);
@@ -117,6 +134,11 @@ impl Replay {
         } else {
             self.pad
         }
+    }
+
+    /// The best-time name entry's input for the next tick (0: none recorded).
+    pub fn name_entry(&self) -> u16 {
+        self.names.iter().find(|n| n.0 == self.tick).map_or(0, |n| n.1)
     }
 
     /// After a tick: counts it, and compares `checksum()` when the recording has one here.
@@ -158,7 +180,7 @@ mod tests {
     #[test]
     fn plays_pads_and_checks() {
         let mut r = Replay::parse(REC).unwrap();
-        assert_eq!((r.world, r.level, r.end), (0, 0, 5));
+        assert_eq!((r.start, r.end), (Start::Practice(0, 0), 5));
         assert_eq!(r.start_hash(), Some(0xaa));
         assert_eq!(r.parts_at(0), Some("core=01 map=02"));
         let mut pads = Vec::new();
@@ -178,7 +200,9 @@ mod tests {
     #[test]
     fn rejects_bad_files() {
         assert!(Replay::parse("0 0x0000\n").is_err());
-        assert!(Replay::parse("# f2rec 1 story 3\n").is_err());
+        assert!(Replay::parse("# f2rec 1 multi 3\n").is_err());
+        let s = Replay::parse("# f2rec 1 story 3\n0 0x0000\n# n 0 0x0020\n# end 2\n").unwrap();
+        assert_eq!((s.start, s.name_entry()), (Start::Story(3), 0x20));
         assert!(Replay::parse("# f2rec 1 practice 0 0\n5 up\n").is_err());
     }
 }

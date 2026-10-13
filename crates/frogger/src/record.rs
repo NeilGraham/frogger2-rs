@@ -1,5 +1,6 @@
-//! `--record FILE` (with `--practice W L`): records a play session for the N64 replay boot
-//! (`F2N64_BOOT=replay`, tools/n64/README.md "Replays").
+//! `--record FILE` (with `--practice W L` or `--story N`): records a play session for the N64
+//! replay boot (`F2N64_BOOT=replay`, tools/n64/README.md "Replays"). A story session runs on
+//! through the next levels and their videos (which take no ticks on either build).
 //!
 //! The file is a pad script (player 1's pads as the game saw them, one line per change), so it
 //! also replays on the PC with `--pad-script`. Comment lines carry the checks:
@@ -12,7 +13,12 @@
 //! # h 60 fedcba9876543210    # checksum after 60 ticks
 //! # p 60 core=... map=...     # its parts (Game::checksum_parts)
 //! # mode 812 6               # game mode after tick 812
+//! # n 900 0x0020             # best-time name entry's pad edges at tick 900 (not a pad line:
+//!                            # the PC feeds it the debounced pad, `App::tick`)
+//! # video 1000 fmv07         # a video started during tick 1000 (information)
 //! ```
+//!
+//! The header is `# f2rec 1 practice W L` or `# f2rec 1 story N`.
 //!
 //! While recording, the session matches the N64's: authentic options with the console and
 //! settings-menu flags, no save, no mods, the default language (`App::session_config`).
@@ -43,17 +49,32 @@ impl Recorder {
         Ok(Recorder { out: std::io::BufWriter::new(f), path: path.to_path_buf(), tick: None, last_pad: None, last_mode: u32::MAX })
     }
 
-    /// The level just started (`App::start_choice`): header and the starting checksum.
-    pub fn start(&mut self, world: u32, level: u32, game: &Game) {
+    /// The level just started (`App::start_choice`; `start`: `practice W L` / `story N`):
+    /// header and the starting checksum.
+    pub fn start(&mut self, start: &str, game: &Game) {
         if self.tick.is_some() {
             return;
         }
         self.tick = Some(0);
         self.last_mode = game.game_state.mode;
-        self.line(format_args!("# f2rec 1 practice {world} {level}"));
+        self.line(format_args!("# f2rec 1 {start}"));
         self.hash(0, game);
         self.flush();
         eprintln!("frogger: recording to {}", self.path.display());
+    }
+
+    /// Before a tick: the best-time name entry got `edges` (`psx_name_entry_frame`).
+    pub fn name_entry(&mut self, edges: u16) {
+        if let (Some(t), true) = (self.tick, edges != 0) {
+            self.line(format_args!("# n {t} 0x{edges:04x}"));
+        }
+    }
+
+    /// A video started during the tick in progress.
+    pub fn video(&mut self, name: &str) {
+        if let Some(t) = self.tick {
+            self.line(format_args!("# video {t} {name}"));
+        }
     }
 
     /// After one tick with player 1's `pad`.

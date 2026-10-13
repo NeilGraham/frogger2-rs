@@ -839,8 +839,12 @@ impl App {
         }
         self.dispatch_effects();
         self.process_level_loads();
-        if let (Some(r), LevelChoice::Arcade(w, l)) = (&mut self.record, c) {
-            r.start(w, l, &self.game);
+        if let Some(r) = &mut self.record {
+            let start = match c {
+                LevelChoice::Story(n) => format!("story {n}"),
+                LevelChoice::Arcade(w, l) => format!("practice {w} {l}"),
+            };
+            r.start(&start, &self.game);
         }
         // A fresh level: no interpolation from the previous scene.
         self.prev.clear();
@@ -1289,6 +1293,9 @@ impl App {
         if self.game.frontend.text_entry > 0 {
             // controller: best-time name entry with the pad/arrows (PS1 `PsxNameEntryFrame`).
             self.game.psx_name_entry_frame(self.pad.debounce[0]);
+            if let Some(r) = &mut self.record {
+                r.name_entry(self.pad.debounce[0]);
+            }
         }
         self.apply_game_options(); // P6-1
                                    // `tick_frames(.., 1)` = retail `LoopFunc` timing: in the pause menu `gameSpeed` is 0 and
@@ -1557,6 +1564,9 @@ impl App {
                 let logo = [FMV_HASBRO_LOGO, FMV_BLITZ_LOGO].iter().any(|&i| FMV[i as usize].name.eq_ignore_ascii_case(&name));
                 if logo && self.qol() && self.gameplay.skip_intro_logos {
                     return; // P6-1: skip the start-up logos
+                }
+                if let Some(r) = &mut self.record {
+                    r.video(&name);
                 }
                 if self.video.is_some() {
                     self.video_queue.push_back(name);

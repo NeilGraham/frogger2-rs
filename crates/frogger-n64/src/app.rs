@@ -531,10 +531,17 @@ impl App {
                 let r = rt::file_read("rom:/replay.txt").ok_or_else(|| String::from("rom:/replay.txt not found"));
                 match r.and_then(|b| crate::replay::Replay::parse(&String::from_utf8_lossy(&b))) {
                     Ok(r) => {
-                        log!("replay: practice {}-{}, {} ticks", r.world, r.level, r.end);
-                        // As the PC's `--practice` (`App::start_choice`): the frontend session first.
+                        log!("replay: {:?}, {} ticks", r.start, r.end);
+                        // As the PC's `--practice` / `--story` (`App::start_choice`): the
+                        // frontend session first.
                         app.game.start_frontend();
-                        app.game.start_arcade(r.world, r.level);
+                        match r.start {
+                            crate::replay::Start::Practice(w, l) => app.game.start_arcade(w, l),
+                            crate::replay::Start::Story(n) => app.game.start_story(n),
+                            crate::replay::Start::None => {}
+                        }
+                        // Videos take no ticks on either build: skipped as a player would.
+                        rt::set_fmv_autoskip(true);
                         app.replay = Some(r);
                     }
                     Err(e) => log!("REPLAY FAILED: {e}"),
@@ -989,7 +996,12 @@ impl App {
             self.prev_cam = Some(render::game_camera(&self.game));
         }
         if self.game.frontend.text_entry > 0 {
-            self.game.psx_name_entry_frame(pad & !self.prev_pad);
+            // A replay: the PC's input (its debounced pad, which pad edges need not equal).
+            let edges = match &self.replay {
+                Some(r) if !r.done() => r.name_entry(),
+                _ => pad & !self.prev_pad,
+            };
+            self.game.psx_name_entry_frame(edges);
         }
         self.prev_pad = pad;
         let t0 = ticks();

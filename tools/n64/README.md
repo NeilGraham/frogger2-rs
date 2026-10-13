@@ -44,20 +44,25 @@ A play session recorded on the PC replays in ares tick for tick, checked against
 state checksums (`Game::checksum`, every 60 ticks): real play, not a scripted test.
 ```sh
 frogger --practice 0 0 --mods "" --record garden1.txt     # PC: play, close the window when done
+frogger --story 1 --mods "" --record story1.txt           # or story mode: on through later chapters and videos
 frogger --headless --practice 0 0 --frames N --pad-script garden1.txt --record check.txt   # optional: PC re-check
 F2N64_BOOT=replay F2N64_KEEP_DFS=1 F2N64_REPLAY=garden1.txt tools/n64/build.sh
 tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 600 -stopon "replay done|REPLAY DESYNC"
+tools/n64/replay-all.sh /mnt/c/Frogger2-rs/recordings     # or: build + run each recording, one summary line each
 ```
 - The recording (`crates/frogger/src/record.rs`) is a `--pad-script` with `# h TICK HEX`
-  checksum lines, their parts (`# p`), and `# mode TICK M` lines (3 = level complete).
+  checksum lines, their parts (`# p`), `# mode TICK M` lines (3 = level complete), the best-time
+  name entry's input (`# n`: the PC feeds it the debounced pad, not a pad line) and `# video`.
   While recording, the PC session matches the N64's: authentic options with the console and
   settings-menu flags, no save, no mods, the default language.
-- The ROM (`src/replay.rs`) starts the level as the PC's `--practice` does, runs one 60 Hz
+- Videos take no ticks on either build (the simulation waits), so the replay skips them after
+  their first frames (`rt::set_fmv_autoskip`), as a player skipping them would.
+- The ROM (`src/replay.rs`) starts the session as the PC's `--practice` / `--story` does, runs one 60 Hz
   `tick_frames(.., 1)` per game frame owed (at most `MAX_TICKS_PER_FRAME`; slower than real time
   when frames are slow), and logs `replay: tick T checksum ok`, `replay: tick T mode M`,
   `REPLAY DESYNC at tick T` with the differing parts, and `replay done: ...`.
-- First result: a 100 s Garden 1 run (level complete at tick 3621) replayed with all 101
-  checksums equal (2026-10-13).
+- First results (2026-10-13): a 100 s Garden 1 run (level complete at tick 3621), all 101
+  checksums equal; a story session Garden -> video 03S -> Boulder Canyon, all 126 equal.
 
 ## Prerequisites
 - libdragon **preview** (pinned `39d0d60`) + its toolchain at `N64_INST`

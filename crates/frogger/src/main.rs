@@ -12,7 +12,7 @@
 //! N frogs, `--demo W L` a recorded demo, `--video NAME` one FMV. Headless without a level option loads Garden 1.
 //! `--pad-script FILE` drives player 1's pad: lines `TICK BUTTONS` hold the buttons
 //! (`cross+up`, `none`, or a hex mask) from that tick on; `TICK shot FILE.png` writes a
-//! screenshot before that tick (headless). `--record FILE` with `--practice W L` records
+//! screenshot before that tick (headless). `--record FILE` with `--practice W L` / `--story N` records
 //! the session for the N64 replay boot (pads + state checksums, `record.rs`).
 //!
 //! Online play (`docs/NETPLAY.md`): `frogger --host [--port N] [--host-addr IP] --multi W L N`
@@ -96,7 +96,7 @@ fn usage() -> ! {
          \x20      frogger --headless --frames N [level options] [--screenshot out.png] [--size WxH]\n\
          display: [--profile authentic|enhanced] [--msaa N] [--render-scale S] [--hud-probe] [--screenshot-rebind]\n\
          \x20      [--pad-script FILE]  (lines `TICK BUTTONS` / `TICK shot FILE.png`)\n\
-         \x20      [--record FILE]  (with --practice W L: pads + checksums for the N64 replay)\n\
+         \x20      [--record FILE]  (with --practice W L / --story N: pads + checksums for the N64 replay)\n\
          online: --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS | --join CODE  [--pad-seed S (headless)]\n\
          mods: [--mods ID,ID...] [--mod ID]... (default: config [mods] enabled; \"\" = none) [--mods-dir DIR]\n\
          practice: [--practice WORLD LEVEL | --story CHAPTER] (level select through a game session)\n\
