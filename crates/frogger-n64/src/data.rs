@@ -225,13 +225,22 @@ impl<S: AssetStore> N64Data<S> {
         if let Some(f) = self.before_access {
             f();
         }
+        // The file's bytes are parsed and dropped: the level heap's transient end.
+        #[cfg(target_vendor = "nintendo64")]
+        return crate::rt::mem_transient(|| self.store.load(path));
+        #[cfg(not(target_vendor = "nintendo64"))]
         self.store.load(path)
     }
 
     fn with_index<T>(&self, f: impl FnOnce(&SfxIndex) -> Option<T>) -> Option<T> {
         let mut g = self.sfx_index.lock();
         if g.is_none() {
-            *g = Some(Box::new(SfxIndex::parse(&self.store.load("sfx/index.bin")?)?));
+            // Loaded once, kept for the whole run (main heap, not the level being loaded).
+            #[cfg(target_vendor = "nintendo64")]
+            let ix = crate::rt::mem_play(|| Some(Box::new(SfxIndex::parse(&self.store.load("sfx/index.bin")?)?)))?;
+            #[cfg(not(target_vendor = "nintendo64"))]
+            let ix = Box::new(SfxIndex::parse(&self.store.load("sfx/index.bin")?)?);
+            *g = Some(ix);
         }
         f(g.as_ref().unwrap())
     }
@@ -283,7 +292,11 @@ impl<S: AssetStore> DataSource for N64Data<S> {
             }
             // `textures/<bank>.prc` (the `prc*` sources, postcard); older packs: from the NTX bank.
             let prc = ntx_bank_path(path).replace(".ntx", ".prc");
-            if let Some(b) = self.store.load(&prc) {
+            #[cfg(target_vendor = "nintendo64")]
+            let bytes = crate::rt::mem_transient(|| self.store.load(&prc));
+            #[cfg(not(target_vendor = "nintendo64"))]
+            let bytes = self.store.load(&prc);
+            if let Some(b) = bytes {
                 return Some(postcard::from_bytes(&b).map_err(|e| format!("{prc}: {e}")));
             }
             return ntx_proc_bank(&self.store, &ntx_bank_path(path)).map(Ok);

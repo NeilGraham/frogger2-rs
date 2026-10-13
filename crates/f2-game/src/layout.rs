@@ -613,6 +613,12 @@ impl Game {
         self.free_garib_list();
         self.level_files = LevelFiles::default();
         self.free_actor_list();
+        // UpdateEvents' snapshot buffers (kept between ticks): released with the level, so
+        // the next level's are allocated with it (memory only; empty outside UpdateEvents).
+        if !self.flag_snap.active {
+            self.flag_snap.enemies = Vec::new();
+            self.flag_snap.platforms = Vec::new();
+        }
         self.models.clear(); // FreeAllObjectBanks
 
         // wave E: FreeTextOverlayLinkedList, FreeSpriteOverlayLinkedList, FreeSpriteList,

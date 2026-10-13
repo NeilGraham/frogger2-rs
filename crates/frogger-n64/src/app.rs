@@ -136,6 +136,10 @@ pub enum Boot {
     SettingsTest,
     BookTest,
     BookSelectTest(u32),
+    /// Testing (memory): every story level, then the retro levels, leaving each after 240
+    /// frames by Quit, a game over or straight into the next level in turn (FMVs skipped);
+    /// `mem` log lines at every load (research/n64-memory.md "Level heap").
+    MemTour(u32),
     LevelBookTest,
     GameOverBookTest,
 }
@@ -154,6 +158,7 @@ impl Boot {
             (Some("book-test"), _, _) => Boot::BookTest,
             (Some("book-select-test"), n, _) => Boot::BookSelectTest(n.unwrap_or(1)),
             (Some("level-book-test"), _, _) => Boot::LevelBookTest,
+            (Some("mem-tour"), n, _) => Boot::MemTour(n.unwrap_or(0)),
             (Some("gameover-book-test"), _, _) => Boot::GameOverBookTest,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
             (Some("save-test"), _, _) => Boot::SaveTest,
@@ -229,9 +234,18 @@ pub static LEVEL: spin::Mutex<Option<Level>> = spin::Mutex::new(None);
 /// next `InitLevel`) frees that side ([`unload_level_render`]).
 static ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Set when no level load is in progress; the first data-source access after it (InitLevel's)
+/// switches allocations to the level heap ([`rt::MEM_LEVEL`]) until [`App::load_scene`] ends.
+/// False until the session is up (its reads at boot are not a level load).
+static PLAYING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Frees the loaded level's object banks and textures (keeps the fonts). Called by the data
 /// source at the start of a level load inside the simulation.
 pub fn unload_level_render() {
+    if PLAYING.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        rt::mem_phase(rt::MEM_LEVEL);
+        log!("app: level load starts (level heap)");
+    }
     if !ARMED.swap(false, core::sync::atomic::Ordering::Relaxed) {
         return;
     }
@@ -316,6 +330,10 @@ pub struct App {
     pad_script: Option<(u32, &'static [(u32, u16)])>,
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
+    /// [`App::free_last_level`] ran for the load in progress (before its video).
+    last_level_freed: bool,
+    /// `Boot::MemTour`: (step, frames in it, waiting in the frontend).
+    tour: Option<(u32, u32, bool)>,
     /// `Boot::GameOverBookTest`: leave the level by a game over instead of Quit.
     game_over_test: bool,
     /// Start of the level load in progress (load step timing).
@@ -395,6 +413,8 @@ impl App {
             settings_test: false,
             pad_script: None,
             level_quit: None,
+            tour: None,
+            last_level_freed: false,
             load_t0: 0,
             game_over_test: false,
             fps_count: (0, 0, 0),
@@ -425,6 +445,12 @@ impl App {
         app.install_game_hooks();
         app.book_font = load_font(&app.data, "textures/font/monofont.bmp").map(|f| font_subset(&f, &book_chars(&app.game)));
         log!("app: session up in {} ms", ticks_to_us(ticks().wrapping_sub(t0)) / 1000);
+        // Lazily built tables would otherwise land in the level heap at the first animation.
+        f2_engine::math::warm_tables();
+        rt::mem_report("session up", false);
+        // Boot and session setup were MEM_MAIN (csrc/main.c big_init).
+        rt::mem_phase(rt::MEM_PLAY);
+        PLAYING.store(true, core::sync::atomic::Ordering::Relaxed);
         match boot {
             Boot::Frontend { trained } => {
                 if trained {
@@ -466,6 +492,11 @@ impl App {
                 app.autostart = Some(0);
                 app.fast_start = true;
                 app.pad_script = Some((0, BOOK_SELECT_SCRIPT));
+            }
+            Boot::MemTour(first) => {
+                rt::set_fmv_autoskip(true);
+                app.tour = Some((first, 0, false));
+                app.tour_start(first);
             }
             Boot::SettingsTest => {
                 app.autostart = Some(0);
@@ -530,6 +561,15 @@ impl App {
     /// The game fonts' N64 textures survive (registry images 1 and 2 again): reloading
     /// `bigfont.bmp` needs a 427 KiB RGBA8 block, which a fragmented heap may not have.
     fn rebuild_renderer(&mut self) {
+        // The first time it loads the game fonts, which stay for the whole run: main heap.
+        let phase = self.fonts_cache.is_none().then(|| rt::mem_phase(rt::MEM_MAIN));
+        self.rebuild_renderer_inner();
+        if let Some(p) = phase {
+            rt::mem_phase_resume(p);
+        }
+    }
+
+    fn rebuild_renderer_inner(&mut self) {
         let mut g = lv();
         let l = g.as_mut().unwrap();
         if self.fonts_cache.is_some() {
@@ -615,9 +655,71 @@ impl App {
             lv().as_ref().map_or(0, |l| l.gfx.tex_bytes) / 1024
         );
         self.level_peak = (self.level_peak.0.max(peak), self.level_peak.1.max(h.used));
+        rt::mem_report(&self.level_name, false);
     }
 
     // ------------------------------------------------------------ levels
+
+    /// `Boot::MemTour` step `i`: story levels, then the retro levels (arcade).
+    fn tour_start(&mut self, i: u32) -> bool {
+        let n = f2_game::story::NUM_STORY_LEVELS as u32;
+        if i < n {
+            log!("app: mem-tour step {i}: story level {i}");
+            self.game.start_story(i);
+        } else if i < n + 10 {
+            log!("app: mem-tour step {i}: arcade 7-{}", i - n);
+            self.game.start_arcade(7, i - n);
+        } else {
+            log!("app: mem-tour done");
+            rt::mem_report("mem-tour done", true);
+            return false;
+        }
+        true
+    }
+
+    fn tour_step(&mut self) {
+        use f2_game::define::mode::FRONTEND_MODE;
+        let Some((i, f, fe)) = self.tour else { return };
+        let mut t = (i, f + 1, fe);
+        let in_frontend = self.game.game_state.mode == FRONTEND_MODE;
+        if fe {
+            // Frames since the frontend is up (a game over shows its screen first).
+            t.1 = if in_frontend { t.1 } else { 0 };
+            if t.1 > 180 {
+                t = (i + 1, 0, false);
+                if !self.tour_start(i + 1) {
+                    self.tour = None;
+                    return;
+                }
+            }
+        } else if t.1 == 240 {
+            match i % 3 {
+                0 => {
+                    log!("app: mem-tour: Quit to the frontend");
+                    let g = &mut self.game;
+                    g.frogger.player[0].character = f2_game::frogger::FROG_FROGGER;
+                    g.frogger.num_frogs = 1;
+                    g.game_state.mode = FRONTEND_MODE;
+                    g.init_level(f2_game::layout::worldid::FRONTEND, f2_game::layout::LEVELID_FRONTEND1);
+                    t = (i, 0, true);
+                }
+                1 => {
+                    log!("app: mem-tour: game over");
+                    self.game.start_game_over();
+                    t = (i, 0, true);
+                }
+                _ => {
+                    log!("app: mem-tour: straight into the next level");
+                    t = (i + 1, 0, false);
+                    if !self.tour_start(i + 1) {
+                        self.tour = None;
+                        return;
+                    }
+                }
+            }
+        }
+        self.tour = Some(t);
+    }
 
     fn process_level_loads(&mut self) {
         if let Some(l) = self.game.take_level_loads().pop() {
@@ -625,18 +727,13 @@ impl App {
         }
     }
 
-    fn load_scene(&mut self, world: u32, level: u32, assets: &f2_game::layout::LevelAssets) {
-        let t0 = ticks();
-        if self.level_name != "boot" {
-            log!("heap [{}] level peak: rust {} KiB, libdragon used {} KiB", self.level_name, self.level_peak.0 / 1024, self.level_peak.1 / 1024);
-        }
-        self.level_name = format!("{world}-{level}");
-        self.level_peak = (0, 0);
-        self.load_t0 = t0;
-        // The audio gap so far covers the simulation's side of the load (InitLevel reading
-        // the level's files) and any FMV before it.
-        self.heap_step("the game's level setup");
-        // Free the previous level's renderer side first (RDRAM).
+    /// Frees the rest of the previous level's renderer side (the scene, r3d storage, the image
+    /// registry, the sound tables) and starts the renderer's side of the load (from the level
+    /// heap's top; InitLevel filled it from the bottom). Before a story video too, which
+    /// plays between InitLevel and [`load_scene`](Self::load_scene) and needs large blocks.
+    fn free_last_level(&mut self) {
+        PLAYING.store(false, core::sync::atomic::Ordering::Relaxed);
+        rt::mem_phase(rt::MEM_LEVEL_TOP);
         ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
         if let Some(l) = lv().as_mut() {
             l.scene = None;
@@ -645,6 +742,25 @@ impl App {
         }
         self.rebuild_renderer();
         self.audio.free_samples();
+        self.last_level_freed = true;
+    }
+
+    fn load_scene(&mut self, world: u32, level: u32, assets: &f2_game::layout::LevelAssets) {
+        let t0 = ticks();
+        if self.level_name != "boot" {
+            log!("heap [{}] level peak: rust {} KiB, libdragon used {} KiB", self.level_name, self.level_peak.0 / 1024, self.level_peak.1 / 1024);
+            rt::mem_report(&format!("{} played + next InitLevel", self.level_name), false);
+        }
+        self.level_name = format!("{world}-{level}");
+        self.level_peak = (0, 0);
+        self.load_t0 = t0;
+        // The audio gap so far covers the simulation's side of the load (InitLevel reading
+        // the level's files) and any FMV before it.
+        self.heap_step("the game's level setup");
+        if !self.last_level_freed {
+            self.free_last_level();
+        }
+        self.last_level_freed = false;
         rt::reset_peak();
         self.heap_step("freeing the last level");
         // Textures first: the NTX bank files are the largest single blocks of a level and
@@ -684,6 +800,18 @@ impl App {
             }
         }
         self.heap_step("textures");
+        // The F2NM mesh files next (up to ~300 KiB each, kept by r3d): large blocks while the
+        // level heap is still in one piece, before the object banks' many small ones.
+        #[cfg(not(feature = "render-cpu"))]
+        let f2nm: Vec<Option<Vec<u8>>> = assets
+            .object_banks
+            .iter()
+            .map(|f| {
+                let b = self.data.store.load(&(norm_path(f) + crate::data::F2NM_SUFFIX));
+                rt::audio_poll();
+                b
+            })
+            .collect();
         let mut banks = Vec::new();
         for f in &assets.object_banks {
             match self.data.object_bank(f) {
@@ -695,9 +823,14 @@ impl App {
         }
         self.heap_step("object banks");
         #[cfg(not(feature = "render-cpu"))]
-        let banks = self.load_meshes(&assets.object_banks, banks);
+        let banks = self.load_meshes(&assets.object_banks, f2nm, banks);
         self.heap_step("r3d meshes");
-        let scene = LevelScene::new(world, level, banks, assets.texture_banks.clone(), &self.game);
+        let mut scene = LevelScene::new(world, level, banks, assets.texture_banks.clone(), &self.game);
+        // The per-actor draw state (~350 bytes an actor: ~100 KiB in Ancients 3) now, while
+        // the level heap is in one piece, instead of at the first frame; room for a quarter
+        // more actors spawned in play.
+        let n = self.game.actor2.actors.slots.len();
+        scene.actors.reserve_exact(n + n / 4 + 8);
         lv().as_mut().unwrap().scene = Some(scene);
         self.load_sfx(world, level);
         self.heap_step("sound effects");
@@ -713,6 +846,12 @@ impl App {
             assets.texture_banks
         );
         self.heap_log("loaded");
+        // Everything the previous level allocated while loading must be gone by now (the
+        // level heap is then free for this level only); the check lists what is not.
+        rt::mem_report(&self.level_name, true);
+        rt::mem_phase(rt::MEM_PLAY);
+        rt::mem_reset_peaks();
+        PLAYING.store(true, core::sync::atomic::Ordering::Relaxed);
         ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
         // The load took real time: do not try to catch it up.
         self.acc = 0;
@@ -723,7 +862,7 @@ impl App {
     /// The banks' F2NM render meshes into r3d; returns the banks without their render
     /// geometry (the draw loop only needs hierarchies, keys and flags from them).
     #[cfg(not(feature = "render-cpu"))]
-    fn load_meshes(&mut self, files: &[String], mut banks: Vec<f2_formats::objbank::ObjectBank>) -> Vec<f2_formats::objbank::ObjectBank> {
+    fn load_meshes(&mut self, files: &[String], f2nm: Vec<Option<Vec<u8>>>, mut banks: Vec<f2_formats::objbank::ObjectBank>) -> Vec<f2_formats::objbank::ObjectBank> {
         // The model index LevelScene builds (first bank wins).
         let mut models = alloc::collections::BTreeMap::new();
         for (bi, b) in banks.iter().enumerate() {
@@ -736,12 +875,12 @@ impl App {
         let mut total = 0;
         // `banks` holds the banks that loaded, in `files` order.
         let mut bi = 0;
-        for f in files {
+        for (f, bytes) in files.iter().zip(f2nm) {
             if bi >= banks.len() {
                 break;
             }
             let p = norm_path(f) + crate::data::F2NM_SUFFIX;
-            let Some(bytes) = self.data.store.load(&p) else {
+            let Some(bytes) = bytes else {
                 log!("app: {p}: not found");
                 continue;
             };
@@ -975,6 +1114,11 @@ impl App {
             return;
         }
         let path = alloc::format!("rom:/video/{}.h264", name.to_ascii_lowercase());
+        // A story video between InitLevel and the renderer's load: the previous level's last
+        // tables go first (the decoder needs a few hundred KiB in large blocks).
+        if !PLAYING.load(core::sync::atomic::Ordering::Relaxed) && !self.last_level_freed && self.level_name != "boot" {
+            self.free_last_level();
+        }
         let t0 = ticks();
         let ok = rt::fmv_play(&path);
         log!("app: video {path} {} ({} ms)", if ok { "played" } else { "missing" }, ticks_to_us(ticks().wrapping_sub(t0)) / 1000);
@@ -1280,6 +1424,7 @@ impl App {
                 pad |= [PAD_UP, PAD_RIGHT, PAD_DOWN, PAD_LEFT][(*c / 32 % 4) as usize];
             }
         }
+        self.tour_step();
         if let Some(c) = &mut self.level_quit {
             *c += 1;
             if *c == 300 {

@@ -354,7 +354,7 @@ impl Game {
         let c = &mut self.cam;
         c.tc_list = TransCameraList::default();
         c.cam_blocks = 0;
-        c.trans_camera_defs.clear();
+        c.trans_camera_defs = Vec::new(); // capacity too: the next level's list is part of its load
         c.last_tile = [None; 4];
         c.fixed_dir = 0;
         c.fixed_pos = 0;

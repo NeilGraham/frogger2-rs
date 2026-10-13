@@ -99,3 +99,82 @@ save 5–10%.
 
 Reproduce: the commands above (game data via `F2_GAME_DIR`). The example prints the full
 per-component breakdown per level.
+
+## Level heap: accounting for every level change (2026-10-13)
+
+Loads kept failing on fragmentation: on the frontend after a game over, on the next level, after
+a quick story-book select. Freeing was never slow. The problem was placement, so waiting longer
+between scenes would not help: every free is synchronous (and the GPU is idle before a load).
+The fix is to keep blocks with different lifetimes in separate memory, and to measure.
+
+### Design (`crates/frogger-n64/csrc/main.c`, "memory: the level heap")
+- **Main heap** (newlib):
+  - the boot and the session (`MEM_MAIN`): game fonts, sfx index, music stream, the mixer's
+    channel buffers, sound-stream `FILE`s, the `f2_engine::math` tables built at boot;
+  - small play-time blocks.
+- **Level heap** (all RDRAM left after boot minus `F2N64_MAIN_RESERVE_KIB`, default 1500):
+  everything allocated for a level, used from both ends.
+  - *Bottom:* the simulation's InitLevel (`MEM_LEVEL`), from its first data access.
+  - *Top:* the renderer's `App::load_scene` (`MEM_LEVEL_TOP`) and play-time blocks of 16 KiB or
+    more (per-level renderer storage, story-book page, video buffers).
+  - *Temporary buffers* (file bytes that get parsed and dropped, `rt::mem_transient`) go to the
+    other end, into the free middle, so they leave no holes in either side.
+  - The renderer frees its last tables (image registry, sound tables) only when its load starts.
+    Because they are at the top, they don't cut holes into the new level's simulation data.
+    Before a story video, `App::free_last_level` frees them early: the decoder needs ~0.5 MiB
+    in large blocks.
+  - Large blocks come first in a load: NTX texture banks, then F2NM mesh files, then the object
+    banks. The per-actor draw state is reserved during the load, not at the first frame.
+- Every level change frees all of this, so **every load starts from an empty level heap**.
+- Each heap falls back to the other when full. The allocator uses boundary tags, an
+  address-ordered free list, first fit from either end, and O(1) coalescing. A host stress test
+  covers it (2M random alloc/realloc/free operations across all phases, with pattern and
+  structure checks).
+- **Lifetime check:** every block records its load epoch. After each load, `mem [W-L]` reports
+  both heaps and lists level-heap blocks from earlier loads ("LEFT OVER"). It also lists
+  play-time blocks alive across a load. Even tiny leftovers matter: a 128-byte block between two
+  400 KiB free runs made the frontend's 439 KiB `titles.ntx` fail.
+  - Found and fixed: the music stream, game fonts, sfx index, mixer channel buffers, `FILE`s,
+    `f2_engine::math` tables.
+  - Also fixed: containers that kept their capacity across levels: the actor arena,
+    `flag_snap`, `trans_camera_defs`, RenderCpu's per-image lists, r3d's file list,
+    `Audio::open`.
+  - Remaining: under 2 KiB of strings (training hints, ≤128-byte blocks).
+  - Find more with `F2N64_MEM_TRACE_SIZE` (tools/n64/README.md).
+
+### Stack overflow (found by this work)
+libdragon gives the stack the top 64 KiB of RDRAM, directly above the heap, with no guard.
+`App::new` builds the App on the stack and goes **~135 KiB below** that 64 KiB. This was
+measured with a painted guard. Whenever the heap reached the top, that stack use overwrote live
+blocks: a stack frame full of texel data, then a jump to `0xFFFF00FF`. There is now a 192 KiB
+painted guard during boot. After `App::new`, all but 16 KiB of it goes back to the heap. The
+16 KiB stays painted, and every `mem` line shows how far the stack went into it. Over two full
+tours, that was 0 KiB after boot.
+
+### Budget (ares, `F2N64_BOOT=mem-tour`)
+The tour covers 17 story levels and the retro levels 7-0..7-9: 45 loads, with Quit, game over
+and direct transitions in turn. Two consecutive full tours passed.
+Heap after code and BSS: 5420 KiB. Split: level heap 3052 KiB, main heap 2366 KiB.
+
+| | peak (worst level) | worst levels | capacity | headroom |
+|---|---:|---|---:|---:|
+| level heap | 2865 KiB | 1-2 Ancients 3 (283 actors), 8-0 frontend | 3052 | 187 KiB |
+| main heap | 2304 KiB | frontend, 7-x, 2-0 | 2366 | 62 KiB (small blocks spill to the level heap's top) |
+
+Retro 7-1/7-4/7-7 need ~1.4 MiB of level heap. Other levels need 2.2–2.8 MiB.
+Loads: average 1.39 s, max 1.83 s (no slower than before).
+
+**Remaining risk is headroom:** about 95 % of the heap is in use at the worst moment.
+Fragmentation no longer carries over from one level to the next, and a regression shows up as
+numbers in the `mem` lines. If more room is needed, the candidates, largest first:
+- the frontend's story-book buffers (320 KiB), only while the book is open;
+- 3 → 2 framebuffers (150 KiB; affects pacing);
+- the `Game` text and overlay pools;
+- ULC music and audio buffers.
+
+### Fast iteration
+`tools/n64/run-ares.sh ROM -- -delay 600 -stopon "mem-tour done"`:
+- A crash (`ASSERTION FAILED` / `CPU EXCEPTION` / `RUST PANIC` in the log) stops the run at once,
+  saves `<rom>-crash.png` of the inspector screen and exits with code 3.
+- The `-stopon` line ends the run on success.
+- Use `grep -a` on `run.txt`: it contains a few binary bytes.

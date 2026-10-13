@@ -238,6 +238,7 @@ mod mixer {
             for h in self.open.drain(..) {
                 rt::sfx_close(h);
             }
+            self.open = Vec::new(); // the next level's list belongs to its load
             self.by_path.clear();
             self.samples.clear();
             for v in &mut self.voice_banks {

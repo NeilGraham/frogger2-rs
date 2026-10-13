@@ -53,6 +53,9 @@
     RUST_TO_C n64_draw_rects
     RUST_TO_C n64_cache_writeback
     RUST_TO_C n64_heap_stats
+    RUST_TO_C n64_mem_phase
+    RUST_TO_C n64_mem_report
+    RUST_TO_C n64_mem_reset_peaks
     RUST_TO_C n64_sfx_open
     RUST_TO_C n64_sfx_close
     RUST_TO_C n64_sfx_channels

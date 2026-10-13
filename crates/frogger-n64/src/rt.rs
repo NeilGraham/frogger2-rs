@@ -51,6 +51,73 @@ pub fn reset_peak() {
     PEAK.store(LIVE.load(Relaxed), Relaxed);
 }
 
+/// Allocation phases (`csrc/main.c` "the level heap"): while a level loads, every allocation
+/// comes from the level heap, which the next level change empties again.
+pub const MEM_PLAY: u32 = 0;
+pub const MEM_LEVEL: u32 = 1;
+/// Session data (lives for the whole run): main heap whatever the size.
+pub const MEM_MAIN: u32 = 2;
+/// A level load, from the level heap's top (the renderer's side; the simulation's InitLevel
+/// fills it from the bottom).
+pub const MEM_LEVEL_TOP: u32 = 3;
+
+/// Sets the allocation phase; returns the previous one. MEM_PLAY -> MEM_LEVEL starts a new
+/// load (epoch).
+pub fn mem_phase(phase: u32) -> u32 {
+    unsafe { ffi::n64_mem_phase(phase) }
+}
+
+/// Runs `f` with session allocations (main heap): for anything allocated during a level
+/// load or play that outlives the level (fonts, caches, session state).
+pub fn mem_play<T>(f: impl FnOnce() -> T) -> T {
+    let old = mem_phase(MEM_MAIN);
+    let r = f();
+    mem_phase_resume(old);
+    r
+}
+
+/// During a level load: `f`'s allocations from the level heap's other end (file buffers that
+/// are parsed and dropped): they go into the free middle and leave no holes among the data
+/// of the side that is loading (InitLevel from the bottom, the renderer from the top).
+/// Outside a load, `f` as is.
+pub fn mem_transient<T>(f: impl FnOnce() -> T) -> T {
+    let old = mem_phase(MEM_LEVEL_TOP | 0x100);
+    match old {
+        MEM_LEVEL => {}
+        MEM_LEVEL_TOP => {
+            mem_phase_resume(MEM_LEVEL);
+        }
+        _ => {
+            mem_phase_resume(old);
+            return f();
+        }
+    }
+    let r = f();
+    mem_phase_resume(old);
+    r
+}
+
+/// Back to a phase [`mem_phase`] returned, without starting a new load.
+pub fn mem_phase_resume(old: u32) {
+    unsafe { ffi::n64_mem_phase(old | 0x100) };
+}
+
+/// One `mem [tag]` log line (both heaps, level-heap blocks by lifetime); `check` also lists
+/// level-heap blocks that earlier loads left behind.
+pub fn mem_report(tag: &str, check: bool) {
+    unsafe { ffi::n64_mem_report(tag.as_ptr(), tag.len() as u32, check as u32) }
+}
+
+/// [`mem_report`], then the stack guard is repainted: later reports show the stack's depth
+/// from here on.
+pub fn mem_report_stack_restart(tag: &str) {
+    unsafe { ffi::n64_mem_report(tag.as_ptr(), tag.len() as u32, 2) }
+}
+
+pub fn mem_reset_peaks() {
+    unsafe { ffi::n64_mem_reset_peaks() }
+}
+
 /// libdragon heap (C and Rust allocations): (total, used) bytes.
 pub fn heap_stats() -> HeapStats {
     let mut s = HeapStats::default();

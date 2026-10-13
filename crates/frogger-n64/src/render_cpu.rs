@@ -84,17 +84,20 @@ impl Default for RenderCpu {
 
 impl RenderCpu {
     pub fn new() -> RenderCpu {
+        const IMAGE_SLOTS: usize = 1024;
         RenderCpu {
-            tex: Vec::new(),
-            bytes: Vec::new(),
+            // Per registry image; reserved at boot so the lists do not grow during a level
+            // load (they live for the whole run: main heap, not the level heap).
+            tex: Vec::with_capacity(IMAGE_SLOTS),
+            bytes: Vec::with_capacity(IMAGE_SLOTS),
             verts: Vec::with_capacity(4096),
             rects: Vec::with_capacity(512),
             stats: FrameStats::default(),
             tex_bytes: 0,
             persp: false,
             skip_once: Vec::new(),
-            gen: Vec::new(),
-            ext: Vec::new(),
+            gen: Vec::with_capacity(IMAGE_SLOTS),
+            ext: Vec::with_capacity(IMAGE_SLOTS),
             built: Built::default(),
             zk: 1.0,
         }

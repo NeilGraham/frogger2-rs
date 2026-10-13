@@ -512,7 +512,9 @@ impl Game {
 
     /// Port of `FreeActorList` (Common/actor2.c:405).
     pub fn free_actor_list(&mut self) {
-        self.actor2.actors.slots.clear();
+        // Capacity released too: the next level's actors are allocated while it loads (the N64
+        // keeps per-level allocations apart from the session's).
+        self.actor2.actors.slots = Vec::new();
         self.actor2.act_list = Head::default();
         self.actor2.global_level_actor = None;
         self.actor2.back_gnd = None;

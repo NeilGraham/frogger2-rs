@@ -94,6 +94,8 @@ pub extern "C" fn f2n64_init() {
         log!("f2n64_init: boot {:?}", boot);
         // SAFETY: single-threaded; f2n64_init/f2n64_frame are only called from main().
         unsafe { APP = Some(app::App::new(boot)) };
+        // App::new builds the App on the stack (deep); measure the stack from here on.
+        rt::mem_report_stack_restart("app up");
     }
 }
 

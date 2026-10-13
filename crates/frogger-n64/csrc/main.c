@@ -106,7 +106,26 @@ static bool file_exists(const char *path) {
     return true;
 }
 
+static void big_dump(void);
+uint32_t n64_mem_phase_impl(uint32_t phase);
+uint32_t mem_phase_save_and_play(void);
+void mem_phase_restore(uint32_t o);
+void mem_main_begin(void);
+void mem_main_end(void);
+void n64_mem_report_impl(const char *tag, uint32_t len, uint32_t check);
+
+static uint32_t sfx_open(const char *path, uint32_t looped);
+
+/* Main heap: newlib keeps the FILE structures of a level's many open sample streams for the
+ * whole run (and the wav64 headers are small). */
 uint32_t n64_sfx_open_impl(const char *path, uint32_t looped) {
+    mem_main_begin();
+    uint32_t h = sfx_open(path, looped);
+    mem_main_end();
+    return h;
+}
+
+static uint32_t sfx_open(const char *path, uint32_t looped) {
     if (!file_exists(path)) return 0;
     for (uint32_t n = 0; n < MAX_SFX - 1; n++) {
         uint32_t h = 1 + (sfx_hint - 1 + n) % (MAX_SFX - 1);
@@ -146,7 +165,11 @@ void n64_ch_set_impl(uint32_t ch, const n64_voice_t *v) {
 
 void n64_sfx_play_impl(uint32_t h, uint32_t ch, const n64_voice_t *v) {
     if (h == 0 || h >= MAX_SFX || !sfx[h] || ch < SFX_CH0 || ch >= BEEP_CH) return;
+    /* The mixer allocates a channel's sample buffer at its first play and keeps it: session
+     * memory, even when that first play is during a level load. */
+    mem_main_begin();
     mixer_ch_play(ch, &sfx[h]->wave);
+    mem_main_end();
     n64_ch_set_impl(ch, v);
 }
 
@@ -166,11 +189,16 @@ uint32_t n64_music_play_impl(const char *path, uint32_t looped) {
     return 0;
 #endif
     if (!path || !file_exists(path)) return 0;
+    /* The track plays on through level loads: main heap (and the mixer's channel buffers,
+     * allocated at the first play, stay for the whole run). */
+    mem_main_begin();
     music = wav64_load(path, &(wav64_loadparms_t){.streaming_mode = WAV64_STREAMING_FULL});
-    if (!music) return 0;
-    wav64_set_loop(music, looped != 0);
-    wav64_play(music, MUSIC_CH);
-    return 1;
+    if (music) {
+        wav64_set_loop(music, looped != 0);
+        wav64_play(music, MUSIC_CH);
+    }
+    mem_main_end();
+    return music != NULL;
 }
 
 void n64_music_vol_impl(uint32_t vol_permille) {
@@ -235,9 +263,6 @@ uint32_t n64_rcp_load_impl(void) {
     return v;
 }
 
-#ifdef F2N64_BIGPOOL_DUMP
-static void big_dump(void);
-#endif
 /* ---- FMV (libdragon fmv_play: H.264 + Opus wav64 next to it) ---- */
 #define FMV_CH 0 /* the music channel pair (the game stops its music around videos) */
 
@@ -261,6 +286,7 @@ void rspq_set_lowpri_window(int words) __attribute__((weak));
 
 uint32_t n64_fmv_play_impl(const char *path) {
     if (!file_exists(path)) return 0;
+    n64_mem_report_impl("video", 5, 0);
 #ifdef F2N64_BIGPOOL_DUMP
     big_dump();
 #endif
@@ -278,7 +304,11 @@ uint32_t n64_fmv_play_impl(const char *path) {
         .decode_ahead_pics = 4,
         .osd_callback = fmv_osd,
     };
+    /* The decoder's buffers are transient: the main heap / the level heap's top (a story FMV
+     * plays in the middle of a level load). */
+    uint32_t ph = mem_phase_save_and_play();
     fmv_play(path, &p);
+    mem_phase_restore(ph);
     rspq_wait();
     if (rspq_set_lowpri_window) rspq_set_lowpri_window(0);
     n64_set_fps_limit_impl(fps_limit); /* the game's frame pacing */
@@ -312,99 +342,367 @@ void n64_panic_impl(const char *msg, uint32_t len) {
     abort();
 }
 
-/* ---- large-block pool ----
- * Level loads allocate a few large blocks (texture-bank and mesh files, decode buffers)
- * among thousands of small simulation allocations; after a few level changes the main heap
- * has no contiguous hole for the next level's big files and asset_load/malloc fails (seen
- * on hardware and in ares: frontend -> level -> frontend). Blocks >= BIG_MIN come from this
- * pool, reserved at boot while the heap is clean (first fit, address-ordered, coalescing);
- * the main heap keeps the small blocks. Both fall back to the other on failure, small blocks
- * included: a full main heap with pool space left must not be out of memory (seen in ares
- * and on hardware: attract demos frontend -> level -> frontend -> Halloween 2, main heap
- * 5506/5518 KiB in use with ~950 KiB of the pool free). */
-static uint32_t big_small_fallbacks;
-#define BIG_MIN (32 * 1024)
-#define BIG_POOL (2560 * 1024)
-typedef struct big_blk { uint32_t size; uint32_t free; struct big_blk *next; uint32_t pad[13]; } big_blk; /* 64 bytes: payloads 64-byte aligned (surfaces, video buffers) */
+/* ---- memory: the level heap ----
+ * Two heaps by lifetime, so every level change starts from an empty one:
+ * - the main heap (newlib malloc): the boot, the session (MEM_MAIN: fonts, the sfx index, the
+ *   music stream) and small play-time blocks (the game's churn);
+ * - the level heap (this pool, the rest of RDRAM after boot): everything allocated while a
+ *   level loads (any size: the simulation's InitLevel from the bottom, MEM_LEVEL; the
+ *   renderer's `App::load_scene` from the top, MEM_LEVEL_TOP) and large play-time blocks
+ *   (from the top: the renderer's per-level storage growing in the first frames, the story
+ *   book page, video buffers). The renderer frees its last tables (image registry, sound
+ *   tables) only once `load_scene` starts, after InitLevel allocated the new level: kept at
+ *   the other end, they do not cut holes into it. The next level change frees all of it (the renderer side in
+ *   `unload_level_render`, the simulation's level state in InitLevel), so the next load
+ *   finds the pool empty: no fragmentation carries over from one level to the next, whatever
+ *   the order of the frees. (Before: one 2.5 MiB pool for blocks >= 32 KiB whatever their
+ *   lifetime, small blocks spilling into it when the main heap was full: loads failed on
+ *   fragmentation, e.g. 1.2 MiB free and no 439 KiB hole for titles.ntx.)
+ * Each heap falls back to the other when full. Every block records the load (epoch) it was
+ * allocated in; `n64_mem_report` (the `mem` log lines) counts blocks of earlier loads still
+ * alive, which must stay ~0 (anything that outlives its level belongs in MEM_MAIN, Rust
+ * `rt::mem_play`). Budget and measurements: research/n64-memory.md "Level heap".
+ * Allocator: boundary tags (16-byte headers, 16-byte granularity), one address-ordered free
+ * list, first fit from the bottom or from the top, O(1) coalescing. */
+typedef struct pb {
+    uint32_t size; /* whole block incl. this header, multiple of 16; bit 0: in use */
+    uint32_t prev; /* size of the block below (0: the first) */
+    union { struct pb *nf; uint32_t epoch; }; /* free: list links; used: load epoch (0: play) */
+    union { struct pb *pf; uint32_t req; };   /* used: requested bytes */
+} pb;
+_Static_assert(sizeof(pb) == 16, "pool header");
+#define PB_USED 1u
+#define PB_SZ(b) ((b)->size & ~15u)
+#define PB_MIN 32u /* smallest block: header + 16 */
+/* What the main heap keeps after boot for the session and play; the rest is the level heap.
+ * research/n64-memory.md "Level heap" has the measurements behind it. */
+#ifndef F2N64_MAIN_RESERVE_KIB
+#define F2N64_MAIN_RESERVE_KIB 1500
+#endif
 void *__real_malloc(size_t);
 void *__real_memalign(size_t, size_t);
 void *__real_realloc(void *, size_t);
 void __real_free(void *);
-static uint8_t *big_base;
-static big_blk *big_head;
-static uint32_t big_used, big_peak;
+static uint8_t *pool_base, *pool_end;
+static uint32_t pool_size;
+static pb *pool_free_list;
+static uint32_t pool_used, pool_peak, pool_runs;
+/* 0: play (main heap first), 1: level load (level heap first). */
+static uint32_t mem_phase, mem_epoch = 1;
+static uint32_t mem_fallback_play, mem_fallback_level, mem_fallback_level_bytes;
+static uint32_t mem_main_only, mem_main_save, mem_level_top;
+#define PLAY_BIG (16 * 1024)
+#ifdef F2N64_MEM_TRACE_SIZE /* testing (tools/n64/README.md) */
+#ifndef F2N64_MEM_TRACE_SIZE2
+#define F2N64_MEM_TRACE_SIZE2 F2N64_MEM_TRACE_SIZE
+#endif
+#ifndef F2N64_MEM_TRACE_PLAY
+#define F2N64_MEM_TRACE_PLAY 0xffffffffu
+#endif
+#endif
+static int mem_main_peak, mem_main_used; /* main heap bytes in blocks allocated since big_init */
 
-static void big_init(void) {
-    big_base = __real_memalign(64, BIG_POOL);
-    if (!big_base) return;
-    big_head = (big_blk *)big_base;
-    big_head->size = BIG_POOL - sizeof(big_blk);
-    big_head->free = 1;
-    big_head->next = NULL;
+/* Main-heap accounting (blocks allocated after big_init; the boot's own are in the base). */
+static inline void main_count(void *p, int sign) {
+    if (!pool_base) return;
+    mem_main_used += sign * (int)malloc_usable_size(p);
+    if (mem_main_used > mem_main_peak) mem_main_peak = mem_main_used;
 }
 
-static int big_owns(void *p) { return big_base && (uint8_t *)p >= big_base && (uint8_t *)p < big_base + BIG_POOL; }
+static inline pb *pb_next(pb *b) { return (pb *)((uint8_t *)b + PB_SZ(b)); }
+/* The free list is kept in address order: first fit stops early, and the top search walks
+ * it backwards. `fl_hint` (a member, or NULL) is where the last insertion happened: frees
+ * come in runs of nearby addresses, so the sorted insertion walks only a few steps. */
+static pb *pool_free_tail, *fl_hint;
+static inline void fl_link_after(pb *h, pb *b) { /* h == NULL: at the head */
+    b->pf = h;
+    b->nf = h ? h->nf : pool_free_list;
+    if (b->nf) b->nf->pf = b;
+    else pool_free_tail = b;
+    if (h) h->nf = b;
+    else pool_free_list = b;
+    pool_runs++;
+}
+static void fl_insert(pb *b) {
+    pb *h = fl_hint ? fl_hint : pool_free_list;
+    if (!h) {
+        fl_link_after(NULL, b);
+    } else if (h < b) {
+        while (h->nf && h->nf < b) h = h->nf;
+        fl_link_after(h, b);
+    } else {
+        while (h->pf && h->pf > b) h = h->pf;
+        fl_link_after(h->pf, b);
+    }
+    fl_hint = b;
+}
+static inline void fl_unlink(pb *b) {
+    if (fl_hint == b) fl_hint = b->nf ? b->nf : b->pf;
+    if (b->pf) b->pf->nf = b->nf;
+    else pool_free_list = b->nf;
+    if (b->nf) b->nf->pf = b->pf;
+    else pool_free_tail = b->pf;
+    pool_runs--;
+}
+/* `n` takes the list place of `o` (no free block lies between them). */
+static inline void fl_replace(pb *o, pb *n) {
+    n->nf = o->nf;
+    n->pf = o->pf;
+    if (n->pf) n->pf->nf = n;
+    else pool_free_list = n;
+    if (n->nf) n->nf->pf = n;
+    else pool_free_tail = n;
+    if (fl_hint == o) fl_hint = n;
+}
 
-/* Large blocks: first fit from the bottom. Small blocks (`top`: the main heap was full) are
- * carved from the top of the highest free block that fits, so they do not scatter through
- * the free space the next level's large files need. (After a quick story-book select the
- * main heap was full and ~150 small blocks had landed between the pool's free runs: 1.2 MiB
- * free, no 439 KiB hole for titles.ntx, out of memory.) */
-static void *big_alloc(uint32_t size, int top) {
-#ifdef F2N64_POOL_BOTTOM_ONLY
-    top = 0; /* testing: the old first-fit placement for small blocks too */
+/* Stack guard: libdragon's stack is the top 64 KiB of RDRAM, directly above the heap, and
+ * nothing stops it from growing into the heap. `App::new` builds the App on the stack and
+ * goes ~135 KiB below it (measured); with the heap reaching the top (a full main heap, or a
+ * pool up to there) that overwrote live blocks. A painted guard below the stack (taken from
+ * the heap's top) covers the boot; once the App is up (`rt::mem_report_stack_restart`) all
+ * but STACK_GUARD_KEEP of it goes back to the heap, and the rest stays painted: `mem` lines
+ * show how far the stack went into it (must stay 0). */
+#ifndef F2N64_STACK_GUARD_KIB
+#define F2N64_STACK_GUARD_KIB 192
 #endif
-    size = (size + 63) & ~63u;
-    big_blk *b = NULL;
-    for (big_blk *c = big_head; c; c = c->next) {
-        if (!c->free || c->size < size) continue;
-        b = c;
-        if (!top) break;
+#define STACK_GUARD (F2N64_STACK_GUARD_KIB * 1024)
+#define STACK_PAINT 0x5741434bu
+void *sbrk_top(int incr);
+static uint32_t *stack_guard;
+
+static uint32_t stack_guard_size;
+#define STACK_GUARD_KEEP (16 * 1024)
+
+static uint32_t stack_guard_used(void) {
+    if (!stack_guard) return 0;
+    uint32_t n = stack_guard_size / 4, i = 0;
+    while (i < n && stack_guard[i] == STACK_PAINT) i++;
+    return (n - i) * 4;
+}
+
+static void big_init(void) {
+    void *g = sbrk_top(STACK_GUARD);
+    if (g != (void *)-1) {
+        stack_guard = g;
+        stack_guard_size = STACK_GUARD;
+        for (uint32_t i = 0; i < STACK_GUARD / 4; i++) stack_guard[i] = STACK_PAINT;
     }
-    if (!b) return NULL;
-    if (b->size >= size + sizeof(big_blk) + 1024) { /* split */
-        big_blk *n;
-        if (top) { /* the allocation is the new upper part */
-            n = (big_blk *)((uint8_t *)(b + 1) + b->size - size - sizeof(big_blk));
-            n->size = size;
-            n->free = 0;
-            n->next = b->next;
-            b->next = n;
-            b->size -= size + sizeof(big_blk);
-            b = n;
+    heap_stats_t s;
+    sys_get_heap_stats(&s);
+    /* The main heap also gets the stack guard back after boot. */
+    int avail = s.total - s.used - F2N64_MAIN_RESERVE_KIB * 1024 + (STACK_GUARD - STACK_GUARD_KEEP);
+    if (avail < 512 * 1024) avail = 512 * 1024;
+    /* Whatever the allocator's overhead, take the largest block it gives. */
+    for (; avail >= 512 * 1024; avail -= 16 * 1024) {
+        pool_base = __real_memalign(64, avail);
+        if (pool_base) break;
+    }
+    if (!pool_base) return;
+    pool_size = avail & ~15u;
+    pool_end = pool_base + pool_size;
+    pb *b = (pb *)pool_base;
+    b->size = pool_size - 16;
+    b->prev = 0;
+    pool_free_list = pool_free_tail = fl_hint = NULL;
+    pool_runs = 0;
+    fl_insert(b);
+    pb *end = pb_next(b); /* sentinel: never free */
+    end->size = 16 | PB_USED;
+    end->prev = PB_SZ(b);
+    struct mallinfo mi = mallinfo();
+    mem_main_used = mem_main_peak = mi.uordblks - (int)pool_size;
+    mem_main_only = 1; /* the boot and the session setup: main heap (Rust: MEM_PLAY once up) */
+}
+
+static inline int big_owns(void *p) { return (uint8_t *)p >= pool_base && (uint8_t *)p < pool_end; }
+
+/* `top`: the highest place that fits (play-time blocks), else the lowest (level loads). */
+static void *big_alloc(uint32_t req, uint32_t align, int top) {
+    if (!pool_base) return NULL;
+#ifdef F2N64_POOL_BOTTOM_ONLY
+    top = 0; /* testing: everything first fit from the bottom */
+#endif
+    if (align < 16) align = 16;
+    uint32_t need = ((req + 15) & ~15u) + 16;
+    pb *best = NULL;
+    uintptr_t best_p = 0;
+    for (pb *f = top ? pool_free_tail : pool_free_list; f; f = top ? f->pf : f->nf) {
+        uintptr_t s = (uintptr_t)f, e = s + PB_SZ(f), p;
+        if (PB_SZ(f) < need) continue;
+        if (top) {
+            p = ((e - need + 16) & ~(uintptr_t)(align - 1));
+            if (p - 16 != s && p - 16 < s + PB_MIN) p -= align; /* a gap must hold a block */
+            if (p < s + 16 || p - 16 + need > e) continue;
         } else {
-            n = (big_blk *)((uint8_t *)(b + 1) + size);
-            n->size = b->size - size - sizeof(big_blk);
-            n->free = 1;
-            n->next = b->next;
-            b->next = n;
-            b->size = size;
+            p = (s + 16 + align - 1) & ~(uintptr_t)(align - 1);
+            if (p - 16 != s && p - 16 < s + PB_MIN) p += align;
+            if (p - 16 + need > e) continue;
         }
+        best = f;
+        best_p = p;
+        break;
     }
-    b->free = 0;
-    big_used += b->size;
-    if (big_used > big_peak) big_peak = big_used;
+    if (!best) return NULL;
+    uint32_t total = PB_SZ(best);
+    uint32_t gap = (uint32_t)(best_p - 16 - (uintptr_t)best);
+    uint32_t tail = total - gap - need;
+    if (tail < PB_MIN) {
+        need += tail;
+        tail = 0;
+    }
+    pb *b = best, *t = NULL;
+    if (gap) { /* the part below stays free, in its place on the list */
+        best->size = gap;
+        b = (pb *)((uint8_t *)best + gap);
+        b->prev = gap;
+    }
+    b->size = need | PB_USED;
+    if (tail) {
+        t = (pb *)((uint8_t *)b + need);
+        t->size = tail;
+        t->prev = need;
+        pb_next(t)->prev = tail;
+        if (gap) {
+            fl_link_after(best, t);
+        } else {
+            fl_replace(best, t);
+        }
+    } else {
+        pb_next(b)->prev = need;
+        if (!gap) fl_unlink(best);
+    }
+    b->epoch = mem_phase ? mem_epoch : 0;
+    b->req = req;
+    pool_used += need;
+    if (pool_used > pool_peak) pool_peak = pool_used;
     return b + 1;
 }
 
-#ifdef F2N64_BIGPOOL_DUMP
-static void big_dump(void) {
-    for (big_blk *b = big_head; b; b = b->next)
-        debugf("bigpool %s %p: %lu bytes\n", b->free ? "FREE " : "block", (void *)(b + 1), (unsigned long)b->size);
-    struct mallinfo mi = mallinfo();
-    debugf("fmv start: main heap used %d KiB, pool %lu KiB\n", mi.uordblks / 1024, (unsigned long)(big_used / 1024));
-}
-#endif
-
-static void big_free(void *p) {
-    big_blk *b = (big_blk *)p - 1;
-    b->free = 1;
-    big_used -= b->size;
-    for (big_blk *c = big_head; c; c = c->next) /* coalesce free neighbours */
-        while (c->free && c->next && c->next->free) {
-            c->size += sizeof(big_blk) + c->next->size;
-            c->next = c->next->next;
+static void big_free(void *ptr) {
+    pb *b = (pb *)ptr - 1;
+    uint32_t size = PB_SZ(b);
+    pool_used -= size;
+    pb *n = pb_next(b);
+    pb *p = b->prev ? (pb *)((uint8_t *)b - b->prev) : NULL;
+    int nfree = !(n->size & PB_USED), pfree = p && !(p->size & PB_USED);
+    if (pfree) { /* grows the block below (on the list already) */
+        if (nfree) {
+            fl_unlink(n);
+            size += PB_SZ(n);
         }
+        p->size = PB_SZ(p) + size;
+        b = p;
+    } else if (nfree) { /* takes the place of the block above */
+        b->size = size + PB_SZ(n);
+        fl_replace(n, b);
+    } else {
+        b->size = size;
+        fl_insert(b);
+    }
+    pb_next(b)->prev = PB_SZ(b);
+}
+
+static uint32_t big_usable(void *ptr) {
+    pb *b = (pb *)ptr - 1;
+    return PB_SZ(b) - 16 - (uint32_t)(((uintptr_t)ptr - (uintptr_t)(b + 1)));
+}
+
+/* Largest free run in the level heap (bytes of payload). */
+static uint32_t big_largest(void) {
+    uint32_t m = 0;
+    for (pb *f = pool_free_list; f; f = f->nf)
+        if (PB_SZ(f) > m) m = PB_SZ(f);
+    return m > 16 ? m - 16 : 0;
+}
+
+
+static void big_dump(void) {
+    pb *prev = NULL;
+    for (pb *b = (pb *)pool_base; b && (uint8_t *)b < pool_end && PB_SZ(b) != 16; prev = b, b = pb_next(b)) {
+        /* Small blocks between two large free runs: what cuts the free space. */
+        if ((b->size & PB_USED) && PB_SZ(b) < 4096 && prev && !(prev->size & PB_USED) && PB_SZ(prev) >= 16384 &&
+            !(pb_next(b)->size & PB_USED) && PB_SZ(pb_next(b)) >= 16384)
+            debugf("pool SPLIT %p: %lu bytes (req %lu) epoch %lu\n", (void *)(b + 1), (unsigned long)PB_SZ(b), (unsigned long)b->req, (unsigned long)b->epoch);
+        if (PB_SZ(b) >= 4096 || !(b->size & PB_USED))
+            debugf("pool %s %p: %lu bytes epoch %lu\n", (b->size & PB_USED) ? "block" : "FREE ", (void *)(b + 1),
+                   (unsigned long)PB_SZ(b), (unsigned long)((b->size & PB_USED) ? b->epoch : 0));
+    }
+}
+
+/* MEM_PLAY (0) / MEM_LEVEL (1) / MEM_MAIN (2: session data, main heap whatever the size) /
+ * MEM_LEVEL_TOP (3: the renderer's side of a load, from the level heap's top);
+ * returns the previous phase. Entering MEM_LEVEL from MEM_PLAY starts
+ * a new load epoch (unless | 0x100: back to the current one). */
+uint32_t n64_mem_phase_impl(uint32_t phase) {
+    uint32_t old = mem_main_only ? 2 : mem_level_top ? 3 : mem_phase;
+    uint32_t p = phase & 0xff;
+    int level = p == 1 || p == 3;
+    if (level && !mem_phase && !(phase & 0x100)) mem_epoch++; /* 0x100: resume the same load */
+    mem_phase = level;
+    mem_main_only = p == 2;
+    mem_level_top = p == 3;
+    return old;
+}
+
+uint32_t mem_phase_save_and_play(void) { uint32_t o = mem_phase; mem_phase = 0; return o; }
+void mem_phase_restore(uint32_t o) { mem_phase = o; } /* same epoch */
+/* Session-lifetime allocations (the music stream): main heap whatever their size. */
+void mem_main_begin(void) {
+    mem_main_save = mem_phase | mem_main_only << 1;
+    mem_phase = 0;
+    mem_main_only = 1;
+}
+void mem_main_end(void) {
+    mem_phase = mem_main_save & 1;
+    mem_main_only = mem_main_save >> 1;
+}
+
+/* One `mem` log line: both heaps, and the level heap's blocks by lifetime. `check`: also
+ * list the blocks that earlier loads left behind (which must not exist). */
+void n64_mem_report_impl(const char *tag, uint32_t len, uint32_t check) {
+    uint32_t cur = 0, cur_n = 0, old = 0, old_n = 0, play = 0, play_n = 0;
+    for (pb *b = (pb *)pool_base; b && (uint8_t *)b < pool_end - 16; b = pb_next(b)) {
+        if (!(b->size & PB_USED)) continue;
+        if (b->epoch == 0) play += PB_SZ(b), play_n++;
+        else if (b->epoch == mem_epoch) cur += PB_SZ(b), cur_n++;
+        else old += PB_SZ(b), old_n++;
+    }
+    int main_used = mem_main_used;
+    heap_stats_t s;
+    sys_get_heap_stats(&s);
+    int main_cap = s.total - (int)pool_size;
+    debugf("mem [%.*s]: level heap %lu KiB used (peak %lu) of %lu: this load %lu KiB/%lu blocks, earlier loads %lu KiB/%lu, "
+           "play %lu KiB/%lu; free %lu KiB in %lu runs, largest %lu KiB | main heap %d KiB used (peak %d) of %d | "
+           "fallbacks: play->level %lu, level->main %lu (%lu KiB) | stack below its 64 KiB: %lu KiB of %d\n",
+           (int)len, tag, (unsigned long)(pool_used / 1024), (unsigned long)(pool_peak / 1024), (unsigned long)(pool_size / 1024),
+           (unsigned long)(cur / 1024), (unsigned long)cur_n, (unsigned long)(old / 1024), (unsigned long)old_n,
+           (unsigned long)(play / 1024), (unsigned long)play_n, (unsigned long)((pool_size - 16 - pool_used) / 1024),
+           (unsigned long)pool_runs, (unsigned long)(big_largest() / 1024), main_used / 1024, mem_main_peak / 1024, main_cap / 1024,
+           (unsigned long)mem_fallback_play, (unsigned long)mem_fallback_level, (unsigned long)(mem_fallback_level_bytes / 1024),
+           (unsigned long)(stack_guard_used() / 1024), (int)(stack_guard_size / 1024));
+    if ((check & 2) && stack_guard) { /* boot done: keep a small guard, give the rest back to the heap */
+        if (stack_guard_size > STACK_GUARD_KEEP && sbrk_top(-(int)(stack_guard_size - STACK_GUARD_KEEP)) != (void *)-1) {
+            stack_guard = (uint32_t *)((uint8_t *)stack_guard + stack_guard_size - STACK_GUARD_KEEP);
+            stack_guard_size = STACK_GUARD_KEEP;
+        }
+        for (uint32_t i = 0; i < stack_guard_size / 4; i++) stack_guard[i] = STACK_PAINT;
+    }
+    if ((check & 1) && play_n) /* play-time blocks still alive after a load: session data, or a leak */
+        for (pb *b = (pb *)pool_base; b && (uint8_t *)b < pool_end - 16; b = pb_next(b))
+            if ((b->size & PB_USED) && !b->epoch && PB_SZ(b) >= 1024)
+                debugf("mem: play-time block alive across a load: %p %lu bytes\n", (void *)(b + 1), (unsigned long)b->req);
+    if ((check & 1) && old_n) {
+        int shown = 0;
+        for (pb *b = (pb *)pool_base; b && (uint8_t *)b < pool_end - 16; b = pb_next(b))
+            if ((b->size & PB_USED) && b->epoch && b->epoch != mem_epoch && shown++ < 24)
+                debugf("mem: LEFT OVER from load %lu: %p %lu bytes\n", (unsigned long)b->epoch, (void *)(b + 1), (unsigned long)b->req);
+    }
+}
+
+/* Peaks restart (per level). */
+void n64_mem_reset_peaks_impl(void) {
+    pool_peak = pool_used;
+    mem_main_peak = mem_main_used;
 }
 
 /* The whole program's malloc family is routed here (`ld --wrap`, tools/n64/Makefile): Rust,
@@ -419,17 +717,49 @@ void *__wrap_memalign(size_t align, size_t size) {
         debugf("\n");
     }
 #endif
-    if (size >= BIG_MIN && align <= 64) {
-        void *p = big_alloc(size, 0);
+    if (!size) size = 1;
+    if (mem_phase && align <= 64) {
+        void *p = big_alloc(size, align, mem_level_top);
+#ifdef F2N64_MEM_TRACE_SIZE
+        if (p && (size == F2N64_MEM_TRACE_SIZE || size == F2N64_MEM_TRACE_SIZE2)) { /* testing: who allocates it */
+            void *bt[14];
+            int n = backtrace(bt, 14);
+            debugf("memtrace %lu %p:", (unsigned long)size, p);
+            for (int i = 4; i < n; i++) debugf(" %p", bt[i]);
+            debugf("\n");
+        }
+#endif
         if (p) return p;
-        debugf("bigpool: %lu bytes do not fit (used %lu KiB of %d), using the main heap\n", (unsigned long)size, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
+        if (mem_fallback_level++ == 0 || size >= 32 * 1024)
+            debugf("mem: LEVEL HEAP FULL: %lu bytes from the main heap (level heap %lu KiB used of %lu, largest free %lu KiB)\n",
+                   (unsigned long)size, (unsigned long)(pool_used / 1024), (unsigned long)(pool_size / 1024), (unsigned long)(big_largest() / 1024));
+        mem_fallback_level_bytes += size;
     }
-    void *p = __real_memalign(align < 8 ? 8 : align, size ? size : 1);
-    if (!p && align <= 64) { /* main heap full: try the pool */
-        p = big_alloc(size ? size : 1, size < BIG_MIN);
-        if (p && size < BIG_MIN && (big_small_fallbacks++ & 1023) == 0)
-            debugf("bigpool: main heap full, small blocks from the pool (%lu so far, pool %lu KiB used)\n",
-                   (unsigned long)big_small_fallbacks, (unsigned long)(big_used / 1024));
+    /* Large play-time blocks are level data too in practice (the renderer's per-level storage
+     * growing in the first frames, the story book page, procedural texture variants): the
+     * level heap's top, freed with the level, so the main heap keeps the session's small
+     * blocks. (Session-lifetime large blocks allocated in play are wrapped in MEM_PLAY_MAIN:
+     * the music stream.) */
+#ifdef F2N64_MEM_TRACE_SIZE
+    if (!mem_phase && size >= F2N64_MEM_TRACE_PLAY) { /* testing: large play-time blocks */
+        void *bt[14];
+        int n = backtrace(bt, 14);
+        debugf("memtrace play %lu:", (unsigned long)size);
+        for (int i = 4; i < n; i++) debugf(" %p", bt[i]);
+        debugf("\n");
+    }
+#endif
+    if (!mem_phase && size >= PLAY_BIG && align <= 64 && !mem_main_only) {
+        void *q = big_alloc(size, align, 1);
+        if (q) return q;
+    }
+    void *p = __real_memalign(align < 8 ? 8 : align, size);
+    if (p) main_count(p, 1);
+    if (!p && !mem_phase && align <= 64) { /* main heap full: the top of the level heap */
+        p = big_alloc(size, align, 1);
+        if (p && (mem_fallback_play++ & 1023) == 0)
+            debugf("mem: main heap full, play-time blocks from the level heap's top (%lu so far, level heap %lu KiB used)\n",
+                   (unsigned long)mem_fallback_play, (unsigned long)(pool_used / 1024));
     }
     return p;
 }
@@ -446,25 +776,33 @@ void *__wrap_calloc(size_t n, size_t size) {
 void __wrap_free(void *ptr) {
     if (!ptr) return;
     if (big_owns(ptr)) big_free(ptr);
-    else __real_free(ptr);
+    else {
+        main_count(ptr, -1);
+        __real_free(ptr);
+    }
 }
 
 void *__wrap_realloc(void *ptr, size_t size) {
     if (!ptr) return __wrap_malloc(size);
-    if (big_owns(ptr)) {
-        big_blk *b = (big_blk *)ptr - 1;
-        if (size <= b->size) return ptr;
-        void *n = __wrap_malloc(size);
-        if (n) { memcpy(n, ptr, b->size); big_free(ptr); }
-        return n;
+    if (!size) {
+        __wrap_free(ptr);
+        return NULL;
     }
-    void *r = __real_realloc(ptr, size);
-    if (!r && size) {
-        void *n = big_alloc(size, size < BIG_MIN);
-        if (n) { memcpy(n, ptr, malloc_usable_size(ptr)); __real_free(ptr); }
-        return n;
+    uint32_t have = big_owns(ptr) ? big_usable(ptr) : malloc_usable_size(ptr);
+    if (big_owns(ptr) && size <= have) return ptr;
+    if (!big_owns(ptr)) { /* a main-heap block stays there when it can (session buffers growing during a load) */
+        main_count(ptr, -1);
+        void *r = __real_realloc(ptr, size);
+        main_count(r ? r : ptr, 1);
+        if (r) return r;
     }
-    return r;
+    /* Across heaps (or the main heap is full): move. */
+    void *n = __wrap_malloc(size);
+    if (n) {
+        memcpy(n, ptr, have < size ? have : size);
+        __wrap_free(ptr);
+    }
+    return n;
 }
 
 void *n64_alloc_impl(uint32_t size, uint32_t align) {
@@ -478,7 +816,7 @@ void *n64_alloc_impl(uint32_t size, uint32_t align) {
                "sbrk end %p top %p (%ld KiB left), top-allocated %d KiB, heap %d KiB; pool %lu/%d KiB\n",
                m.arena / 1024, m.uordblks / 1024, m.fordblks / 1024, m.ordblks, m.keepcost / 1024,
                __heap_end, __heap_top, (long)(__heap_top - __heap_end) / 1024, __heap_top_allocated_size / 1024,
-               __heap_total_size / 1024, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
+               __heap_total_size / 1024, (unsigned long)(pool_used / 1024), (int)(pool_size / 1024));
     }
     return p;
 }
@@ -494,7 +832,7 @@ void n64_heap_stats_impl(n64_heap_t *out) {
     sys_get_heap_stats(&s);
     out->total = s.total;
     /* The pool is one reserved block of the main heap: count what is used inside it. */
-    out->used = big_base ? s.used - BIG_POOL + big_used : s.used;
+    out->used = pool_base ? s.used - (int)pool_size + (int)pool_used : s.used;
 }
 
 uint32_t n64_pad_impl(uint32_t port) {
@@ -512,10 +850,8 @@ void *n64_file_read_impl(const char *path, uint32_t *len) {
     FILE *f = asset_fopen(path, &sz);
     if (!f) return NULL;
     uint8_t *p = memalign(16, sz > 0 ? (size_t)sz : 1);
-#ifdef F2N64_BIGPOOL_DUMP
     if (!p) big_dump();
-#endif
-    assertf(p, "Out of memory reading %s (%d bytes; pool %lu/%d KiB)", path, sz, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
+    assertf(p, "Out of memory reading %s (%d bytes; level heap %lu/%lu KiB)", path, sz, (unsigned long)(pool_used / 1024), (unsigned long)(pool_size / 1024));
     /* 32 KiB at a time with the music topped up in between: a level's large files (texture
      * banks, compressed) take a few hundred ms to read and inflate, longer than the audio
      * buffer (300 ms): the music dropped out while loading. */
@@ -532,7 +868,7 @@ void *n64_file_read_impl(const char *path, uint32_t *len) {
     return p;
 }
 
-uint32_t n64_bigpool_peak_kib(void) { return big_peak / 1024; }
+uint32_t n64_bigpool_peak_kib(void) { return pool_peak / 1024; }
 
 /* ---- textures ---- */
 /* Columns x0 .. x0+w of an image description as a new surface. */
@@ -2095,7 +2431,7 @@ int main(void) {
     profile_init(&(profile_parms_t){.num_slots = 64, .dump_stderr_interval = 5.0f});
     __mixer_profile_init();
 #endif
-    debugf("large-block pool %d KiB\n", big_base ? BIG_POOL / 1024 : 0);
+    debugf("level heap %lu KiB, main heap reserve %d KiB\n", (unsigned long)(pool_size / 1024), F2N64_MAIN_RESERVE_KIB);
     f2n64_call(f2n64_init);
     for (;;) {
         joypad_poll();

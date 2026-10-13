@@ -1505,6 +1505,9 @@ impl R3d {
             self.crc_tex = Vec::new();
         }
         self.files.truncate(m.files);
+        if self.files.is_empty() {
+            self.files = Vec::new(); // the next level's list is part of its load
+        }
         self.tex_by_crc.retain(|_, h| (*h as u32) < m.tex);
         for (crc, &id) in &self.crc_id {
             self.crc_tex[id as usize] = self.tex_by_crc.get(crc).copied().unwrap_or(0);

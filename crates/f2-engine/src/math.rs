@@ -33,6 +33,12 @@ fn build_tables() -> Box<Tables> {
     t
 }
 
+/// Builds the lookup tables now instead of at their first use (the N64 builds them at boot,
+/// so the 32 KiB block is not allocated in the middle of a level).
+pub fn warm_tables() {
+    let _ = tables();
+}
+
 #[cfg(not(target_vendor = "nintendo64"))]
 fn tables() -> &'static Tables {
     static T: once_cell::race::OnceBox<Tables> = once_cell::race::OnceBox::new();
