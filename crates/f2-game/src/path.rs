@@ -65,11 +65,94 @@ pub struct PathState {
     pub path_alloc: u16,
     /// The node block (`pathNodes`).
     pub nodes: Vec<PathNode>,
+    /// Phase 3S3: changes whenever the node block may have changed (a cache key for
+    /// [`NodePosCache`]; not state).
+    #[serde(skip)]
+    pub(crate) gen: NodeGen,
+}
+
+/// Phase 3S3: a counter of writes to [`PathState::nodes`] (every writer goes through
+/// [`PathState::touch`]); compares equal whatever it holds (not state).
+#[derive(Clone, Copy, Default)]
+pub struct NodeGen(u32);
+
+impl PartialEq for NodeGen {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for NodeGen {}
+
+impl core::fmt::Debug for NodeGen {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("NodeGen")
+    }
+}
+
+/// Phase 3S3: `GetPositionForPathNode` of an entity's `fromNode` and `toNode` as last
+/// computed, for the node block generation and node indices in the key. Node positions
+/// depend only on the node (tile, offset) and on the tile's centre and normal, which never
+/// change after the level load. Not state (never serialized, compared or printed).
+#[derive(Clone, Copy, Default)]
+pub struct NodePosCache {
+    valid: bool,
+    gen: u32,
+    nodes: u32,
+    from: i16,
+    to: i16,
+    from_pos: SVector,
+    to_pos: SVector,
+}
+
+impl PartialEq for NodePosCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for NodePosCache {}
+
+impl core::fmt::Debug for NodePosCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("NodePosCache")
+    }
+}
+
+impl NodePosCache {
+    #[inline]
+    pub(crate) fn matches(&self, gen: u32, path: &Path) -> bool {
+        self.valid && self.gen == gen && self.nodes == path.nodes && self.from == path.from_node && self.to == path.to_node
+    }
+
+    /// `(to, from)` positions.
+    #[inline]
+    pub(crate) fn get(&self) -> (SVector, SVector) {
+        (self.to_pos, self.from_pos)
+    }
+
+    #[inline]
+    pub(crate) fn set(&mut self, gen: u32, path: &Path, to: SVector, from: SVector) {
+        *self = NodePosCache { valid: true, gen, nodes: path.nodes, from: path.from_node, to: path.to_node, from_pos: from, to_pos: to };
+    }
 }
 
 impl PathState {
+    /// The node block generation ([`NodePosCache`] key).
+    #[inline]
+    pub(crate) fn gen_value(&self) -> u32 {
+        self.gen.0
+    }
+
+    /// Marks the node block as (possibly) changed.
+    #[inline]
+    pub(crate) fn touch(&mut self) {
+        self.gen.0 = self.gen.0.wrapping_add(1);
+    }
+
     /// Port of `AllocatePathList` (Common/path.c:96).
     pub fn allocate_path_list(&mut self, num_nodes: i32) {
+        self.touch();
         self.path_count = 0;
         self.path_alloc = num_nodes as u16;
         self.nodes = Vec::with_capacity(num_nodes.max(0) as usize);
@@ -83,6 +166,7 @@ impl PathState {
                 text: format!("Error! Tried to allocate {} nodes with {} left", num_nodes, self.path_alloc as i32 - self.path_count as i32),
             });
         }
+        self.touch();
         self.path_count = self.path_count.wrapping_add(num_nodes as u16);
         let first = self.nodes.len() as u32;
         self.nodes.resize(self.nodes.len() + num_nodes.max(0) as usize, PathNode::default());
@@ -97,6 +181,7 @@ impl PathState {
 
     /// Mutable nodes of `path`.
     pub fn nodes_mut(&mut self, path: &Path) -> &mut [PathNode] {
+        self.touch();
         let a = path.nodes as usize;
         &mut self.nodes[a..a + path.num_nodes.max(0) as usize]
     }
@@ -108,12 +193,17 @@ impl PathState {
 
     /// `&path->nodes[i]` (mutable).
     pub fn node_mut(&mut self, path: &Path, i: i32) -> &mut PathNode {
+        self.touch();
         &mut self.nodes[path.node_index(i)]
     }
 
     /// Port of `FreePathList` (Common/path.c:65).
     pub fn free_path_list(&mut self) {
+        let gen = self.gen;
         *self = PathState::default();
+        // (The counter continues: caches of the old block must not match the new one.)
+        self.gen = gen;
+        self.touch();
     }
 }
 

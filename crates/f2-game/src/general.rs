@@ -105,6 +105,16 @@ pub fn find_nearest_tile_f(map: &Map, v: FVector) -> Option<TileId> {
 
 /// Port of `FindNearestTileS` (Common/general.c:166).
 pub fn find_nearest_tile_s(map: &Map, v: SVector) -> Option<TileId> {
+    // Phase 3S3: the grid built with the map (`crate::nearest`), when it applies.
+    if let Some(r) = map.grid.find(&map.tiles, v) {
+        debug_assert_eq!(r, find_nearest_tile_scan(map, v), "nearest-tile grid");
+        return r;
+    }
+    find_nearest_tile_scan(map, v)
+}
+
+/// [`find_nearest_tile_s`] by scanning every tile.
+fn find_nearest_tile_scan(map: &Map, v: SVector) -> Option<TileId> {
     // Phase 3S: `DistanceBetweenPointsSS(v, c) >> 12` is `g(u)` of the wrapped squared
     // distance `u` (`utilSqrt`), and `g` is non-decreasing for `u < NEAREST_SAFE` (above,
     // the float rounds to 2^32 and `utilSqrt` wraps to 0). `d_best` is a safe `u` with
@@ -133,7 +143,7 @@ pub fn find_nearest_tile_s(map: &Map, v: SVector) -> Option<TileId> {
 }
 
 /// Squared distances below this have a non-decreasing `utilSqrt` (see `find_nearest_tile_s`).
-const NEAREST_SAFE: u32 = 0xFFFF_FF00;
+pub(crate) const NEAREST_SAFE: u32 = 0xFFFF_FF00;
 
 /// The plain scan `find_nearest_tile_s` must equal (tests).
 #[cfg(test)]
@@ -177,9 +187,20 @@ mod nearest_tests {
                 let t = map.tiles[1].clone();
                 map.tiles[3] = t;
             }
-            for _ in 0..50 {
-                let v = SVector::new(c(rnd()), c(rnd()), c(rnd()));
+            map.grid = crate::nearest::TileGrid::build(&map.tiles);
+            for k in 0..50 {
+                // points among the tiles, near them and anywhere
+                let v = if k % 3 == 0 && n > 0 {
+                    let t = map.tiles[(rnd() % n as u64) as usize].centre;
+                    let mut j = |a: i16| (a as i32 + (rnd() % 41) as i32 - 20).clamp(-32768, 32767) as i16;
+                    SVector::new(j(t.vx), j(t.vy), j(t.vz))
+                } else {
+                    SVector::new(c(rnd()), c(rnd()), c(rnd()))
+                };
                 assert_eq!(find_nearest_tile_s(&map, v), find_nearest_tile_s_ref(&map, v));
+                if let Some(r) = map.grid.find(&map.tiles, v) {
+                    assert_eq!(r, find_nearest_tile_s_ref(&map, v), "grid");
+                }
             }
         }
     }

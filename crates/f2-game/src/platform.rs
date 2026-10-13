@@ -75,6 +75,8 @@ pub struct Platform {
     pub flags: u32,
     pub update: Option<PlatformUpdate>,
     pub path: Path,
+    /// Phase 3S3: positions of the path's from/to nodes (a cache, not state).
+    pub node_pos: crate::path::NodePosCache,
     pub in_tile: [Option<TileId>; 2],
     pub curr_speed: Fixed,
     pub src_orientation: IQuaternion,
@@ -111,7 +113,7 @@ crate::ser_order!(Platform, "Platform", PlatformWire {
     path: Path,
     carrying: Option<ActorId>,
     update: Option<PlatformUpdate>,
-});
+} skip { node_pos });
 
 impl HasLinks<PlatformId> for Platform {
     fn links(&self) -> &Links<PlatformId> {
@@ -153,11 +155,26 @@ pub(crate) fn udiv(a: u32, b: u32) -> i32 {
 /// when a path's speed and wait times are all zero (the original hangs).
 pub(crate) const CATCHUP_GUARD: u32 = 1_000_000;
 
+/// `GameTile::default()` (the tile a NULL tile pointer reads as; test
+/// `zero_tile_is_default`).
+static ZERO_TILE: GameTile = GameTile {
+    centre: SVector { vx: 0, vy: 0, vz: 0, pad: 0 },
+    normal: SVector { vx: 0, vy: 0, vz: 0, pad: 0 },
+    state: 0,
+    tile_ptrs: [None; 4],
+    dir_vector: [SVector { vx: 0, vy: 0, vz: 0, pad: 0 }; 4],
+};
+
 impl Game {
     /// `&firstTile[...]` for a possibly NULL tile pointer: the tile, or a zeroed tile
-    /// where the original would dereference NULL.
-    pub(crate) fn tile_or_default(&self, t: Option<TileId>) -> GameTile {
-        t.map_or_else(GameTile::default, |t| self.map.tile(t).clone())
+    /// where the original would dereference NULL. (Phase 3S3: by reference; callers that
+    /// read a field no longer copy the whole 84-byte tile.)
+    #[inline(always)]
+    pub(crate) fn tile_ref(&self, t: Option<TileId>) -> &GameTile {
+        match t {
+            Some(t) => self.map.tile(t),
+            None => &ZERO_TILE,
+        }
     }
 
     /// `path->nodes[i]` by value. Indices outside the node block (the original reads
@@ -178,6 +195,24 @@ impl Game {
         get_position_for_path_node(&self.map, &n)
     }
 
+    /// `(node_position(toNode), node_position(fromNode))` of `path`, from `cache` while the
+    /// node block and the node indices are unchanged (phase 3S3), else computed and cached.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_x")]
+    pub(crate) fn path_end_positions(&self, path: &Path, cache: &mut crate::path::NodePosCache) -> (SVector, SVector) {
+        let gen = self.path.gen_value();
+        if cache.matches(gen, path) {
+            if cfg!(debug_assertions) {
+                let fresh = (self.node_position(path, path.to_node as i32), self.node_position(path, path.from_node as i32));
+                assert_eq!(cache.get(), fresh, "stale NodePosCache: a path node write did not touch the node block");
+            }
+            return cache.get();
+        }
+        let to = self.node_position(path, path.to_node as i32);
+        let from = self.node_position(path, path.from_node as i32);
+        cache.set(gen, path, to, from);
+        (to, from)
+    }
+
     /// `GetPositionForPathNodeOffset2(&v, &path->nodes[i])`.
     pub(crate) fn node_position_offset2(&self, path: &Path, i: i32) -> SVector {
         let n = self.path_node(path, i);
@@ -187,9 +222,10 @@ impl Game {
         get_position_for_path_node_offset2(&self.map, &n)
     }
 
-    /// Tile of `path->nodes[i].worldTile`.
-    pub(crate) fn node_tile(&self, path: &Path, i: i32) -> GameTile {
-        self.tile_or_default(self.path_node(path, i).world_tile)
+    /// Tile of `path->nodes[i].worldTile` (by reference, as [`tile_ref`](Self::tile_ref)).
+    #[inline(always)]
+    pub(crate) fn node_tile_ref(&self, path: &Path, i: i32) -> &GameTile {
+        self.tile_ref(self.path_node(path, i).world_tile)
     }
 
     fn plt(&self, id: PlatformId) -> &Platform {
@@ -281,6 +317,47 @@ impl Game {
             self.actor2.actors[carrying].actor.position = pos;
 
             if self.game_state.multi != SINGLEPLAYER {
+                self.update_platform_carry_multi(carrying);
+            }
+        }
+
+        // check if this platform is currently 'waiting' at a node
+        if self.plt(id).is_waiting != 0 {
+            let p = self.plt(id);
+            if (p.is_waiting != -1 && self.act_frame_count > p.path.start_frame) || (p.flags & PLATFORM_NEW_STEPONACTIVATED != 0 && p.carrying.is_some()) {
+                self.plt_mut(id).is_waiting = 0;
+            } else {
+                return;
+            }
+        }
+
+        let path = self.plt(id).path;
+        let node0 = self.path_node(&path, 0);
+
+        // check if this is a disappearing or crumbling platform
+        if self.plt(id).flags & (PLATFORM_NEW_DISAPPEARWITHFROG | PLATFORM_NEW_CRUMBLES) != 0 {
+            self.update_platform_crumble(id, act2, &path, &node0);
+        } else {
+            // platform is not carrying a frog
+            let gs = self.game_speed;
+            let p = self.plt_mut(id);
+            if p.countdown < node0.speed {
+                p.countdown = p.countdown.wrapping_add(gs);
+            }
+        }
+
+        // special fx associated with platform
+        if self.actor2.actors[act2].effects != 0 && self.actor2.actors[act2].clipped == 0 {
+            self.process_attached_effects(FxEntity::Platform(id));
+        }
+    }
+
+    /// The multiplayer part of `UpdatePlatforms`' "update frog if on the current platform"
+    /// (phase 3S3: out of line, outside the platform loop's I-cache region).
+    #[inline(never)]
+    fn update_platform_carry_multi(&mut self, carrying: ActorId) {
+        {
+            {
                 let nf = self.frogger.num_frogs.max(0) as usize;
                 let i = (0..nf).find(|&i| self.frogger.frog[i] == Some(carrying));
                 if let Some(i) = i {
@@ -306,22 +383,15 @@ impl Game {
                 }
             }
         }
+    }
 
-        // check if this platform is currently 'waiting' at a node
-        if self.plt(id).is_waiting != 0 {
-            let p = self.plt(id);
-            if (p.is_waiting != -1 && self.act_frame_count > p.path.start_frame) || (p.flags & PLATFORM_NEW_STEPONACTIVATED != 0 && p.carrying.is_some()) {
-                self.plt_mut(id).is_waiting = 0;
-            } else {
-                return;
-            }
-        }
-
-        let path = self.plt(id).path;
-        let node0 = self.path_node(&path, 0);
-
-        // check if this is a disappearing or crumbling platform
-        if self.plt(id).flags & (PLATFORM_NEW_DISAPPEARWITHFROG | PLATFORM_NEW_CRUMBLES) != 0 {
+    /// The disappearing / crumbling part of `UpdatePlatforms` (phase 3S3: out of line,
+    /// outside the platform loop's I-cache region).
+    #[inline(never)]
+    fn update_platform_crumble(&mut self, id: PlatformId, act2: ActorId, path: &crate::path::Path, node0: &crate::path::PathNode) {
+        let gs = self.game_speed;
+        let (path, node0) = (*path, *node0);
+        {
             if self.plt(id).countdown < 0 {
                 if self.plt(id).flags & PLATFORM_NEW_CARRYINGFROG != 0 {
                     self.plt_mut(id).countdown = node0.speed;
@@ -354,7 +424,7 @@ impl Game {
                                 p.carrying = None;
 
                                 if self.frogger.player[i].frog_state & FROGSTATUS_ISDEAD == 0 {
-                                    let dt = self.tile_or_default(in0);
+                                    let dt = self.tile_ref(in0).clone();
                                     let fpos = self.frog_position(i);
                                     self.calculate_frog_jump_s(&fpos, &dt.centre, &dt.normal, 0, t.wrapping_add(1), i as i32);
                                 }
@@ -377,23 +447,12 @@ impl Game {
 
                     if self.plt(id).flags & PLATFORM_NEW_CRUMBLES != 0 {
                         let mut n = FVector::default();
-                        new_set_vector_fs(&mut n, &self.tile_or_default(self.plt(id).in_tile[0]).normal);
+                        new_set_vector_fs(&mut n, &self.tile_ref(self.plt(id).in_tile[0]).normal);
                         self.create_special_effect(FXTYPE_SMOKEBURST, &apos, &n, 204800, 8192, 4096, 4096);
                         self.create_special_effect(FXTYPE_SMOKEBURST, &apos, &n, 163840, 4096, 4096, 6144);
                     }
                 }
             }
-        } else {
-            // platform is not carrying a frog
-            let p = self.plt_mut(id);
-            if p.countdown < node0.speed {
-                p.countdown = p.countdown.wrapping_add(gs);
-            }
-        }
-
-        // special fx associated with platform
-        if self.actor2.actors[act2].effects != 0 && self.actor2.actors[act2].clipped == 0 {
-            self.process_attached_effects(FxEntity::Platform(id));
         }
     }
 
@@ -563,7 +622,7 @@ impl Game {
         // determine relevant platform update function
         let flags = self.plt(pid).flags;
         let path = self.plt(pid).path;
-        let t0 = self.node_tile(&path, 0);
+        let t0 = self.node_tile_ref(&path, 0).clone();
         let facing = self.plt(pid).facing as usize;
         let orient = |g: &mut Game| {
             let q = &mut g.actor2.actors[actor].actor.q_rot;
@@ -636,14 +695,14 @@ impl Game {
         let actor = self.plt(pid).plt_actor.expect("platform actor");
         self.actor2.actors[actor].actor.position = start;
 
-        let to_t = self.node_tile(&path, path.to_node as i32);
-        let from_t = self.node_tile(&path, path.from_node as i32);
+        let to_t = self.node_tile_ref(&path, path.to_node as i32).clone();
+        let from_t = self.node_tile_ref(&path, path.from_node as i32).clone();
         let mut fwd = FVector::default();
         sub_vector_fss(&mut fwd, &to_t.centre, &from_t.centre);
         make_unit(&mut fwd);
 
         let facing = self.plt(pid).facing as usize;
-        let t0 = self.node_tile(&path, 0);
+        let t0 = self.node_tile_ref(&path, 0).clone();
         let q = &mut self.actor2.actors[actor].actor.q_rot;
         if flags & PLATFORM_NEW_FACEFORWARDS == 0 {
             crate::actor2::orientate_fs(q, &fwd, &from_t.normal);
@@ -666,6 +725,7 @@ impl Game {
     }
 
     /// Port of `UpdatePlatformPathNodes` (Common/platform.c:675).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
     pub fn update_platform_path_nodes(&mut self, pid: PlatformId) {
         {
             let p = self.plt_mut(pid);
@@ -700,14 +760,14 @@ impl Game {
         if path.num_nodes < 2 {
             return;
         }
-        let from_t = self.node_tile(&path, path.from_node as i32);
-        let to_t = self.node_tile(&path, path.to_node as i32);
+        let from_t = self.node_tile_ref(&path, path.from_node as i32).clone();
+        let to_t = self.node_tile_ref(&path, path.to_node as i32).clone();
         let p = self.plt(pid);
         if p.visible != 0 && p.flags & PLATFORM_NEW_NOREORIENTATE == 0 {
             let q = self.actor2.actors[p.plt_actor.expect("platform actor")].actor.q_rot;
             let flags = p.flags;
             let facing = p.facing as usize;
-            let t0 = self.node_tile(&path, 0);
+            let t0 = self.node_tile_ref(&path, 0).clone();
             let p = self.plt_mut(pid);
             p.src_orientation = q;
             if flags & PLATFORM_NEW_FACEFORWARDS == 0 {
@@ -815,8 +875,9 @@ impl Game {
 
         // update the platform position
         let path = self.plt(pid).path;
-        let to_position = self.node_position(&path, path.to_node as i32);
-        let from_position = self.node_position(&path, path.from_node as i32);
+        let mut cache = self.plt(pid).node_pos;
+        let (to_position, from_position) = self.path_end_positions(&path, &mut cache);
+        self.plt_mut(pid).node_pos = cache;
 
         let length = udiv(afc.wrapping_sub(path.start_frame) << 12, path.end_frame.wrapping_sub(path.start_frame));
 
@@ -839,6 +900,7 @@ impl Game {
     }
 
     /// Port of `UpdateUpDownPlatform` (Common/platform.c:898).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
     pub fn update_up_down_platform(&mut self, pid: PlatformId) {
         let afc = self.act_frame_count;
         let ws = self.frogger.wait_scale;
@@ -874,7 +936,7 @@ impl Game {
         let (start_offset, end_offset) = if p.flags & PLATFORM_NEW_MOVEUP != 0 { (node0.offset, node0.offset2) } else { (node0.offset2, node0.offset) };
 
         // get up vector for this platform
-        let t0 = self.node_tile(&path, 0);
+        let t0 = self.node_tile_ref(&path, 0).clone();
         let mut move_vec = FVector::default();
         new_set_vector_fs(&mut move_vec, &t0.normal);
 
@@ -892,7 +954,7 @@ impl Game {
         let node0 = self.path_node(&path, 0);
         let start_offs = node0.offset;
         let dest_offs = node0.offset2;
-        let t0 = self.node_tile(&path, 0);
+        let t0 = self.node_tile_ref(&path, 0).clone();
         let actor = p.plt_actor.expect("platform actor");
         let carrying = p.flags & PLATFORM_NEW_CARRYINGFROG != 0;
 
@@ -1003,16 +1065,16 @@ impl Game {
 
             let p = self.plt(plt).clone();
             if p.flags & PLATFORM_NEW_NOREORIENTATE == 0 {
-                let in0 = self.tile_or_default(p.in_tile[0]);
+                let in0 = self.tile_ref(p.in_tile[0]).clone();
                 let mut dest = p.dest_orientation;
                 if p.flags & PLATFORM_NEW_FACEFORWARDS == 0 {
-                    let nt = self.node_tile(&p.path, (flag + 1) % p.path.num_nodes as i32);
+                    let nt = self.node_tile_ref(&p.path, (flag + 1) % p.path.num_nodes as i32).clone();
                     let mut fwd = FVector::default();
                     sub_vector_fss(&mut fwd, &nt.centre, &in0.centre);
                     make_unit(&mut fwd);
                     crate::actor2::orientate_fs(&mut dest, &fwd, &in0.normal);
                 } else {
-                    let t0 = self.node_tile(&p.path, 0);
+                    let t0 = self.node_tile_ref(&p.path, 0).clone();
                     crate::actor2::orientate_ss(&mut dest, &t0.dir_vector[p.facing as usize], &in0.normal);
                 }
                 let pm = self.plt_mut(plt);
@@ -1024,5 +1086,13 @@ impl Game {
             self.effects.push(Effect::Log { text: format!("MoveEnemyToNode(): Flag ({flag}) out of range") });
         }
         1
+    }
+}
+
+#[cfg(test)]
+mod zero_tile_tests {
+    #[test]
+    fn zero_tile_is_default() {
+        assert_eq!(super::ZERO_TILE, super::GameTile::default());
     }
 }

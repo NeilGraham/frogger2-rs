@@ -138,20 +138,36 @@ fn smooth_up(pt: &mut ProcTexture) {
 
 /// [`smooth_up_ref`] eight pixels at a time (phase 3S2; 16-bit lanes as in
 /// [`water_swar`]): `(2t + b[p-64] + b[p-32]) >> 3` (<= 2040 before the shift), reads
-/// outside the buffer are 0 (a zero-padded copy, as `rd`), row ends keep `buf2`.
+/// outside the buffer are 0 (as `rd`), row ends keep `buf2`.
+///
+/// Phase 3S3: rows 2..=29 read `buf1` in place; only rows 1 and 30, whose neighbours
+/// leave the buffer, go through a small zero-padded copy (the full padded copy on the
+/// stack cost more D-cache traffic than the filter on the N64).
 fn smooth_up_swar(pt: &mut ProcTexture) {
-    const PAD: usize = 72;
-    let mut b = [0u8; 1024 + 2 * PAD];
-    b[PAD..PAD + 1024].copy_from_slice(&pt.buf1[..1024]);
+    let src: &[u8; 1024] = pt.buf1[..1024].try_into().expect("1024-byte buffer");
     let b2: &mut [u8; 1024] = (&mut pt.buf2[..1024]).try_into().expect("1024-byte buffer");
+    // Row 1 reads absolute [-32, 136), row 30 [896, 1064): copies with zeros outside.
+    let mut top = [0u8; 64 + 136];
+    top[64..].copy_from_slice(&src[..136]);
+    let mut bot = [0u8; 1072 - 896];
+    bot[..128].copy_from_slice(&src[896..]);
+    smooth_rows(&top, 64, b2, 1..=1);
+    smooth_rows(src, 0, b2, 2..=29);
+    smooth_rows(&bot, 896usize.wrapping_neg(), b2, 30..=30);
+}
+
+/// Rows `rows` of [`smooth_up_swar`] reading `b`, where absolute index `k` is at `k + base`
+/// (wrapping).
+#[inline(always)]
+fn smooth_rows<const N: usize>(b: &[u8; N], base: usize, b2: &mut [u8; 1024], rows: core::ops::RangeInclusive<usize>) {
     let keep_first = u64::from_ne_bytes([0xFF, 0, 0, 0, 0, 0, 0, 0]);
     let keep_last = u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, 0xFF]);
-    for i in 1..=30usize {
+    for i in rows {
         for g in 0..4 {
             let q = (i << 5) + g * 8;
-            let r = PAD + q;
+            let r = q.wrapping_add(base);
             let lane = |sh: u32| {
-                let f = |o: usize| (ld8(&b, o) >> sh) & M8;
+                let f = |o: usize| (ld8(b, o) >> sh) & M8;
                 let t = f(r + 31) + f(r + 33) + f(r + 64);
                 ((t + t + f(r - 64) + f(r - 32)) >> 3) & (0xFF * L16)
             };
@@ -184,20 +200,36 @@ fn smooth_up_ref(pt: &mut ProcTexture) {
 /// (a circularly padded copy). The low byte of `(s - 10) >> 2` (arithmetic, also for the
 /// negative sums the `u32` shift makes huge) is the low byte of `(s + 1014) >> 2`.
 fn forcefield_filter(pt: &mut ProcTexture) {
-    const PAD: usize = 48;
+    // Phase 3S3: groups 4..=123 read `buf1` in place; the first and last four wrap around
+    // through small circular copies.
     let src: &[u8; 1024] = pt.buf1[..1024].try_into().expect("1024-byte buffer");
-    let mut b = [0u8; 1024 + 2 * PAD];
-    b[..PAD].copy_from_slice(&src[1024 - PAD..]);
-    b[PAD..PAD + 1024].copy_from_slice(src);
-    b[PAD + 1024..].copy_from_slice(&src[..PAD]);
     let b2: &mut [u8; 1024] = (&mut pt.buf2[..1024]).try_into().expect("1024-byte buffer");
-    for q in (0..1024).step_by(8) {
-        let r = PAD + q;
+    // Groups q = 0..32 read absolute [-31, 72): copy of [-48, 80) (base 48).
+    let mut lo = [0u8; 128];
+    lo[..48].copy_from_slice(&src[1024 - 48..]);
+    lo[48..].copy_from_slice(&src[..80]);
+    // Groups q = 992..1024 read absolute [961, 1064): copy of [944, 1072) (base -944).
+    let mut hi = [0u8; 128];
+    hi[..80].copy_from_slice(&src[944..]);
+    hi[80..].copy_from_slice(&src[..48]);
+    forcefield_groups(&lo, 48, b2, 0, 32);
+    forcefield_groups(src, 0, b2, 32, 992);
+    forcefield_groups(&hi, 944usize.wrapping_neg(), b2, 992, 1024);
+}
+
+/// Groups `q` in `from..to` (step 8) of [`forcefield_filter`] reading `b` (absolute index
+/// `k` at `k + base`, wrapping).
+#[inline(always)]
+fn forcefield_groups<const N: usize>(b: &[u8; N], base: usize, b2: &mut [u8; 1024], from: usize, to: usize) {
+    let mut q = from;
+    while q < to {
+        let r = q.wrapping_add(base);
         let lane = |sh: u32| {
-            let f = |o: usize| (ld8(&b, o) >> sh) & M8;
+            let f = |o: usize| (ld8(b, o) >> sh) & M8;
             ((f(r) + f(r - 1) + f(r - 31) + f(r + 32) + 1014 * L16) >> 2) & (0xFF * L16)
         };
         b2[q..q + 8].copy_from_slice(&(lane(0) | (lane(8) << 8)).to_ne_bytes());
+        q += 8;
     }
 }
 
@@ -229,22 +261,35 @@ fn water(pt: &mut ProcTexture, damp: u32) {
 /// value; the neighbour reads go through a zero-padded copy of `buf1` (the lanes that would
 /// read outside the buffer are those discarded row ends).
 fn water_swar(pt: &mut ProcTexture, damp: u32) {
-    const PAD: usize = 40;
+    // Phase 3S3: rows 2..=29 read `buf1` in place; rows 1 and 30 (whose outer lanes read
+    // one byte outside the buffer) go through small zero-padded copies.
+    let src: &[u8; 1024] = pt.buf1[..1024].try_into().expect("1024-byte buffer");
+    let b2: &mut [u8; 1024] = (&mut pt.buf2[..1024]).try_into().expect("1024-byte buffer");
+    // Row 1 reads absolute [-1, 104), row 30 [927, 1025).
+    let mut top = [0u8; 8 + 104];
+    top[8..].copy_from_slice(&src[..104]);
+    let mut bot = [0u8; 1032 - 920];
+    bot[..104].copy_from_slice(&src[920..]);
+    water_rows(&top, 8, b2, damp, 1..=1);
+    water_rows(src, 0, b2, damp, 2..=29);
+    water_rows(&bot, 920usize.wrapping_neg(), b2, damp, 30..=30);
+}
+
+/// Rows `rows` of [`water_swar`] reading `b` (absolute index `k` at `k + base`, wrapping).
+#[inline(always)]
+fn water_rows<const N: usize>(b: &[u8; N], base: usize, b2: &mut [u8; 1024], damp: u32, rows: core::ops::RangeInclusive<usize>) {
     const M: u64 = 0x00FF_00FF_00FF_00FF;
     const L: u64 = 0x0001_0001_0001_0001;
-    let mut b = [0u8; 1024 + 2 * PAD];
-    b[PAD..PAD + 1024].copy_from_slice(&pt.buf1[..1024]);
-    let b2: &mut [u8; 1024] = (&mut pt.buf2[..1024]).try_into().expect("1024-byte buffer");
     let ld = |o: usize| u64::from_ne_bytes(b[o..o + 8].try_into().unwrap());
     // Byte 0 / byte 7 of a group (column 0 / 31 of the row) keep their old value.
     let keep_first = u64::from_ne_bytes([0xFF, 0, 0, 0, 0, 0, 0, 0]);
     let keep_last = u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, 0xFF]);
     let dmask = (0xFFu64 >> damp) * L;
-    for i in 1..=30usize {
+    for i in rows {
         let mut out = [0u64; 4];
         for (g, o) in out.iter_mut().enumerate() {
             let q = (i << 5) + g * 8;
-            let r = PAD + q;
+            let r = q.wrapping_add(base);
             let n = [ld(r - 32), ld(r + 32), ld(r + 1), ld(r - 1), ld(r + 33), ld(r + 31), ld(r - 33), ld(r - 31)];
             let mut se = 0u64;
             let mut so = 0u64;

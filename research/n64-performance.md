@@ -1728,3 +1728,141 @@ present; differences are animation phase and timers.
   fragility (see 3R's Lab game-over note) that this change exposes in that run; needs a fix in
   the pool / level-load path.
 - Timing is layout-sensitive (±5–10 %); the numbers above are single builds per level.
+
+## 3S3: simulation tick, third round (2026-10-12)
+
+Branch `worktree-agent-a08011cde1a4eb6cc` (from `350099b`). Goal: `Game::tick` Space 1 ≤ 10 ms,
+Lab/Subterranean/Halloween 1 ≤ 8 ms, Garden 1 ≤ 6 ms, bit-identical. Result: **−14…−22 %**
+(Space 14.7 → 12.5 ms, Lab 10.6 → 8.9, Subterranean 10.5 → 8.5, Halloween 10.5 → 8.2,
+Garden 8.5 → 7.3). The targets are not reached.
+
+### Result (ares v148, `level-hop W 0`, 80 s runs, mean of the windows after the first two; µs per tick)
+
+Both rows of a level are builds made in this worktree on the same day (`base` = `350099b`),
+run in parallel ares instances. Lab 1 ends in a game over after ~15 s, so its row is one window.
+
+| level | | tick | actordraw | enemies | platforms | specfx | draw2d | loop-rest | frogs | events | draw3d | fps |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Space 1 (2-0) | base | 14 672 | 5 873 | 2 852 | 1 817 | 1 237 | 1 189 | 700 | 373 | 332 | 258 | 16.0 |
+| | after | 12 542 | 5 483 | 1 864 | 1 625 | 959 | 1 106 | 593 | 288 | 377 | 215 | 16.5 |
+| Lab 1 (5-0) | base | 10 613 | 5 021 | 2 364 | 737 | 192 | 675 | 870 | 425 | 33 | 260 | 16.9 |
+| | after | 8 938 | 4 762 | 1 489 | 580 | 165 | 673 | 623 | 321 | 44 | 242 | 17.8 |
+| Subterranean 1 (4-0) | base | 10 457 | 4 438 | 766 | 888 | 614 | 741 | 1 459 | 753 | 448 | 310 | 18.4 |
+| | after | 8 509 | 4 030 | 544 | 790 | 568 | 616 | 740 | 458 | 493 | 227 | 19.8 |
+| Halloween 1 (6-0) | base | 10 508 | 3 546 | 2 468 | 1 207 | 287 | 827 | 774 | 518 | 620 | 219 | 21.9 |
+| | after | 8 246 | 3 218 | 1 156 | 1 033 | 271 | 664 | 633 | 372 | 682 | 183 | 23.6 |
+| Garden 1 (0-0) | base | 8 504 | 3 632 | 1 626 | 834 | 204 | 813 | 670 | 454 | 76 | 163 | 27.9 |
+| | after | 7 286 | 3 316 | 1 136 | 698 | 172 | 781 | 560 | 343 | 87 | 138 | 29.3 |
+
+Build-to-build layout noise is still ±5 % per phase (platforms moved by ±200 µs between
+builds with identical platform code until the last region fixes); the "after" rows match
+the last five builds of the round within that.
+
+### Cost model (measured, ares v148)
+A temporary calibration build (`F2N64_TUNE_AB` cycling through masks; 20 000 operations
+per tick, Garden 1) gave per operation: `mul.s`/`add.s` 5.3–5.5 cycles (dependent or not),
+`mul.d` 8.4, `div.s` 30, 32-bit integer `mult` ~4.4 (not ~25), `FMul` (64-bit product)
+~13, integer `div` ~41, `i32→f32` ~7, `u32→f32` ~11, **Rust's saturating `f32 as i64`
+~36**, `mtx_cat` ~520, `quaternion_to_matrix` ~240, `MakeUnit` ~376, a D-cache load miss
+~47 extra and a **store miss ~85** (allocate + later write-back). Host callgrind with the
+VR4300 geometry (`--D1=8192,1,16 --I1=16384,1,32 --toggle-collect='*tick_frames*'` on a
+host copy of `level-hop`) counts ~10 000 D-cache misses per Space 1 tick: memory, not
+arithmetic, is about a third of the tick. The sampling profiler attributes a long
+branch-free block's time to the *next* block (ares checks interrupts at block ends), so
+per-function numbers around calls mislead; only same-ROM A/B or whole-phase numbers are
+trustworthy.
+
+### What changed (all exact)
+1. **I-cache regions** (`tools/n64/Makefile`): a new `.text.f2hot_x` between the enemy and
+   platform regions holds the fixed-point maths both loops call per entity (`Orientate`,
+   `MakeUnit`, `IQuatSlerp`, `fixedRotateVectorByRotation`, `MagnitudeF`, the quaternion
+   helpers, `ProcessAttachedEffects`' test, the node-position lookup): e + x = 15.6 KiB and
+   x + p = 12.4 KiB (the enemy region was 25 KiB and evicted itself). Cold parts moved out of
+   line so the regions fit: `ProcessAttachedEffects`' effect creation (8 KiB; the test left
+   in the region also skips the body for actors outside the timer/distance window — Space
+   ran it for 26 far enemies per tick), `UpdatePathNME`'s node arrival and push blocks,
+   `DoEnemyCollision`'s multiplayer branch, `UpdatePlatforms`' crumble and multiplayer
+   parts, `UpdateFlappyThing` (Garden only), the float fallbacks of `rsin`/`rcos`/`arccos`
+   (`#[cold]`: `IQuatSlerp` 5.7 → 1.8 KiB, `Orientate` 3.4 → 2.1 KiB),
+   `transform_actor_sprites`' body, `find_to_from`, `calc_view_matrix`;
+   `copy_and_draw_actors` is no longer inlined into `after_game_loop` (its loop shared I-cache
+   lines with `copy_actor`). Every remaining out-of-region callee of the three loops is once
+   per tick or rare (checked from the ELF: `jal` targets of region functions).
+2. **Allocations per tick.** The N64 heap is full during Subterranean 1, where small blocks
+   fall back to the big-block pool's list walk (`big_alloc` + `big_free` were 0.46 ms/tick).
+   The HUD's numbers are formatted on the stack and copied into the overlays' `String`s only
+   when they change (`hud::StackStr`, `set_text`); `sync_collect_text` and the time overlay
+   no longer clone overlays; `take_effects` leaves a list with the last call's capacity
+   (ambient sounds emit several `UpdateHandle`s per frame; a host can also `Vec::append`
+   out of `Game::effects` to keep both buffers); swarm and lightning effects walk their
+   particle chains in place; `ActorListDraw(1)` and `DrawSpecialFX` snapshot into reused
+   buffers (`Game::scratch`). Subterranean loop-rest 1.46 → 0.74 ms.
+3. **Nearest tile** (`nearest.rs`): `FindNearestTileS` scanned all ~950 tiles (a D-cache miss
+   each; Halloween's rotating enemy: ~1 ms/tick). A uniform x/z grid built with the collision
+   map gives the same tile: while no squared distance can wrap (checked against the bounding
+   box of all centres) the scan's `DistanceBetweenPointsSS >> 12` is a non-decreasing
+   function of the exact squared distance, so cells farther than the best tile in that
+   measure (strictly) are skipped, and ties keep the lowest index. A replaced tile list or a
+   far point falls back to the scan; debug builds compare every answer with the scan; tested
+   on random maps. Halloween enemies 2.5 → 1.2 ms.
+4. **No struct copies in hot loops**: `tile_ref`/`node_tile_ref` return `&GameTile` (an
+   84-byte clone per call before; a static zero tile stands for NULL), `FroggerHop`'s
+   per-platform scan reads three fields instead of cloning each 256-byte platform
+   (Subterranean frogs 0.75 → 0.46 ms), `DoEnemyCollision` and `UpdatePathNME` read fields
+   instead of cloning the enemy, and `copy_actor` compares its source copies word by word
+   (`==` on the arrays had become `memcmp` calls outside the region).
+5. **Node positions** (`path::NodePosCache` in `Platform` and `Enemy`, `skip` in
+   `ser_order!`, not state): path platforms and path enemies reuse their from/to node
+   positions while the node block generation (`PathState::touch`, called by every node
+   writer) and the node indices are unchanged; debug builds recompute on every reuse.
+   Same-ROM A/B: platforms −0.45…−0.73 ms, enemies −0.13…−0.35 ms.
+6. **Actor pass**: the sphere's position-independent part (`t2`, radius) survives a
+   position-only move (`SphereCache::rot_valid`; A/B −130 µs); the sphere test reuses the
+   view-space `z` of its depth test (`xfm_point_f_z`; A/B −60…−100 µs); `object_local_r`
+   has one `quaternion_to_matrix` call site.
+7. **f2-math**: `utilSqrt` converts `num < 2^31` through the signed conversion and takes the
+   product's integer part from the float's bits (no saturating conversion; equal for all
+   2^32 inputs, test `util_sqrt_bits_all`); `MakeUnit`'s top-bit search is four compares
+   (MIPS III has no `clz`; tested over all `u32`); `Random` is `#[inline]` (constant limits
+   become multiplications); `DistanceBetweenPoints*` are `#[inline]` and
+   `normalise_components`/`reduced_sqrt` `#[inline(always)]` (they had stopped being
+   inlined). Same-ROM A/B of the first two: −150 µs in Space.
+8. **Procedural textures**: the filters read `buf1` in place except for the first and last
+   row (fire/candle/steam, water) or the first and last four groups (forcefield, circular),
+   which go through small padded copies (before: a 1.1 KiB zeroed and copied stack buffer
+   per texture per frame). Equal to the scalar references on the existing 4 000-case tests.
+   Space draw2d 1.19 → 1.1 ms, Halloween 0.83 → 0.66.
+
+### Parity
+- `demo_trace 0 0 / 1 0 / 6 1` and the 102 `f2-parity check --corpus all` Rust traces are
+  sha1-identical to `350099b`'s (105/105 files; the check: 102 ok, 0 regressed).
+- Host simbench checksums unchanged (frontend `7054b682…`, 0-0 `5aff35da…`, 2-0
+  `9fd3d559…`, 2-2 `29f4158d…`, 4-1 `4e0873f9…`, 6-0 `c0075ee8…`, demos `2d7f69cc…`,
+  `dc71fff9…`, `b9bfab76…`); level-hop checksums (2 frames per tick, 600 ticks) unchanged
+  on 0-0, 2-0, 4-0, 5-0, 6-0; debug runs (cache and grid asserts) on 1-0, 2-0, 2-2, 4-0,
+  6-0, 6-1. Not rerun: the N64 = host simbench comparison (needs an `F2N64_DATA=prep` DFS).
+- f2-game and f2-math tests pass (debug), clippy `-D warnings`, the `thumbv7em` no-std check.
+
+### Tried and dropped
+- Key times in a separate array per channel (one search instance): +0.5…1.4 ms actordraw;
+  the times array is one more D-cache miss per channel.
+- `quaternion_to_matrix` out of line: the 64-byte matrix returned through memory cost more
+  than the I-cache it saved.
+- Bit-level float→int conversions for `sin_fast`/`acos_fast`/`ftol16`/`oozd` (equal on all
+  f32 and dense f64 tests): A/B 0.
+- Writing `SphereCache::src_*` only when changed: A/B 0.
+- An 8-pixel palette blit: the blit is bound by the 2 KiB surface write misses; the surface
+  is serialized game state, so it stays.
+- A per-platform `IQuatSlerp` set-up cache and an `Orientate` memo: estimated ≤ 50 µs each
+  after their extra cache lines; not built.
+
+### Where the time is now / next
+- Actor pass (3.2–5.5 ms): ~10 D-cache lines per actor per tick in `copy_actor` and the
+  sphere test (~2.5 ms of misses in Space by callgrind) and the float work of moving visible
+  actors (root object matrix + bounding box ≈ 3 200 cycles each, ~13 per tick in Space;
+  their object-local part could be cached for static-key models, ~50 µs). The s region is
+  16.0 KiB, at the I-cache limit: new per-actor code needs room first.
+- Enemies/platforms: `MakeUnit`/`Orientate` per path enemy (three integer divisions each)
+  and entity memory. Space's lightning makes 160 `MakeUnit` calls per tick (~0.5 ms).
+- `FindNearestTileS`-like scans elsewhere, events (`snap_at_flag` walks all platforms and
+  enemies each tick: ~0.3 ms in Subterranean).
