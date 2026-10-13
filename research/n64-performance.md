@@ -1866,3 +1866,23 @@ trustworthy.
   and entity memory. Space's lightning makes 160 `MakeUnit` calls per tick (~0.5 ms).
 - `FindNearestTileS`-like scans elsewhere, events (`snap_at_flag` walks all platforms and
   enemies each tick: ~0.3 ms in Subterranean).
+
+## After the 3A + 3D2 + 3S3 merges (2026-10-12, `e9c7447`)
+Same benchmark (`bench.sh m4-wW "level-hop W 0" 40`, clean build, frog hopping, last 3 windows).
+fps: first measurement this push → after 3S2/3E/3R → now.
+
+| level | fps | sim | draw (loop / r3d queue / flush) | Game::tick | audio / frame | worst frame |
+|---|---|---|---|---|---|---|
+| Garden 1 | 15.4 → 28.4 → **37.2** | 8 ms | 17 (9 / 2.9 / 1.5) | 6.9 ms | 1.3 ms | 29 ms |
+| Ancients 1 | 19.0 → 29.4 → **42.7** | 6 | 15 (8 / 1.9 / 1.5) | 5.4 | 1.3 | 25 |
+| Space 1 | 10.2 → 16.6 → **24.3** | 13 | 25 (14 / 2.3 / 1.5) | 11.8 | 2.5 | 42 |
+| City | 39.8 → 59.0 → **59.8** | 4 | 11 (3 / 3.1 / 0.8) | 3.0 | 0.9 | 18 |
+| Subterranean 1 | 12.6 → 19.3 → **29.7** | 11 | 20 (12 / 1.9 / 1.3) | 8.4 | 2.4 | 35 |
+| Lab 1 | 10.6 → 17.5 → **26.6** | 11 | 24 (14 / 2.4 / 1.3) | 8.5 | 3.3 | 47–50 |
+| Halloween 1 | 13.5 → 22.2 → **35.4** | 9 | 17 (9 / 2.2 / 1.2) | 8.0 | 1.6 | 31 |
+| Retro 1 | 28.7 → 45.6 → **59.8** | 6 | 9 (5 / 1.0 / 0.9) | 5.4 | 0.8 | 19 |
+| frontend | 16.5 → 25.5 → **29.5** | 6 | 25 (12 / 5.0 / 1.6) | 5.5 | 2.0 | 38 |
+
+Lab 1's last window contains the game-over load (565 ms frame), excluded above. No assertions
+or panics in the sweep; host tests pass. Open: Space/Lab/frontend still above 33 ms; the
+Space 3 game-over → frontend out-of-memory risk (3D2); 2D submit (3A); book overlay (3A).
