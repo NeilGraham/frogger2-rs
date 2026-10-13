@@ -1409,6 +1409,13 @@ static inline void tl_vertex(n64_vertex_t *o, const float *v, float zk, uint32_t
  * 1.0 = 0x10000 here). Vertex conversion as tl_vertex + tri_one. */
 void __rdpq_autosync_use(uint32_t res);
 #define F2_TRI_DATA_LEN 32 /* ROUND_UP((2+1+1+3)*4, 16) */
+/* rdpq_tri.c float_to_s16_16 (static there). */
+static inline int32_t f2_s16_16(float f) {
+    if (f >= 32768.f) return 0x7FFFFFFF;
+    if (f < -32768.f) return 0x80000000;
+    return floor(f * 65536.f);
+}
+
 /* fast_vtx's colour cache (valid within one n64_draw_tl_tris call: same blend mode) and
  * the source vertex of each of the RSP's three triangle-data slots (fast_tri_shared). */
 static uint32_t col_key[4], col_rgba;
@@ -1449,7 +1456,7 @@ static inline void fast_vtx(int i, const float *v, const tri_setup_t *su, float 
         col_ok = true;
     }
     int16_t s = 0, t = 0;
-    int32_t w = 0;
+    int32_t w = 0, inv_w = 0;
     if (tex) {
         float fs = v[8], ft = v[9];
         if (su->mode == 1) {
@@ -1458,9 +1465,16 @@ static inline void fast_vtx(int i, const float *v, const tri_setup_t *su, float 
         }
         s = fs * 32.0f;
         t = ft * 32.0f;
-        w = 0x10000;
+        /* 1/w as tl_vertex clamps it, w and 1/w as rdpq_triangle_rsp converts them. */
+        float iw = v[3] > 0.0f ? (v[3] < 1.0f ? v[3] : 1.0f) : 1.0f;
+        if (iw == 1.0f) {
+            w = inv_w = 0x10000;
+        } else {
+            w = f2_s16_16(1.0f / iw);
+            inv_w = f2_s16_16(iw);
+        }
     }
-    rspq_write(RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE_DATA, F2_TRI_DATA_LEN * i, (x << 16) | (y & 0xFFFF), (z << 16), rgba, (s << 16) | (t & 0xFFFF), w, w);
+    rspq_write(RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE_DATA, F2_TRI_DATA_LEN * i, (x << 16) | (y & 0xFFFF), (z << 16), rgba, (s << 16) | (t & 0xFFFF), w, inv_w);
 }
 
 /* The fields of a TlVertex that fast_vtx reads (x y z rhw r g b a s t), bitwise. */
@@ -1523,8 +1537,8 @@ void n64_draw_tl_tris_impl(const n64_tl_batch_t *b, const n64_state_t *st) {
         slot_src[0] = slot_src[1] = slot_src[2] = NULL;
         for (uint32_t k = 0; k < b->ntris; k++, p += b->stride) {
             const float *v = (const float *)p;
-            /* rhw = 1 (the sprites, shadows and effects): straight to the RSP command. */
-            if (su.mode != 2 && v[3] == 1.0f && v[15] == 1.0f && v[27] == 1.0f) {
+            /* Straight to the RSP command (rdpq_triangle_rsp's words, see fast_vtx). */
+            if (su.mode != 2) {
                 fast_tri_shared(&su, v, b->zk, st->blend);
                 continue;
             }
