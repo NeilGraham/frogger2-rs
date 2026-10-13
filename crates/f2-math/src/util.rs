@@ -40,15 +40,26 @@ pub fn ftol32(x: f64) -> i32 {
 /// `((bits - 0x3F800000) >> 1) + 0x3F800000` (arithmetic shift); result `(ULONG)(r*65536)`.
 #[inline]
 pub fn util_sqrt(num: u32) -> u32 {
-    let n = num as f32;
-    let bits = ((n.to_bits() as i32).wrapping_sub(0x3F80_0000) >> 1).wrapping_add(0x3F80_0000);
-    let retval = f32::from_bits(bits as u32);
-    // Phase 3S: `retval` is a positive normal float in [2^-63, 65536] for every `num`, so
-    // `retval * 65536` is exact in `f32` and lies in [0, 2^32]: the original's `double`
-    // product and `_ftol` (`ftol`) give the same integer as an `f32` multiply and a
-    // truncating `f32 -> i64` conversion (no `f64` work on the VR4300). Tested against
-    // [`util_sqrt_f64`] on a dense sweep of `u32`.
-    (retval * 65536.0) as i64 as u32
+    // Phase 3S3: `num` to `float` through the signed conversion where that is the same
+    // number (one `cvt.s.w` on the VR4300 instead of the unsigned conversion's
+    // double-precision sequence), and `retval * 65536` truncated to an integer from the
+    // float's bits: `retval` is a positive normal float `1.m * 2^(e-127)` in
+    // [2^-63, 65536] for every `num` (phase 3S), so the product's integer part is
+    // `(1.m << 23) * 2^(e-134)`, which is what the original's `double` product and `_ftol`
+    // give (2^32 for `num` rounding to 2^32, kept as 0 by the `ULONG` store). That avoids
+    // Rust's saturating float-to-int conversion (three FPU compares, ~36 cycles on the
+    // VR4300). Equal to [`util_sqrt_f64`] for every `u32` (test `util_sqrt_bits_all`).
+    let n = if num <= i32::MAX as u32 { num as i32 as f32 } else { num as f32 };
+    let bits = ((n.to_bits() as i32).wrapping_sub(0x3F80_0000) >> 1).wrapping_add(0x3F80_0000) as u32;
+    let e = (bits >> 23) as i32 - 134;
+    let mant = (bits & 0x007F_FFFF) | 0x0080_0000;
+    if e >= 0 {
+        ((mant as u64) << e) as u32
+    } else if e > -24 {
+        mant >> -e
+    } else {
+        0
+    }
 }
 
 /// [`util_sqrt`] as written in the original (`double` product, `_ftol`), for tests.
@@ -197,13 +208,17 @@ fn sin_lookup(x: i32) -> Fixed {
 }
 
 /// The float evaluation of [`rsin`] (the reference the table is generated from).
-#[inline]
+/// Phase 3S3: out of line (rarely reached; keeps [`rsin`] call sites small for the N64's
+/// I-cache).
+#[inline(never)]
+#[cold]
 pub fn rsin_float(x: i32) -> Fixed {
     ftol32((detfloat::sin(rtrig_arg(x)) as f32) as f64 * 4096.0)
 }
 
-/// The float evaluation of [`rcos`].
-#[inline]
+/// The float evaluation of [`rcos`] (out of line, as [`rsin_float`]).
+#[inline(never)]
+#[cold]
 pub fn rcos_float(x: i32) -> Fixed {
     ftol32((detfloat::cos(rtrig_arg(x)) as f32) as f64 * 4096.0)
 }
@@ -250,7 +265,9 @@ mod tests {
         };
         (-40_000..=40_000).for_each(check);
         // util_sqrt: every u32 below 2^22, near every power of two, and a dense stride.
-        let us = |x: u32| assert_eq!(crate::util_sqrt(x), crate::util_sqrt_f64(x), "util_sqrt({x})");
+        let us = |x: u32| {
+            assert_eq!(crate::util_sqrt(x), crate::util_sqrt_f64(x), "util_sqrt({x})");
+        };
         (0..1u32 << 22).for_each(us);
         for b in 0..32 {
             let p = 1u64 << b;
@@ -267,5 +284,19 @@ mod tests {
             x = n;
         }
         check(i32::MAX);
+    }
+}
+
+#[cfg(test)]
+mod sqrt_all {
+    /// Every `u32` (~5 s in release).
+    #[test]
+    #[ignore]
+    fn util_sqrt_bits_all() {
+        for x in 0..=u32::MAX {
+            if crate::util_sqrt(x) != crate::util_sqrt_f64(x) {
+                panic!("{x}");
+            }
+        }
     }
 }

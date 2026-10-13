@@ -37,7 +37,11 @@ impl Default for Rng {
 impl Rng {
     /// Port of `Random` (Common/maths.c:251): shift-xor generator, returns `rseed % lim`.
     /// `lim == 0` returns 0 without advancing the state.
+    ///
+    /// Phase 3S3: inlined, so a constant `lim` turns the `%` into a multiplication (the
+    /// VR4300's `divu` takes ~40 cycles); the result is the same.
     #[track_caller]
+    #[inline]
     pub fn random(&mut self, lim: u32) -> i32 {
         if lim == 0 {
             return 0;
@@ -77,6 +81,9 @@ pub fn arccos(cos: i32) -> i32 {
 }
 
 /// The float evaluation of [`arccos`] (the reference its table is generated from).
+/// Phase 3S3: out of line (rarely reached; keeps [`arccos`] call sites small).
+#[inline(never)]
+#[cold]
 pub fn arccos_float(cos: i32) -> i32 {
     // RETAIL: the exe runs with Direct3D's x87 control word (24-bit precision), so
     // `cos/4096.0F`, the `acos` result and the product are each rounded to `float`.
@@ -147,6 +154,7 @@ fn rotate_tail(result: &mut FVector, m_vec: &FVector, p_vec: &FVector, rot: &IQu
 
 /// Port of `fixedRotateVectorByRotation` (Common/maths.c:308): rotate by axis (`x,y,z`,
 /// 4096 = 1) and angle `w`. Equivalent to the C when `result` aliases `vect`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_x")]
 pub fn fixed_rotate_vector_by_rotation(result: &mut FVector, vect: &FVector, rot: &IQuaternion) {
     let v = *vect;
     let mut m = v.vx.wrapping_mul(rot.x) >> 12;
@@ -175,6 +183,7 @@ pub fn fixed_quaternion_multiply(dest: &mut IQuaternion, src1: &IQuaternion, src
 }
 
 /// Port of `fixedGetQuaternionFromRotation` (Common/maths.c:291): axis/angle -> quaternion.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_x")]
 pub fn fixed_get_quaternion_from_rotation(dest_q: &mut IQuaternion, src_q: &IQuaternion) {
     let s = *src_q;
     let theta_over2 = s.w / 2;
@@ -200,6 +209,7 @@ pub fn distance_between_points_vv(v1: &Vector, v2: &Vector) -> Fixed {
 }
 
 /// Port of `DistanceBetweenPointsSS` (Common/maths.c:415).
+#[inline]
 pub fn distance_between_points_ss(v1: &SVector, v2: &SVector) -> Fixed {
     let mut t = Vector::default();
     sub_vector_vss(&mut t, v1, v2);
@@ -207,6 +217,7 @@ pub fn distance_between_points_ss(v1: &SVector, v2: &SVector) -> Fixed {
 }
 
 /// Port of `DistanceBetweenPointsSV` (Common/maths.c:428).
+#[inline]
 pub fn distance_between_points_sv(v1: &SVector, v2: &Vector) -> Fixed {
     let mut t = Vector::default();
     sub_vector_vsv(&mut t, v1, v2);
@@ -214,6 +225,7 @@ pub fn distance_between_points_sv(v1: &SVector, v2: &Vector) -> Fixed {
 }
 
 /// Port of `DistanceBetweenPointsSF` (Common/maths.c:441).
+#[inline]
 pub fn distance_between_points_sf(v1: &SVector, v2: &FVector) -> Fixed {
     let mut t = FVector::default();
     sub_vector_fsf(&mut t, v1, v2);
@@ -221,6 +233,7 @@ pub fn distance_between_points_sf(v1: &SVector, v2: &FVector) -> Fixed {
 }
 
 /// Port of `DistanceBetweenPointsFS` (Common/maths.c:450).
+#[inline]
 pub fn distance_between_points_fs(v1: &FVector, v2: &SVector) -> Fixed {
     let mut t = FVector::default();
     sub_vector_ffs(&mut t, v1, v2);
@@ -228,6 +241,7 @@ pub fn distance_between_points_fs(v1: &FVector, v2: &SVector) -> Fixed {
 }
 
 /// Port of `DistanceBetweenPointsFF` (Common/maths.c:458).
+#[inline]
 pub fn distance_between_points_ff(v1: &FVector, v2: &FVector) -> Fixed {
     let mut t = FVector::default();
     sub_vector_fff(&mut t, v1, v2);
@@ -339,7 +353,7 @@ pub fn magnitude_s(vect: &SVector) -> Fixed {
 /// `NormaliseQuaternion`: returns `(utilSqrt(calc), s)` with components pre-shifted by
 /// `s` so that their OR is <= 26754. `n_sq` is how many of `comps` are squared (all of
 /// them except for the `NormaliseQuaternion` quirk).
-#[inline]
+#[inline(always)]
 fn reduced_sqrt(comps: &[u32], shift_count: usize) -> (u32, u32) {
     let mut num = comps.iter().fold(0u32, |a, &c| a | c);
     let mut s: u32 = 0;
@@ -356,6 +370,7 @@ fn reduced_sqrt(comps: &[u32], shift_count: usize) -> (u32, u32) {
 
 /// Port of `MagnitudeF` (Common/maths.c:771). `16-s` may underflow; the x86 shift masks
 /// the count to 5 bits, reproduced with `wrapping_shr`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_x")]
 pub fn magnitude_f(v: &FVector) -> Fixed {
     let c = [v.vx.wrapping_abs() as u32, v.vy.wrapping_abs() as u32, v.vz.wrapping_abs() as u32];
     let (l, s) = reduced_sqrt(&c, 3);
@@ -374,16 +389,45 @@ pub fn magnitude_2dv(vect: &Vector) -> Fixed {
     fsqrt(vect.vx.wrapping_mul(vect.vx).wrapping_add(vect.vz.wrapping_mul(vect.vz)))
 }
 
+/// The index of `num`'s top set bit when it is above 18, else 18 (all [`normalise_components`]
+/// distinguishes). Phase 3S3: a short search; the VR4300 (MIPS III) has no `clz`, so
+/// `leading_zeros` is a ~35-instruction bit-smearing sequence.
+#[inline(always)]
+fn top_bit_if_over_18(num: u32) -> i32 {
+    let mut v = num >> 19;
+    if v == 0 {
+        return 18;
+    }
+    let mut t = 19;
+    if v >= 1 << 8 {
+        v >>= 8;
+        t += 8;
+    }
+    if v >= 1 << 4 {
+        v >>= 4;
+        t += 4;
+    }
+    if v >= 1 << 2 {
+        v >>= 2;
+        t += 2;
+    }
+    if v >= 2 {
+        t += 1;
+    }
+    t
+}
+
 /// Shared normalise step of `MakeUnit` / `NormaliseQuaternion` (Common/maths.c:925-955).
+#[inline(always)]
 fn normalise_components(comps: &mut [i32], num: u32, l: u32, s: u32) {
     let m = l.wrapping_shr(16u32.wrapping_sub(s)) as i32;
     if m == 0 {
         return;
     }
-    // find top bit (phase 3S: `leading_zeros` instead of the shift loop; `num != 0` here,
+    // find top bit (phase 3S: no shift loop; phase 3S3: `top_bit_if_over_18`; `num != 0` here,
     // since `num == 0` gives `l == utilSqrt(0) == 0` and returned above)
     debug_assert!(num != 0);
-    let tb: i32 = 31 - num.leading_zeros() as i32;
+    let tb: i32 = top_bit_if_over_18(num);
     if tb > 18 {
         let s = (30 - tb) as u32;
         let d = (tb - 18) as u32;
@@ -402,7 +446,7 @@ fn normalise_components(comps: &mut [i32], num: u32, l: u32, s: u32) {
 ///
 /// # Panics
 /// Only where the original would raise a divide-by-zero (not reachable for `m != 0`).
-#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_x")]
 pub fn make_unit(vect: &mut FVector) {
     let c = [fabs(vect.vx) as u32, fabs(vect.vy) as u32, fabs(vect.vz) as u32];
     let num = c[0] | c[1] | c[2];
@@ -480,7 +524,7 @@ pub fn calculate_quat_for_plane2(y_rot: Fixed, q_aim: &mut IQuaternion, normal: 
 
 /// Port of `IQuatSlerp` (Common/maths.c:1248). Equivalent to the C when `dquat` aliases
 /// `sp2` (as in babyfrog.c); the C never calls it with `dquat` aliasing `src1`.
-#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_p")]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_x")]
 pub fn iquat_slerp(src1: &IQuaternion, sp2: &IQuaternion, t: Fixed, dquat: &mut IQuaternion) {
     let (a, b) = (*src1, *sp2);
     let sq4 = |x: i32, y: i32, z: i32, w: i32| fmul(x, x).wrapping_add(fmul(y, y)).wrapping_add(fmul(z, z)).wrapping_add(fmul(w, w));
@@ -723,6 +767,7 @@ pub fn rotate_vector_by_xz_rotation(result: &mut FVector, vect: &FVector, rot: &
 }
 
 /// Port of `GetQuaternionFromXZRotation` (Common/maths.c:1569).
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_x")]
 pub fn get_quaternion_from_xz_rotation(dest_q: &mut IQuaternion, src_q: &IQuaternion) {
     let s = *src_q;
     let theta_over2 = s.w >> 1;
@@ -793,5 +838,19 @@ pub fn slide_vector_to_vector_ff(vect: &mut FVector, dest: &FVector, speed: Fixe
         vect.vy = vect.vy.wrapping_add(temp_vect.vy);
         vect.vz = vect.vz.wrapping_add(temp_vect.vz);
         false
+    }
+}
+
+#[cfg(test)]
+mod tests_3s3 {
+    /// `top_bit_if_over_18` gives what `normalise_components` needs from `leading_zeros`,
+    /// for every `u32`.
+    #[test]
+    fn top_bit_matches_leading_zeros() {
+        for num in 1..=u32::MAX {
+            let tb = 31 - num.leading_zeros() as i32;
+            let t = super::top_bit_if_over_18(num);
+            assert!(if tb > 18 { t == tb } else { t <= 18 }, "{num}");
+        }
     }
 }
