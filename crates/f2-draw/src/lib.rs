@@ -6,7 +6,10 @@
 //! [`Renderer`]: f2_engine::Renderer
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![forbid(unsafe_code)]
+#![cfg_attr(not(target_vendor = "nintendo64"), forbid(unsafe_code))]
+// The N64 build only: `link_section` (an "unsafe" attribute) places the per-actor draw path in
+// the I-cache-friendly hot region (tools/n64/Makefile); there is still no unsafe code.
+#![cfg_attr(target_vendor = "nintendo64", deny(unsafe_code))]
 
 extern crate alloc;
 

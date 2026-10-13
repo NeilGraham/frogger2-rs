@@ -48,6 +48,23 @@ pub struct TextureRegistry {
     /// Indices of the entries with more than one animation frame, in order (`None`: to be
     /// rebuilt; entries change through `add_entry` / `add_rgba` / `apply_anims` only).
     animated: Option<Vec<u32>>,
+    /// Console fast path: the last `by_crc` lookups (an entry keeps its index once added).
+    #[cfg(feature = "lean")]
+    memo: CrcMemo,
+}
+
+/// [`TextureRegistry::entry`]'s memo of `by_crc` (`lean`, single-threaded consoles): 64
+/// direct-mapped `(crc, index + 1)` slots, 0 = empty. Exact: an entry is only ever replaced
+/// in place, so a CRC's index never changes once it is in the map.
+#[cfg(feature = "lean")]
+struct CrcMemo([(core::sync::atomic::AtomicU32, core::sync::atomic::AtomicU32); 64]);
+
+#[cfg(feature = "lean")]
+impl Default for CrcMemo {
+    fn default() -> Self {
+        use core::sync::atomic::AtomicU32;
+        CrcMemo([const { (AtomicU32::new(0), AtomicU32::new(0)) }; 64])
+    }
 }
 
 impl TextureRegistry {
@@ -155,6 +172,20 @@ impl TextureRegistry {
     }
 
     pub fn entry(&self, crc: u32) -> Option<&TexEntry> {
+        #[cfg(feature = "lean")]
+        {
+            use core::sync::atomic::Ordering::Relaxed;
+            let (k, v) = &self.memo.0[((crc ^ crc >> 6 ^ crc >> 12 ^ crc >> 18) & 63) as usize];
+            let i = v.load(Relaxed);
+            if i != 0 && k.load(Relaxed) == crc {
+                return self.entries.get(i as usize - 1);
+            }
+            let i = *self.by_crc.get(&crc)?;
+            k.store(crc, Relaxed);
+            v.store(i as u32 + 1, Relaxed);
+            Some(&self.entries[i])
+        }
+        #[cfg(not(feature = "lean"))]
         self.by_crc.get(&crc).map(|&i| &self.entries[i])
     }
 
@@ -172,7 +203,8 @@ impl TextureRegistry {
     /// `timeInfo.frameCount` (game frames). Call once per rendered frame.
     pub fn update_animating_textures(&mut self, frame_count: u32) {
         // Only the animated entries (the same ones, in the same order, as a walk over all).
-        let animated = self.animated.take().unwrap_or_else(|| self.entries.iter().enumerate().filter(|(_, e)| e.frames.len() > 1).map(|(i, _)| i as u32).collect());
+        let animated =
+            self.animated.take().unwrap_or_else(|| self.entries.iter().enumerate().filter(|(_, e)| e.frames.len() > 1).map(|(i, _)| i as u32).collect());
         for &i in &animated {
             let me = &mut self.entries[i as usize];
             let n = me.frames.len();
@@ -235,5 +267,29 @@ mod tests {
         assert_eq!(r.current(1), Some(h(&r, 3)));
         r.update_animating_textures(16);
         assert_eq!(r.current(1), Some(h(&r, 1)));
+    }
+
+    /// The lookup memo (console builds) never answers for a CRC it has not seen and follows
+    /// replaced entries and animation frames.
+    #[test]
+    fn lookups_follow_the_map() {
+        let mut r = TextureRegistry::new();
+        let img: Vec<TexHandle> = (0..300).map(|i| r.add_image(1, 1, vec![i as u8; 4])).collect();
+        // CRCs that share memo slots.
+        let crcs: Vec<u32> = (0..200u32).map(|i| i.wrapping_mul(0x9e37_79b9) ^ (i << 6)).collect();
+        for (k, &c) in crcs.iter().enumerate().take(150) {
+            r.add_entry(c, "t", TexType::Normal, img[k]);
+        }
+        for _ in 0..3 {
+            for (k, &c) in crcs.iter().enumerate() {
+                assert_eq!(r.current(c), (k < 150).then(|| img[k]), "crc {c:08x}");
+            }
+        }
+        // Replaced in place: the memo still finds the entry, with its new image.
+        r.add_entry(crcs[3], "t", TexType::Normal, img[299]);
+        assert_eq!(r.current(crcs[3]), Some(img[299]));
+        // Added later: found once in the map.
+        r.add_entry(crcs[170], "t", TexType::Normal, img[170]);
+        assert_eq!(r.current(crcs[170]), Some(img[170]));
     }
 }

@@ -126,15 +126,24 @@ fn lerp_snap(prev: Option<&Snap>, cur: &Snap, alpha: f32) -> (V3, [f32; 4]) {
 // ------------------------------------------------------------------ level scene
 
 /// An engine actor with its model id and that model's `LevelScene::models` entry.
+/// `repr(C)`: what every actor reads each frame (a culled one nothing else) comes first.
+#[repr(C)]
 pub struct ActorSlot {
     pub model_id: u32,
-    pub bm: (usize, usize),
-    pub actor: Actor,
+    /// [`Renderer::actor_bound`] of the model: actors wholly outside the view are left out.
+    #[cfg_attr(not(feature = "lean"), allow(dead_code))]
+    bound: Option<f32>,
+    /// How many draws the actor made when it was last drawn (`u32::MAX`: not yet): what a
+    /// culled actor tells the back end it leaves out.
+    #[cfg_attr(not(feature = "lean"), allow(dead_code))]
+    ndraws: u32,
     /// The simulation's position / rotation / size the actor's `pos`, `q_rot` and `scale`
     /// were last converted from (skips the conversions while they stay the same).
     last: Option<(Snap, [i32; 3])>,
+    pub bm: (usize, usize),
     /// The actor's `overrideTex` name and the CRC of its lowercase form.
     override_crc: Option<(String, u32)>,
+    pub actor: Actor,
 }
 
 /// Renderer-side data of the loaded level (`LevelAssets`).
@@ -156,6 +165,8 @@ pub struct LevelScene {
     pub placeholder_frog: Option<((usize, usize), Actor)>,
     /// Draw list 1's actors, collected while drawing list 0 (one pass over `actList`).
     list1: Vec<ActorId>,
+    /// [`Renderer::actor_bound`] per model id (computed when an actor slot first needs it).
+    bounds: BTreeMap<u32, Option<f32>>,
 }
 
 impl LevelScene {
@@ -177,7 +188,20 @@ impl LevelScene {
         let far_clip = if lvd.far_clip > 0 { lvd.far_clip as f32 * 0.1 } else { 1200.0 };
         let fog = lvd.fog.map(|c| c as u8 as f64 / 255.0);
         let clear = [fog[0], fog[1], fog[2], 1.0];
-        let mut s = LevelScene { world, level, banks, models, tex_files, world_model, far_clip, clear, actors: Vec::new(), placeholder_frog: None, list1: Vec::new() };
+        let mut s = LevelScene {
+            world,
+            level,
+            banks,
+            models,
+            tex_files,
+            world_model,
+            far_clip,
+            clear,
+            actors: Vec::new(),
+            placeholder_frog: None,
+            list1: Vec::new(),
+            bounds: BTreeMap::new(),
+        };
         // TODO(port): remove once f2-game creates the frogs (CreateFrogger, frogger.c).
         if !game_has_frog(game) {
             if let (Some(&bm), Some(t)) = (s.models.get(&f2_formats::crc("frogger.obe")), game.map.g_t_start[0]) {
@@ -430,15 +454,12 @@ fn draw_background(r: &mut Renderer, scene: &LevelScene, game: &Game, cam: &Came
 /// `ActorListDraw(list)`: the actors of draw list `list`, interpolated between ticks.
 /// List 0 walks `actList` once and keeps list 1's actors (in list order) for the list-1 call
 /// that follows it in `draw_loop`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_d")]
 fn draw_actor_list(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &DrawCtx, list: u32) {
     if scene.actors.len() < game.actor2.actors.slots.len() {
         scene.actors.resize_with(game.actor2.actors.slots.len(), || None);
     }
-    let pc = PerList {
-        modge_frame: modge_frame(game),
-        portraits: game.options.portrait_actor.iter().any(Option::is_some),
-        back_gnd: game.actor2.back_gnd,
-    };
+    let pc = PerList { modge_frame: modge_frame(game), portraits: game.options.portrait_actor.iter().any(Option::is_some), back_gnd: game.actor2.back_gnd };
     if list == 0 {
         let mut list1 = core::mem::take(&mut scene.list1);
         list1.clear();
@@ -472,20 +493,22 @@ struct PerList {
 }
 
 /// One actor of `ActorListDraw`.
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_d")]
 fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx: &DrawCtx, pc: &PerList, id: ActorId) {
     if Some(id) == pc.back_gnd {
         return;
     }
-    let a2 = &game.actor2.actors[id];
+    // `actors[id]` without the out-of-line `Index` call (the per-actor code stays in one
+    // I-cache-resident region on the N64).
+    let a2 = game.actor2.actors.slots[id.idx()].as_ref().expect("freed actor");
     if a2.draw == 0 || a2.flags & f2_game::actor2::ACTOR_DRAW_NEVER != 0 {
         return;
     }
     let mdx = &a2.actor.actual_actor;
     let Some(model_id) = mdx.object_controller else { return };
     let slot = &mut scene.actors[id.idx()];
-    if slot.as_ref().is_none_or(|s| s.model_id != model_id) {
-        let Some(&bm) = scene.models.get(&model_id) else { return };
-        *slot = Some(ActorSlot { model_id, bm, actor: Actor::default(), last: None, override_crc: None });
+    if slot.as_ref().is_none_or(|s| s.model_id != model_id) && !new_slot(r, slot, &scene.models, &mut scene.bounds, &scene.banks, model_id) {
+        return;
     }
     let sl = slot.as_mut().unwrap();
     let (b, m) = sl.bm;
@@ -497,6 +520,38 @@ fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx:
     // Console fast path: not moved since the last tick and the same as at the last draw:
     // position, rotation and scale as converted then.
     let same = cfg!(feature = "lean") && prev == Some(&cur) && sl.last == Some((cur, size));
+    use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE, OBJECT_FLAGS_WAVE};
+    // Console fast path: an actor whose every draw the back end would cull (wholly outside
+    // the view: most of a level's actors) is left out before any interpolation or transform.
+    // `bound` encloses every vertex the back end draws for any pose (MODGE/WAVE included).
+    // The drawn position lies on the segment from the previous position to the current one
+    // (or is the current one), so within their Manhattan distance of the current one.
+    #[cfg(feature = "lean")]
+    let mut culled = false;
+    #[cfg(feature = "lean")]
+    if let Some(rb) = sl.bound {
+        let p = cur.pos;
+        // ×0.1 instead of /10: within the slack.
+        let c = [p[0] as f32 * 0.1, p[1] as f32 * 0.1, p[2] as f32 * 0.1];
+        let moved = prev.map_or(0, |q| (0..3).map(|k| (p[k] as i32 - q.pos[k] as i32).unsigned_abs()).sum::<u32>());
+        let amax = size.iter().map(|&c| c.unsigned_abs()).max().unwrap_or(0) as f32 / 4096.0;
+        // Slack for rounding (the back end's matrices, the conversions).
+        if r.actor_culled(&c, rb * amax * 1.01 + moved as f32 * 0.1 + 1.0) {
+            if r.cull_check() {
+                // Testing: drawn anyway, the back end checks it culls every draw.
+                culled = true;
+                r.mark_culled(true);
+            } else {
+                if sl.ndraws != u32::MAX {
+                    r.skip_draws(sl.ndraws);
+                } else {
+                    skip_first(r, &scene.banks[b].models[m], mdx, &mut sl.actor);
+                    sl.ndraws = sl.actor.mesh_draws.as_ref().map_or(u32::MAX, |d| d.1.len() as u32);
+                }
+                return;
+            }
+        }
+    }
     if !same {
         let (pos, q) = lerp_snap(prev, &cur, ctx.alpha);
         ea.pos = pos;
@@ -509,33 +564,72 @@ fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx:
     let anim = mdx.animation.as_ref();
     ea.animated = anim.is_some();
     ea.anim_time = anim.map_or(0.0, |an| an.anim_time);
-    use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE, OBJECT_FLAGS_WAVE};
     ea.extra_flags = mdx.root_object_flags & (OBJECT_FLAGS_ADDITIVE | OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE);
     ea.wrap_tc = mdx.flags & f2_game::mdx_actor::mdx_flags::ACTOR_WRAPTC != 0;
     ea.modge_frame = pc.modge_frame;
-    // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours):
-    // `textures.by_name(lowercase)`, with the name's CRC kept while the name stays.
+    // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours).
     ea.override_tex = match a2.override_tex.as_deref() {
         None => None,
-        Some(n) => {
-            let crc = match &sl.override_crc {
-                Some((s, c)) if s == n => *c,
-                _ => {
-                    let c = f2_formats::crc(&n.to_ascii_lowercase());
-                    sl.override_crc = Some((n.into(), c));
-                    c
-                }
-            };
-            r.textures.current(crc)
-        }
+        Some(n) => override_tex(r, &mut sl.override_crc, n),
     };
     // `SetActorGouraudValues` on the multiplayer portraits (options.c:685).
-    ea.gouraud = if pc.portraits {
-        game.options.portrait_actor.iter().position(|&p| p == Some(id)).map(|i| game.options.portrait_gouraud[i].map(|c| c as f32 / 255.0))
-    } else {
-        None
+    ea.gouraud = if pc.portraits { portrait_gouraud(game, id) } else { None };
+    r.draw_actor(&scene.banks[b].models[m], &mut sl.actor);
+    #[cfg(feature = "lean")]
+    {
+        sl.ndraws = sl.actor.mesh_draws.as_ref().map_or(1, |d| d.1.len() as u32);
+        if culled {
+            r.mark_culled(false);
+        }
+    }
+}
+
+/// A culled actor that has never been drawn: its draw count from its draw list.
+#[cfg(feature = "lean")]
+#[cold]
+#[inline(never)]
+fn skip_first(r: &mut Renderer, model: &f2_formats::objbank::Model, mdx: &f2_game::mdx_actor::MdxActor, ea: &mut Actor) {
+    use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE, OBJECT_FLAGS_WAVE};
+    ea.extra_flags = mdx.root_object_flags & (OBJECT_FLAGS_ADDITIVE | OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE);
+    ea.wrap_tc = mdx.flags & f2_game::mdx_actor::mdx_flags::ACTOR_WRAPTC != 0;
+    r.skip_actor(model, ea);
+}
+
+/// A new [`ActorSlot`] for `model_id` (false: the model is not loaded). Out of line: rare.
+#[cold]
+#[inline(never)]
+fn new_slot(
+    r: &Renderer,
+    slot: &mut Option<ActorSlot>,
+    models: &BTreeMap<u32, (usize, usize)>,
+    bounds: &mut BTreeMap<u32, Option<f32>>,
+    banks: &[ObjectBank],
+    model_id: u32,
+) -> bool {
+    let Some(&bm) = models.get(&model_id) else { return false };
+    let bound = if cfg!(feature = "lean") { *bounds.entry(model_id).or_insert_with(|| r.actor_bound(&banks[bm.0].models[bm.1])) } else { None };
+    *slot = Some(ActorSlot { model_id, bound, ndraws: u32::MAX, last: None, bm, override_crc: None, actor: Actor::default() });
+    true
+}
+
+/// `textures.by_name(lowercase(name))`, with the name's CRC kept while the name stays.
+#[inline(never)]
+fn override_tex(r: &Renderer, cache: &mut Option<(String, u32)>, n: &str) -> Option<TexHandle> {
+    let crc = match cache {
+        Some((s, c)) if s == n => *c,
+        _ => {
+            let c = f2_formats::crc(&n.to_ascii_lowercase());
+            *cache = Some((n.into(), c));
+            c
+        }
     };
-    r.draw_actor(&scene.banks[b].models[m], ea);
+    r.textures.current(crc)
+}
+
+/// The Gouraud colour of a multiplayer portrait actor (`SetActorGouraudValues`).
+#[inline(never)]
+fn portrait_gouraud(game: &Game, id: ActorId) -> Option<[f32; 3]> {
+    game.options.portrait_actor.iter().position(|&p| p == Some(id)).map(|i| game.options.portrait_gouraud[i].map(|c| c as f32 / 255.0))
 }
 
 /// `timeInfo.frameCount` (60 Hz frames since `InitTiming`, held in the pause menu), which

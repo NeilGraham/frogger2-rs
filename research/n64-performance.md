@@ -1609,3 +1609,122 @@ own limit, and the game's is restored after it.
   forgotten at each batch and after any `rdpq_triangle`.
 - Paced flips call `display_show` from the RDP-done interrupt (as `rdpq_detach_show` does) or
   from a vblank handler; `-DF2N64_FLIP_LIBDRAGON` restores the old path.
+
+## 3D2: draw-loop actor cost, second round (2026-10-12)
+Scope: the CPU work of `f2_draw::render::draw_actor_list` and what it calls on the N64
+(`f2-draw`, `f2-engine`, r3d's recording side), worst case Space 1. Branch
+`worktree-agent-a13e17187dd926045` from `350099b`. No change to `f2-game`.
+
+### Before / after (ares v148, `tools/n64/bench.sh NAME "level-hop W 0" 40`, last windows, frog hopping)
+Draw phases are the `draw phases` line (µs/frame; actor phases include the r3d recording).
+
+| level | fps | draw | draw loop | actors0 + actors1 | shadows | sprites | r3d queue (batch) |
+|---|---|---|---|---|---|---|---|
+| Space 1 (2-0) | 16.1 → **21.2** | 37 → 25–26 ms | 23 → **15 ms** | 10.1 + 5.3 → 3.0 + 3.9 ms | 2.4 → 2.05 | 2.2 → 2.1 | 5.2 → 2.3 ms |
+| Garden 1 (0-0) | 28.2 → **34.0** | 21–22 → 17 ms | 12–13 → **9–10 ms** | 7.2 + 1.65 → 4.5 + 1.9 ms | 0.84 → 0.74 | 1.0 → 0.9 | 4.4 → 2.9 ms |
+| Lab 1 (5-0, windows before the game over) | 17.0 → **22.7** | 33–34 → 23–24 ms | 21 → **14 ms** | 5.8 + 5.5 → 1.85 + 3.7 ms | 2.4 → 2.1 | 5.3 → 4.5 | 5.2 → 2.3 ms |
+
+The targets (Space ≤ 12 ms, Garden ≤ 7 ms of draw loop) are not reached; what is left is
+listed under "Where the time is now". Space's `specfx` phase reads 1.3 → 1.8 ms in these
+runs; builds with the shadow or texture change reverted show the same, so it is the
+different game state at 21 fps (more effects alive), not code.
+
+### What changed
+1. **Actors wholly outside the view are left out before any work** (the big one). In a
+   hopping run r3d's batch culled ~88 % of all actor draws (Space 396 of 449, Garden 328 of
+   374 per frame): the draw loop interpolated, slerped, transformed and recorded ~110 actors a
+   frame that showed nothing. Now each actor slot carries a radius bound of its model
+   (`f2_engine::anim::model_bound`, computed once per model from r3d's mesh spheres through
+   `MeshBackend::object_sphere`): rotations keep lengths and interpolated move/scale keys stay
+   within their largest key, so `max|actor scale| · (|c|+r+WAVE_MAX)·max|s_o| + Σ|t_k|·max|s_k-1|`
+   encloses every vertex the RSP draws in any animation pose and actor rotation (MODGE/WAVE
+   included: WAVE raises a vertex by ≤ 10 object units; r3d's sphere gets one `pos_scale` step
+   of slack). The test uses the current tick position with the Manhattan distance to the
+   previous one (the drawn, interpolated position lies on that segment) and r3d's own frustum
+   (`R3d::sphere_culled`, the planes `cull_world` uses), so no interpolation is needed for it.
+   A culled actor only tells the back end how many draws it would have made
+   (`MeshBackend::skip`): r3d keeps the draw slots, so later actors keep last frame's slots and
+   r3d's per-slot caches. `None` (never culled): skinned models (the frog), unknown spheres,
+   non-finite data, move/scale key times that do not increase (the key search could
+   extrapolate). `lean` (N64) only; the PC has no mesh sink.
+   - Correctness: `F2N64_CULL_CHECK=1` draws culled actors anyway with a marker bit and r3d
+     checks it culls every such draw wholly. Hopping runs (30–40 s) of all 20 arcade levels that
+     boot (W 0–7; 0-1, 0-2, 3-1, 3-2 do not boot in this harness): ~1.6 million draws of culled
+     actors, **0 visible**. Host test `model_bound_encloses_every_pose` (random hierarchies,
+     keys, rotations, scales, WAVE heights).
+2. **Per-actor code in one I-cache region**: `draw_actor_list`, `draw_listed_actor`,
+   `quat_slerp`, `sin_fast`/`acos_fast` joined `.text.f2hot_d` (f2-draw's `forbid(unsafe_code)`
+   is `deny` on the N64 only, like f2-game); rare paths out of line (slot creation, override
+   texture CRC, portrait Gouraud, skinned recording, draw-list builds); `actors[id]` without
+   f2-game's out-of-line `Index`. The sin/acos tables are read through a relaxed pointer on
+   the N64 (`OnceBox::get` cost a `sync` per lookup and its init was inlined four times into
+   `quat_slerp`, 2 KiB → 0.6 KiB). Space actors 15.4 → 13.3 ms on its own. The loop's per-actor
+   code is now ~13 KiB contiguous from `queue_raw` (Makefile comment updated).
+3. **One back-end call per actor** (`MeshBackend::actor`, `ObjDraw` list cached per actor and
+   flags; `R3dLevel::record_actor` resolves the override texture once). Same draws, slots and
+   queue entries. Small on its own (−0.2 ms).
+4. `xform_actor_cached` split: the key test inline, `pose_update` out of line with one
+   `L × R` loop (`rotl` kept as before: second unchanged rotation); `Vec` resizing moved to the
+   hierarchy rebuild.
+5. Animated hierarchies (`transform_object`): the keyframe search tests the hinted pair first
+   (`key_search`; the original's search starts at `low = e_key, high = e_key + 1`, so the
+   result is identical for any key array: host test `key_search_matches_find_to_from`);
+   `lean`: a non-unit object scale scales the rows instead of a full `mtx_cat` with
+   `gu_scale` (equal up to the sign of zeros, `lean_transform_matches_full_products`);
+   `xform_into` no longer refills the output with identities. Synthetic 10-object model:
+   6570 → 6120 cycles per object.
+6. Shadows (`lean`): `rot · (translate · I)` built directly (−0.3 ms Space);
+   `TextureRegistry::entry` has a 64-slot CRC → index memo (`lean`; exact: entries are only
+   replaced in place).
+7. Culled path made cheap: `ActorSlot` is `repr(C)` with what a culled actor reads first
+   (model, bound, draw count, last snapshot); the cull test uses `pos × 0.1` (no divisions).
+
+PC frames: `frogger --headless --frames {90,300} --level W 0 --profile {authentic,enhanced}
+--size 320x240` for W = 0,1,2,3,5,8 (24 PNGs) byte-identical between `350099b` and the head.
+Host tests: `cargo test -p f2-draw -p f2-engine` (and `-p f2-engine --features lean`),
+`cargo +nightly test` in `crates/frogger-n64`. N64 captures before/after (Garden, Space,
+Lab; `target/n64/bench-d2/`, not in the repo): same scenery, actors at the screen edges
+present; differences are animation phase and timers.
+
+### Measurement notes
+- ares costs measured in a boot-time microbenchmark (cycles): `mul.s`/`add.s` ~5 (dependent
+  or not), `div.s` ~29, `cvt`/`trunc` ~5, `mult` ~5 (not 25 in this context), `lw`/`lwc1`
+  hit ~2, D-cache read miss ~40, **store miss ~80** (fill plus the dirty victim's write-back),
+  I-cache line miss ~40–50, call+return ~19, `sync` ~6. A warm second run of the same
+  per-actor code took 65–70 % of the first, i.e. instruction count and misses both matter.
+  Real functions (warm): `quaternion_to_matrix` 240, `quat_slerp` ~700, `mtx_cat` 510,
+  13-float array compare ~270. (A first microbenchmark charged `quat_slerp` 2500 cycles: the
+  lazy table build landed in its timing loop.)
+- `F2N64_CULL_CHECK` builds are for checking only (they draw everything).
+
+### Tried and dropped
+- Per-object pre-cull at record time (each object's mesh sphere through its matrix against
+  r3d's frustum before queueing): r3d's batch got 0.15–0.65 ms faster, the draw loop 0.4–0.8 ms
+  slower (Garden +0.15 ms net). Recording a draw costs about as much as testing it.
+- Reusing the simulation's matrices: `f2-game` only computes the root object's matrix (for
+  the bounding-box test) at tick time; the draw side interpolates, so nothing to share.
+
+### Where the time is now / next
+- Space 1 (15 ms): actors 7 ms (the frog alone ~1.25 ms: 18 animated bones at ~5000 cycles
+  each; ~15 visible actors at 60–100 µs; ~110 culled at ~10–15 µs), shadows 2.1, sprites 2.1,
+  specfx 1.8, overlays 1.2. Garden (10 ms): actors 6.4 (many visible multi-object actors; after
+  the actor test r3d still culls ~2/3 of the recorded draws, mostly objects of partly visible
+  multi-object models), overlays 1.1.
+- Fx: every `push_tri` writes a 152-byte `Tri` (~1000 cycles of store misses): ~160 a frame in
+  Space and Lab ≈ 1.5–2 ms across shadows / sprites / specfx. A compact console quad/sprite
+  record (consumed by `render_cpu`) is the next big item there.
+- Animated hierarchies: `quat_slerp` + keys + two products per object; caching the slerp's
+  per-key-pair setup would save ~400 cycles per object.
+
+### Risks
+- The actor test is only as good as r3d's mesh spheres and frustum (checked in ROM by
+  `F2N64_CULL_CHECK`, all levels); a back end that changes how far vertices move (a new
+  vertex animation like WAVE) must widen `model_bound`.
+- **Memory**: in a Space 3 (`level-hop 2 2`) run the main heap fills during the level on the
+  baseline too (`bigpool: main heap full, small blocks from the pool`, ~4000 small blocks);
+  on the head the frontend load after the game over then failed to place `titles.ntx`
+  (439 KB) in the fragmented pool and asserted. Heap use is not higher (level peak 3057 vs
+  3141 KiB Rust); the code grew ~10 KiB, the allocation pattern moved. Pre-existing
+  fragility (see 3R's Lab game-over note) that this change exposes in that run; needs a fix in
+  the pool / level-load path.
+- Timing is layout-sensitive (±5–10 %); the numbers above are single builds per level.

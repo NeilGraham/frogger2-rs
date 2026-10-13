@@ -713,6 +713,9 @@ struct QDraw {
 }
 
 const Q_SKINNED: u8 = 8;
+/// Testing (`F2N64_CULL_CHECK`): a draw of an actor the draw loop's actor test culled;
+/// [`R3d::run_queue_with`] checks that it culls the draw wholly.
+pub const Q_CHECK_CULLED: u8 = 64;
 const Q_NO_CLIP: u8 = 16;
 const Q_OBJECT_FOG: u8 = 32;
 /// `QDraw::mesh` of a raw draw not resolved yet / of a draw not to draw.
@@ -909,6 +912,11 @@ pub struct R3d {
     /// Resolve every raw draw (no memo).
     resolve_all: bool,
     /// Per draw slot: the model matrix of the last (stamp, key) recorded in it.
+    /// Testing (`F2N64_CULL_CHECK`): OR-ed into the `lf` of [`queue_raw`](Self::queue_raw)
+    /// draws ([`Q_CHECK_CULLED`]), and the counts of [`cull_check_draw`](Self::cull_check_draw).
+    pub extra_lf: u8,
+    cull_checked: u32,
+    cull_wrong: u32,
     slot_model: Vec<(u32, u16, Model34)>,
     /// Per mesh: the per-draw data; the parts' bounding spheres of all meshes.
     mhot: Vec<MeshHot>,
@@ -1323,6 +1331,9 @@ impl R3d {
             qgouraud: Vec::new(),
             modge_todo: Vec::new(),
             slot_model: Vec::new(),
+            extra_lf: 0,
+            cull_checked: 0,
+            cull_wrong: 0,
             slot_key: Vec::new(),
             drawn: 0,
             resolve_all: false,
@@ -1772,6 +1783,28 @@ impl R3d {
     /// Whether `mesh` is stored in world space (draw it with an identity model matrix).
     pub fn mesh_is_world(&self, mesh: MeshId) -> bool {
         self.mhot.get(mesh.0 as usize).is_some_and(|m| m.flags & MH_WORLD != 0)
+    }
+
+    /// A rigid mesh's bounding sphere in model units (centre, radius: the stored positions
+    /// times `pos_scale`, plus one `pos_scale` step for the rounding of the stored and the
+    /// MODGE/WAVE-animated positions), enclosing every vertex the RSP draws of it apart from
+    /// a WAVE height; `None` for world meshes and meshes with a part without a sphere (those
+    /// are never culled).
+    pub fn mesh_sphere(&self, mesh: MeshId) -> Option<([f32; 3], f32)> {
+        let m = self.mhot.get(mesh.0 as usize)?;
+        if m.flags & (MH_WORLD | MH_OPEN) != 0 || m.radius < 0.0 {
+            return None;
+        }
+        let s = m.pos_scale;
+        Some((m.center.map(|c| c * s), (m.radius + 1.0) * s))
+    }
+
+    /// Whether a world-space sphere is wholly outside this frame's view (left / right / top /
+    /// bottom, near, far: the planes [`cull_world`](Self::cull_world) culls normal draws with),
+    /// i.e. every rigid draw inside it would be culled.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    pub fn sphere_culled(&self, c: &[f32; 3], r: f32) -> bool {
+        self.cull.classify(c, r, 6).is_none()
     }
 
     /// `PCCalcModgeValues` on a rigid mesh's vertices at frame `fc` (`flags` bit 0 MODGE:
@@ -2261,7 +2294,7 @@ impl R3d {
         modge_frame: u32,
     ) {
         let (no_clip, object_fog, skinned) = flags;
-        let lf = list as u8 | if no_clip { Q_NO_CLIP } else { 0 } | if object_fog { Q_OBJECT_FOG } else { 0 };
+        let lf = list as u8 | if no_clip { Q_NO_CLIP } else { 0 } | if object_fog { Q_OBJECT_FOG } else { 0 } | self.extra_lf;
         let ovr = override_tex.map_or(0, |t| t.0 + 1);
         self.queue_core(lf, model, MESH_UNRESOLVED, object, ovr, mats, alpha, gouraud, skinned, slot, stamp, modge, modge_frame);
     }
@@ -2426,6 +2459,9 @@ impl R3d {
             // SAFETY: `qmodels` and `slot_model` are only changed by `queue`, not while the
             // queue runs.
             self.draw_slot_pid(list, mesh, unsafe { &*model }, &p, pid, d.slot, if d.slot == NO_SLOT { 0 } else { d.stamp });
+            if d.lf & Q_CHECK_CULLED != 0 {
+                self.cull_check_draw(d.model, d.key, self.pushed != pushed);
+            }
             // MODGE/WAVE vertices only for meshes on screen (the RSP reads them at the flush).
             if d.modge != 0 && self.pushed != pushed {
                 self.modge_todo.push((mesh, d.modge_frame, d.modge));
@@ -2452,6 +2488,27 @@ impl R3d {
     /// index, as `xform_actor` returns them).
     pub fn draw_skinned(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
         self.queue(list, mesh, bones, p, true, u32::MAX, 0, 0, 0);
+    }
+
+    /// Testing (`F2N64_CULL_CHECK`): counts the draws of actors the draw loop culled, and
+    /// those this batch did not cull wholly (logged: the actor test must never cull a draw
+    /// that shows).
+    #[cold]
+    #[inline(never)]
+    fn cull_check_draw(&mut self, model: u32, object: u16, shown: bool) {
+        self.cull_checked += 1;
+        if shown {
+            self.cull_wrong += 1;
+            if self.cull_wrong <= 20 {
+                #[cfg(target_vendor = "nintendo64")]
+                crate::log!("r3d: CULL CHECK FAILED: model {:08x} object {} is visible", model, object);
+            }
+        }
+        if self.cull_checked % 2000 == 0 {
+            #[cfg(target_vendor = "nintendo64")]
+            crate::log!("r3d: cull check: {} draws of culled actors, {} visible", self.cull_checked, self.cull_wrong);
+        }
+        let _ = (model, object);
     }
 
     /// Asks the resolver for a raw draw's mesh (and remembers it for the slot).

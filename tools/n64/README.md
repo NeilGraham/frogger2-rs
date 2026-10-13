@@ -131,6 +131,7 @@ USA data: 36 MiB ROM.
 | `F2N64_FRAME_LIMIT=30` / `20` / `0` | testing: the frame limit at boot whatever the SRAM settings say |
 | `F2N64_MODGE_CHECK=1` | testing: every 64 frames, compare the RSP's MODGE/WAVE vertices with the bit-exact CPU model (logged) |
 | `F2N64_MODGE_CPU=1` | testing: animate MODGE/WAVE meshes on the CPU instead of the RSP |
+| `F2N64_CULL_CHECK=1` | testing: actors the draw loop's view test would leave out (research/n64-performance.md §3D2) are drawn anyway, their draws marked; r3d logs `cull check: N draws of culled actors, M visible` every 2000 such draws and `CULL CHECK FAILED` (model, object) for any it does not cull wholly (must stay 0) |
 | `F2N64_CVT_CHECK=1` | testing: at boot, check the shader's float -> s15.16 matrix conversion against `to_fixed` (logged) |
 | `F2N64_R3DT_FRAME=N` | r3d-test ROM: freeze the synthetic scene's animation at frame N (screenshots comparable between builds) |
 | `F2N64_MEASURE_SIZES=1` | measurement: log r3d draws/triangles per on-screen radius class (< 1, 1.5, 3 px) every 300 frames |
