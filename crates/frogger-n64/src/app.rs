@@ -1475,7 +1475,7 @@ impl App {
         let f = w.frames.max(1);
         let secs_x100 = ticks_to_us(span) / 10_000;
         log!(
-            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms (longest loop {} ms), audio {} us/frame, pacing {} fps; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws ({} reused, {} view-only), {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices, {} sfx started ({} unknown uids), music track {:?} playing {}",
+            "perf [{}] mode {}: {} frames, {} sim ticks in {}.{:02} s => {}.{} fps, {} ticks/s (dropped total {}); per frame: sim {} ms, draw {} ms (draw loop {} ms, textures {} ms, build {} ms, CPU-side submit {} ms, framebuffer wait {} ms, r3d queue {} us, flush {} us), worst frame {} ms (longest loop {} ms), audio {} us/frame, pacing {} fps; RSP busy {}.{}%, RDP busy {}.{}%; Game::tick {} us/tick, audio poll {} us/tick; {} cpu tris + {} rects/frame; r3d {} draws ({} reused, {} view-only), {} tris ({} sent to the RSP, {} batches, {} texture loads)/frame; audio: {} voices ({} silent), {} sfx started ({} unknown uids), music track {:?} playing {}",
             self.level_name,
             self.game.game_state.mode,
             w.frames,
@@ -1515,6 +1515,7 @@ impl App {
             w.rsp_groups / f,
             w.tex_loads / f,
             self.audio.active(),
+            self.audio.silent(),
             self.audio.plays,
             self.audio.missing,
             self.audio.music_track,

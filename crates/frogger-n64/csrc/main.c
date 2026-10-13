@@ -1978,7 +1978,10 @@ int main(void) {
     asset_init_compression(3);
     /* Generous headroom: the game may render well below 60 fps; Rust also polls the mixer
      * between simulation ticks and during loads (n64_audio_poll). */
-    audio_init(32000, AUDIO_INIT_LATENCY_MS(300));
+#ifndef F2N64_AUDIO_RATE
+#define F2N64_AUDIO_RATE 32000 /* measurement: F2N64_CFLAGS=-DF2N64_AUDIO_RATE=22050 */
+#endif
+    audio_init(F2N64_AUDIO_RATE, AUDIO_INIT_LATENCY_MS(300));
     mixer_init(MIXER_CHANNELS);
     wav64_init_compression(2); /* ULC (music) */
     wav64_init_compression(3); /* Opus (FMV audio); VADPCM needs no init */
