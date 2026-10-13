@@ -126,6 +126,7 @@ pub enum Boot {
     FrontendStart,
     SettingsTest,
     BookTest,
+    BookSelectTest,
     LevelBookTest,
     GameOverBookTest,
 }
@@ -142,6 +143,7 @@ impl Boot {
             (Some("frontend-start"), _, _) => Boot::FrontendStart,
             (Some("settings-test"), _, _) => Boot::SettingsTest,
             (Some("book-test"), _, _) => Boot::BookTest,
+            (Some("book-select-test"), _, _) => Boot::BookSelectTest,
             (Some("level-book-test"), _, _) => Boot::LevelBookTest,
             (Some("gameover-book-test"), _, _) => Boot::GameOverBookTest,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
@@ -305,6 +307,8 @@ pub struct App {
     level_quit: Option<u32>,
     /// `Boot::GameOverBookTest`: leave the level by a game over instead of Quit.
     game_over_test: bool,
+    /// `Boot::BookSelectTest`: after the book opens, Left and select.
+    book_select_test: bool,
     /// Start of the level load in progress (load step timing).
     load_t0: u32,
     /// FPS counter: frames and start of the current second, the last second's count.
@@ -383,6 +387,7 @@ impl App {
             level_quit: None,
             load_t0: 0,
             game_over_test: false,
+            book_select_test: false,
             fps_count: (0, 0, 0),
             avg_tick: 0,
             avg_draw: 0,
@@ -435,6 +440,13 @@ impl App {
             Boot::BookTest => {
                 app.autostart = Some(0);
                 app.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
+            }
+            Boot::BookSelectTest => {
+                // Story chapter 2's first level, Quit to the frontend, the book (open on
+                // chapter 2), Left to chapter 1 and select it.
+                app.game.start_story(f2_game::options::PAGE_TO_STORY_LEVEL[1] as _);
+                app.level_quit = Some(0);
+                app.book_select_test = true;
             }
             Boot::SettingsTest => {
                 app.autostart = Some(0);
@@ -1248,6 +1260,10 @@ impl App {
                     g.game_state.mode = f2_game::define::mode::FRONTEND_MODE;
                     g.init_level(f2_game::layout::worldid::FRONTEND, f2_game::layout::LEVELID_FRONTEND1);
                     self.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
+                    if self.book_select_test {
+                        use f2_game::levplay::{PAD_CROSS, PAD_LEFT, PAD_RIGHT, PAD_UP};
+                        self.pad_script = Some((0, &[(90, 0), (10, PAD_RIGHT), (90, 0), (10, PAD_UP), (150, 0), (10, PAD_LEFT), (120, 0), (10, PAD_CROSS)]));
+                    }
                 }
             }
         }
