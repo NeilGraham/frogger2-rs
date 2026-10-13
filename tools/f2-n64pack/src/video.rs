@@ -103,12 +103,18 @@ fn atomic_write(dst: &Path, data: &[u8]) -> Result<()> {
     std::fs::rename(&part, dst).map_err(|e| e.to_string())
 }
 
+/// x264 reference frames. libdragon's H.264 decoder allocates max_dec_frame_buffering + 1
+/// pictures (115 KiB each at 320x240); x264's "slower" preset means 8 refs, ~1 MiB of RDRAM
+/// during a video, which a story FMV started from the book did not have (out of memory in
+/// h264bsdInitDpb). 1 ref: 2 pictures.
+pub const H264_REFS: u32 = 1;
+
 /// Encodes one movie's video stream (cached). Returns the cached file path.
 pub fn encode_video(ctx: &Ctx, name: &str, codec: VideoCodec, width: u32, q: u32) -> Result<PathBuf> {
     let src = src_path(ctx, name);
     let cache = ctx.cache_dir("fmv").map_err(|e| e.to_string())?;
     let params = match codec {
-        VideoCodec::H264 => format!("h264-w{width}-crf{}-quick{}", h264_crf(q), u8::from(ctx.quick)),
+        VideoCodec::H264 => format!("h264-w{width}-crf{}-quick{}-ref{H264_REFS}", h264_crf(q), u8::from(ctx.quick)),
         VideoCodec::Mpeg1 => format!("mpeg1-w{width}-q{q}-quick{}", u8::from(ctx.quick)),
     };
     let cached = cache.join(format!("{name}-{}.{}", file_key(&src, &params), codec.ext()));
@@ -120,6 +126,8 @@ pub fn encode_video(ctx: &Ctx, name: &str, codec: VideoCodec, width: u32, q: u32
     let mut c = Command::new(ctx.tool("videoconv64"));
     c.env("N64_INST", std::path::absolute(ctx.tools.parent().unwrap_or(Path::new("."))).map_err(|e| e.to_string())?);
     c.args(["-c", codec.name(), "-w", &width.to_string(), "-q", &q.to_string(), "--no-audio", "--no-progress"]);
+    // Our videoconv64 (tools/n64/libdragon-3a.patch) passes this on to x264 as `ref=N`.
+    c.env("VCONV64_H264_REF", H264_REFS.to_string());
     if ctx.quick {
         c.arg("-Q");
     }

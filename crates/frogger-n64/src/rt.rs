@@ -215,6 +215,11 @@ pub fn rcp_load() -> (u32, u32) {
     (v & 0xFFFF, v >> 16)
 }
 
+/// Test boots: every video stops after its first frames (as if skipped at once).
+pub fn set_fmv_autoskip(on: bool) {
+    unsafe { ffi::n64_fmv_autoskip = on as i32 }
+}
+
 /// Plays a video (blocking); false if the file is missing.
 pub fn fmv_play(path: &str) -> bool {
     let z = cpath(path);

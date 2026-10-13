@@ -209,3 +209,22 @@ diff -ruN -x build -x '*.a' -x '*.o' -x '*.d' -x libdragon.version -x .git libdr
          state->stream_offset += DIVIDE_CEIL(bits, 8);
          state->block_index++;
  
+diff --git a/tools/videoconv64/vconv_encode_h264.cpp b/tools/videoconv64/vconv_encode_h264.cpp
+index dbb8b2fe2..6897e959f 100644
+--- a/tools/videoconv64/vconv_encode_h264.cpp
++++ b/tools/videoconv64/vconv_encode_h264.cpp
+@@ -1,3 +1,4 @@
++#include <cstdlib>
+ /*
+     videoconv64 encoding module (H.264)
+ 	Written by Giovanni Bajo <giovannibajo@gmail.com>
+@@ -330,6 +331,9 @@ EncodeResult vconv_encode_h264(const CodecInfo &ci, const AnalysisResult &ar) {
+ 	// Main profile with CABAC and 8x8 transform disabled (B-frames are already
+ 	// disabled via -bf below).
+ 	std::string x264_params = "no-deblock=1:no-info=1:slices=1:weightp=1:cabac=0:8x8dct=0";
++	// F2 (3A): reference frames from VCONV64_H264_REF (the decoder allocates max_dec_frame_buffering
++	// + 1 pictures of 115 KiB at 320x240: "slower" means 8 refs, ~1 MiB of RDRAM while a video plays).
++	if (const char *r = getenv("VCONV64_H264_REF")) x264_params += std::string(":ref=") + r;
+ 
+ 	std::vector<std::string> cmd = {
+ 		cfg.ffmpeg_path,

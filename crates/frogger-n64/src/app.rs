@@ -69,6 +69,15 @@ pub fn pick_fps(tick_us: u32, draw_us: u32, budget_us: u32) -> u32 {
     crate::pacing::pick_fps_mode(&PACED_FPS, tick_us, draw_us, budget_us, crate::pacing::VARIABLE, crate::pacing::MAX_FRAMES_PER_TICK)
 }
 
+/// `Boot::BookSelectTest` in the frontend: right and up onto the story book, then select the
+/// chapter it opens on right away (frames, PSX pad bits). Selecting a chapter within a fraction
+/// of a second of arriving ran out of memory on hardware (research/n64-performance.md).
+const BOOK_SELECT_SCRIPT: &[(u32, u16)] = {
+    use f2_game::levplay::{PAD_CROSS, PAD_RIGHT, PAD_UP};
+    &[(90, 0), (6, PAD_RIGHT), (30, 0), (6, PAD_UP), (45, 0), (6, PAD_CROSS), (20, 0), (6, PAD_CROSS)]
+};
+
+
 /// `Game::phase_hook`: C0 ticks per simulation phase (`f2_game::simbench::phase`) in the
 /// current perf window, and the time of the last mark.
 static PHASES: [core::sync::atomic::AtomicU32; f2_game::simbench::phase::COUNT] = [const { core::sync::atomic::AtomicU32::new(0) }; f2_game::simbench::phase::COUNT];
@@ -126,7 +135,7 @@ pub enum Boot {
     FrontendStart,
     SettingsTest,
     BookTest,
-    BookSelectTest,
+    BookSelectTest(u32),
     LevelBookTest,
     GameOverBookTest,
 }
@@ -143,7 +152,7 @@ impl Boot {
             (Some("frontend-start"), _, _) => Boot::FrontendStart,
             (Some("settings-test"), _, _) => Boot::SettingsTest,
             (Some("book-test"), _, _) => Boot::BookTest,
-            (Some("book-select-test"), _, _) => Boot::BookSelectTest,
+            (Some("book-select-test"), n, _) => Boot::BookSelectTest(n.unwrap_or(1)),
             (Some("level-book-test"), _, _) => Boot::LevelBookTest,
             (Some("gameover-book-test"), _, _) => Boot::GameOverBookTest,
             (Some("frontend-trained"), _, _) => Boot::Frontend { trained: true },
@@ -292,6 +301,8 @@ pub struct App {
     autofinish: Option<u32>,
     /// `Boot::FrontendStart`: frames spent on the title screen.
     autostart: Option<u32>,
+    /// `autostart` presses Start every 20 frames instead of 60 (`Boot::BookSelectTest`).
+    fast_start: bool,
     /// `Boot::LevelHop`: game frames since boot (a hop every 32, after 3 s).
     hop_bench: Option<u32>,
     /// The settings page (`settings.rs`) and its values (SRAM).
@@ -307,8 +318,6 @@ pub struct App {
     level_quit: Option<u32>,
     /// `Boot::GameOverBookTest`: leave the level by a game over instead of Quit.
     game_over_test: bool,
-    /// `Boot::BookSelectTest`: after the book opens, Left and select.
-    book_select_test: bool,
     /// Start of the level load in progress (load step timing).
     load_t0: u32,
     /// FPS counter: frames and start of the current second, the last second's count.
@@ -378,6 +387,7 @@ impl App {
             last_pad: 0,
             autofinish: None,
             autostart: None,
+            fast_start: false,
             hop_bench: None,
             settings: Default::default(),
             menu: Default::default(),
@@ -387,7 +397,6 @@ impl App {
             level_quit: None,
             load_t0: 0,
             game_over_test: false,
-            book_select_test: false,
             fps_count: (0, 0, 0),
             avg_tick: 0,
             avg_draw: 0,
@@ -441,12 +450,22 @@ impl App {
                 app.autostart = Some(0);
                 app.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
             }
-            Boot::BookSelectTest => {
-                // Story chapter 2's first level, Quit to the frontend, the book (open on
-                // chapter 2), Left to chapter 1 and select it.
-                app.game.start_story(f2_game::options::PAGE_TO_STORY_LEVEL[1] as _);
-                app.level_quit = Some(0);
-                app.book_select_test = true;
+            Boot::BookSelectTest(chapters) => {
+                // Every FMV skipped at once and the title pressed through quickly, then
+                // BOOK_SELECT_SCRIPT. Chapters
+                // 1..=N open (the book opens on chapter N; 1: the training level, no FMV;
+                // 2: Ancients 1 after its FMV).
+                if chapters >= 2 {
+                    let i = f2_game::options::PAGE_TO_STORY_LEVEL[(chapters as usize - 1).min(f2_game::menus::BOOK_NUM_PAGES - 1)] as usize;
+                    let s = f2_game::story::STORY_SEQUENCE[i];
+                    let w = &mut app.game.layout.world_visual_data[s.world_num as usize];
+                    w.world_open = 1;
+                    w.level_visual_data[s.level_num as usize].level_open = 1;
+                }
+                rt::set_fmv_autoskip(true);
+                app.autostart = Some(0);
+                app.fast_start = true;
+                app.pad_script = Some((0, BOOK_SELECT_SCRIPT));
             }
             Boot::SettingsTest => {
                 app.autostart = Some(0);
@@ -1194,7 +1213,26 @@ impl App {
         let plan = crate::pacing::plan(&mut self.acc, TICK, MAX_TICKS_PER_FRAME, variable);
         self.dropped_ticks += plan.dropped as u64;
         let (n, k) = (plan.ticks, plan.frames);
-        let std_pad = input::psx_pad(rt::pad(0));
+        // Test boots' scripted presses count as the real pad (the settings page reads it too).
+        let mut script = 0u16;
+        if let (None, Some((f, steps))) = (self.autostart, &mut self.pad_script) {
+            // Game frames (60 Hz), whatever the frame rate.
+            *f += (n * k).max(1);
+            let mut t = *f;
+            let mut done = true;
+            for &(n, p) in steps.iter() {
+                if t <= n {
+                    script |= p;
+                    done = false;
+                    break;
+                }
+                t -= n;
+            }
+            if done {
+                self.pad_script = None;
+            }
+        }
+        let std_pad = input::psx_pad(rt::pad(0)) | script;
         let mut pad = if self.settings.swap_ab { input::swap_ab(std_pad) } else { std_pad };
         if self.menu.open {
             let before = self.settings;
@@ -1260,35 +1298,16 @@ impl App {
                     g.game_state.mode = f2_game::define::mode::FRONTEND_MODE;
                     g.init_level(f2_game::layout::worldid::FRONTEND, f2_game::layout::LEVELID_FRONTEND1);
                     self.pad_script = Some((0, &[(90, 0), (10, f2_game::levplay::PAD_RIGHT), (90, 0), (10, f2_game::levplay::PAD_UP)]));
-                    if self.book_select_test {
-                        use f2_game::levplay::{PAD_CROSS, PAD_LEFT, PAD_RIGHT, PAD_UP};
-                        self.pad_script = Some((0, &[(90, 0), (10, PAD_RIGHT), (90, 0), (10, PAD_UP), (150, 0), (10, PAD_LEFT), (120, 0), (10, PAD_CROSS)]));
-                    }
                 }
             }
         }
-        if let (None, Some((f, steps))) = (self.autostart, &mut self.pad_script) {
-            *f += 1;
-            let mut t = *f;
-            let mut done = true;
-            for &(n, p) in steps.iter() {
-                if t <= n {
-                    pad |= p;
-                    done = false;
-                    break;
-                }
-                t -= n;
-            }
-            if done {
-                self.pad_script = None;
-            }
-        }
+        let every = if self.fast_start { 20 } else { 60 };
         if let Some(c) = &mut self.autostart {
             use f2_game::define::mode::{FRONTEND_MODE, STARTUP_MODE};
             let m = self.game.game_state.mode as u32;
             if m == STARTUP_MODE {
                 *c += 1;
-                if *c > 30 && *c % 60 < 10 {
+                if *c > 30 && *c % every < 6 {
                     pad |= f2_game::levplay::PAD_START;
                 }
             } else if m == FRONTEND_MODE && *c > 0 {

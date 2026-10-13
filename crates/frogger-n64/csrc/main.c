@@ -4,6 +4,7 @@
  * (via the abi.S stubs). Interface and ABI rules: n64_ffi.h. */
 #include <libdragon.h>
 #include <malloc.h>
+#include <backtrace.h>
 #include <string.h>
 #include "n64_ffi.h"
 
@@ -234,14 +235,21 @@ uint32_t n64_rcp_load_impl(void) {
     return v;
 }
 
+#ifdef F2N64_BIGPOOL_DUMP
+static void big_dump(void);
+#endif
 /* ---- FMV (libdragon fmv_play: H.264 + Opus wav64 next to it) ---- */
 #define FMV_CH 0 /* the music channel pair (the game stops its music around videos) */
+
+/* Set by test boots (Rust `rt::set_fmv_autoskip`): every video stops after its first frames. */
+volatile int32_t n64_fmv_autoskip;
 
 static void fmv_osd(void *ctx, int frame_idx, float time_sec, fmv_control_t *ctrl) {
     /* Skippable with A / B / Start like the PC's key press. */
     joypad_poll();
     joypad_buttons_t b = joypad_get_buttons_pressed(JOYPAD_PORT_1);
     if (frame_idx > 2 && (b.a || b.b || b.start)) ctrl->stop(ctrl);
+    if (n64_fmv_autoskip && frame_idx > 2) ctrl->stop(ctrl); /* testing: as if skipped at once */
 }
 
 /* Plays a video over the game's 320x240 16-bit display (no display re-init: the game's
@@ -253,6 +261,9 @@ void rspq_set_lowpri_window(int words) __attribute__((weak));
 
 uint32_t n64_fmv_play_impl(const char *path) {
     if (!file_exists(path)) return 0;
+#ifdef F2N64_BIGPOOL_DUMP
+    big_dump();
+#endif
     rspq_wait();
     if (rspq_set_lowpri_window) rspq_set_lowpri_window(0x200);
     if (music) {
@@ -334,25 +345,56 @@ static void big_init(void) {
 
 static int big_owns(void *p) { return big_base && (uint8_t *)p >= big_base && (uint8_t *)p < big_base + BIG_POOL; }
 
-static void *big_alloc(uint32_t size) {
+/* Large blocks: first fit from the bottom. Small blocks (`top`: the main heap was full) are
+ * carved from the top of the highest free block that fits, so they do not scatter through
+ * the free space the next level's large files need. (After a quick story-book select the
+ * main heap was full and ~150 small blocks had landed between the pool's free runs: 1.2 MiB
+ * free, no 439 KiB hole for titles.ntx, out of memory.) */
+static void *big_alloc(uint32_t size, int top) {
+#ifdef F2N64_POOL_BOTTOM_ONLY
+    top = 0; /* testing: the old first-fit placement for small blocks too */
+#endif
     size = (size + 63) & ~63u;
-    for (big_blk *b = big_head; b; b = b->next) {
-        if (!b->free || b->size < size) continue;
-        if (b->size >= size + sizeof(big_blk) + 1024) { /* split */
-            big_blk *n = (big_blk *)((uint8_t *)(b + 1) + size);
+    big_blk *b = NULL;
+    for (big_blk *c = big_head; c; c = c->next) {
+        if (!c->free || c->size < size) continue;
+        b = c;
+        if (!top) break;
+    }
+    if (!b) return NULL;
+    if (b->size >= size + sizeof(big_blk) + 1024) { /* split */
+        big_blk *n;
+        if (top) { /* the allocation is the new upper part */
+            n = (big_blk *)((uint8_t *)(b + 1) + b->size - size - sizeof(big_blk));
+            n->size = size;
+            n->free = 0;
+            n->next = b->next;
+            b->next = n;
+            b->size -= size + sizeof(big_blk);
+            b = n;
+        } else {
+            n = (big_blk *)((uint8_t *)(b + 1) + size);
             n->size = b->size - size - sizeof(big_blk);
             n->free = 1;
             n->next = b->next;
             b->next = n;
             b->size = size;
         }
-        b->free = 0;
-        big_used += b->size;
-        if (big_used > big_peak) big_peak = big_used;
-        return b + 1;
     }
-    return NULL;
+    b->free = 0;
+    big_used += b->size;
+    if (big_used > big_peak) big_peak = big_used;
+    return b + 1;
 }
+
+#ifdef F2N64_BIGPOOL_DUMP
+static void big_dump(void) {
+    for (big_blk *b = big_head; b; b = b->next)
+        debugf("bigpool %s %p: %lu bytes\n", b->free ? "FREE " : "block", (void *)(b + 1), (unsigned long)b->size);
+    struct mallinfo mi = mallinfo();
+    debugf("fmv start: main heap used %d KiB, pool %lu KiB\n", mi.uordblks / 1024, (unsigned long)(big_used / 1024));
+}
+#endif
 
 static void big_free(void *p) {
     big_blk *b = (big_blk *)p - 1;
@@ -368,14 +410,23 @@ static void big_free(void *p) {
 /* The whole program's malloc family is routed here (`ld --wrap`, tools/n64/Makefile): Rust,
  * our C host and libdragon (asset_load, surfaces, the H.264 decoder's frame buffers, ...). */
 void *__wrap_memalign(size_t align, size_t size) {
+#ifdef F2N64_BIGPOOL_DUMP
+    if (size >= 200000) {
+        void *bt[8];
+        int n = backtrace(bt, 8);
+        debugf("bigalloc %lu:", (unsigned long)size);
+        for (int i = 0; i < n; i++) debugf(" %p", bt[i]);
+        debugf("\n");
+    }
+#endif
     if (size >= BIG_MIN && align <= 64) {
-        void *p = big_alloc(size);
+        void *p = big_alloc(size, 0);
         if (p) return p;
         debugf("bigpool: %lu bytes do not fit (used %lu KiB of %d), using the main heap\n", (unsigned long)size, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
     }
     void *p = __real_memalign(align < 8 ? 8 : align, size ? size : 1);
     if (!p && align <= 64) { /* main heap full: try the pool */
-        p = big_alloc(size ? size : 1);
+        p = big_alloc(size ? size : 1, size < BIG_MIN);
         if (p && size < BIG_MIN && (big_small_fallbacks++ & 1023) == 0)
             debugf("bigpool: main heap full, small blocks from the pool (%lu so far, pool %lu KiB used)\n",
                    (unsigned long)big_small_fallbacks, (unsigned long)(big_used / 1024));
@@ -409,7 +460,7 @@ void *__wrap_realloc(void *ptr, size_t size) {
     }
     void *r = __real_realloc(ptr, size);
     if (!r && size) {
-        void *n = big_alloc(size);
+        void *n = big_alloc(size, size < BIG_MIN);
         if (n) { memcpy(n, ptr, malloc_usable_size(ptr)); __real_free(ptr); }
         return n;
     }
@@ -461,6 +512,9 @@ void *n64_file_read_impl(const char *path, uint32_t *len) {
     FILE *f = asset_fopen(path, &sz);
     if (!f) return NULL;
     uint8_t *p = memalign(16, sz > 0 ? (size_t)sz : 1);
+#ifdef F2N64_BIGPOOL_DUMP
+    if (!p) big_dump();
+#endif
     assertf(p, "Out of memory reading %s (%d bytes; pool %lu/%d KiB)", path, sz, (unsigned long)(big_used / 1024), BIG_POOL / 1024);
     /* 32 KiB at a time with the music topped up in between: a level's large files (texture
      * banks, compressed) take a few hundred ms to read and inflate, longer than the audio

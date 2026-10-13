@@ -235,6 +235,8 @@ pub mod pad {
 
 #[cfg(target_vendor = "nintendo64")]
 extern "C" {
+    /// `csrc/main.c`: nonzero stops every video after its first frames (test boots).
+    pub static mut n64_fmv_autoskip: i32;
     pub fn n64_log(msg: *const u8, len: u32);
     pub fn n64_panic(msg: *const u8, len: u32) -> !;
     pub fn n64_alloc(size: u32, align: u32) -> *mut u8;
