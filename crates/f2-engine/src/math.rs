@@ -24,25 +24,55 @@ struct Tables {
 }
 
 /// Port of `InitMaths` (mdxMath.cpp:53): the lookup tables behind `sinFast`/`acosFast`.
+fn build_tables() -> Box<Tables> {
+    let mut t = Box::new(Tables { sin: [0.0; 4096], acos: [0.0; 4096] });
+    for i in 0..4096 {
+        t.acos[i] = ((i as f64 - 2048.0) / 2048.0).acos() as f32;
+        t.sin[i] = ((i as f64 * PI2) / 4096.0).sin() as f32;
+    }
+    t
+}
+
+#[cfg(not(target_vendor = "nintendo64"))]
 fn tables() -> &'static Tables {
     static T: once_cell::race::OnceBox<Tables> = once_cell::race::OnceBox::new();
-    T.get_or_init(|| {
-        let mut t = Box::new(Tables { sin: [0.0; 4096], acos: [0.0; 4096] });
-        for i in 0..4096 {
-            t.acos[i] = ((i as f64 - 2048.0) / 2048.0).acos() as f32;
-            t.sin[i] = ((i as f64 * PI2) / 4096.0).sin() as f32;
-        }
+    T.get_or_init(build_tables)
+}
+
+/// The N64 has one thread: a plain (relaxed) pointer load per lookup instead of
+/// `OnceBox::get`'s acquire load (a `sync` on the VR4300), and the table build out of line
+/// (it was inlined into every caller, e.g. four times into `quat_slerp`).
+#[cfg(target_vendor = "nintendo64")]
+#[inline(always)]
+fn tables() -> &'static Tables {
+    use core::sync::atomic::{AtomicPtr, Ordering::Relaxed};
+    static T: AtomicPtr<Tables> = AtomicPtr::new(core::ptr::null_mut());
+    #[cold]
+    #[inline(never)]
+    fn init() -> &'static Tables {
+        let t = Box::leak(build_tables());
+        T.store(t, Relaxed);
         t
-    })
+    }
+    let p = T.load(Relaxed);
+    if p.is_null() {
+        return init();
+    }
+    // SAFETY: `T` only ever holds a leaked (never freed) box, written once by `init`; the
+    // N64 runs one thread.
+    unsafe { &*p }
 }
 
 /// `sinFast(x)` (mdxMath.cpp:48): `sinTable[(long)(x*(4096/PI2)) & 4095]`.
+// N64: one copy (not inlined four times into `quat_slerp`), in the draw path's hot region.
+#[cfg_attr(target_vendor = "nintendo64", inline(never), link_section = ".text.f2hot_d")]
 pub fn sin_fast(x: f32) -> f32 {
     let i = (x as f64 * (4096.0 / PI2)) as i64;
     tables().sin[(i & 4095) as usize]
 }
 
 /// `acosFast(x)` (mdxMath.cpp:49): `acosTable[(long)(x*2048+2048) & 4095]`.
+#[cfg_attr(target_vendor = "nintendo64", inline(never), link_section = ".text.f2hot_d")]
 pub fn acos_fast(x: f32) -> f32 {
     let i = ((x as f64 * 2048.0) + 2048.0) as i64;
     tables().acos[(i & 4095) as usize]
@@ -142,6 +172,7 @@ pub fn quaternion_to_matrix(q: &Quat) -> Mat4 {
 }
 
 /// Port of `QuatSlerp` (mdxMath.cpp:304), including the table-based trig.
+#[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
 pub fn quat_slerp(s1: &Quat, sp2: &Quat, t: f32) -> Quat {
     let d = |a: f32, b: f32| a - b;
     let (x, y, z, w) = (d(s1[0], sp2[0]), d(s1[1], sp2[1]), d(s1[2], sp2[2]), d(s1[3], sp2[3]));

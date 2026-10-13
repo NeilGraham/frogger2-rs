@@ -22,3 +22,7 @@ f2-math = { path = "../f2-math", default-features = false }
 # Button-prompt table shared by the text overlays (a `thread_local!` before `no_std`).
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 libm = "0.2.16"
+
+[lints.rust]
+# `target_vendor = "nintendo64"` (tools/n64/mips-nintendo64-none.json): N64 hot-code sections.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_vendor, values("nintendo64"))'] }

@@ -13,7 +13,7 @@
 //! retail and stay in `Frame::Xlu`.
 
 use alloc::collections::BTreeMap;
-use f2_engine::math::{mtx_cat, mtx_xfm, quaternion_to_matrix, Mat4, IDENTITY};
+use f2_engine::math::{mtx_cat, mtx_xfm, quaternion_to_matrix, Mat4};
 use f2_engine::scene::{Frame, TlVertex, Tri, DIST, SZ_SCALE};
 use f2_engine::{Renderer, TexHandle};
 use f2_game::ids::{SpecFxId, SpriteId};
@@ -281,9 +281,13 @@ fn draw_shadow(r: &mut Renderer, pos: V3, normal: V3, size: f32, offset: f32, al
         t.tu = u;
         t.tv = w;
     }
-    let t = f2_engine::math::gu_translate(pos[0], pos[1], pos[2]);
     let rot = normal_rotation(normal);
-    let m = mtx_cat(&rot, &mtx_cat(&t, &IDENTITY));
+    // Console fast path: `rot · (translate · I)` is the rotation rows over the translation
+    // (up to the sign of zeros: the products add zero terms).
+    #[cfg(feature = "lean")]
+    let m = [rot[0], rot[1], rot[2], [pos[0], pos[1], pos[2], 1.0]];
+    #[cfg(not(feature = "lean"))]
+    let m = mtx_cat(&rot, &mtx_cat(&f2_engine::math::gu_translate(pos[0], pos[1], pos[2]), &f2_engine::math::IDENTITY));
     let corners = [[size, offset, size], [size, offset, -size], [-size, offset, -size], [-size, offset, size]];
     if xfm_quad(r, &m, &mut v, corners, -4.0) {
         push(r, Frame::Xlu, [v[0], v[1], v[2]], tex);

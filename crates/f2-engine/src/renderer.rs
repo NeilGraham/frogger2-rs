@@ -957,6 +957,56 @@ impl Renderer {
         self.draw_actor_cpu(model, actor);
     }
 
+    /// [`anim::model_bound`](crate::anim::model_bound) of `model` with the mesh sink back
+    /// end's mesh bounds: `None` without such a back end (or for a CPU-drawn model), i.e.
+    /// never [`actor_culled`](Self::actor_culled).
+    pub fn actor_bound(&self, model: &Model) -> Option<f32> {
+        let b = self.mesh_sink.as_ref()?.backend.as_ref()?;
+        if self.cpu_models.contains(&model.id) {
+            return None;
+        }
+        crate::anim::model_bound(model, &|o| b.object_sphere(model.id, o))
+    }
+
+    /// Whether the mesh sink back end would cull every rigid draw inside the world-space
+    /// sphere `(c, r)` (see [`actor_bound`](Self::actor_bound)); the caller then calls
+    /// [`skip_actor`](Self::skip_actor) instead of [`draw_actor`](Self::draw_actor).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    pub fn actor_culled(&self, c: &crate::math::Vec3, r: f32) -> bool {
+        self.mesh_sink.as_ref().is_some_and(|s| s.sphere_culled(c, r))
+    }
+
+    /// An actor left out after [`actor_culled`](Self::actor_culled): the back end is told how
+    /// many draws [`draw_actor`](Self::draw_actor) would have made.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    pub fn skip_actor(&mut self, model: &Model, actor: &mut Actor) {
+        if let Some(s) = self.mesh_sink.as_mut() {
+            crate::scene::skip_actor(model, actor, s);
+        }
+    }
+
+    /// Testing: [`MeshBackend::cull_check`] of the mesh sink's back end.
+    pub fn cull_check(&self) -> bool {
+        self.mesh_sink.as_ref().and_then(|s| s.backend.as_ref()).is_some_and(|b| b.cull_check())
+    }
+
+    /// Testing: [`MeshBackend::mark_culled`] of the mesh sink's back end.
+    pub fn mark_culled(&mut self, on: bool) {
+        if let Some(b) = self.mesh_sink.as_mut().and_then(|s| s.backend.as_mut()) {
+            b.mark_culled(on);
+        }
+    }
+
+    /// `n` draws left out after [`actor_culled`](Self::actor_culled) (the count
+    /// [`draw_actor`](Self::draw_actor) made last time; [`skip_actor`](Self::skip_actor)
+    /// works it out).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    pub fn skip_draws(&mut self, n: u32) {
+        if let Some(b) = self.mesh_sink.as_mut().and_then(|s| s.backend.as_mut()) {
+            b.skip(n);
+        }
+    }
+
     /// [`draw_actor`](Self::draw_actor) transformed on the CPU into the frames (out of line:
     /// keeps the mesh-sink path small for a console's instruction cache).
     #[inline(never)]

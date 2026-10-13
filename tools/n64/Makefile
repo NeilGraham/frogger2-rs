@@ -47,9 +47,11 @@ $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 # `.text.f2hot_d` + `.text.f2hot_q` (the draw loop's actor path and r3d queueing) and `.text.f2hot_f` (flushing the
 # lists to the RSP and drawing the CPU batches between them), then the libdragon / newlib
 # functions of those loops. Order of the first region (phase 3E): r3d queueing first, then
-# cull_world's closure (its own section, per draw), then the actor path, so the per-actor
-# code falls on the I-cache lines of `animate_modge` (a few water draws per frame) rather
-# than on `draw_slot` (every draw); keep `.text.f2hot_d` under ~6 KiB for that.
+# cull_world's closure (its own section, per draw), then the actor path. Since 3R the r3d
+# batch (`run_queue_with`, `f2hot_q`) runs after the draw loop, so the two no longer share a
+# loop: what matters (3D2) is that everything the draw loop runs per actor (`f2hot_d`:
+# draw_listed_actor, Renderer::draw_actor, xform_actor_cached, quat_slerp, sin/acos_fast, the
+# r3d recording, `queue_raw`) is contiguous and under 16 KiB (~13 KiB from `queue_raw`).
 # Then `.text.f2hot_s` (< 16 KiB): the simulation's per-actor pass (`Game::copy_and_draw_actors`
 # and what it calls per actor), contiguous so its functions never evict each other.
 HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rspq_block_run mg_uniform_load mg_uniform_load_raw \

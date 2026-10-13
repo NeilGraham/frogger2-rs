@@ -23,7 +23,7 @@ use crate::render_cpu::RenderCpu;
 use crate::rt;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use f2_engine::{Frame, MeshBackend, MeshDraw, Renderer, TextureRegistry, View, MESH_SKIN};
+use f2_engine::{Frame, MeshBackend, MeshDraw, ObjDraw, ObjSphere, Renderer, TextureRegistry, View, MESH_SKIN};
 use f2_formats::objbank::ObjectBank;
 
 /// Per-frame counters.
@@ -314,6 +314,73 @@ impl R3dLevel {
         self.r.queue_raw(list, d.model, d.object, mats, d.alpha_mul, d.gouraud, ovr, flags, slot as u32, d.stamp, d.modge, d.modge_frame);
     }
 
+    /// [`record`](Self::record) of every draw of a rigid actor ([`MeshBackend::actor`]): the
+    /// same draws, slots and queue entries, with the per-actor parts (override texture,
+    /// flags) once.
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    fn record_actor(&mut self, cpu: &RenderCpu, base: &MeshDraw, objs: &[ObjDraw], mats: &[[[f32; 4]; 4]]) {
+        let t0 = if crate::r3d::R3D_PROF { rt::ticks() } else { 0 };
+        let first = self.slot;
+        self.slot += objs.len() as u32;
+        let ovr = match base.override_tex {
+            None => None,
+            Some(h) => match self.tex_for(cpu, h.0) {
+                Some(t) => Some(t),
+                None => {
+                    // PC: no texture, nothing drawn (the slots stay used, as per draw).
+                    for slot in first..self.slot {
+                        if slot % 16 == 15 {
+                            rt::audio_poll_due();
+                        }
+                    }
+                    return;
+                }
+            },
+        };
+        let flags = (base.no_clip, base.object_fog, false);
+        for (k, o) in objs.iter().enumerate() {
+            let slot = first + k as u32;
+            let Some(mut list) = list_of(o.frame) else { continue };
+            if base.no_clip && list == List::Normal {
+                list = List::Background;
+            }
+            // Every 16th draw (the C call misses the I-cache; 16 draws take ~1 ms).
+            if slot % 16 == 15 {
+                rt::audio_poll_due();
+            }
+            let i = o.object as usize;
+            self.r.queue_raw(list, base.model, o.object, &mats[i..i + 1], base.alpha_mul, base.gouraud, ovr, flags, slot, base.stamp, o.modge, base.modge_frame);
+        }
+        if crate::r3d::R3D_PROF {
+            self.r.prof.record_ticks = self.r.prof.record_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
+            self.r.prof.records += objs.len() as u32;
+        }
+    }
+
+    /// `n` draws of an actor culled before recording ([`MeshBackend::skip`]): their slots stay
+    /// reserved, so the following draws keep last frame's slots (and r3d's per-slot caches).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    fn skip_slots(&mut self, n: u32) {
+        let first = self.slot;
+        self.slot += n;
+        // The audio poll of every 16th slot (see `record_inner`).
+        if self.slot >> 4 != first >> 4 {
+            rt::audio_poll_due();
+        }
+    }
+
+    /// The bounding sphere of the mesh of (model, object) in model units
+    /// ([`MeshBackend::object_sphere`]).
+    fn object_sphere(&self, model: u32, object: u16) -> ObjSphere {
+        match self.meshes.get(&(model, object)) {
+            None => ObjSphere::NoMesh,
+            Some(&m) => match self.r.mesh_sphere(m) {
+                Some((c, r)) => ObjSphere::Sphere(c, r),
+                None => ObjSphere::Unknown,
+            },
+        }
+    }
+
     /// The mesh of a recorded draw ([`R3d::run_queue_with`]'s resolver: the slot memo had
     /// another model/object), applying the debug filters and logging missing meshes once.
     #[cold]
@@ -439,5 +506,37 @@ impl MeshBackend for R3dBackend {
     fn mesh(&mut self, _view: &View, d: &MeshDraw, mats: &[[[f32; 4]; 4]]) {
         // SAFETY: see `new`.
         unsafe { (*self.lvl).record(&*self.cpu, d, mats) }
+    }
+
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    fn actor(&mut self, _view: &View, base: &MeshDraw, objs: &[ObjDraw], mats: &[[[f32; 4]; 4]]) {
+        // SAFETY: see `new`.
+        unsafe { (*self.lvl).record_actor(&*self.cpu, base, objs, mats) }
+    }
+
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    fn sphere_culled(&self, c: &[f32; 3], r: f32) -> bool {
+        // SAFETY: see `new`.
+        unsafe { (*self.lvl).r.sphere_culled(c, r) }
+    }
+
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    fn skip(&mut self, n: u32) {
+        // SAFETY: see `new`.
+        unsafe { (*self.lvl).skip_slots(n) }
+    }
+
+    fn object_sphere(&self, model: u32, object: u16) -> ObjSphere {
+        // SAFETY: see `new`.
+        unsafe { (*self.lvl).object_sphere(model, object) }
+    }
+
+    fn cull_check(&self) -> bool {
+        option_env!("F2N64_CULL_CHECK").is_some()
+    }
+
+    fn mark_culled(&mut self, on: bool) {
+        // SAFETY: see `new`.
+        unsafe { (*self.lvl).r.extra_lf = if on { crate::r3d::Q_CHECK_CULLED } else { 0 } }
     }
 }

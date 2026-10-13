@@ -582,6 +582,64 @@ pub trait MeshBackend {
     /// `d.mat_first`/`d.mat_count` are 0: `mats` are the draw's matrices (one per bone for
     /// [`MESH_SKIN`]). `view` is the renderer's view at record time.
     fn mesh(&mut self, view: &View, d: &MeshDraw, mats: &[Mat4]);
+
+    /// The mesh draws of one rigid actor, in order: for each `o` of `objs`,
+    /// `MeshDraw { object: o.object, frame: o.frame, modge: o.modge, ..*base }` with the matrix
+    /// `mats[o.object]` (the same draws [`mesh`](Self::mesh) would get one by one; one call
+    /// per actor instead of one per object).
+    fn actor(&mut self, view: &View, base: &MeshDraw, objs: &[ObjDraw], mats: &[Mat4]) {
+        for o in objs {
+            let i = o.object as usize;
+            self.mesh(view, &MeshDraw { object: o.object, frame: o.frame, modge: o.modge, ..*base }, &mats[i..i + 1]);
+        }
+    }
+
+    /// Whether every rigid draw inside the world-space sphere `(c, r)` would be culled (wholly
+    /// outside the view): the caller may then leave the draws out ([`skip`](Self::skip)).
+    /// The default never culls.
+    fn sphere_culled(&self, _c: &Vec3, _r: f32) -> bool {
+        false
+    }
+
+    /// `n` draws left out because [`sphere_culled`](Self::sphere_culled) said so (a back end
+    /// that numbers its draws keeps the numbers of the ones after them).
+    fn skip(&mut self, _n: u32) {}
+
+    /// The bounding sphere (model units) of what the back end draws for the mesh of object
+    /// `object` of model `model`.
+    fn object_sphere(&self, _model: u32, _object: u16) -> ObjSphere {
+        ObjSphere::Unknown
+    }
+
+    /// Testing: whether culled actors are drawn anyway, their draws marked
+    /// ([`mark_culled`](Self::mark_culled)) so the back end can check that it culls them all.
+    fn cull_check(&self) -> bool {
+        false
+    }
+
+    /// Testing ([`cull_check`](Self::cull_check)): the draws until the next call belong to
+    /// an actor [`sphere_culled`](Self::sphere_culled) said is wholly outside the view.
+    fn mark_culled(&mut self, _on: bool) {}
+}
+
+/// [`MeshBackend::object_sphere`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ObjSphere {
+    /// No bound known: never cull.
+    Unknown,
+    /// The back end draws nothing for the object.
+    NoMesh,
+    /// Every vertex drawn lies within `radius` of `centre` (model units).
+    Sphere(Vec3, f32),
+}
+
+/// One object draw of a rigid actor ([`MeshBackend::actor`]): pre-order object index, frame
+/// list (never [`Frame::Glow`]) and the [`MeshDraw::modge`] bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjDraw {
+    pub object: u16,
+    pub frame: Frame,
+    pub modge: u8,
 }
 
 /// Recorded mesh draws of a frame (see [`MeshDraw`]).
@@ -618,6 +676,64 @@ impl MeshSink {
         self.mats.extend_from_slice(mats);
         self.draws.push(MeshDraw { mat_first, mat_count: mats.len() as u32, ..d });
     }
+
+    /// [`MeshBackend::sphere_culled`] (false without a back end: recorded draws are kept).
+    pub fn sphere_culled(&self, c: &Vec3, r: f32) -> bool {
+        self.backend.as_ref().is_some_and(|b| b.sphere_culled(c, r))
+    }
+
+    /// [`push`](Self::push) of every draw of a rigid actor ([`MeshBackend::actor`]).
+    #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
+    fn push_actor(&mut self, view: &View, base: &MeshDraw, objs: &[ObjDraw], mats: &[Mat4]) {
+        if let Some(b) = &mut self.backend {
+            b.actor(view, base, objs, mats);
+            return;
+        }
+        for o in objs {
+            let i = o.object as usize;
+            self.push(view, MeshDraw { object: o.object, frame: o.frame, modge: o.modge, ..*base }, &mats[i..i + 1]);
+        }
+    }
+}
+
+/// [`Renderer::skip_actor`](crate::Renderer::skip_actor): tells the back end that the
+/// actor's draws (as [`record_actor`] would make them now) are left out.
+pub(crate) fn skip_actor(model: &Model, actor: &mut Actor, sink: &mut MeshSink) {
+    let Some(b) = sink.backend.as_mut() else { return };
+    let n = if model.is_skinned {
+        1
+    } else {
+        let key = (model.id, actor.extra_flags, actor.xlu < 1.0, actor.wrap_tc);
+        if actor.mesh_draws.as_ref().is_none_or(|(k, _)| *k != key) {
+            new_draws(model, &mut actor.mesh_draws, key);
+        }
+        actor.mesh_draws.as_ref().map_or(0, |d| d.1.len() as u32)
+    };
+    b.skip(n);
+}
+
+#[cold]
+#[inline(never)]
+fn new_draws(model: &Model, slot: &mut Option<((u32, i16, bool, bool), Vec<ObjDraw>)>, key: (u32, i16, bool, bool)) {
+    *slot = Some((key, object_draws(model, key.1, key.2, key.3)));
+}
+
+/// The draws of a rigid model's objects that have a mesh, in pre-order: frame list
+/// (`object_frame` of the object's flags with `extra` OR-ed in) and MODGE/WAVE bits; `Glow`
+/// objects (never drawn on retail PC) left out.
+fn object_draws(model: &Model, extra: i16, fade: bool, wrap: bool) -> Vec<ObjDraw> {
+    let mut objs = Vec::new();
+    for_each_object(model, |i, o| {
+        if o.mesh.is_some() {
+            let f = o.flags | extra;
+            let frame = object_frame(f, fade, wrap);
+            if frame != Frame::Glow {
+                let modge = (f & OBJECT_FLAGS_MODGE != 0) as u8 | ((f & OBJECT_FLAGS_WAVE != 0) as u8) << 1;
+                objs.push(ObjDraw { object: i as u16, frame, modge });
+            }
+        }
+    });
+    objs
 }
 
 /// [`draw_actor`] recorded into a [`MeshSink`]: same matrices, same frame selection, no
@@ -646,33 +762,28 @@ pub(crate) fn record_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, sink:
         modge_frame: actor.modge_frame,
     };
     if model.is_skinned {
-        if model.root.mesh.is_none() {
-            return;
-        }
-        let frame = object_frame(extra, fade, actor.wrap_tc);
-        if frame != Frame::Glow {
-            sink.push(cx.view, MeshDraw { object: MESH_SKIN, frame, ..base }, mats);
-        }
+        record_skin(cx, model, extra, fade, actor.wrap_tc, &base, mats, sink);
     } else {
-        if actor.mesh_objects.as_ref().is_none_or(|(id, _)| *id != model.id) {
-            let mut objs = Vec::new();
-            for_each_object(model, |i, o| {
-                if o.mesh.is_some() {
-                    objs.push((i as u16, o.flags));
-                }
-            });
-            actor.mesh_objects = Some((model.id, objs));
+        // The draw list depends on the model and the flags only: kept while they hold.
+        let key = (model.id, extra, fade, actor.wrap_tc);
+        if actor.mesh_draws.as_ref().is_none_or(|(k, _)| *k != key) {
+            new_draws(model, &mut actor.mesh_draws, key);
         }
-        let objs = &actor.mesh_objects.as_ref().unwrap().1;
-        for &(i, flags) in objs {
-            let f = flags | extra;
-            let frame = object_frame(f, fade, actor.wrap_tc);
-            if frame != Frame::Glow {
-                let i = i as usize;
-                let modge = (f & OBJECT_FLAGS_MODGE != 0) as u8 | ((f & OBJECT_FLAGS_WAVE != 0) as u8) << 1;
-                sink.push(cx.view, MeshDraw { object: i as u16, frame, modge, ..base }, &mats[i..i + 1]);
-            }
-        }
+        let objs = &actor.mesh_draws.as_ref().unwrap().1;
+        sink.push_actor(cx.view, &base, objs, mats);
+    }
+}
+
+/// The skinned part of [`record_actor`] (out of line: one model, the frog).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn record_skin(cx: &EmitCtx, model: &Model, extra: i16, fade: bool, wrap: bool, base: &MeshDraw, mats: &[Mat4], sink: &mut MeshSink) {
+    if model.root.mesh.is_none() {
+        return;
+    }
+    let frame = object_frame(extra, fade, wrap);
+    if frame != Frame::Glow {
+        sink.push(cx.view, MeshDraw { object: MESH_SKIN, frame, ..*base }, mats);
     }
 }
 
