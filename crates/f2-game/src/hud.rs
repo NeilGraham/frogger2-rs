@@ -21,6 +21,52 @@ use crate::ids::{OverlayId, TextOverlayId};
 use crate::layout::worldid;
 use crate::sprite::{SPRITE_ADDITIVE, SPRITE_SUBTRACTIVE};
 use crate::textover::{strs, Font, TEXTOVERLAY_PAUSED, TEXTOVERLAY_SHADOW};
+
+/// Phase 3S3: a short formatted string on the stack (the HUD's per-frame numbers), so
+/// formatting allocates nothing; [`set_text`] then copies it into the overlay's `String`
+/// only when it differs.
+pub(crate) struct StackStr {
+    buf: [u8; 48],
+    len: usize,
+}
+
+impl StackStr {
+    pub(crate) fn new() -> StackStr {
+        StackStr { buf: [0; 48], len: 0 }
+    }
+
+    /// `format!(args)`; the HUD's strings are a few characters (longer text panics, as
+    /// it would show a port bug rather than a game state).
+    pub(crate) fn fmt(args: core::fmt::Arguments) -> StackStr {
+        let mut s = StackStr::new();
+        core::fmt::Write::write_fmt(&mut s, args).expect("HUD string longer than 48 bytes");
+        s
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.len]).expect("formatted text is UTF-8")
+    }
+}
+
+impl core::fmt::Write for StackStr {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let end = self.len + s.len();
+        if end > self.buf.len() {
+            return Err(core::fmt::Error);
+        }
+        self.buf[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// `*text = s.to_string()`, keeping the allocation (and not writing when equal).
+pub(crate) fn set_text(text: &mut String, s: &str) {
+    if text != s {
+        text.clear();
+        text.push_str(s);
+    }
+}
 use crate::timer::Timer;
 use crate::Game;
 
@@ -151,6 +197,14 @@ impl Game {
     fn hud_text(&mut self, t: Option<TextOverlayId>, s: String) {
         if let Some(o) = self.textover.get_mut(t) {
             o.text = s;
+        }
+    }
+
+    /// [`hud_text`](Self::hud_text) from a [`StackStr`]: the overlay's `String` is reused
+    /// (phase 3S3: no allocation per frame; the text is the same).
+    fn hud_text_str(&mut self, t: Option<TextOverlayId>, s: &StackStr) {
+        if let Some(o) = self.textover.get_mut(t) {
+            set_text(&mut o.text, s.as_str());
         }
     }
 
@@ -697,9 +751,9 @@ impl Game {
                     o.x_pos = 3500;
                     o.y_pos = 3700;
                 }
-                hsec = format!("{:02}", ((time_frames * 100) / 60) % 100);
-                sec = "0".to_string();
-                min = String::new();
+                hsec = StackStr::fmt(format_args!("{:02}", ((time_frames * 100) / 60) % 100));
+                sec = StackStr::fmt(format_args!("0"));
+                min = StackStr::new();
                 for o in [h.time_hand_over, h.time_head_over] {
                     if let Some(o) = self.overlays.get_mut(o) {
                         o.angle /= 2;
@@ -731,14 +785,14 @@ impl Game {
                         self.play_sample(f2_formats::crc::crc("clocktick"), None, 0, SAMPLE_VOLUME, -1);
                         self.hud.last_secs = secs;
                     }
-                    hsec = format!("{:02}", (time_frames.wrapping_mul(100) / 60) % 100);
-                    sec = format!("{secs:02}");
-                    min = String::new();
+                    hsec = StackStr::fmt(format_args!("{:02}", (time_frames.wrapping_mul(100) / 60) % 100));
+                    sec = StackStr::fmt(format_args!("{secs:02}"));
+                    min = StackStr::new();
                 } else {
-                    hsec = format!("{:02}", (time_frames.wrapping_mul(100) / 60) % 100);
-                    sec = format!("{:02}", (time_frames / 60) % 60);
+                    hsec = StackStr::fmt(format_args!("{:02}", (time_frames.wrapping_mul(100) / 60) % 100));
+                    sec = StackStr::fmt(format_args!("{:02}", (time_frames / 60) % 60));
                     let m = (time_frames / (60 * 60)) % 60;
-                    min = if m > 0 { format!("{m:2}:") } else { String::new() };
+                    min = if m > 0 { StackStr::fmt(format_args!("{m:2}:")) } else { StackStr::new() };
                 }
 
                 if self.hud.go_timer.time <= 1 {
@@ -759,23 +813,24 @@ impl Game {
                     hard_time_frames = 0;
                 }
             }
-            self.hud_text(h.time_text_hsec, hsec);
-            self.hud_text(h.time_text_sec, sec);
-            self.hud_text(h.time_text_min, min);
+            self.hud_text_str(h.time_text_hsec, &hsec);
+            self.hud_text_str(h.time_text_sec, &sec);
+            self.hud_text_str(h.time_text_min, &min);
             // timeTextMin->xPos = timeTextSec->xPos - (CalcStringWidth(min,font,scale)+2)*6.4
-            if let (Some(sec_o), Some(min_o)) = (self.textover.get(h.time_text_sec).cloned(), self.textover.get(h.time_text_min).cloned()) {
+            // (Phase 3S3: the fields read in place, no clones of the overlays.)
+            if let (Some(sec_x), Some(min_o)) = (self.textover.get(h.time_text_sec).map(|o| o.x_pos), self.textover.get(h.time_text_min)) {
                 let w = self.textover.calc_string_width(&min_o.text, min_o.font, min_o.scale as f32 / 4096.0);
-                let x = sec_o.x_pos as f32 - (w + 2) as f32 * 6.4;
+                let x = sec_x as f32 - (w + 2) as f32 * 6.4;
                 if let Some(o) = self.textover.get_mut(h.time_text_min) {
                     o.x_pos = f2_math::ftol32(x as f64) as i16;
                 }
             }
         }
 
-        let lives = format!("{}", self.frogger.player[0].lives as i32 as u32);
-        self.hud_text(h.lives_text, lives);
-        let coins = format!("{:2}", self.frogger.player[0].num_spawn);
-        self.hud_text(h.coins_text, coins);
+        let lives = StackStr::fmt(format_args!("{}", self.frogger.player[0].lives as i32 as u32));
+        self.hud_text_str(h.lives_text, &lives);
+        let coins = StackStr::fmt(format_args!("{:2}", self.frogger.player[0].num_spawn));
+        self.hud_text_str(h.coins_text, &coins);
 
         if hard && !frontend_world {
             if self.hud.go_timer.time > 1 {
@@ -821,10 +876,11 @@ impl Game {
             return;
         }
         if to_overlay {
-            let c = self.collect.collect_text.clone();
-            let text = if c.text.is_empty() { String::new() } else { self.language.gamestring_by_id(&c.text).to_string() };
+            // Phase 3S3: no clones (the overlay's `String` is reused).
+            let c = &self.collect.collect_text;
+            let text = if c.text.is_empty() { "" } else { self.language.gamestring_by_id(&c.text) };
             if let Some(o) = self.textover.get_mut(id) {
-                o.text = text;
+                set_text(&mut o.text, text);
                 o.x_pos = c.x_pos;
                 o.x_pos_to = c.x_pos_to;
                 o.speed = c.speed;

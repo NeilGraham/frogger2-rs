@@ -75,6 +75,9 @@ pub struct Map {
     pub num_babies: i32,
     pub camera_boxes: CameraBoxes,
     pub scenics: Vec<Scenic>,
+    /// Phase 3S3: the nearest-tile search grid over `tiles` (a cache, not state).
+    #[serde(skip)]
+    pub(crate) grid: crate::nearest::TileGrid,
 }
 
 fn sv(v: level::SVec) -> SVector {
@@ -115,6 +118,7 @@ impl Map {
                 dir_vector: [sv(t.dir_vector[0]), sv(t.dir_vector[1]), sv(t.dir_vector[2]), sv(t.dir_vector[3])],
             })
             .collect();
+        self.grid = crate::nearest::TileGrid::build(&self.tiles);
         for (pl, s) in c.player_start.iter().enumerate() {
             self.g_t_start[pl] = tile_ref(*s, n);
         }

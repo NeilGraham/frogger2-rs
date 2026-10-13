@@ -310,6 +310,8 @@ fn find_to_from_ch<K: KeyTime>(keys: &[K], time: f32, e_key: i16, ch: Option<&Ke
 }
 
 /// Port of `FindToFromVKeys`/`FindToFromQKeys` (mdxObject.cpp:229/305): `(from, to, interp)`.
+/// (Phase 3S3: never inlined: the fallback of [`find_to_from_ch`], rarely used.)
+#[inline(never)]
 fn find_to_from<K: KeyTime>(keys: &[K], time: f32, e_key: i16) -> (usize, usize, f32) {
     let num_keys = keys.len() as i32;
     let t = |i: i32| keys[i.clamp(0, num_keys - 1) as usize].time() as f32;
@@ -427,17 +429,18 @@ fn object_local_r(
     } else {
         sk.first().map_or([1.0; 3], |k| k.v)
     };
-    let mut rotmat = if rk.len() > 1 && animated {
+    let q = if rk.len() > 1 && animated {
         let (f, t, i) = find_to_from_ch(rk, time, last[2], ch.map(|c| &c[2]));
         last[2] = f as i16;
         if (rk[t].time as f32 - time) < ANIMSNAP_THRESHHOLD * ROTATESNAP_MULT {
-            quaternion_to_matrix(&rk[t].q)
+            rk[t].q
         } else {
-            quaternion_to_matrix(&quat_slerp(&rk[f].q, &rk[t].q, i))
+            quat_slerp(&rk[f].q, &rk[t].q, i)
         }
     } else {
-        quaternion_to_matrix(&rk.first().map_or([0.0, 0.0, 0.0, 1.0], |k| k.q))
+        rk.first().map_or([0.0, 0.0, 0.0, 1.0], |k| k.q)
     };
+    let mut rotmat = quaternion_to_matrix(&q);
     rotmat[3][0] = translation[0] * actor_scale[0] * parent_scale[0];
     rotmat[3][1] = translation[1] * actor_scale[1] * parent_scale[1];
     rotmat[3][2] = translation[2] * actor_scale[2] * parent_scale[2];
@@ -630,13 +633,29 @@ pub struct SphereCache {
     centre: Vec3,
     radius: f32,
     src_pos: [i16; 3],
+    /// Phase 3S3: `t2` and `radius` (the part of the sphere that does not depend on
+    /// `placement.pos`) are those of the current model, `scale` and `q_rot`.
+    rot_valid: bool,
     src_size: [i32; 3],
     src_q: [i32; 4],
+    /// The rotated, scaled `trueCentre` ([`sphere_rot`]).
+    t2: Vec3,
 }
 
 impl SphereCache {
     #[inline(always)]
     pub fn invalidate(&mut self) {
+        self.valid = false;
+        self.root_valid = false;
+        self.copy_valid = false;
+        self.spr_valid = false;
+        self.rot_valid = false;
+    }
+
+    /// [`invalidate`](Self::invalidate) for a write of `placement.pos` alone: the
+    /// position-independent part of the sphere stays valid.
+    #[inline(always)]
+    fn invalidate_pos(&mut self) {
         self.valid = false;
         self.root_valid = false;
         self.copy_valid = false;
@@ -729,13 +748,26 @@ pub fn sphere_visible(model: &crate::assets::ModelInfo, p: &MdxPlacement, view: 
 #[inline]
 #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
 pub fn sphere_world(model: &crate::assets::ModelInfo, p: &MdxPlacement) -> (Vec3, f32) {
+    let (t2, radius) = sphere_rot(model, p);
+    (sphere_centre(p, t2), radius)
+}
+
+/// The position-independent part of [`sphere_world`]: `trueCentre` scaled and rotated by
+/// `qRot`, and the radius.
+#[inline]
+#[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
+fn sphere_rot(model: &crate::assets::ModelInfo, p: &MdxPlacement) -> (Vec3, f32) {
     let tc = model.true_centre;
     let t_pos = [tc[0] * p.scale[0], tc[1] * p.scale[1], tc[2] * p.scale[2]];
     let rotmat = quaternion_to_matrix(&p.q_rot);
     let t2 = mtx_xfm(&rotmat, t_pos);
-    let t_pos = [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]];
     let scale = p.scale[0].max(p.scale[1].max(p.scale[2]));
-    (t_pos, model.actor_radius * scale)
+    (t2, model.actor_radius * scale)
+}
+
+#[inline(always)]
+fn sphere_centre(p: &MdxPlacement, t2: Vec3) -> Vec3 {
+    [p.pos[0] + t2[0], p.pos[1] + t2[1], p.pos[2] + t2[2]]
 }
 
 /// The view half of [`sphere_visible`] for a world-space sphere from [`sphere_world`].
@@ -752,12 +784,26 @@ pub fn sphere_on_screen(t_pos: Vec3, radius: f32, view: &ViewXform) -> bool {
         if !(depth + radius > view.near_clip && depth - radius < view.far_clip) {
             return false;
         }
-        let wh = view.xfm_point_f(t_pos);
+        // Phase 3S3: `z` is the third component `xfm_point_f` would compute again.
+        let wh = view.xfm_point_f_z(t_pos, z);
         if wh[2] > view.near_clip {
             radius = (view.fov as f32 * radius * (view.x_res * (1.0 / 640.0))) / (wh[2] + view.dist as f32);
         }
         (wh[0] > -radius && wh[0] < view.x_res + radius) && (wh[1] > -radius && wh[1] < view.y_res + radius)
     }
+}
+
+/// [`copy_placement`] reporting a changed position and a changed rotation or scale
+/// separately (the same stores).
+#[inline(always)]
+fn copy_placement_parts(p: &mut MdxPlacement, pos: SVector, size: f2_math::FVector, q: f2_math::IQuaternion) -> (bool, bool) {
+    let pos_changed = set_f32s(&mut p.pos, [pos.vx as f32 * 0.1, pos.vy as f32 * 0.1, pos.vz as f32 * 0.1]);
+    const S: f32 = 1.0 / 4096.0;
+    let mut rot_changed = set_f32s(&mut p.scale, [size.vx as f32 * S, size.vy as f32 * S, size.vz as f32 * S]);
+    if q.w != 0 || q.x != 0 || q.y != 0 || q.z != 0 {
+        rot_changed |= set_f32s(&mut p.q_rot, [q.x as f32 * S, q.y as f32 * S, q.z as f32 * S, q.w as f32 * S]);
+    }
+    (pos_changed, rot_changed)
 }
 
 /// A float stored to a `short` (MSVC `_ftol` truncation, low 16 bits kept).
@@ -863,6 +909,23 @@ impl ViewXform {
     #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub fn xfm_point_f(&self, p: Vec3) -> Vec3 {
         let [x, y, z] = mtx_xfm(&self.matrix, p);
+        let zd = z + self.dist as f32;
+        if zd > self.near_clip && zd < self.far_clip && x > -self.horiz_clip && x < self.horiz_clip && y > -self.vert_clip && y < self.vert_clip {
+            let o = self.oozd_f(z);
+            [self.x_res / 2.0 + x * o, self.y_res / 2.0 + y * o, z]
+        } else {
+            [x, y, 0.0]
+        }
+    }
+
+    /// [`xfm_point_f`](Self::xfm_point_f) given the point's view-space `z` (the third
+    /// component of `mtx_xfm(&self.matrix, p)`, computed by the caller with the same
+    /// expression).
+    #[inline(always)]
+    pub fn xfm_point_f_z(&self, p: Vec3, z: f32) -> Vec3 {
+        let m = &self.matrix;
+        let x = m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + m[3][0];
+        let y = m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + m[3][1];
         let zd = z + self.dist as f32;
         if zd > self.near_clip && zd < self.far_clip && x > -self.horiz_clip && x < self.horiz_clip && y > -self.vert_clip && y < self.vert_clip {
             let o = self.oozd_f(z);
@@ -979,6 +1042,8 @@ impl Default for ViewState {
 impl Game {
     /// Port of `CalcViewMatrix` (PC/drawloop.cpp:65) + `farClip = fog.max*0.1`
     /// (drawloop.cpp:198): the view the next tick's logic culls against.
+    /// Phase 3S3: once per tick, kept out of the actor pass's I-cache region.
+    #[inline(never)]
     pub fn calc_view_matrix(&mut self) {
         let c = &self.cam;
         let s = |v: i32| v as f32 * CAMVECTSCALE;
@@ -1237,6 +1302,9 @@ impl Game {
 
     /// The object sprites of `TransformObject` (mdxObject.cpp:461) for actor `id`: the sprites
     /// the model's objects point at follow the actor (position, size, `xlu`, `draw`).
+    ///
+    /// Phase 3S3: the test for object sprites stays in the actor pass's I-cache region; the
+    /// rest (few actors have object sprites) is out of line.
     #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     pub(crate) fn transform_actor_sprites(&mut self, id: ActorId) {
         let a2 = &self.actor2.actors[id];
@@ -1246,6 +1314,13 @@ impl Game {
         if !a2.obj_sprites.as_ref().is_some_and(|(m, _)| *m == mid) {
             return;
         }
+        self.transform_actor_sprites_body(id, mid);
+    }
+
+    #[inline(never)]
+    fn transform_actor_sprites_body(&mut self, id: ActorId, mid: u32) {
+        let a2 = &self.actor2.actors[id];
+        let a = &a2.actor.actual_actor;
         let Some(model) = self.models.get(mid) else { return };
         if !model.xform_tree.iter().any(|x| x.has_sprites) {
             return;
@@ -1438,7 +1513,10 @@ impl Game {
         // ones they were made from (and nothing else has written the placement since).
         let (src_pos, src_size, src_q) = ([pos.vx, pos.vy, pos.vz], [size.vx, size.vy, size.vz], [q.x, q.y, q.z, q.w]);
         let pc = &c.actor.actual_actor.sphere;
-        if pc.copy_valid && pc.src_pos == src_pos && pc.src_size == src_size && pc.src_q == src_q {
+        // Phase 3S3: compared word by word (`==` on the arrays became `memcmp` calls).
+        let same = |a: &[i32], b: &[i32]| a.iter().zip(b).fold(0, |d, (x, y)| d | (x ^ y)) == 0;
+        let same_pos = ((pc.src_pos[0] ^ src_pos[0]) | (pc.src_pos[1] ^ src_pos[1]) | (pc.src_pos[2] ^ src_pos[2])) == 0;
+        if pc.copy_valid && same_pos && same(&pc.src_size, &src_size) && same(&pc.src_q, &src_q) {
             if cfg!(debug_assertions) {
                 let mut check = *p;
                 copy_placement(&mut check, pos, size, q);
@@ -1451,10 +1529,13 @@ impl Game {
             }
             return;
         }
-        let changed = copy_placement(p, pos, size, q);
+        // Phase 3S3: a moved actor keeps the position-independent part of its sphere.
+        let (pos_changed, rot_changed) = copy_placement_parts(p, pos, size, q);
         let pc = &mut c.actor.actual_actor.sphere;
-        if changed {
+        if rot_changed {
             pc.invalidate();
+        } else if pos_changed {
+            pc.invalidate_pos();
         }
         pc.src_pos = src_pos;
         pc.src_size = src_size;
@@ -1509,7 +1590,9 @@ impl Game {
         // Phase 3S2: the world sphere is reused while placement and model are unchanged (a
         // valid entry also proves the model exists: the table has not changed since).
         let hit = a.sphere.valid && a.sphere.model == mid && a.sphere.generation == generation;
-        let model = if hit {
+        // Phase 3S3: only the position moved: the rotated centre offset is still valid.
+        let rot_hit = !hit && a.sphere.rot_valid && a.sphere.model == mid && a.sphere.generation == generation;
+        let model = if hit || rot_hit {
             None
         } else {
             let Some(model) = self.models.get(mid) else { return };
@@ -1520,12 +1603,25 @@ impl Game {
         let visible = draw_override || {
             let c = &mut a.sphere;
             if let Some(model) = model {
-                let (centre, radius) = sphere_world(model, &a.placement);
+                let (t2, radius) = sphere_rot(model, &a.placement);
                 c.valid = true;
+                c.rot_valid = true;
                 c.model = mid;
                 c.generation = generation;
-                c.centre = centre;
+                c.t2 = t2;
+                c.centre = sphere_centre(&a.placement, t2);
                 c.radius = radius;
+            } else if rot_hit {
+                c.valid = true;
+                c.centre = sphere_centre(&a.placement, c.t2);
+                if cfg!(debug_assertions) {
+                    let model = self.models.get(mid).expect("cached model");
+                    let (centre, radius) = sphere_world(model, &a.placement);
+                    assert!(
+                        centre.map(f32::to_bits) == c.centre.map(f32::to_bits) && radius.to_bits() == c.radius.to_bits(),
+                        "stale SphereCache rotation for actor {id:?}"
+                    );
+                }
             } else if cfg!(debug_assertions) {
                 let model = self.models.get(mid).expect("cached model");
                 let (centre, radius) = sphere_world(model, &a.placement);

@@ -168,6 +168,8 @@ pub struct Enemy {
     pub flags: u32,
     pub in_tile: Option<TileId>,
     pub path: Path,
+    /// Phase 3S3: positions of the path's from/to nodes (a cache, not state).
+    pub node_pos: crate::path::NodePosCache,
     pub update: [Option<EnemyUpdate>; ENEMY_UPDATEFUNCS],
     pub speed: Fixed,
     pub curr_normal: FVector,
@@ -200,7 +202,7 @@ crate::ser_order!(Enemy, "Enemy", EnemyWire {
     in_tile: Option<TileId>,
     path: Path,
     update: [Option<EnemyUpdate>; ENEMY_UPDATEFUNCS],
-});
+} skip { node_pos });
 
 impl HasLinks<EnemyId> for Enemy {
     fn links(&self) -> &Links<EnemyId> {
@@ -240,6 +242,13 @@ impl EnemiesState {
         self.reactive_anims =
             ORIG_REACTIVE_ANIMS.iter().map(|&(n, c, f, t)| ReactiveAnim { name: n.to_string(), anim_char: c, anim_frog: f, type_: t }).collect();
     }
+}
+
+/// The fields of an enemy `DoEnemyCollision` reads.
+struct NmeCollision {
+    flags: u32,
+    nme_actor: Option<ActorId>,
+    in_tile: Option<TileId>,
 }
 
 /// `ENEMY_RANDOMNESS`: a value from 0.5 to 1.5.
@@ -301,6 +310,7 @@ impl Game {
 
     /// `path->nodes[i].worldTile = t` (nodes are shared between entities).
     fn set_node_tile(&mut self, path: &Path, i: i32, t: Option<TileId>) {
+        self.path.touch();
         let idx = path.node_index(i);
         if let Some(n) = self.path.nodes.get_mut(idx) {
             n.world_tile = t;
@@ -341,7 +351,11 @@ impl Game {
     /// Port of `DoEnemyCollision` (Common/enemies.c:192).
     #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn do_enemy_collision(&mut self, cur: EnemyId) {
-        let e = self.nme(cur).clone();
+        // Phase 3S3: the fields used, not a clone of the whole enemy.
+        let e = {
+            let n = self.nme(cur);
+            NmeCollision { flags: n.flags, nme_actor: n.nme_actor, in_tile: n.in_tile }
+        };
         let act = self.nact(cur);
         if e.flags & ENEMY_NEW_VENT != 0 || e.flags & ENEMY_NEW_PUSHESFROG != 0 {
             return;
@@ -378,6 +392,15 @@ impl Game {
                 }
             }
         } else {
+            self.do_enemy_collision_multi(cur, &e, apos, arad);
+        }
+    }
+
+    /// The multiplayer part of [`do_enemy_collision`](Self::do_enemy_collision) (phase
+    /// 3S3: out of line, outside the enemy loop's I-cache region).
+    #[inline(never)]
+    fn do_enemy_collision_multi(&mut self, cur: EnemyId, e: &NmeCollision, apos: SVector, arad: Fixed) {
+        {
             // We only want to do collision with player 1 in a REMOTE multiplayer game
             let mut i = if self.game_state.multi == MULTIREMOTE { 0 } else { self.frogger.num_frogs - 1 };
             while i >= 0 {
@@ -454,7 +477,7 @@ impl Game {
                 let mut fwd = FVector::default();
                 sub_vector_fss(&mut fwd, &self.actor2.actors[nact].actor.position, &self.frog_position(p));
                 make_unit(&mut fwd);
-                let ct = self.tile_or_default(self.frogmove.curr_tile[p]);
+                let ct = self.tile_ref(self.frogmove.curr_tile[p]).clone();
                 if let Some(f) = frog {
                     orientate_fs(&mut self.actor2.actors[f].actor.q_rot, &fwd, &ct.normal);
                 }
@@ -462,7 +485,7 @@ impl Game {
                 let mut fwd = FVector::default();
                 sub_vector_ffs(&mut fwd, &self.cam.curr_cam_source, &self.frog_position(p));
                 make_unit(&mut fwd);
-                let ct = self.tile_or_default(self.frogmove.curr_tile[p]);
+                let ct = self.tile_ref(self.frogmove.curr_tile[p]).clone();
                 let dv = ct.dir_vector[find_closest_tile_vector(&ct, &fwd)];
                 new_set_vector_fs(&mut fwd, &dv);
                 if let Some(f) = frog {
@@ -567,7 +590,7 @@ impl Game {
                 // if enemy is a pusher and currently waiting - should still 'push' away frog
                 if flags & ENEMY_NEW_PUSHESFROG != 0 && self.nme(id).in_tile == self.frogmove.curr_tile[0] {
                     let prev = self.frogmove.prev_tile;
-                    let c = self.tile_or_default(prev).centre;
+                    let c = self.tile_ref(prev).centre;
                     if let Some(f) = self.frogger.frog[0] {
                         self.actor2.actors[f].actor.position = c;
                     }
@@ -669,6 +692,7 @@ impl Game {
     }
 
     /// Port of `UpdateBobbingEnemy` (Common/enemies.c:529).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn update_bobbing_enemy(&mut self, nme: EnemyId) {
         let e = self.nme(nme);
         let p = e.path;
@@ -676,7 +700,7 @@ impl Game {
             return;
         }
         let bob = rsin(udiv(fr(self.act_frame_count, p.start_frame) << 12, fr(p.end_frame, p.start_frame))) >> 8;
-        let normal = self.tile_or_default(e.in_tile).normal;
+        let normal = self.tile_ref(e.in_tile).normal;
         let ofs = SVector {
             vx: ((normal.vx as i32).wrapping_mul(bob) >> 10) as i16,
             vy: ((normal.vy as i32).wrapping_mul(bob) >> 10) as i16,
@@ -687,9 +711,10 @@ impl Game {
     }
 
     /// Port of `UpdateJigglingEnemy` (Common/enemies.c:559), PC amplitude.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn update_jiggling_enemy(&mut self, nme: EnemyId) {
         let bob = ((self.act_frame_count >> 2) & 1) as i32 * 9;
-        let normal = self.tile_or_default(self.nme(nme).in_tile).normal;
+        let normal = self.tile_ref(self.nme(nme).in_tile).normal;
         let ofs = SVector {
             vx: ((normal.vx as i32 * bob) >> 12) as i16,
             vy: ((normal.vy as i32 * bob) >> 12) as i16,
@@ -707,8 +732,8 @@ impl Game {
         let p = e.path;
         let clam = (udiv(fr(self.act_frame_count, p.start_frame) << 12, fr(p.end_frame, p.start_frame)) as u32).wrapping_mul(2) as i32;
 
-        let to_c = self.node_tile(&p, p.to_node as i32).centre;
-        let from_c = self.node_tile(&p, p.from_node as i32).centre;
+        let to_c = self.node_tile_ref(&p, p.to_node as i32).centre;
+        let from_c = self.node_tile_ref(&p, p.from_node as i32).centre;
         let tr = |v: i32| v as i16;
         // SetVectorFS(&fwd, ...)
         let mut fwd = [tr((to_c.vx as i32) << 12), tr((to_c.vy as i32) << 12), tr((to_c.vz as i32) << 12)];
@@ -720,7 +745,7 @@ impl Game {
             fwd[k] = tr(fmul(fwd[k] as i32, 4096 / 500));
         }
 
-        let normal = self.tile_or_default(e.in_tile).normal;
+        let normal = self.tile_ref(e.in_tile).normal;
         let x = rsin(clam).wrapping_mul(25).wrapping_add(25);
         let y = rcos(clam).wrapping_mul(20).wrapping_add(40);
         let n = [normal.vx as i32, normal.vy as i32, normal.vz as i32];
@@ -743,7 +768,7 @@ impl Game {
         let y = (1i32 << (12 + 9)).wrapping_sub(x.wrapping_mul(x) >> (12 - 9));
 
         let mut v = FVector::default();
-        new_set_vector_fs(&mut v, &self.tile_or_default(e.in_tile).normal);
+        new_set_vector_fs(&mut v, &self.tile_ref(e.in_tile).normal);
         scale_vector_ff(&mut v, y);
         add_to_vector_sf(self.npos_mut(nme), &v);
 
@@ -779,7 +804,7 @@ impl Game {
         let e = self.nme(nme).clone();
         let p = e.path;
         let mut fwd = SVector::default();
-        sub_vector_sss(&mut fwd, &self.node_tile(&p, p.to_node as i32).centre, &self.node_tile(&p, p.from_node as i32).centre);
+        sub_vector_sss(&mut fwd, &self.node_tile_ref(&p, p.to_node as i32).centre, &self.node_tile_ref(&p, p.from_node as i32).centre);
 
         let a = self.nact(nme);
         // A zero divisor faults in the original.
@@ -814,10 +839,21 @@ impl Game {
     #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
     pub fn update_path_nme(&mut self, cur: EnemyId) {
         let afc = self.act_frame_count;
-        let ws = self.frogger.wait_scale;
 
         // make sure we're in the correct section of the path
         if afc >= self.nme(cur).path.end_frame {
+            self.update_path_nme_arrive(cur);
+        }
+        self.update_path_nme_move(cur);
+    }
+
+    /// The node-arrival part of [`update_path_nme`](Self::update_path_nme) (phase 3S3: out
+    /// of line, ~once per node, outside the enemy loop's I-cache region).
+    #[inline(never)]
+    fn update_path_nme_arrive(&mut self, cur: EnemyId) {
+        let afc = self.act_frame_count;
+        let ws = self.frogger.wait_scale;
+        {
             // loop through updating the path until the end frame is later than the current frame
             let mut guard = 0;
             loop {
@@ -865,15 +901,21 @@ impl Game {
                 }
             }
         }
+    }
 
+    /// The per-frame part of [`update_path_nme`](Self::update_path_nme).
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
+    fn update_path_nme_move(&mut self, cur: EnemyId) {
+        let afc = self.act_frame_count;
         // BUG(original): when waiting, `fwd` is used uninitialised by the push-block code
         // below; the port uses a zero vector.
         let mut fwd = FVector::default();
         let path = self.nme(cur).path;
         if self.nme(cur).is_waiting == 0 {
             // update the enemy position
-            let to_position = self.node_position(&path, path.to_node as i32);
-            let from_position = self.node_position(&path, path.from_node as i32);
+            let mut cache = self.nme(cur).node_pos;
+            let (to_position, from_position) = self.path_end_positions(&path, &mut cache);
+            self.nme_mut(cur).node_pos = cache;
             sub_vector_fss(&mut fwd, &to_position, &from_position);
 
             let progress = fr(afc, path.start_frame).max(1);
@@ -884,18 +926,20 @@ impl Game {
             let dn = e.delta_normal;
             add_to_vector_ff(&mut e.curr_normal, &dn);
 
-            let e = self.nme(cur).clone();
-            if e.flags & ENEMY_NEW_DONOTMOVE == 0 {
+            // Phase 3S3: the fields used below, not a clone of the whole enemy.
+            let e = self.nme(cur);
+            let (flags, visible, curr_normal, facing) = (e.flags, e.visible, e.curr_normal, e.facing);
+            if flags & ENEMY_NEW_DONOTMOVE == 0 {
                 add_vector_sfs(self.npos_mut(cur), &fwd, &from_position);
-                if e.visible != 0 && e.flags & ENEMY_NEW_NOREORIENTATE == 0 {
-                    if e.flags & ENEMY_NEW_FACEFORWARDS == 0 {
+                if visible != 0 && flags & ENEMY_NEW_NOREORIENTATE == 0 {
+                    if flags & ENEMY_NEW_FACEFORWARDS == 0 {
                         let mut fwd_copy = fwd;
                         make_unit(&mut fwd_copy);
-                        orientate(self.nq_mut(cur), &fwd_copy, &e.curr_normal);
+                        orientate(self.nq_mut(cur), &fwd_copy, &curr_normal);
                     } else {
                         // Need to do this so normals still work
-                        let dv = self.node_tile(&path, 0).dir_vector[e.facing as usize];
-                        orientate_sf(self.nq_mut(cur), &dv, &e.curr_normal);
+                        let dv = self.node_tile_ref(&path, 0).dir_vector[facing as usize];
+                        orientate_sf(self.nq_mut(cur), &dv, &curr_normal);
                     }
                 }
             }
@@ -903,6 +947,20 @@ impl Game {
 
         // ------------- Push blocks, big fat mofo blocks that push ---------------
         if self.nme(cur).flags & ENEMY_NEW_PUSHESFROG != 0 {
+            self.update_path_nme_push(cur, fwd);
+        }
+
+        let path = self.nme(cur).path;
+        let half = fr(path.end_frame, path.start_frame) / 2;
+        let t = if afc < path.start_frame.wrapping_add(half) { path.from_node } else { path.to_node };
+        let tile = self.node_world_tile(&path, t as i32);
+        self.nme_mut(cur).in_tile = tile;
+    }
+
+    /// The push-block part of [`update_path_nme`](Self::update_path_nme) (out of line).
+    #[inline(never)]
+    fn update_path_nme_push(&mut self, cur: EnemyId, mut fwd: FVector) {
+        {
             make_unit(&mut fwd);
             let mut v = FVector::default();
             sub_vector_fss(&mut v, &self.frog_position(0), &self.npos(cur));
@@ -921,12 +979,6 @@ impl Game {
                 }
             }
         }
-
-        let path = self.nme(cur).path;
-        let half = fr(path.end_frame, path.start_frame) / 2;
-        let t = if afc < path.start_frame.wrapping_add(half) { path.from_node } else { path.to_node };
-        let tile = self.node_world_tile(&path, t as i32);
-        self.nme_mut(cur).in_tile = tile;
     }
 
     /// Port of `UpdateSlerpPathNME` (Common/enemies.c:904).
@@ -1011,7 +1063,7 @@ impl Game {
 
                 // Slerp orientation towards frog
                 let mut cn = FVector::default();
-                new_set_vector_fs(&mut cn, &self.node_tile(&path, 0).normal);
+                new_set_vector_fs(&mut cn, &self.node_tile_ref(&path, 0).normal);
                 self.nme_mut(cur).curr_normal = cn;
                 let q1 = self.actor2.actors[act].actor.q_rot;
                 let mut fwd = FVector::default();
@@ -1024,7 +1076,7 @@ impl Game {
 
                 // If the snapper has just spotted the frog, set snap time
                 if self.actor2.actors[act].distance_from_frog < 750 << 12 {
-                    let ct = self.tile_or_default(self.frogmove.curr_tile[0]).centre;
+                    let ct = self.tile_ref(self.frogmove.curr_tile[0]).centre;
                     self.actor2.actors[act].actor.rotaim = ct;
 
                     let q1 = self.actor2.actors[act].actor.q_rot;
@@ -1129,7 +1181,7 @@ impl Game {
                 let node0 = self.path_node(&path, 0);
                 if fr(afc, path.start_frame) < (fr(path.end_frame, path.start_frame).wrapping_mul(10)) >> 4 {
                     let mut cn = FVector::default();
-                    new_set_vector_fs(&mut cn, &self.node_tile(&path, 0).normal);
+                    new_set_vector_fs(&mut cn, &self.node_tile_ref(&path, 0).normal);
                     self.nme_mut(cur).curr_normal = cn;
                     let to_position = self.node_position(&path, path.from_node as i32);
                     let mut dir = FVector::default();
@@ -1215,7 +1267,7 @@ impl Game {
                     // If halway through waiting cycle, trigger some warning effect
                     if afc > path.start_frame.wrapping_add(fr(path.end_frame, path.start_frame) >> 1) {
                         let mut up = FVector::default();
-                        new_set_vector_fs(&mut up, &self.node_tile(&path, 0).normal);
+                        new_set_vector_fs(&mut up, &self.node_tile_ref(&path, 0).normal);
 
                         if a2.effects & EF_FIERYSMOKE != 0 {
                             // Pilot light type thing
@@ -1231,9 +1283,9 @@ impl Game {
                         } else if a2.effects & EF_LIGHTNING != 0 && self.nme(cur).is_idle == 0 {
                             let time = ((fr(path.end_frame, afc) << 12) / 60) as i32;
                             let time = time.wrapping_add(node0.speed);
-                            let last_c = self.node_tile(&path, path.num_nodes as i32 - 1).centre;
+                            let last_c = self.node_tile_ref(&path, path.num_nodes as i32 - 1).centre;
                             let mut normal = FVector::default();
-                            sub_vector_fss(&mut normal, &last_c, &self.node_tile(&path, 0).centre);
+                            sub_vector_fss(&mut normal, &last_c, &self.node_tile_ref(&path, 0).centre);
                             make_unit(&mut normal);
                             let fx = self.create_special_effect(FXTYPE_TWINKLE, &apos, &normal, 163840, 0, 0, time);
                             if fx.is_some() {
@@ -1279,7 +1331,7 @@ impl Game {
                     let scale = if node0.offset2 != 0 { node0.offset2 / SCALE } else { 4096 };
                     self.actor2.actors[act].fx_count += 1;
                     let mut up = FVector::default();
-                    new_set_vector_fs(&mut up, &self.node_tile(&path, 0).normal);
+                    new_set_vector_fs(&mut up, &self.node_tile_ref(&path, 0).normal);
                     let nn = path.num_nodes as i32;
 
                     if a2.effects & EF_FIERYSMOKE != 0 {
@@ -1330,7 +1382,7 @@ impl Game {
                             if !(node.world_tile == self.frogmove.curr_tile[j] || node.world_tile == self.frogmove.dest_tile[j]) {
                                 continue;
                             }
-                            let nt = self.tile_or_default(node.world_tile);
+                            let nt = self.tile_ref(node.world_tile).clone();
                             let mut pos = FVector::default();
                             new_set_vector_fs(&mut pos, &nt.normal);
                             scale_vector_ff(&mut pos, node.offset);
@@ -1376,7 +1428,7 @@ impl Game {
         let (start_offset, end_offset) = if e.flags & ENEMY_NEW_MOVEUP != 0 { (node0.offset, node0.offset2) } else { (node0.offset2, node0.offset) };
 
         // get up vector for this platform
-        let t0 = self.node_tile(&path, 0);
+        let t0 = self.node_tile_ref(&path, 0).clone();
         let mut move_vec = FVector::default();
         new_set_vector_fs(&mut move_vec, &t0.normal);
 
@@ -1390,7 +1442,7 @@ impl Game {
         let e = self.nme(cur).clone();
         let path = e.path;
         let node0 = self.path_node(&path, 0);
-        let t0 = self.node_tile(&path, 0);
+        let t0 = self.node_tile_ref(&path, 0).clone();
         let afc = self.act_frame_count;
 
         // note - our fixed-point angles go from 0-4096, where 4096 => 360degrees => 2pi radians
@@ -1486,8 +1538,8 @@ impl Game {
     fn move_between_nodes_1_2(&mut self, cur: EnemyId, length: Fixed) {
         let e = self.nme(cur).clone();
         let path = e.path;
-        let t1 = self.node_tile(&path, 1);
-        let t2 = self.node_tile(&path, 2);
+        let t1 = self.node_tile_ref(&path, 1).clone();
+        let t2 = self.node_tile_ref(&path, 2).clone();
         let mut fwd = FVector::default();
         sub_vector_fss(&mut fwd, &t2.centre, &t1.centre);
         scale_vector_ff(&mut fwd, length);
@@ -1501,7 +1553,7 @@ impl Game {
 
         // Elevate above gametile
         let mut up = FVector::default();
-        new_set_vector_fs(&mut up, &self.tile_or_default(e.in_tile).normal);
+        new_set_vector_fs(&mut up, &self.tile_ref(e.in_tile).normal);
         scale_vector_ff(&mut up, self.path_node(&path, 0).offset);
         add_to_vector_sf(self.npos_mut(cur), &up);
     }
@@ -1542,7 +1594,7 @@ impl Game {
         // If we need a new destination tile, find it by the direction to the frog
         if self.node_world_tile(&p, 2).is_none() {
             let mut frog_vec = FVector::default();
-            sub_vector_fss(&mut frog_vec, &self.tile_or_default(self.frogmove.curr_tile[0]).centre, &self.npos(cur));
+            sub_vector_fss(&mut frog_vec, &self.tile_ref(self.frogmove.curr_tile[0]).centre, &self.npos(cur));
             let n1 = self.node_world_tile(&p, 1);
             let n2 = n1.and_then(|n1| find_joined_tile_by_direction(&self.map, n1, &frog_vec));
             self.set_node_tile(&p, 2, n2);
@@ -1720,8 +1772,9 @@ impl Game {
         iquat_slerp(&q1, &q2, speed, self.nq_mut(cur));
     }
 
-    /// Port of `UpdateFlappyThing` (Common/enemies.c:1856).
-    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
+    /// Port of `UpdateFlappyThing` (Common/enemies.c:1856). (Phase 3S3: not in the enemy
+    /// loop's I-cache region: only Garden 1 has flappy things, and the region with the
+    /// shared maths must stay under 16 KiB.)
     pub fn update_flappy_thing(&mut self, nme: EnemyId) {
         let path = self.nme(nme).path;
         let afc = self.act_frame_count;
@@ -1763,7 +1816,7 @@ impl Game {
             if path.start_node != 0 {
                 // If we just found a node to aim at, go there
                 let sn = self.path_node(&path, path.start_node as i32);
-                let st = self.tile_or_default(sn.world_tile);
+                let st = self.tile_ref(sn.world_tile).clone();
                 let mut up = FVector::default();
                 new_set_vector_fs(&mut up, &st.normal);
                 scale_vector_ff(&mut up, sn.offset);
@@ -1772,8 +1825,8 @@ impl Game {
                 // Else pick a random point in space
                 let n0 = self.path_node(&path, 0);
                 let n1 = self.path_node(&path, 1);
-                let t0 = self.tile_or_default(n0.world_tile);
-                let t1 = self.tile_or_default(n1.world_tile);
+                let t0 = self.tile_ref(n0.world_tile).clone();
+                let t1 = self.tile_ref(n1.world_tile).clone();
                 let mut up = FVector::default();
                 let mut p1 = SVector::default();
                 let mut p2 = SVector::default();
@@ -1865,7 +1918,7 @@ impl Game {
         if let Some(n2) = self.node_world_tile(&p, 2) {
             if afc > p.end_frame {
                 let mut fwd = FVector::default();
-                sub_vector_fss(&mut fwd, &self.map.tile(n2).centre, &self.node_tile(&p, 1).centre);
+                sub_vector_fss(&mut fwd, &self.map.tile(n2).centre, &self.node_tile_ref(&p, 1).centre);
                 self.set_node_tile(&p, 1, Some(n2));
 
                 self.map.tile_mut(n2).state = tilestate::NORMAL;
@@ -1896,7 +1949,7 @@ impl Game {
     pub fn slerp_waiting_flappy_thing(&mut self, cur: EnemyId) {
         let path = self.nme(cur).path;
         let q1 = *self.nq_mut(cur);
-        let n = self.node_tile(&path, path.start_node as i32).normal;
+        let n = self.node_tile_ref(&path, path.start_node as i32).normal;
         let q3 = IQuaternion { x: n.vx as i32, y: n.vy as i32, z: n.vz as i32, w: 0 };
         let mut q2 = IQuaternion::default();
         fixed_get_quaternion_from_rotation(&mut q2, &q3);
@@ -1979,7 +2032,7 @@ impl Game {
 
         let flags = self.nme(nid).flags;
         let p = self.nme(nid).path;
-        let t0 = self.node_tile(&p, 0);
+        let t0 = self.node_tile_ref(&p, 0).clone();
         let fac = self.nme(nid).facing as usize;
         let orient = |g: &mut Game| orientate_ss(&mut g.actor2.actors[actor].actor.q_rot, &t0.dir_vector[fac], &t0.normal);
         let set = |g: &mut Game, u: EnemyUpdate| g.nme_mut(nid).update[0] = Some(u);
@@ -2134,7 +2187,7 @@ impl Game {
         let start = self.node_position(&path, path.from_node as i32);
         *self.npos_mut(nme) = start;
         let from = self.path_node(&path, path.from_node as i32);
-        let n = self.tile_or_default(from.world_tile).normal;
+        let n = self.tile_ref(from.world_tile).normal;
         normal_to_quaternion(self.nq_mut(nme), &n);
 
         // set enemy current 'in' tile and speeds and pause times
@@ -2242,8 +2295,8 @@ impl Game {
         if path.num_nodes < 2 {
             return;
         }
-        let from_t = self.node_tile(&path, path.from_node as i32);
-        let to_t = self.node_tile(&path, path.to_node as i32);
+        let from_t = self.node_tile_ref(&path, path.from_node as i32).clone();
+        let to_t = self.node_tile_ref(&path, path.to_node as i32).clone();
 
         // set the current enemy normal to that of the 'from' node and get the dest normal
         let mut curr = FVector::default();

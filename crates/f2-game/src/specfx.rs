@@ -1234,7 +1234,11 @@ impl Game {
         if self.specfx.count == 0 {
             return;
         }
-        for id in self.specfx.ids() {
+        // Phase 3S3: the snapshot of the list goes into a reused buffer.
+        let mut ids = core::mem::take(&mut self.scratch.fx_ids);
+        ids.clear();
+        ids.extend(self.specfx.iter_list().map(|(i, _)| i.0));
+        for &id in &ids {
             if !self.specfx.is_live(SpecFxId(id)) {
                 continue;
             }
@@ -1244,6 +1248,7 @@ impl Game {
                 _ => {}
             }
         }
+        self.scratch.fx_ids = ids;
     }
 
     /// The state part of `DrawFXRing` (PC/pcgfx.c:375): the ring is transformed segment by
@@ -1509,10 +1514,14 @@ impl Game {
         let limit = e.accn;
         let j = (fx.0.wrapping_mul(SIZEOF_SPECFX) & (40 + 64 + 128 + 256)) as i32;
         let afc = self.act_frame_count as i32;
-        let ss = self.sprite.chain(e.sprites, e.num_p);
-        let ps = self.particle.chain(e.particles, e.num_p);
+        // Phase 3S3: the sprite and particle chains are walked as they are used (the loop
+        // only moves them; no `Vec` per effect per frame).
+        let (mut next_s, mut next_p) = (e.sprites, e.particles);
         let mut i = e.num_p;
-        for (s, p) in ss.into_iter().zip(ps) {
+        for _ in 0..e.num_p.max(0) {
+            let (Some(s), Some(p)) = (next_s, next_p) else { break };
+            next_s = self.sprite.next_of(s);
+            next_p = self.particle.next_of(p);
             i -= 1;
             let k = i.wrapping_add(j);
             let px = fmul(fmul(rsin(afc.wrapping_add(k.wrapping_mul(10)).wrapping_mul(43)), limit), 4);
@@ -1623,10 +1632,13 @@ impl Game {
             scale_vector_ff(&mut aim, e.speed);
             add_vector_sfs(&mut target, &aim, &e.origin);
         }
-        let ps = self.particle.chain(e.particles, e.num_p);
+        // Phase 3S3: the particle chain is walked as it is used (the loop moves particles and
+        // never relinks them; no `Vec` per bolt per frame).
         let num_p = e.num_p;
-        for (i, &p) in ps.iter().enumerate() {
-            let i = i as i32;
+        let mut next_p = e.particles;
+        for i in 0..num_p.max(0) {
+            let Some(p) = next_p else { break };
+            next_p = self.particle.next_of(p);
             let mut to = FVector::default();
             if i != 0 {
                 let scale = 4096 / (num_p - i);
@@ -1899,8 +1911,45 @@ impl Game {
     }
 
     /// Port of `ProcessAttachedEffects` (Common/specfx.c:1802).
-    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_e")]
+    ///
+    /// Phase 3S3: the test that decides whether the call does anything stays here, in the
+    /// enemy loop's I-cache region (`.text.f2hot_e`); the rest (effect creation, ~8 KiB of
+    /// code) is out of line. Nothing happens unless the effect timer has run out
+    /// (`actFrameCount > fxCount`) or one of the per-frame effects is set; the skipped
+    /// part only reads state.
+    #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_x")]
     pub fn process_attached_effects(&mut self, entity: FxEntity) {
+        const EVERY_FRAME: u32 = EF_GLOW | EF_BUTTERFLYSWARM | EF_BATSWARM | EF_SPACETHING1 | EF_TRAIL | EF_BILLBOARDTRAIL;
+        let (act, tile) = match entity {
+            FxEntity::Enemy(id) => {
+                let n = &self.enemies.enemy_list.array[id.idx()];
+                (n.nme_actor, n.in_tile)
+            }
+            FxEntity::Platform(id) => {
+                let p = &self.platform.platform_list.array[id.idx()];
+                (p.plt_actor, p.in_tile[0])
+            }
+        };
+        let Some(act) = act else { return };
+        let a2 = &self.actor2.actors[act];
+        if a2.effects & EVERY_FRAME == 0 {
+            // Only the timed part can do anything: it needs a tile, frog 0 and the timer and
+            // distance tests (the body repeats them).
+            if self.act_frame_count <= a2.fx_count || tile.is_none() {
+                return;
+            }
+            let Some(frog0) = self.frogger.frog[0] else { return };
+            let apos = a2.actor.position;
+            if distance_between_points_ss(&self.actor2.actors[frog0].actor.position, &apos) >= (ACTOR_DRAWDISTANCEOUTER << 1) {
+                return;
+            }
+        }
+        self.process_attached_effects_body(entity);
+    }
+
+    /// The body of [`process_attached_effects`](Self::process_attached_effects).
+    #[inline(never)]
+    fn process_attached_effects_body(&mut self, entity: FxEntity) {
         let (act, tile, flags, path, is_enemy) = match entity {
             FxEntity::Enemy(id) => {
                 let n = &self.enemies.enemy_list.array[id.idx()];

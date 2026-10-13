@@ -70,6 +70,7 @@ impl Game {
                         find_nearest_tile_v(&self.map, v)
                     }
                 };
+                self.path.touch();
                 self.path.nodes[first as usize + k] = PathNode {
                     world_tile,
                     offset: n.offset,

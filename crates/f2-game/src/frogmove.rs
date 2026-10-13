@@ -252,7 +252,12 @@ impl Game {
 
     /// `currTile[p]` (the original dereferences it unconditionally).
     fn ctile(&self, p: usize) -> GameTile {
-        self.tile_or_default(self.frogmove.curr_tile[p])
+        self.tile_ref(self.frogmove.curr_tile[p]).clone()
+    }
+
+    /// [`ctile`](Self::ctile) by reference.
+    fn ctile_ref(&self, p: usize) -> &GameTile {
+        self.tile_ref(self.frogmove.curr_tile[p])
     }
 
     /// `plat->pltActor->actor->position`.
@@ -281,7 +286,7 @@ impl Game {
                 e.visible = 1;
                 let path = e.path;
                 let actor = e.nme_actor;
-                let centre = self.tile_or_default(self.path_node(&path, 0).world_tile).centre;
+                let centre = self.tile_ref(self.path_node(&path, 0).world_tile).centre;
                 if let Some(a) = actor {
                     let a = &mut self.actor2.actors[a];
                     a.draw = 1;
@@ -594,8 +599,17 @@ impl Game {
                 while let Some(cur) = c {
                     let next = self.platform.platform_list.array[cur.idx()].links.next;
                     c = next;
-                    let plat = self.platform.platform_list.array[cur.idx()].clone();
-                    if plat.active == 0 || self.tile_or_default(plat.in_tile[0]).state == tilestate::BARRED {
+                    // Phase 3S3: the three fields used, not a clone of the 256-byte platform.
+                    let plat = {
+                        let pl = &self.platform.platform_list.array[cur.idx()];
+                        struct P {
+                            active: u8,
+                            in_tile: [Option<TileId>; 2],
+                            flags: u32,
+                        }
+                        P { active: pl.active, in_tile: pl.in_tile, flags: pl.flags }
+                    };
+                    if plat.active == 0 || self.tile_ref(plat.in_tile[0]).state == tilestate::BARRED {
                         continue;
                     }
 
@@ -627,7 +641,7 @@ impl Game {
 
                     // 'kay, now check to see if we've fallen through it...
                     let plt = ppos;
-                    let ctn = fv(&self.ctile(p).normal);
+                    let ctn = fv(&self.ctile_ref(p).normal);
                     let mut v = FVector::default();
                     sub_vector_fss(&mut v, &pos, &plt);
                     let after = dot_product_ff(&v, &ctn);
@@ -699,7 +713,7 @@ impl Game {
         pp.frog_state &= !FROGSTATUS_ALLHOPFLAGS;
         pp.frog_state |= FROGSTATUS_ISJUMPINGTOPLATFORM;
         pp.jump_time = 4096; // aaand land.
-        let n = fv(&self.tile_or_default(self.platform.platform_list.array[cur.idx()].in_tile[0]).normal);
+        let n = fv(&self.tile_ref(self.platform.platform_list.array[cur.idx()].in_tile[0]).normal);
         self.frogger.player[p].height_jumped = dot_product_ff(up, &n);
     }
 
@@ -748,7 +762,7 @@ impl Game {
         if let Some(plat) = self.platform.curr_platform[p] {
             let pl_data = self.platform.platform_list.array[plat.idx()].clone();
             let tile_id = pl_data.in_tile[0];
-            let tile = self.tile_or_default(tile_id);
+            let tile = self.tile_ref(tile_id).clone();
 
             self.cam.control_camera = 0;
 
@@ -764,8 +778,8 @@ impl Game {
 
             if tile.state == tilestate::BARRED {
                 // if we're moving onto a barred tile, push the frog in the other direction
-                let from = self.node_tile(&pl_data.path, pl_data.path.from_node as i32).centre;
-                let to = self.node_tile(&pl_data.path, pl_data.path.to_node as i32).centre;
+                let from = self.node_tile_ref(&pl_data.path, pl_data.path.from_node as i32).centre;
+                let to = self.node_tile_ref(&pl_data.path, pl_data.path.to_node as i32).centre;
                 let mut v = FVector::default();
                 sub_vector_fss(&mut v, &from, &to);
                 make_unit(&mut v);
@@ -1020,7 +1034,7 @@ impl Game {
 
         self.frogger.player[p].frog_state |= if self.platform.dest_platform[p].is_some() { FROGSTATUS_ISJUMPINGTOPLATFORM } else { FROGSTATUS_ISJUMPINGTOTILE };
 
-        let from_tile = self.tile_or_default(from);
+        let from_tile = self.tile_ref(from).clone();
         self.frogmove.next_frog_facing[p] = get_tiles_matching_direction(&from_tile, self.frogmove.frog_facing[p], &dest_tile);
 
         let pp = &self.frogger.player[p];
@@ -1154,7 +1168,7 @@ impl Game {
         } else if self.frogger.player[p].frog_state & FROGSTATUS_ISJUMPINGTOPLATFORM != 0 {
             let dp = self.platform.dest_platform[p].expect("destPlatform");
             let t = self.platform.platform_list.array[dp.idx()].in_tile[0];
-            let tt = self.tile_or_default(t);
+            let tt = self.tile_ref(t).clone();
 
             // ok - frog has landed
             let ppos = self.plat_pos(dp);
@@ -1180,7 +1194,7 @@ impl Game {
 
             if self.frogger.player[p].height_jumped < -DROP_KILL_HEIGHT {
                 // BUG(original): uses destTile (may be stale/NULL) for the decal.
-                let dt = self.tile_or_default(self.frogmove.dest_tile[p]);
+                let dt = self.tile_ref(self.frogmove.dest_tile[p]).clone();
                 self.splat_frog(p, &dt, 64);
             } else {
                 frog_anim!(self, p, FROG_ANIM_BREATHE, true, true, FROG_BREATHE_SPEED);
@@ -1193,7 +1207,7 @@ impl Game {
             } else {
                 let ct = self.ctile(p);
                 let dt_id = self.frogmove.dest_tile[p];
-                let dt = self.tile_or_default(dt_id);
+                let dt = self.tile_ref(dt_id).clone();
                 if ct.state >= tilestate::CONVEYOR_ONEWAY && dt.state < tilestate::CONVEYOR_ONEWAY {
                     let cam = get_tiles_matching_direction(&ct, self.cam.cam_facing[p], &dt);
                     frog_anim!(self, p, FROG_ANIM_BREATHE, true, false, FROG_BREATHE_SPEED);
@@ -1212,7 +1226,7 @@ impl Game {
                 self.frogmove.dest_tile[p] = None;
             }
 
-            let tt = self.tile_or_default(tile);
+            let tt = self.tile_ref(tile).clone();
             let state = tt.state;
 
             if self.frogger.player[p].death_by as i32 != DEATHBY_WHACKING {
@@ -1336,7 +1350,7 @@ impl Game {
         let to = if self.frogger.player[p].frog_state & FROGSTATUS_ISJUMPINGTOPLATFORM != 0 {
             self.plat_pos(self.platform.dest_platform[p].expect("destPlatform"))
         } else {
-            self.tile_or_default(self.frogmove.dest_tile[p]).centre
+            self.tile_ref(self.frogmove.dest_tile[p]).centre
         };
         self.calculate_frog_jump_s(&fpos, &to, &tile.normal, -1, frames, p as i32);
         let fpos = self.frog_pos(p);
@@ -1816,7 +1830,7 @@ impl Game {
 
         // (the original also computes an unused `pos` = position + dir*300)
         let fpos = self.frog_pos(p);
-        let to = self.tile_or_default(bounce_to).centre;
+        let to = self.tile_ref(bounce_to).centre;
         let n = self.ctile(p).normal;
         self.calculate_frog_jump_s(&fpos, &to, &n, height, time, pl);
         self.frogmove.dest_tile[p] = bounce_to;

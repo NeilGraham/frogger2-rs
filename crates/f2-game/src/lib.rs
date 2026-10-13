@@ -62,6 +62,7 @@ pub mod memload;
 pub mod menus; // wave G
 pub mod modscript; // P7b mods: behaviour scripts
 pub mod multi;
+mod nearest;
 pub mod netsync; // P6-2 netplay: snapshot / checksum / resimulate
 pub mod options; // wave G
 pub mod overlays; // wave E
@@ -254,12 +255,24 @@ pub struct Game {
     /// `EnemyAtFlag`/`PlatformAtFlag` while `UpdateEvents` evaluates triggers (not game
     /// state; see `evenfunc.rs`).
     pub(crate) flag_snap: evenfunc::FlagSnap,
+    /// Phase 3S3: reused buffers of per-tick passes (not game state).
+    pub(crate) scratch: Scratch,
     /// Phase 3T: `timeInfo` and `LoopFunc`'s timing globals (variable timestep; untouched by
     /// [`Game::tick`]).
     pub timing: timing::TimingState,
     /// Phase 3T: the host's `timeGetTime()` (ms) for `InitTiming`/`InitBackdrop` under
     /// [`Game::update_timing`] (not game state; `None` = hold the last clock value).
     pub timing_clock: Option<fn() -> u32>,
+}
+
+/// Phase 3S3: buffers the per-tick passes reuse instead of allocating every tick (the N64's
+/// allocator is slow). Not game state: contents are rebuilt before every use.
+#[derive(Clone, Default)]
+pub(crate) struct Scratch {
+    /// `ActorListDraw(1)`'s actors of the current `DrawLoop`.
+    pub actor_ids1: Vec<ids::ActorId>,
+    /// `DrawSpecialFX`'s snapshot of the effect list.
+    pub fx_ids: Vec<u32>,
 }
 
 impl Game {
@@ -326,6 +339,10 @@ impl Game {
     /// matrix, sounds and `Random()` (in the same order as before, as `CopyActorList` makes
     /// none of those calls); `CopyActorList` reads only its own actor and `frog[0]`'s
     /// position (unchanged by drawing); neither creates, frees nor re-lists actors.
+    ///
+    /// Phase 3S3: never inlined, so the loop stays in `.text.f2hot_s` with what it calls
+    /// (inlined into `after_game_loop` it shared I-cache lines with `copy_actor`).
+    #[inline(never)]
     #[cfg_attr(target_vendor = "nintendo64", allow(unsafe_code), link_section = ".text.f2hot_s")]
     fn copy_and_draw_actors(&mut self) {
         use define::mode::*;
@@ -336,7 +353,9 @@ impl Game {
         self.calc_view_matrix();
         let view = self.specfx.view;
         let frog0 = self.frog0_position();
-        let mut ids1 = Vec::new();
+        // Phase 3S3: list 1 goes into a reused buffer (no allocation per tick).
+        let mut ids1 = core::mem::take(&mut self.scratch.actor_ids1);
+        ids1.clear();
         let mut cur = self.actor2.act_list.first;
         while let Some(id) = cur {
             cur = self.actor2.actors[id].links.next;
@@ -347,9 +366,10 @@ impl Game {
                 _ => {}
             }
         }
-        for id in ids1 {
+        for &id in &ids1 {
             self.actor_list_draw_one(id, view.as_ref());
         }
+        self.scratch.actor_ids1 = ids1;
         // DrawLoop (PC/drawloop.cpp:250): UpdateFrogTongue(0) after ActorListDraw(1).
         if self.game_state.multi == define::SINGLEPLAYER && self.frogger.frog[0].is_some() {
             self.update_frog_tongue(0);
@@ -358,7 +378,14 @@ impl Game {
     }
 
     /// Drains platform requests produced since the last call.
+    ///
+    /// Phase 3S3: the list for the next requests starts with room for as many as this call
+    /// returns (one allocation per call instead of the regrowth by doubling; ambient sounds
+    /// emit several `UpdateHandle`s every frame). A host that keeps its own buffer can move
+    /// the requests out with `Vec::append` from [`Game::effects`] instead, which keeps both
+    /// allocations.
     pub fn take_effects(&mut self) -> Vec<Effect> {
-        core::mem::take(&mut self.effects)
+        let n = self.effects.len();
+        core::mem::replace(&mut self.effects, Vec::with_capacity(n))
     }
 }

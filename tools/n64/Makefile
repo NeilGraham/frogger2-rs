@@ -52,6 +52,10 @@ $(BUILD_DIR)/r3d.o: $(BUILD_DIR)/r3d_rsp_syms.h
 # than on `draw_slot` (every draw); keep `.text.f2hot_d` under ~6 KiB for that.
 # Then `.text.f2hot_s` (< 16 KiB): the simulation's per-actor pass (`Game::copy_and_draw_actors`
 # and what it calls per actor), contiguous so its functions never evict each other.
+# Then the enemy loop (`.text.f2hot_e`), the fixed-point maths both it and the platform loop
+# call per entity (`.text.f2hot_x`: MakeUnit, Orientate, IQuatSlerp, ...) and the platform
+# loop (`.text.f2hot_p`): e + x and x + p each < 16 KiB (phase 3S3), so neither loop's code
+# evicts itself.
 HOT_C = n64_r3d_draw_list_impl load_frame upload_tex additive_tex draw_inline rspq_block_run mg_uniform_load mg_uniform_load_raw \
 	mg_uniform_load_inline mg_uniform_load_inline_raw mg_draw_begin mg_draw_end \
 	mg_bind_vertex_buffer data_cache_hit_writeback rspq_flush_internal __rspq_deferred_poll \
@@ -72,6 +76,8 @@ $(BUILD_DIR)/f2.ld: $(N64_LIBDIR)/n64.ld $(F2_MAKEFILE)
 			print "        *(.text.f2hot_s .text.f2hot_s.*)"; \
 			print "        __f2_hot_sim_e = .;"; \
 			print "        *(.text.f2hot_e .text.f2hot_e.*)"; \
+			print "        __f2_hot_sim_x = .;"; \
+			print "        *(.text.f2hot_x .text.f2hot_x.*)"; \
 			print "        __f2_hot_sim_p = .;"; \
 			print "        *(.text.f2hot_p .text.f2hot_p.*)"; \
 			print "        __f2_hot_sim_end = .;"; done = 1 } { print }' $< > $@
