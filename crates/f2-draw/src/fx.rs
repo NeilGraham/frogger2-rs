@@ -558,6 +558,10 @@ pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32, posed: &BTree
     // an SVECTOR read as floats: tiny denormals, i.e. the world origin.
     let frog_z = if game.frogger.frog[0].is_some() { r.view.xfm_point([0.0; 3]).map_or(0.0, |m| m[2]) } else { 0.0 };
     let mut list: Vec<(f32, f32, f32, SprIdx)> = Vec::new();
+    // Out of memory (consoles): no sprites this frame rather than an abort.
+    if list.try_reserve(game.sprite.count.clamp(0, MAX_ARRAY_SPRITES as i32) as usize).is_err() {
+        return;
+    }
     for (id, s) in game.sprite.iter_list().take(MAX_ARRAY_SPRITES) {
         let s = posed.get(&id).unwrap_or(s);
         let p = [s.pos.vx as f32 * 0.1, s.pos.vy as f32 * 0.1, s.pos.vz as f32 * 0.1];

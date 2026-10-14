@@ -403,6 +403,9 @@ static uint32_t mem_main_only, mem_main_save, mem_level_top;
 #endif
 #endif
 static int mem_main_peak, mem_main_used; /* main heap bytes in blocks allocated since big_init */
+#ifdef F2N64_MEM_PEAK_TRACE
+static uint32_t peak_trace_hw; /* the last logged play-time high-water mark (`memgrow`) */
+#endif
 
 /* Main-heap accounting (blocks allocated after big_init; the boot's own are in the base). */
 static inline void main_count(void *p, int sign) {
@@ -519,6 +522,28 @@ static void big_init(void) {
 static inline int big_owns(void *p) { return (uint8_t *)p >= pool_base && (uint8_t *)p < pool_end; }
 
 /* `top`: the highest place that fits (play-time blocks), else the lowest (level loads). */
+#ifdef F2N64_MEM_LIVE_TRACE /* testing (tools/n64/README.md): who owns the play-time blocks */
+/* Interned allocation backtraces; a play-time pool block keeps its trace's index in the
+ * top bits of `req` (requested bytes: the low 20 bits). `n64_mem_report(.., 8)` dumps the
+ * live play-time blocks by trace (`memlive`), `(.., 16)` the blocks of the current load. */
+#define LT_DEPTH 8
+#ifdef F2N64_MEM_LIVE_LOAD /* load-time blocks too (many more sites: a bigger table) */
+#define LT_MAX 2048
+#else
+#define LT_MAX 512
+#endif
+static void *lt_bt[LT_MAX][LT_DEPTH];
+static uint32_t lt_n;
+static uint32_t lt_intern(void) {
+    void *bt[LT_DEPTH + 3] = {0};
+    backtrace(bt, LT_DEPTH + 3);
+    for (uint32_t i = 0; i < lt_n; i++)
+        if (!memcmp(lt_bt[i], bt + 3, sizeof(lt_bt[i]))) return i + 1;
+    if (lt_n == LT_MAX) return 0;
+    memcpy(lt_bt[lt_n], bt + 3, sizeof(lt_bt[lt_n]));
+    return ++lt_n;
+}
+#endif
 static void *big_alloc(uint32_t req, uint32_t align, int top) {
     if (!pool_base) return NULL;
 #ifdef F2N64_POOL_BOTTOM_ONLY
@@ -575,6 +600,13 @@ static void *big_alloc(uint32_t req, uint32_t align, int top) {
     }
     b->epoch = mem_phase ? mem_epoch : 0;
     b->req = req;
+#ifdef F2N64_MEM_LIVE_TRACE
+#ifdef F2N64_MEM_LIVE_LOAD
+    if (req < (1u << 20)) b->req |= lt_intern() << 20;
+#else
+    if (!b->epoch && req < (1u << 20)) b->req |= lt_intern() << 20;
+#endif
+#endif
     pool_used += need;
     if (pool_used > pool_peak) pool_peak = pool_used;
     return b + 1;
@@ -662,6 +694,26 @@ void mem_main_end(void) {
 /* One `mem` log line: both heaps, and the level heap's blocks by lifetime. `check`: also
  * list the blocks that earlier loads left behind (which must not exist). */
 void n64_mem_report_impl(const char *tag, uint32_t len, uint32_t check) {
+#ifdef F2N64_MEM_LIVE_TRACE
+    if (check & 24) { /* testing: live pool blocks by allocation backtrace (8: play-time, 16: this load's) */
+        static uint32_t cnt[LT_MAX + 1], bytes[LT_MAX + 1];
+        memset(cnt, 0, sizeof(cnt));
+        memset(bytes, 0, sizeof(bytes));
+        for (pb *b = (pb *)pool_base; b && (uint8_t *)b < pool_end - 16; b = pb_next(b)) {
+            if (!(b->size & PB_USED) || ((check & 8) ? b->epoch != 0 : b->epoch != mem_epoch)) continue;
+            uint32_t id = b->req >> 20;
+            cnt[id]++;
+            bytes[id] += PB_SZ(b);
+        }
+        for (uint32_t id = 0; id <= lt_n; id++) {
+            if (!cnt[id] || bytes[id] < ((check & 16) ? 8192 : 512)) continue;
+            debugf("memlive [%.*s] %lu: %lu blocks %lu bytes:", (int)len, tag, (unsigned long)id, (unsigned long)cnt[id], (unsigned long)bytes[id]);
+            if (id) for (int i = 0; i < LT_DEPTH; i++) debugf(" %p", lt_bt[id - 1][i]);
+            debugf("\n");
+        }
+        return;
+    }
+#endif
     if (check & 4) { /* during play: counters only (the block walk below takes ~4 ms) */
         debugf("mem [%.*s]: level heap %lu KiB used (peak %lu) of %lu, %lu free runs | main heap %d KiB used (peak %d) | "
                "fallbacks: play->level %lu, level->main %lu | stack below its 64 KiB: %lu KiB of %d\n",
@@ -713,11 +765,38 @@ void n64_mem_report_impl(const char *tag, uint32_t len, uint32_t check) {
 void n64_mem_reset_peaks_impl(void) {
     pool_peak = pool_used;
     mem_main_peak = mem_main_used;
+#ifdef F2N64_MEM_PEAK_TRACE
+    peak_trace_hw = (uint32_t)mem_main_used + pool_used;
+#endif
 }
 
+#ifdef F2N64_MEM_PEAK_TRACE /* testing (tools/n64/README.md): what makes play-time memory grow */
+static void *wrap_memalign_inner(size_t align, size_t size);
+/* During play, an allocation that takes both heaps' bytes in use F2N64_MEM_PEAK_TRACE bytes
+ * past the last logged high-water mark logs its backtrace (`memgrow`): blocks freed every
+ * frame stop reaching new highs, what keeps growing keeps showing up. The mark restarts at
+ * every `n64_mem_reset_peaks` (the end of a load). */
+void *__wrap_memalign(size_t align, size_t size) {
+    void *p = wrap_memalign_inner(align, size);
+    if (p && !mem_phase && pool_base) {
+        uint32_t total = (uint32_t)mem_main_used + pool_used;
+        if (total >= peak_trace_hw + F2N64_MEM_PEAK_TRACE) {
+            void *bt[16];
+            int n = backtrace(bt, 16);
+            debugf("memgrow %lu KiB +%lu:", (unsigned long)(total / 1024), (unsigned long)size);
+            for (int i = 2; i < n; i++) debugf(" %p", bt[i]);
+            debugf("\n");
+            peak_trace_hw = total;
+        }
+    }
+    return p;
+}
+static void *wrap_memalign_inner(size_t align, size_t size) {
+#else
 /* The whole program's malloc family is routed here (`ld --wrap`, tools/n64/Makefile): Rust,
  * our C host and libdragon (asset_load, surfaces, the H.264 decoder's frame buffers, ...). */
 void *__wrap_memalign(size_t align, size_t size) {
+#endif
 #ifdef F2N64_BIGPOOL_DUMP
     if (size >= 200000) {
         void *bt[8];

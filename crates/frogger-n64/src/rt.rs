@@ -33,6 +33,10 @@ unsafe impl GlobalAlloc for LibdragonHeap {
                 h.used / 1024,
                 h.total / 1024
             );
+            // Testing: who owns the play-time blocks (a full report without the trace build).
+            if option_env!("F2N64_MEM_LIVE").is_some() {
+                unsafe { ffi::n64_mem_report(b"fail".as_ptr(), 4, 8) };
+            }
         }
         p
     }

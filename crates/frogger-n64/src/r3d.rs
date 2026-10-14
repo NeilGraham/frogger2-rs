@@ -658,8 +658,13 @@ struct SlotUni {
     u: [R3dDrawUniform; 3],
 }
 
-/// Slots per [`SlotUni`] chunk (chunks never move: the RSP reads the uniforms in place).
+/// Uniform rings per [`SlotUni`] chunk (chunks never move: the RSP reads the uniforms in place).
 const SLOT_CHUNK: usize = 32;
+/// A draw slot without a uniform ring (`R3d::slot_ui`).
+const NO_UNI: u16 = u16::MAX;
+/// A uniform ring unused for this many frames is no longer read by the RSP (frames N-1 and
+/// N-2 can be in flight while N records) and can go to another slot.
+const UNI_REUSE_FRAMES: u32 = 3;
 
 /// No draw slot (not reusable).
 const NO_SLOT: u16 = u16::MAX;
@@ -901,9 +906,19 @@ pub struct R3d {
     pub sent_tris: u32,
     /// Bumped when the view changes between frames (invalidates `cache`).
     view_gen: u32,
-    /// Per draw slot: the last draw queued in it, and its uniforms (by chunk).
+    /// Per draw slot: the last draw queued in it.
     slots: Vec<Slot>,
-    slot_uni: Vec<alloc::boxed::Box<[SlotUni; SLOT_CHUNK]>>,
+    /// Per draw slot: its uniform ring in `rings` (`NO_UNI`: none). Slots get rings only when
+    /// they draw: a level's slots count every draw of the frame, culled actors' included
+    /// (640+ in heavy levels, ~70 drawn), and unused rings go back to the pool
+    /// ([`R3d::slot_ring`]).
+    slot_ui: Vec<u16>,
+    /// Slot uniform rings by chunk, with per ring the owning slot (`NO_SLOT`: free) and the last
+    /// frame that queued it.
+    rings: Vec<alloc::boxed::Box<[SlotUni; SLOT_CHUNK]>>,
+    uni_owner: Vec<u16>,
+    uni_used: Vec<u32>,
+    uni_free: Vec<u16>,
     /// Per draw slot: the (model, object) of the last raw draw in it and its mesh
     /// ([`R3d::run_queue_with`]).
     slot_key: Vec<(u32, u16, u16)>,
@@ -1315,7 +1330,11 @@ impl R3d {
             sent_tris: 0,
             view_gen: 0,
             slots: Vec::new(),
-            slot_uni: Vec::new(),
+            slot_ui: Vec::new(),
+            rings: Vec::new(),
+            uni_owner: Vec::new(),
+            uni_used: Vec::new(),
+            uni_free: Vec::new(),
             prev_vis: Vec::with_capacity(2048),
             frame_no: 1,
             cache_hits: 0,
@@ -1474,7 +1493,11 @@ impl R3d {
         self.discard();
         // Per-level storage (the RSP finished above): freed, the next level grows its own.
         self.slots = Vec::new();
-        self.slot_uni = Vec::new();
+        self.slot_ui = Vec::new();
+        self.rings = Vec::new();
+        self.uni_owner = Vec::new();
+        self.uni_used = Vec::new();
+        self.uni_free = Vec::new();
         self.slot_model = Vec::new();
         self.slot_key = Vec::new();
         self.ptab = Vec::new();
@@ -2138,11 +2161,14 @@ impl R3d {
             if e.vis_count == 0 {
                 return;
             }
+            // Queued last frame, so its ring is still its own (`UNI_REUSE_FRAMES`).
             let (a, n, cur) = (e.vis_first as usize, e.vis_count as usize, (e.cf & SLOT_CUR) as usize);
             let vis_first = self.vis.len() as u32;
             e.vis_first = vis_first as u16;
             self.vis.extend_from_slice(&self.prev_vis[a..a + n]);
-            let uptr: *const R3dDrawUniform = &self.slot_uni[i / SLOT_CHUNK][i % SLOT_CHUNK].u[cur];
+            let r = self.slot_ui[i] as usize;
+            self.uni_used[r] = self.frame_no;
+            let uptr: *const R3dDrawUniform = &self.rings[r / SLOT_CHUNK][r % SLOT_CHUNK].u[cur];
             self.push_rec_ptr(list, mesh, p, uptr, vis_first, n as u32);
             return;
         }
@@ -2176,7 +2202,10 @@ impl R3d {
         if n == 0 {
             return;
         }
-        let su = &mut self.slot_uni[i / SLOT_CHUNK][i % SLOT_CHUNK];
+        let r = self.slot_ring(i);
+        self.uni_used[r] = frame_no;
+        let e = &mut self.slots[i];
+        let su = &mut self.rings[r / SLOT_CHUNK][r % SLOT_CHUNK];
         // The ring's current uniform is this draw's with that frame's fog: with the same fog it
         // is this frame's too (no write, in flight or not). Else the next one, from the model.
         let mut cur = (e.cf & SLOT_CUR) as usize;
@@ -2192,14 +2221,60 @@ impl R3d {
         self.push_rec_ptr(list, mesh, p, uptr, vis_first, n);
     }
 
-    /// Makes room for `n` draw slots (uniform chunks are allocated whole and never move).
+    /// Makes room for `n` draw slots (their uniform rings come with their first draw).
     #[cold]
     #[inline(never)]
     fn grow_slots(&mut self, n: usize) {
         self.slots.resize(n, Slot::default());
-        while self.slot_uni.len() * SLOT_CHUNK < n {
-            self.slot_uni.push(alloc::boxed::Box::new([SlotUni::default(); SLOT_CHUNK]));
+        self.slot_ui.resize(n, NO_UNI);
+    }
+
+    /// Slot `i`'s uniform ring: its own, a free one, one unused for [`UNI_REUSE_FRAMES`]
+    /// frames (taken from its slot, which writes a fresh uniform at its next draw), or a new
+    /// chunk's (chunks are allocated whole and never move).
+    fn slot_ring(&mut self, i: usize) -> usize {
+        let r = self.slot_ui[i];
+        if r != NO_UNI {
+            return r as usize;
         }
+        if self.uni_free.is_empty() {
+            self.reclaim_rings();
+        }
+        let r = match self.uni_free.pop() {
+            Some(r) => r,
+            None => self.grow_rings(),
+        };
+        self.uni_owner[r as usize] = i as u16;
+        self.slot_ui[i] = r;
+        // The ring's entries are not this slot's: the draw writes a new one.
+        self.slots[i].cf &= !(SLOT_U | SLOT_U_NOFOG);
+        r as usize
+    }
+
+    /// Frees the rings of slots that did not queue them for [`UNI_REUSE_FRAMES`] frames.
+    #[cold]
+    #[inline(never)]
+    fn reclaim_rings(&mut self) {
+        for r in 0..self.uni_owner.len() {
+            let owner = self.uni_owner[r];
+            if owner != NO_SLOT && self.frame_no.wrapping_sub(self.uni_used[r]) >= UNI_REUSE_FRAMES {
+                self.slot_ui[owner as usize] = NO_UNI;
+                self.uni_owner[r] = NO_SLOT;
+                self.uni_free.push(r as u16);
+            }
+        }
+    }
+
+    /// A new chunk of rings; returns one of them (the rest are free).
+    #[cold]
+    #[inline(never)]
+    fn grow_rings(&mut self) -> u16 {
+        let first = (self.rings.len() * SLOT_CHUNK) as u16;
+        self.rings.push(alloc::boxed::Box::new([SlotUni::default(); SLOT_CHUNK]));
+        self.uni_owner.resize(self.uni_owner.len() + SLOT_CHUNK, NO_SLOT);
+        self.uni_used.resize(self.uni_used.len() + SLOT_CHUNK, 0);
+        self.uni_free.extend((first + 1..first + SLOT_CHUNK as u16).rev());
+        first
     }
 
     /// The id of a draw's parameters in `ptab` (equal parameters, equal ids, within a frame
@@ -3259,7 +3334,7 @@ mod tests {
             let _ = f;
         }
         r.reset_to(base);
-        assert!(r.slots.is_empty() && r.slot_uni.is_empty() && r.slot_model.is_empty() && r.mhot.is_empty() && r.spheres.is_empty());
+        assert!(r.slots.is_empty() && r.rings.is_empty() && r.slot_model.is_empty() && r.mhot.is_empty() && r.spheres.is_empty());
         let ids = r.load_file(bytes.clone()).unwrap();
         let mut fresh = R3d::new();
         let fids = fresh.load_file(bytes).unwrap();

@@ -325,6 +325,8 @@ impl Default for RenderOptions {
 #[derive(Default)]
 pub struct Frames {
     pub tris: [Vec<Tri>; NUM_FRAMES],
+    /// Triangles dropped this frame because a list could not grow (out of memory: consoles).
+    pub dropped: u32,
 }
 
 impl Frames {
@@ -332,9 +334,17 @@ impl Frames {
         for f in &mut self.tris {
             f.clear();
         }
+        self.dropped = 0;
     }
+    /// Queues a triangle. When the list cannot grow (out of memory, which only a console
+    /// sees) it tries a small exact top-up, then drops the triangle instead of aborting.
     pub fn push(&mut self, frame: Frame, tri: Tri) {
-        self.tris[frame as usize].push(tri);
+        let v = &mut self.tris[frame as usize];
+        if v.len() == v.capacity() && v.try_reserve(1).is_err() && v.try_reserve_exact(16).is_err() {
+            self.dropped += 1;
+            return;
+        }
+        v.push(tri);
     }
     pub fn total(&self) -> usize {
         self.tris.iter().map(Vec::len).sum()

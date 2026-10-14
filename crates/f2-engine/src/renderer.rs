@@ -1039,6 +1039,11 @@ impl Renderer {
         self.frames.total()
     }
 
+    /// Triangles dropped so far this frame because a list could not grow (out of memory).
+    pub fn dropped_tris(&self) -> u32 {
+        self.frames.dropped
+    }
+
     /// Full-screen backdrop (`mdxDrawBackdrop`), drawn before everything else.
     /// With `hud_anchor` (enhanced) it is pillarboxed to the centred 4:3 area.
     pub fn draw_backdrop(&mut self, tex: TexHandle) {

@@ -337,6 +337,10 @@ pub struct App {
     pad_script: Option<(u32, &'static [(u32, u16)])>,
     /// `Boot::Replay`: the recording being played (one 60 Hz tick of its pads per game frame).
     replay: Option<crate::replay::Replay>,
+    /// Triangles dropped because the lists could not grow (out of memory), and the frame of
+    /// the last `MEM LOW` line.
+    oom_tris: u64,
+    oom_logged: u64,
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
     /// [`App::free_last_level`] ran for the load in progress (before its video).
@@ -424,6 +428,8 @@ impl App {
             settings_test: false,
             pad_script: None,
             replay: None,
+            oom_tris: 0,
+            oom_logged: 0,
             level_quit: None,
             tour: None,
             last_level_freed: false,
@@ -557,6 +563,10 @@ impl App {
         }
         app.dispatch_effects();
         app.process_level_loads();
+        if option_env!("F2N64_MEM_LIVE").is_some() && app.replay.is_some() {
+            // Testing: the level's load-time blocks by allocation site.
+            unsafe { crate::ffi::n64_mem_report(b"load".as_ptr(), 4, 16) };
+        }
         let start = app.replay.as_mut().and_then(|r| Some(r.check(0, r.start_hash()?, app.game.checksum())));
         if let Some(c) = start {
             app.replay_report(c);
@@ -1240,6 +1250,16 @@ impl App {
         unsafe {
             crate::ffi::n64_prof(2)
         };
+        // Out of memory: the triangle lists dropped what they could not hold (logged, at
+        // most once a second).
+        let d = self.r.dropped_tris();
+        if d > 0 {
+            self.oom_tris += d as u64;
+            if self.frames.wrapping_sub(self.oom_logged) >= 30 {
+                log!("MEM LOW: {d} triangles dropped this frame ({} in all)", self.oom_tris);
+                self.oom_logged = self.frames;
+            }
+        }
     }
 
     fn draw_inner(&mut self) {
@@ -1400,7 +1420,15 @@ impl App {
         let Some(r) = &self.replay else { return };
         match c {
             Check::None => {}
-            Check::Ok(t) => log!("replay: tick {t} checksum ok"),
+            Check::Ok(t) => {
+                log!("replay: tick {t} checksum ok");
+                // Testing (F2N64_CFLAGS=-DF2N64_MEM_LIVE_TRACE, F2N64_MEM_LIVE=1): live
+                // play-time blocks by allocation site every 20 s of game time.
+                if option_env!("F2N64_MEM_LIVE").is_some() && t % 1200 == 0 {
+                    rt::mem_report(&format!("t{t}"), false);
+                    unsafe { crate::ffi::n64_mem_report(b"live".as_ptr(), 4, 8) };
+                }
+            }
             Check::Desync(t, want, got) => {
                 log!("REPLAY DESYNC at tick {t}: checksum {got:016x}, the PC had {want:016x}");
                 let rec = r.parts_at(t).unwrap_or("");
