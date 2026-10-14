@@ -346,6 +346,8 @@ pub struct App {
     chain: Option<crate::replay::Chain>,
     /// `Boot::Replay`: the recording's ROM path (its checksum parts are read on a desync).
     replay_src: Option<String>,
+    /// `F2N64_REPLAY_HOLD`: the hold was logged.
+    replay_held: bool,
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
     /// [`App::free_last_level`] ran for the load in progress (before its video).
@@ -453,6 +455,7 @@ impl App {
             oom_logged: 0,
             chain: None,
             replay_src: None,
+            replay_held: false,
             level_quit: None,
             tour: None,
             last_level_freed: false,
@@ -1583,6 +1586,18 @@ impl App {
             // when the frame takes longer than MAX_TICKS_PER_FRAME ticks).
             n = (n * k).min(MAX_TICKS_PER_FRAME);
             k = 1;
+            // Testing (F2N64_REPLAY_HOLD=T): the simulation stops after tick T of the replay
+            // (of the chain's first segment) and that scene is drawn from then on, logged
+            // `replay: holding at tick T` (run-ares.sh -stopon it, then screenshots; the PC
+            // reference: `frogger --headless ... --pad-script REC` with a `T shot FILE` line).
+            if let Some(h) = option_env!("F2N64_REPLAY_HOLD").and_then(|h| h.trim().parse::<u64>().ok()) {
+                let r = self.replay.as_ref().unwrap();
+                n = n.min(h.saturating_sub(r.tick) as u32);
+                if n == 0 && !self.replay_held {
+                    self.replay_held = true;
+                    log!("replay: holding at tick {}", r.tick);
+                }
+            }
         }
         // Testing (F2N64_FREEZE=N or N/M): the simulation stops after N game frames of each
         // level and the same scene is drawn from then on; with /M it then advances one tick
