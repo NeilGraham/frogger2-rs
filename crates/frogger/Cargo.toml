@@ -22,7 +22,10 @@ required-features = ["ps5-vulkan"]
 default = ["desktop", "audio-device"]
 # Window, GPU and gamepads (winit, wgpu, gilrs): the desktop executable. Without it the
 # library builds for hosts that bring their own platform layer and use the CPU renderer.
-desktop = ["gpu", "f2-platform/window", "f2-platform/gamepad", "dep:f2-fontgen"]
+desktop = ["gpu", "f2-platform/window", "f2-platform/gamepad", "fontgen"]
+# Builds the modern fonts on first run when the typeface is found (desktop; Android finds
+# it only in `<data>/fonts`).
+fontgen = ["dep:f2-fontgen"]
 # The wgpu renderer in the library (`App::new`) without window or gamepads: console hosts
 # that bring their own GPU context (e.g. the PS5 Vulkan path, f2-engine `ps5-static-driver`).
 gpu = ["dep:wgpu", "f2-engine/gpu"]

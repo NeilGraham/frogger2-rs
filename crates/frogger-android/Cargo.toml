@@ -1,0 +1,27 @@
+[package]
+name = "frogger-android"
+description = "Android host for the Frogger 2 port: NativeActivity via winit, wgpu (Vulkan/GLES), cpal (AAudio), touch controls and Android gamepads, in-app import."
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish.workspace = true
+
+# Built as `libfrogger_android.so` by `tools/android/build-apk.sh` (cargo-ndk). The rlib
+# lets `cargo test --workspace` run the portable parts (touch layout) on the host.
+[lib]
+name = "frogger_android"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+frogger = { path = "../frogger", default-features = false, features = ["gpu", "audio-device", "fontgen"] }
+f2-engine = { path = "../f2-engine", default-features = false, features = ["std", "gpu"] }
+f2-platform = { path = "../f2-platform", default-features = false, features = ["window"] }
+f2-audio = { path = "../f2-audio", default-features = false }
+f2-import = { path = "../f2-import" }
+wgpu = "=30.0.1"
+winit = { version = "0.30", features = ["android-native-activity"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+libc = "0.2"
+# Calls into FroggerActivity (the file picker); same versions cpal already uses.
+jni = "0.21"

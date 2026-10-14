@@ -267,7 +267,7 @@ impl App {
         };
         // Modern fonts: built on first run from the system typeface (desktop), else whatever
         // was generated into the data (consoles get them with the bundled data).
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "fontgen")]
         match f2_fontgen::ensure(&data.rendition) {
             Ok(Some(log)) => log.iter().for_each(|l| eprintln!("frogger: modern font: {l}")),
             Ok(None) => {}

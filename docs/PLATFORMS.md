@@ -47,7 +47,8 @@ Build instructions: [BUILDING.md](BUILDING.md). Packaging: `tools/package/`, `pa
 | WSL2 (WSLg) | works (dev setup) | native Linux | X11 via XWayland (native Wayland crashes WSLg's Weston), llvmpipe/lavapipe | Pulse via ALSA plugin | usbipd only | — |
 | PS4 / PS5 (homebrew) | **builds; runs in the shadPS4 emulator**; not yet run on hardware | `tools/ps4/build-pkg.sh` (OpenOrbis, `x86_64-unknown-freebsd` std) | VideoOut + CPU renderer (`f2-engine/soft.rs`) | sceAudioOut | scePad | PS4 fPKG (also installs on a jailbroken PS5) |
 | PS5 (native homebrew) | **builds; runs in the KytyPS5 emulator** (4K, 120 Hz); not yet run on hardware | `tools/ps5/build.sh` (ps5-payload-sdk stubs, PS5_Vulkan packaging, `x86_64-unknown-freebsd` std) | tiled VideoOut + CPU renderer; optional wgpu on PS5 RADV (`--gpu`, untested) | sceAudioOut | scePad | PS5 app folder / `.ffpkg` |
-| Web, Android, iOS, Switch, PS2/PS3, N64 | not started | see §4 | | | | |
+| Android (arm64, x86_64) | **builds; imports and plays in the Android 15 emulator**; not yet run on a phone | `tools/android/build-apk.sh` (cargo-ndk, no Gradle) | winit NativeActivity / Vulkan or GLES | cpal AAudio (Oboe) | touch overlay + Android gamepad buttons | APK, sideload ([ANDROID.md](ANDROID.md)) |
+| Web, iOS, Switch, PS2/PS3, N64 | not started | see §4 | | | | |
 
 Verified for this document (2026-10-10): Linux release build, workspace test suite (no game
 data, 63 test binaries green), windowed smoke run under WSLg (llvmpipe Vulkan, audio on),
@@ -195,11 +196,12 @@ General constraints:
   The CPU (4x Cortex-A57) and 4 GB RAM handle the PC data comfortably.
 
 ### Android
-- wgpu (Vulkan/GLES), winit (`android-activity`), cpal (AAudio/OpenSL ES) are all supported
-  upstream; gilrs does not support Android, so pads need the Android input events through winit.
-  Storage: app-private dir for data; import via the Storage Access Framework (file picker) since
-  raw paths to the user's ISO are not readable. Packaging: `cargo-apk`/`xbuild` or Gradle with
-  `cargo-ndk`. Touch controls would be a new input source mapped to pad bits. Effort: medium.
+- **Done (first cut)**: `crates/frogger-android`, details in [ANDROID.md](ANDROID.md). wgpu
+  (Vulkan/GLES), winit (`android-native-activity`), cpal (Oboe, C++ runtime linked statically);
+  touch controls and Android gamepad key events become player 1's joypad; a small Java
+  `NativeActivity` subclass adds immersive mode and the Storage Access Framework picker for
+  importing a disc image on the device. Remaining: physical-device testing, analogue sticks,
+  multiple pads, release signing.
 
 ### iOS
 - wgpu Metal, winit iOS, cpal CoreAudio all supported; gilrs has no iOS backend (needs a small

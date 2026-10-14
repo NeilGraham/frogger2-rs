@@ -986,6 +986,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "frogger-android"
+version = "0.1.0"
+dependencies = [
+ "f2-audio",
+ "f2-engine",
+ "f2-import",
+ "f2-platform",
+ "frogger",
+ "jni 0.21.1",
+ "libc",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"

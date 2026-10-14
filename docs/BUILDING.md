@@ -55,6 +55,12 @@ cargo check --workspace --all-targets --no-default-features --target aarch64-app
 `--no-default-features` turns off the binaries' `audio-device` feature (cpal), because
 `coreaudio-sys` runs bindgen against the macOS SDK headers in its build script.
 
+## Android
+
+`tools/android/build-apk.sh [--debug] [--abis arm64-v8a,x86_64]` builds `target/android/frogger2.apk`
+(needs the Android SDK/NDK, `cargo-ndk`, a JDK). Setup, data import and emulator testing:
+[ANDROID.md](ANDROID.md).
+
 ## PS4 / PS5 homebrew
 
 `tools/ps4/build-pkg.sh [--data game-data/usa] [--icon IMAGE]` builds a PS4 fPKG (also

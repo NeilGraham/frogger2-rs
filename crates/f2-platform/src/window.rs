@@ -172,6 +172,10 @@ pub struct Frame<'a> {
 pub trait WindowApp {
     /// The window was created (or re-created after a suspend).
     fn init(&mut self, _window: &Arc<Window>) {}
+    /// The window is about to be destroyed (Android: the app went to the background). Drop
+    /// everything that refers to it (the GPU surface); [`WindowApp::init`] follows with a new
+    /// window on resume.
+    fn suspended(&mut self) {}
     /// Raw window events after the wrapper handled keyboard/focus.
     fn event(&mut self, _window: &Arc<Window>, _event: &WindowEvent) -> Flow {
         Flow::Continue
@@ -262,6 +266,13 @@ struct Runner<A: WindowApp> {
 const MAC_SHORTCUTS: bool = cfg!(target_os = "macos");
 
 impl<A: WindowApp> ApplicationHandler for Runner<A> {
+    fn suspended(&mut self, _el: &ActiveEventLoop) {
+        if self.window.take().is_some() {
+            self.app.suspended();
+            self.keyboard.clear();
+        }
+    }
+
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -361,7 +372,12 @@ fn prefer_x11_on_wsl() {
 
 pub fn run<A: WindowApp>(cfg: WindowConfig, app: A) -> Result<A, String> {
     prefer_x11_on_wsl();
-    let el = EventLoop::new().map_err(|e| e.to_string())?;
+    run_with(EventLoop::new().map_err(|e| e.to_string())?, cfg, app)
+}
+
+/// [`run`] on an event loop the host built itself (Android: `EventLoop::builder()` with the
+/// `AndroidApp`).
+pub fn run_with<A: WindowApp>(el: EventLoop<()>, cfg: WindowConfig, app: A) -> Result<A, String> {
     el.set_control_flow(ControlFlow::Poll);
     let mut r = Runner { cfg, app, window: None, keyboard: KeyboardState::default(), focused: true, error: None, cmd_held: false };
     el.run_app(&mut r).map_err(|e| e.to_string())?;
@@ -489,6 +505,8 @@ pub fn dik_from_keycode(k: KeyCode) -> Option<u8> {
         KanaMode => dik::KANA,
         Convert => dik::CONVERT,
         NonConvert => dik::NOCONVERT,
+        // The Android Back button (system navigation / gamepad B on some devices).
+        BrowserBack if cfg!(target_os = "android") => dik::ESCAPE,
         _ => return None,
     })
 }
