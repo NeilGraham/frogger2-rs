@@ -56,6 +56,10 @@ pub struct R3dFrameStats {
     pub view_reused: u32,
 }
 
+/// Testing: the next frame's draws are logged as with `F2N64_DUMP_FRAME` (set when an
+/// `F2N64_REPLAY_HOLD` hold starts).
+pub static DUMP_REQUEST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 pub struct R3dLevel {
     pub r: R3d,
     base: R3dMark,
@@ -370,6 +374,10 @@ impl R3dLevel {
                     crate::log!("dump frame {}", self.frame_no);
                 }
             }
+        }
+        if option_env!("F2N64_REPLAY_HOLD").is_some() && DUMP_REQUEST.swap(false, core::sync::atomic::Ordering::Relaxed) {
+            self.dump_next = true;
+            crate::log!("dump frame (requested)");
         }
         self.r.begin_frame(&view_params(r));
         self.slot = 0;

@@ -1911,3 +1911,41 @@ Garden 1 36.8 → 37.9 fps, Ancients 1 43.1 → 43.5, Space 1 23.7 → 24.3, Cit
 Subterranean 1 30.4 → 30.7, Lab 1 (first two windows) 25.9 → 27.0, Lab 2 (`5 1`) 28.0 → 28.4,
 Halloween 1 36.3 → 37.3, Retro 1 59.8 → 59.8, frontend 30.9 → 31.2; r3d flush 0.1-0.3 ms
 lower everywhere. `mem-tour`: all 26 steps, no ALLOC FAILED, stack guard untouched.
+
+## Stretched CPU triangles: guard-band clipping in main.c (2026-10-13)
+Symptom (Space Station, top-down cameras): translucent stretched triangles over the view,
+dark (shadow-like) and sometimes bright streaks; the PC never shows them.
+
+Cause: the CPU's screen-space triangles (f2-engine `TlVertex` lists: shadows
+`f2_draw::fx::draw_shadow`, special effects, sprites, overlays) reach the RDP unclipped
+(`n64_draw_tl_tris` / `n64_draw_tris`). f2-engine only drops vertices behind the near plane
+or outside `XfmPoint`'s view box (|vx| < 3000, |vy| < 2500), so a quad of an actor near the
+camera projects to +-30000 pixels (the Space Station replay: 3364 frames of 14105 ticks,
+up to 23000 px). The PC's GPU clips them. On the N64, `fast_vtx` / `rdpq_triangle_rsp` pack
+X/Y as s13.2 int16 (+-8192 px; the RSP set-up's edge deltas are 16-bit too) and the RDP's Y
+is s11.2: the coordinates wrap and an off-screen triangle is drawn across the screen. In this
+level: the ai_circle shadow quads (black, alpha up to 1: dark smears dimming the whole
+picture) and the lightning effect's additive `electric.bmp` quads (bright streaks).
+
+Diagnosis tools (tools/n64/README.md): `F2N64_TRI_DIAG` (per frame, triangles outside the
+guard band, with the replay tick), `F2N64_HOLD_AB=T1,...` (holds at each listed tick and
+counts framebuffer rows that differ with and without the clipping: 784 candidate ticks in
+one 207 s ares run, 74 differ, noise 0 everywhere), `F2N64_REPLAY_HOLD` screenshots (its
+hold now waits for the tick itself; the first held frame's draws are dumped).
+A prediction from the int16 wrap alone was not enough: most wrapped triangles draw nothing,
+which is why held screenshots at "obvious" ticks showed no change; the A/B row count is
+what finds the visible ones.
+
+Fix: a triangle with a vertex outside x in [-1024, 1344], y in [-1024, 1264] (320x240 +
+1024 px) is rejected when all three vertices are off one screen edge (or not finite), else
+clipped to that band (Sutherland-Hodgman; attributes linear in screen space as the RDP
+interpolates them; s/w, t/w, 1/w under `N64_PERSP`) and drawn as a fan. In the replay every
+such triangle was rejected (34497, none partly on screen), matching the PC.
+`F2N64_CFLAGS=-DF2N64_NO_GUARD` restores the old path for comparisons.
+
+Cost (Space Station #2 replay, 58-59 perf windows of `[2-0] mode 2`, emulated time):
+before 12.58 fps, CPU triangle submit 1126 us/frame, CPU-side submit 2.19 ms; after
+12.42 fps, 1141 us, 2.68 ms; after with `-DF2N64_CODEPAD=1024` 12.47 fps, 1114 us, 2.24 ms:
+the difference is code layout (the rect batches, untouched, moved 1336 -> 1812 us without
+the pad), not the check (12 compares per CPU triangle). No allocation (a 12-vertex array
+on the stack in the rare clip path). All 237 checksums equal before and after.

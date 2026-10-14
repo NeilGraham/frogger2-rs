@@ -348,6 +348,9 @@ pub struct App {
     replay_src: Option<String>,
     /// `F2N64_REPLAY_HOLD`: the hold was logged.
     replay_held: bool,
+    /// `F2N64_HOLD_AB`: index of the current hold tick, frames drawn at it, the row hashes
+    /// of its first frame with clipping, rows differing between its two frames with.
+    ab: (usize, u32, Vec<u32>, usize),
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
     /// [`App::free_last_level`] ran for the load in progress (before its video).
@@ -456,6 +459,7 @@ impl App {
             chain: None,
             replay_src: None,
             replay_held: false,
+            ab: (0, 0, Vec::new(), 0),
             level_quit: None,
             tour: None,
             last_level_freed: false,
@@ -1611,11 +1615,26 @@ impl App {
             if let Some(h) = option_env!("F2N64_REPLAY_HOLD").and_then(|h| h.trim().parse::<u64>().ok()) {
                 let r = self.replay.as_ref().unwrap();
                 n = n.min(h.saturating_sub(r.tick) as u32);
-                // At the hold tick (`n` is also 0 in frames that owe no tick, e.g. while the
-                // story video plays: not a hold).
+                // (Not merely `n == 0`: a frame may owe no tick before the hold is reached.)
                 if r.tick >= h && !self.replay_held {
                     self.replay_held = true;
                     log!("replay: holding at tick {}", r.tick);
+                    #[cfg(not(feature = "render-cpu"))]
+                    crate::render_r3d::DUMP_REQUEST.store(true, core::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+        // Testing (F2N64_HOLD_AB=T1,T2,..., replay boot): the replay holds at each tick for six
+        // drawn frames, the last three without main.c's guard-band clipping of CPU triangles,
+        // and logs how many framebuffer rows differ between a frame with and one without
+        // (`holdab tick T rows D (noise N)`, N: two frames with): finds the ticks where the
+        // clipping changes the picture.
+        if let (Some(list), Some(r)) = (option_env!("F2N64_HOLD_AB"), self.replay.as_ref().filter(|r| !r.done())) {
+            if let Some(h) = list.split(',').nth(self.ab.0).and_then(|s| s.trim().parse::<u64>().ok()) {
+                n = n.min(h.saturating_sub(r.tick) as u32);
+                if r.tick >= h {
+                    self.ab.1 += 1;
+                    rt::probe_c(8, (self.ab.1 > 3) as u32);
                 }
             }
         }
@@ -1753,6 +1772,9 @@ impl App {
                 let game = &self.game;
                 let r = self.replay.as_mut().unwrap();
                 let c = r.after_tick(|| game.checksum());
+                if option_env!("F2N64_TRI_DIAG").is_some() {
+                    crate::render_cpu::DIAG_TICK.store(r.tick as u32, core::sync::atomic::Ordering::Relaxed);
+                }
                 if game.game_state.mode != mode {
                     log!("replay: tick {} mode {}", r.tick, game.game_state.mode);
                 }
@@ -1772,6 +1794,26 @@ impl App {
         }
         let t1 = ticks();
         self.draw();
+        if option_env!("F2N64_HOLD_AB").is_some() && self.ab.1 > 0 {
+            let rows = || (0..HEIGHT).map(|y| rt::probe_c(9, y)).collect::<Vec<u32>>();
+            let diff = |a: &[u32], b: &[u32]| a.iter().zip(b).filter(|(x, y)| x != y).count();
+            match self.ab.1 {
+                2 => self.ab.2 = rows(),
+                3 => {
+                    let b = rows();
+                    self.ab.3 = diff(&self.ab.2, &b);
+                }
+                6 => {
+                    let d = diff(&self.ab.2, &rows());
+                    let tick = self.replay.as_ref().map_or(0, |r| r.tick);
+                    log!("holdab tick {} rows {} (noise {})", tick, d, self.ab.3);
+                    rt::probe_c(8, 0);
+                    self.ab.0 += 1;
+                    self.ab.1 = 0;
+                }
+                _ => {}
+            }
+        }
         let t2 = ticks();
         self.frames += 1;
         if !self.loaded {

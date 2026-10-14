@@ -30,6 +30,9 @@ use f2_engine::scene::TlVertex;
 use f2_engine::textures::{Image, TextureRegistry};
 use f2_engine::Renderer;
 
+/// Testing (`F2N64_TRI_DIAG`): the replay tick, for the off-screen triangle log.
+pub static DIAG_TICK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 /// Per-frame counters (logged by the front end).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameStats {
@@ -412,6 +415,35 @@ impl RenderCpu {
         for q in fv.overlays {
             self.add_quad(&mut b, 8, q, white);
         }
+        // Testing (F2N64_TRI_DIAG): per frame, the number of scene triangles with a vertex
+        // outside main.c's guard band (clipped or rejected there) and the one reaching
+        // farthest, with the replay tick (`tridiag tick T n N pass P ext E tex X v ...`).
+        if option_env!("F2N64_TRI_DIAG").is_some() {
+            let mut n = 0u32;
+            let mut worst: Option<(usize, f32, &f2_engine::Tri)> = None;
+            for (k, (_, tris)) in fv.passes.iter().enumerate() {
+                for t in tris.iter() {
+                    if t.v.iter().all(|v| (-1024.0..=1344.0).contains(&v.sx) && (-1024.0..=1264.0).contains(&v.sy)) {
+                        continue;
+                    }
+                    n += 1;
+                    let e = t.v.iter().map(|v| (v.sx - 160.0).abs().max((v.sy - 120.0).abs())).fold(0.0f32, f32::max);
+                    if worst.is_none_or(|w| e > w.1) {
+                        worst = Some((k, e, t));
+                    }
+                }
+            }
+            if let Some((k, e, t)) = worst {
+                let v = &t.v;
+                crate::log!(
+                    "tridiag tick {} n {} pass {} ext {} tex {:?} v ({} {} {}) ({} {} {}) ({} {} {}) rgba {:.2} {:.2} {:.2} {:.2}",
+                    DIAG_TICK.load(core::sync::atomic::Ordering::Relaxed),
+                    n, k, e as i32, t.tex.map(|h| h.0),
+                    v[0].sx, v[0].sy, v[0].sz, v[1].sx, v[1].sy, v[1].sz, v[2].sx, v[2].sy, v[2].sz,
+                    v[0].color[0], v[0].color[1], v[0].color[2], v[0].color[3]
+                );
+            }
+        }
         self.stats = FrameStats { cmds: b.batches.len() as u32, build_ticks: ticks().wrapping_sub(t0), ..Default::default() };
         self.built = b;
     }
@@ -486,6 +518,18 @@ impl RenderCpu {
                 },
                 if bt.kind == Kind::Verts { bt.count / 3 } else { bt.count }
             );
+            if bt.kind == Kind::Tl {
+                // SAFETY: as in `draw_segment` (the frame is unchanged since `build`).
+                let tris = unsafe { core::slice::from_raw_parts(bt.first as *const f2_engine::Tri, bt.count as usize) };
+                for t in tris {
+                    let v = &t.v;
+                    crate::log!(
+                        "dump cpu  tri ({:.0} {:.0} {:.4}) ({:.0} {:.0} {:.4}) ({:.0} {:.0} {:.4}) rgba {:.2} {:.2} {:.2} {:.2}",
+                        v[0].sx, v[0].sy, v[0].sz, v[1].sx, v[1].sy, v[1].sz, v[2].sx, v[2].sy, v[2].sz,
+                        v[0].color[0], v[0].color[1], v[0].color[2], v[0].color[3]
+                    );
+                }
+            }
         }
     }
 

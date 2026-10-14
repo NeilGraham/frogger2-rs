@@ -1766,11 +1766,13 @@ static void set_mode_cached(const n64_state_t *st, int kind, bool tex) {
 #define TILE_H 32
 #define CLIP_MAX 12
 
-static int clip_axis(n64_vertex_t *in, int n, n64_vertex_t *out, int axis, float lim, bool keep_greater) {
+/* Clips polygon `in` (n vertices) to the half-plane where float `f` of the vertex (0 = x,
+ * 1 = y, 7 = s, 8 = t) is >= lim (keep_greater) or <= lim; returns the output count. */
+static int clip_axis(n64_vertex_t *in, int n, n64_vertex_t *out, int f, float lim, bool keep_greater) {
     int m = 0;
     for (int i = 0; i < n; i++) {
         n64_vertex_t *a = &in[i], *b = &in[(i + 1) % n];
-        float va = axis ? a->t : a->s, vb = axis ? b->t : b->s;
+        float va = ((const float *)a)[f], vb = ((const float *)b)[f];
         bool ia = keep_greater ? va >= lim : va <= lim, ib = keep_greater ? vb >= lim : vb <= lim;
         if (ia && m < CLIP_MAX) out[m++] = *a;
         if (ia != ib && m < CLIP_MAX) {
@@ -1778,6 +1780,7 @@ static int clip_axis(n64_vertex_t *in, int n, n64_vertex_t *out, int axis, float
             const float *fa = (const float *)a, *fb = (const float *)b;
             float *fo = (float *)&out[m++];
             for (int j = 0; j < 10; j++) fo[j] = fa[j] + (fb[j] - fa[j]) * k;
+            fo[f] = lim; /* exactly on the edge (no rounding outside it) */
         }
     }
     return m;
@@ -1815,13 +1818,13 @@ static void draw_tri_tiled(const rdpq_trifmt_t *f, const tex_t *tx, const n64_ve
             int n = 3;
             memcpy(a, t, sizeof t);
             /* Outer tiles keep what lies beyond the texture (clamped addressing). */
-            if (tx0 > 0) n = clip_axis(a, n, b, 0, tx0, true); else memcpy(b, a, sizeof(n64_vertex_t) * n);
+            if (tx0 > 0) n = clip_axis(a, n, b, 7, tx0, true); else memcpy(b, a, sizeof(n64_vertex_t) * n);
             if (n < 3) continue;
-            if (tx0 + TILE_W < (int)w) n = clip_axis(b, n, a, 0, tx0 + TILE_W, false); else memcpy(a, b, sizeof(n64_vertex_t) * n);
+            if (tx0 + TILE_W < (int)w) n = clip_axis(b, n, a, 7, tx0 + TILE_W, false); else memcpy(a, b, sizeof(n64_vertex_t) * n);
             if (n < 3) continue;
-            if (ty > 0) n = clip_axis(a, n, b, 1, ty, true); else memcpy(b, a, sizeof(n64_vertex_t) * n);
+            if (ty > 0) n = clip_axis(a, n, b, 8, ty, true); else memcpy(b, a, sizeof(n64_vertex_t) * n);
             if (n < 3) continue;
-            if (ty + TILE_H < (int)h) n = clip_axis(b, n, a, 1, ty + TILE_H, false); else memcpy(a, b, sizeof(n64_vertex_t) * n);
+            if (ty + TILE_H < (int)h) n = clip_axis(b, n, a, 8, ty + TILE_H, false); else memcpy(a, b, sizeof(n64_vertex_t) * n);
             if (n < 3) continue;
             int ux1 = tx0 + TILE_W + 1, uy1 = ty + TILE_H + 1;
             if (ux1 > (int)w) ux1 = w;
@@ -1884,6 +1887,39 @@ static inline void tri_one(const tri_setup_t *su, n64_vertex_t *t) {
     rdpq_triangle(su->f, (const float *)&t[0], (const float *)&t[1], (const float *)&t[2]);
 }
 
+/* ---- guard band ----
+ * Screen-space triangles from the CPU (f2-engine's TlVertex lists: shadows, translucent
+ * models, sprites, effects) are not clipped to the screen before they get here: the PC's GPU
+ * clips them, and f2-engine only rejects vertices behind the near plane or far outside the
+ * view (XfmPoint: |vx| < 3000, |vy| < 2500, vz > near), so a polygon near the camera (the
+ * top-down cameras) projects to screen coordinates of +-30000 pixels. The RSP triangle
+ * set-up takes X/Y as s13.2 16-bit integers (+-8192 pixels; its edge deltas are 16-bit too)
+ * and the RDP's Y as s11.2 (+-2048): beyond that the coordinates wrap and an off-screen
+ * triangle is drawn stretched across the screen. In Space Station (top-down cameras) these
+ * were the shadow quads (ai_circle, black, translucent: dark smears over the whole view) of
+ * actors near the camera and the lightning effect's additive quads (bright streaks); none
+ * of them is visible on the PC. Triangles
+ * with a vertex outside the guard band below are rejected when they lie wholly off one screen
+ * edge, else clipped to the band (Sutherland-Hodgman, attributes interpolated linearly in
+ * screen space as the RDP interpolates them; texture coordinates as s/w, t/w, 1/w when
+ * perspective-correct), the rest are drawn unchanged. */
+#define GUARD_X0 (-1024.0f)
+#define GUARD_Y0 (-1024.0f)
+#define GUARD_X1 (320.0f + 1024.0f)
+#define GUARD_Y1 (240.0f + 1024.0f)
+static uint32_t st_guard_clipped, st_guard_rejected;
+static bool guard_off; /* testing: n64_probe_c(8, 1) */
+/* x, y of three vertices all inside the guard band (false for NaN). */
+static inline bool in_guard(const float *a, const float *b, const float *c) {
+#ifdef F2N64_NO_GUARD /* testing: no guard-band clipping (the old behaviour) */
+    return true;
+#endif
+    if (__builtin_expect(guard_off, 0)) return true;
+    return a[0] >= GUARD_X0 && a[0] <= GUARD_X1 && a[1] >= GUARD_Y0 && a[1] <= GUARD_Y1 &&
+           b[0] >= GUARD_X0 && b[0] <= GUARD_X1 && b[1] >= GUARD_Y0 && b[1] <= GUARD_Y1 &&
+           c[0] >= GUARD_X0 && c[0] <= GUARD_X1 && c[1] >= GUARD_Y0 && c[1] <= GUARD_Y1;
+}
+
 static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st);
 void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
     uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
@@ -1892,12 +1928,17 @@ void n64_draw_tris_impl(const n64_vertex_t *v, uint32_t ntris, const n64_state_t
     st_tri_ticks += TICKS_READ() - t0;
     st_tri_wait += rspq_wait_ticks - w0;
 }
+static void guard_clip_draw(const tri_setup_t *su, n64_vertex_t *a);
 static void draw_tris_inner(const n64_vertex_t *v, uint32_t ntris, const n64_state_t *st) {
     if (!attached || !ntris) return;
     tri_setup_t su = tri_begin(ntris, st);
-    n64_vertex_t t[3];
+    n64_vertex_t t[CLIP_MAX];
     for (uint32_t k = 0; k < ntris; k++, v += 3) {
-        memcpy(t, v, sizeof t);
+        memcpy(t, v, sizeof(n64_vertex_t) * 3);
+        if (__builtin_expect(!in_guard(&v[0].x, &v[1].x, &v[2].x), 0)) {
+            guard_clip_draw(&su, t);
+            continue;
+        }
         tri_one(&su, t);
     }
 }
@@ -2059,6 +2100,53 @@ static void fast_tri_shared(const tri_setup_t *su, const float *v, float zk, uin
     st_rdpq_tris++;
 }
 
+/* A triangle (a[0..3], room for CLIP_MAX vertices) with a vertex outside the guard band:
+ * rejected when wholly off one edge of the screen (or not finite), else clipped to the band
+ * and drawn as a fan through tri_one (which may modify the vertices). */
+static void guard_clip_draw(const tri_setup_t *su, n64_vertex_t *a) {
+    const float W = display_get_width(), H = display_get_height();
+    int l = 0, r = 0, u = 0, d = 0;
+    for (int j = 0; j < 3; j++) {
+        float x = a[j].x, y = a[j].y;
+        if (!(x - x == 0.0f && y - y == 0.0f)) { /* NaN or infinite */
+            st_guard_rejected++;
+            return;
+        }
+        l += x < 0.0f;
+        r += x > W;
+        u += y < 0.0f;
+        d += y > H;
+    }
+    if (l == 3 || r == 3 || u == 3 || d == 3) {
+        st_guard_rejected++;
+        return;
+    }
+    st_guard_clipped++;
+    bool persp = (su->flags & N64_PERSP) != 0;
+    if (persp)
+        for (int j = 0; j < 3; j++) {
+            a[j].s *= a[j].inv_w;
+            a[j].t *= a[j].inv_w;
+        }
+    n64_vertex_t b[CLIP_MAX];
+    int n = clip_axis(a, 3, b, 0, GUARD_X0, true);
+    n = clip_axis(b, n, a, 0, GUARD_X1, false);
+    n = clip_axis(a, n, b, 1, GUARD_Y0, true);
+    n = clip_axis(b, n, a, 1, GUARD_Y1, false);
+    if (n < 3) return;
+    if (persp)
+        for (int j = 0; j < n; j++) {
+            a[j].s /= a[j].inv_w;
+            a[j].t /= a[j].inv_w;
+        }
+    /* rdpq_triangle fills the RSP's triangle-data slots itself (fast_tri_shared's cache). */
+    slot_src[0] = slot_src[1] = slot_src[2] = NULL;
+    for (int k = 1; k + 1 < n; k++) {
+        n64_vertex_t t[3] = {a[0], a[k], a[k + 1]};
+        tri_one(su, t);
+    }
+}
+
 void n64_draw_tl_tris_impl(const n64_tl_batch_t *b, const n64_state_t *st) {
     uint32_t t0 = TICKS_READ(), w0 = rspq_wait_ticks;
     if (attached && b->ntris) {
@@ -2069,6 +2157,14 @@ void n64_draw_tl_tris_impl(const n64_tl_batch_t *b, const n64_state_t *st) {
         slot_src[0] = slot_src[1] = slot_src[2] = NULL;
         for (uint32_t k = 0; k < b->ntris; k++, p += b->stride) {
             const float *v = (const float *)p;
+            if (__builtin_expect(!in_guard(v, v + 12, v + 24), 0)) {
+                n64_vertex_t c[CLIP_MAX];
+                tl_vertex(&c[0], v, b->zk, st->blend);
+                tl_vertex(&c[1], v + 12, b->zk, st->blend);
+                tl_vertex(&c[2], v + 24, b->zk, st->blend);
+                guard_clip_draw(&su, c);
+                continue;
+            }
             /* Straight to the RSP command (rdpq_triangle_rsp's words, see fast_vtx). */
             if (su.mode != 2) {
                 fast_tri_shared(&su, v, b->zk, st->blend);
@@ -2346,6 +2442,8 @@ void n64_present_impl(void) {
         debugf("cputri: rect paths (sum over 300 frames; draw_one_rect return codes):");
         for (int i = 0; i < 16; i++) if (st_rect_path[i]) debugf(" %d:%lu", i, (unsigned long)st_rect_path[i]);
         debugf("; texture upload cache per frame: %lu hits, %lu misses (%lu uploaded directly)\n", st_upc_hits / 300, st_upc_misses / 300, st_upc_direct / 300);
+        debugf("cputri: guard band (sum over 300 frames): %lu triangles clipped, %lu rejected\n", (unsigned long)st_guard_clipped, (unsigned long)st_guard_rejected);
+        st_guard_clipped = st_guard_rejected = 0;
         st_upc_hits = st_upc_misses = st_upc_direct = 0;
         memset(st_rect_path, 0, sizeof st_rect_path);
         st_mode_ticks = st_modes = st_tex_ticks = 0;
@@ -2477,6 +2575,17 @@ uint32_t n64_probe_c_impl(uint32_t kind, uint32_t n) {
         if (probe_block) rspq_block_free(probe_block);
         probe_block = NULL;
         return 0;
+    case 8: /* testing (F2N64_HOLD_AB): guard-band clipping off (n = 1) / on (n = 0) */
+        guard_off = n != 0;
+        return 0;
+    case 9: { /* testing: hash of row n of the last frame (after the RDP is done) */
+        if (!last_fb || n >= last_fb->height) return 0;
+        rspq_wait();
+        const volatile uint16_t *p = (const volatile uint16_t *)UncachedAddr(last_fb->buffer) + n * (last_fb->stride / 2);
+        uint32_t h = 2166136261u;
+        for (uint32_t x = 0; x < last_fb->width; x++) h = (h ^ p[x]) * 16777619u;
+        return h;
+    }
     case 5: {
         if (!last_fb) return 0;
         rspq_wait();
