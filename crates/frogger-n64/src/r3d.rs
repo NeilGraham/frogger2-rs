@@ -944,6 +944,8 @@ pub struct R3d {
     /// DMA while the CPU already queues the next one; triple-buffered display = at most 2
     /// frames in flight).
     uni: [Vec<R3dDrawUniform>; 3],
+    /// Most per-frame (not slot) uniforms a frame used since the level loaded (heap log).
+    pub uni_peak: u32,
     /// Draws recorded since `begin_frame` ([`R3d::queue`]), bone matrices of the skinned ones,
     /// model matrices of the ones without a slot.
     q: Vec<QDraw>,
@@ -1311,7 +1313,10 @@ impl R3d {
             crc_id: BTreeMap::new(),
             crc_tex: Vec::new(),
             gparts: Vec::new(),
-            uni: [Vec::with_capacity(512), Vec::with_capacity(512), Vec::with_capacity(512)],
+            // Per-frame uniforms (not slot ones): ~40 in the heaviest levels; the arena grows
+            // while a frame records (records hold indices, resolved at the flush).
+            uni: [Vec::with_capacity(128), Vec::with_capacity(128), Vec::with_capacity(128)],
+            uni_peak: 0,
             uni_frame: 0,
             meshes: Vec::new(),
             mhot: Vec::new(),
@@ -1692,6 +1697,7 @@ impl R3d {
         self.frame = frame_uniform_vp(view, false);
         self.frame_noclip = frame_uniform_vp(view, true);
         self.vp = view_proj(view, false);
+        self.uni_peak = self.uni_peak.max(self.uni[self.uni_frame].len() as u32);
         self.uni_frame = (self.uni_frame + 1) % 3;
         self.uni[self.uni_frame].clear();
         self.queued_tris = 0;

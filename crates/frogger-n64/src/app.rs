@@ -344,6 +344,8 @@ pub struct App {
     /// `Boot::Replay` chain mode (`rom:/replay/list.txt`): the segments; `replay` is the one
     /// playing.
     chain: Option<crate::replay::Chain>,
+    /// `Boot::Replay`: the recording's ROM path (its checksum parts are read on a desync).
+    replay_src: Option<String>,
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
     /// [`App::free_last_level`] ran for the load in progress (before its video).
@@ -376,15 +378,9 @@ const N64_GAME_OPTIONS: f2_game::enhance::GameOptions = f2_game::enhance::GameOp
 /// Chain mode: the temporary stack a new session is built on ([`rt::on_big_stack`]).
 const REPLAY_SESSION_STACK: usize = 160 * 1024;
 
-/// Reads and parses a PC recording from the ROM.
-fn read_replay(path: &str) -> Result<crate::replay::Replay, String> {
-    let b = rt::file_read(path).ok_or_else(|| format!("{path} not found"))?;
-    crate::replay::Replay::parse(&String::from_utf8_lossy(&b))
-}
-
-/// Chain mode: a segment's recording without its checksum parts (most of its size), on the
-/// main heap: the test's own data stays small and out of the level heap, whose state from
-/// level to level is what a chain is for.
+/// A recording (a chain segment or the single `rom:/replay.txt`) without its checksum parts
+/// (most of its size), on the main heap: the test's own data stays small and out of the
+/// level heap, whose state is what the replay tests.
 fn read_replay_lean(path: &str) -> Result<crate::replay::Replay, String> {
     rt::mem_play(|| {
         let b = rt::file_read(path).ok_or_else(|| format!("{path} not found"))?;
@@ -456,6 +452,7 @@ impl App {
             oom_tris: 0,
             oom_logged: 0,
             chain: None,
+            replay_src: None,
             level_quit: None,
             tour: None,
             last_level_freed: false,
@@ -574,8 +571,10 @@ impl App {
                     }
                     None => Some(String::from("rom:/replay.txt")),
                 };
-                let chain = app.chain.is_some();
-                match path.map(|p| if chain { read_replay_lean(&p) } else { read_replay(&p) }) {
+                // Lean (no checksum parts, on the main heap) as in chain mode: the test's own
+                // data (~140 KiB of parts for a long level) must not take the memory it tests.
+                app.replay_src = path.clone();
+                match path.map(|p| read_replay_lean(&p)) {
                     Some(Ok(r)) => app.replay_begin(r),
                     Some(Err(e)) => log!("REPLAY FAILED: {e}"),
                     None => {}
@@ -720,8 +719,12 @@ impl App {
     fn heap_log(&mut self, what: &str) {
         let (live, peak) = rt::rust_heap();
         let h = rt::heap_stats();
+        #[cfg(not(feature = "render-cpu"))]
+        let uni = lv().as_ref().map_or(0, |l| l.r3d.r.uni_peak);
+        #[cfg(feature = "render-cpu")]
+        let uni = 0;
         log!(
-            "heap [{}] {what}: rust live {} KiB peak {} KiB; libdragon used {} / {} KiB; N64 textures {} KiB",
+            "heap [{}] {what}: rust live {} KiB peak {} KiB; libdragon used {} / {} KiB; N64 textures {} KiB; r3d frame uniforms peak {uni}",
             self.level_name,
             live / 1024,
             peak / 1024,
@@ -1541,8 +1544,8 @@ impl App {
                 // Chain mode keeps no parts: from the recording in the ROM again.
                 let rec = match r.parts_at(t) {
                     Some(p) => String::from(p),
-                    None => (self.chain.as_ref().and_then(|c| c.segments.get(c.cur)))
-                        .and_then(|s| rt::mem_play(|| rt::file_read(&s.0).and_then(|b| crate::replay::parts_in(&String::from_utf8_lossy(&b), t))))
+                    None => (self.chain.as_ref().and_then(|c| c.segments.get(c.cur)).map(|s| s.0.as_str()).or(self.replay_src.as_deref()))
+                        .and_then(|p| rt::mem_play(|| rt::file_read(p).and_then(|b| crate::replay::parts_in(&String::from_utf8_lossy(&b), t))))
                         .unwrap_or_default(),
                 };
                 for (name, h) in self.game.checksum_parts() {

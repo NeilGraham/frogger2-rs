@@ -407,8 +407,14 @@ static int mem_main_peak, mem_main_used; /* main heap bytes in blocks allocated 
 static uint32_t peak_trace_hw; /* the last logged play-time high-water mark (`memgrow`) */
 #endif
 
+#ifdef F2N64_MEM_MAIN_TRACE
+static void mt_note(void *p, int sign);
+#endif
 /* Main-heap accounting (blocks allocated after big_init; the boot's own are in the base). */
 static inline void main_count(void *p, int sign) {
+#ifdef F2N64_MEM_MAIN_TRACE
+    mt_note(p, sign);
+#endif
     if (!pool_base) return;
     mem_main_used += sign * (int)malloc_usable_size(p);
     if (mem_main_used > mem_main_peak) mem_main_peak = mem_main_used;
@@ -542,6 +548,35 @@ static uint32_t lt_intern(void) {
     if (lt_n == LT_MAX) return 0;
     memcpy(lt_bt[lt_n], bt + 3, sizeof(lt_bt[lt_n]));
     return ++lt_n;
+}
+#endif
+#ifdef F2N64_MEM_MAIN_TRACE /* testing (needs F2N64_MEM_LIVE_TRACE): main-heap blocks by site */
+#define MT_SIZE 16384 /* power of two; open addressing, linear probing, backward-shift deletion */
+static uint32_t mt_key[MT_SIZE];
+static uint16_t mt_id[MT_SIZE];
+static uint32_t mt_lost;
+static inline uint32_t mt_hash(uint32_t k) { return (k >> 3) * 2654435761u >> (32 - 14); }
+static void mt_note(void *p, int sign) {
+    uint32_t k = (uint32_t)p, i = mt_hash(k) & (MT_SIZE - 1);
+    if (sign > 0) {
+        for (uint32_t n = 0; n < MT_SIZE; n++, i = (i + 1) & (MT_SIZE - 1))
+            if (!mt_key[i]) { mt_key[i] = k; mt_id[i] = (uint16_t)lt_intern(); return; }
+        mt_lost++;
+        return;
+    }
+    for (uint32_t n = 0; n < MT_SIZE && mt_key[i]; n++, i = (i + 1) & (MT_SIZE - 1)) {
+        if (mt_key[i] != k) continue;
+        /* Backward-shift deletion keeps every probe chain intact. */
+        uint32_t j = i;
+        for (;;) {
+            j = (j + 1) & (MT_SIZE - 1);
+            if (!mt_key[j]) break;
+            uint32_t h = mt_hash(mt_key[j]) & (MT_SIZE - 1);
+            if ((j > i) ? (h <= i || h > j) : (h <= i && h > j)) { mt_key[i] = mt_key[j]; mt_id[i] = mt_id[j]; i = j; }
+        }
+        mt_key[i] = 0;
+        return;
+    }
 }
 #endif
 static void *big_alloc(uint32_t req, uint32_t align, int top) {
@@ -711,6 +746,24 @@ void n64_mem_report_impl(const char *tag, uint32_t len, uint32_t check) {
             if (id) for (int i = 0; i < LT_DEPTH; i++) debugf(" %p", lt_bt[id - 1][i]);
             debugf("\n");
         }
+#ifdef F2N64_MEM_MAIN_TRACE
+        if (check & 16) { /* and the main heap's blocks by site */
+            memset(cnt, 0, sizeof(cnt));
+            memset(bytes, 0, sizeof(bytes));
+            for (uint32_t i = 0; i < MT_SIZE; i++) {
+                if (!mt_key[i]) continue;
+                cnt[mt_id[i]]++;
+                bytes[mt_id[i]] += malloc_usable_size((void *)mt_key[i]);
+            }
+            for (uint32_t id = 0; id <= lt_n; id++) {
+                if (!cnt[id] || bytes[id] < 4096) continue;
+                debugf("memlive [main] %lu: %lu blocks %lu bytes:", (unsigned long)id, (unsigned long)cnt[id], (unsigned long)bytes[id]);
+                if (id) for (int i = 0; i < LT_DEPTH; i++) debugf(" %p", lt_bt[id - 1][i]);
+                debugf("\n");
+            }
+            debugf("memlive [main] lost %lu (table full)\n", (unsigned long)mt_lost);
+        }
+#endif
         return;
     }
 #endif

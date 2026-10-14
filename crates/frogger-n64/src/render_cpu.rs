@@ -90,8 +90,9 @@ impl RenderCpu {
             // load (they live for the whole run: main heap, not the level heap).
             tex: Vec::with_capacity(IMAGE_SLOTS),
             bytes: Vec::with_capacity(IMAGE_SLOTS),
-            verts: Vec::with_capacity(4096),
-            rects: Vec::with_capacity(512),
+            // `submit`'s buffers (the render-cpu build; the r3d build fills `built`): 184 KiB.
+            verts: Vec::with_capacity(if cfg!(feature = "render-cpu") { 4096 } else { 0 }),
+            rects: Vec::with_capacity(if cfg!(feature = "render-cpu") { 512 } else { 0 }),
             stats: FrameStats::default(),
             tex_bytes: 0,
             persp: false,
