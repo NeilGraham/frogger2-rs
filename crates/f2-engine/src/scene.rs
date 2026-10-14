@@ -325,6 +325,16 @@ impl Default for RenderOptions {
 #[derive(Default)]
 pub struct Frames {
     pub tris: [Vec<Tri>; NUM_FRAMES],
+    /// `ProcessShadows`' polys. Retail draws them between its two `DrawAllFrames` flushes:
+    /// after the landscape and list-0 actors, before list-1 actors (every actor with a
+    /// shadow: frogs, babies, enemies), which therefore cover their own shadow.
+    pub shadows: Vec<Tri>,
+    /// Lengths of the `Normal` and `Wrap` lists when list-1 actors began
+    /// ([`Frames::begin_late_actors`]): triangles after them are drawn after the shadows.
+    pub late_split: Option<[usize; 2]>,
+    /// Length of the `Xlu` list when the first shadow was queued (where the shadows sat
+    /// in `Xlu` before they had their own list; [`crate::Renderer::frame_view`]).
+    pub shadow_xlu_at: Option<usize>,
     /// Triangles dropped this frame because a list could not grow (out of memory: consoles).
     pub dropped: u32,
 }
@@ -334,7 +344,25 @@ impl Frames {
         for f in &mut self.tris {
             f.clear();
         }
+        self.shadows.clear();
+        self.late_split = None;
+        self.shadow_xlu_at = None;
         self.dropped = 0;
+    }
+
+    /// Queues a shadow poly (`ProcessShadows`, see [`Frames::shadows`]).
+    pub fn push_shadow(&mut self, tri: Tri) {
+        self.shadow_xlu_at.get_or_insert(self.tris[Frame::Xlu as usize].len());
+        if self.shadows.len() == self.shadows.capacity() && self.shadows.try_reserve(1).is_err() {
+            self.dropped += 1;
+            return;
+        }
+        self.shadows.push(tri);
+    }
+
+    /// `ActorListDraw(1)` starts: opaque triangles from here on are drawn after the shadows.
+    pub fn begin_late_actors(&mut self) {
+        self.late_split = Some([self.tris[Frame::Normal as usize].len(), self.tris[Frame::Wrap as usize].len()]);
     }
     /// Queues a triangle. When the list cannot grow (out of memory, which only a console
     /// sees) it tries a small exact top-up, then drops the triangle instead of aborting.
@@ -347,7 +375,7 @@ impl Frames {
         v.push(tri);
     }
     pub fn total(&self) -> usize {
-        self.tris.iter().map(Vec::len).sum()
+        self.tris.iter().map(Vec::len).sum::<usize>() + self.shadows.len()
     }
 }
 

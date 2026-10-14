@@ -1039,6 +1039,17 @@ impl Renderer {
         self.frames.push(frame, tri);
     }
 
+    /// Queues a `ProcessShadows` poly: drawn after the landscape and list-0 actors, before
+    /// the list-1 actors (see [`Frames::shadows`]).
+    pub fn push_shadow(&mut self, tri: Tri) {
+        self.frames.push_shadow(tri);
+    }
+
+    /// `ActorListDraw(1)` starts (after `ProcessShadows`): see [`Frames::begin_late_actors`].
+    pub fn begin_late_actors(&mut self) {
+        self.frames.begin_late_actors();
+    }
+
     /// Number of 3D triangles queued so far this frame.
     pub fn queued_tris(&self) -> usize {
         self.frames.total()
@@ -1309,19 +1320,47 @@ impl Renderer {
         for q in &self.backdrops {
             push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q));
         }
-        for (k, (frame, blend, depth, wrap, aref, sorted)) in PASSES.into_iter().enumerate() {
-            barrier.set(cmds.len());
-            marks[k + 1] = cmds.len() as u32;
-            let tris = &mut self.frames.tris[frame as usize];
-            if sorted {
-                self.options.xlu_sort.sort(tris);
-            }
-            for t in tris.iter() {
+        // Retail's two `DrawAllFrames` flushes around `ProcessShadows`: the opaque passes'
+        // early triangles (landscape, list-0 actors), the shadows, then their late ones
+        // (list-1 actors, which cover their own shadows). The early translucent triangles
+        // are not split off: they are drawn with the late ones, after the shadows.
+        let split = self.frames.late_split;
+        let early = |frame: Frame, len: usize| match (frame, split) {
+            (Frame::Normal, Some([n, _])) => n.min(len),
+            (Frame::Wrap, Some([_, w])) => w.min(len),
+            (Frame::Normal | Frame::Wrap, None) => len,
+            _ => 0,
+        };
+        let emit = |verts: &mut Vec<TlVertex>, cmds: &mut Vec<DrawCmd>, tris: &[Tri], blend, depth, wrap, aref| {
+            for t in tris {
                 let mut v = t.v;
                 for x in &mut v {
                     x.alpha_ref = aref;
                 }
-                push(&mut verts, &mut cmds, blend, depth, wrap, true, t.tex, &v);
+                push(verts, cmds, blend, depth, wrap, true, t.tex, &v);
+            }
+        };
+        let (n_early, w_early) =
+            (early(Frame::Normal, self.frames.tris[Frame::Normal as usize].len()), early(Frame::Wrap, self.frames.tris[Frame::Wrap as usize].len()));
+        for (k, (frame, blend, depth, wrap, aref, sorted)) in PASSES.into_iter().enumerate() {
+            barrier.set(cmds.len());
+            marks[k + 1] = cmds.len() as u32;
+            if sorted {
+                self.options.xlu_sort.sort(&mut self.frames.tris[frame as usize]);
+            }
+            let tris = &self.frames.tris[frame as usize];
+            match frame {
+                // Segment 1 holds the early opaque triangles of both opaque passes, the
+                // shadows (`xluZRS`, `normalAlphaCmpRS`, clamped) and the late `Normal` ones.
+                Frame::Normal => {
+                    emit(&mut verts, &mut cmds, &tris[..n_early], blend, depth, wrap, aref);
+                    let (_, wb, wd, ww, wa, _) = PASSES[1];
+                    emit(&mut verts, &mut cmds, &self.frames.tris[Frame::Wrap as usize][..w_early], wb, wd, ww, wa);
+                    emit(&mut verts, &mut cmds, &self.frames.shadows, Blend::Semi, DepthMode::Test, false, ALPHA_NONZERO);
+                    emit(&mut verts, &mut cmds, &tris[n_early..], blend, depth, wrap, aref);
+                }
+                Frame::Wrap => emit(&mut verts, &mut cmds, &tris[w_early..], blend, depth, wrap, aref),
+                _ => emit(&mut verts, &mut cmds, tris, blend, depth, wrap, aref),
             }
         }
         barrier.set(cmds.len());
@@ -1344,6 +1383,13 @@ impl Renderer {
             let c = clear.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
             Quad2D::rect(x, y, w, h, [0.0; 4], None, [c[0], c[1], c[2], 255], Blend::Semi)
         });
+        // This view has no shadow slot: the shadows go back into `Xlu` where they used to be
+        // queued (back ends that consume it draw them as before).
+        if !self.frames.shadows.is_empty() {
+            let at = self.frames.shadow_xlu_at.unwrap_or(0).min(self.frames.tris[Frame::Xlu as usize].len());
+            let shadows = core::mem::take(&mut self.frames.shadows);
+            self.frames.tris[Frame::Xlu as usize].splice(at..at, shadows);
+        }
         let sort = self.options.xlu_sort;
         for (frame, _, _, _, _, sorted) in PASSES {
             if sorted {

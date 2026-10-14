@@ -290,8 +290,9 @@ fn draw_shadow(r: &mut Renderer, pos: V3, normal: V3, size: f32, offset: f32, al
     let m = mtx_cat(&rot, &mtx_cat(&f2_engine::math::gu_translate(pos[0], pos[1], pos[2]), &f2_engine::math::IDENTITY));
     let corners = [[size, offset, size], [size, offset, -size], [-size, offset, -size], [-size, offset, size]];
     if xfm_quad(r, &m, &mut v, corners, -4.0) {
-        push(r, Frame::Xlu, [v[0], v[1], v[2]], tex);
-        push(r, Frame::Xlu, [v[2], v[3], v[4]], tex);
+        // Drawn between the list-0 and list-1 actors (the engine's shadow list).
+        r.push_shadow(Tri { v: [v[0].tl(), v[1].tl(), v[2].tl()], tex: Some(tex) });
+        r.push_shadow(Tri { v: [v[2].tl(), v[3].tl(), v[4].tl()], tex: Some(tex) });
     }
 }
 

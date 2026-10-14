@@ -393,6 +393,7 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
                 fx::process_shadows(r, game);
             }
             phase(draw_phase::SHADOWS);
+            r.begin_late_actors();
             draw_actor_list(r, scene, game, ctx, 1);
             if let Some(((b, m), a)) = &mut scene.placeholder_frog {
                 r.draw_actor(&scene.banks[*b].models[*m], a);
