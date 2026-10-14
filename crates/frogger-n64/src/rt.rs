@@ -127,6 +127,30 @@ pub fn mem_reset_peaks() {
     unsafe { ffi::n64_mem_reset_peaks() }
 }
 
+/// Runs `f` on a temporary stack of `size` bytes allocated from the heap (in the current
+/// [`mem_phase`]), for work whose frames do not fit libdragon's 64 KiB stack: a new
+/// `Game` session mid-run (`Game::new` alone has a ~52 KiB frame; at boot a painted guard
+/// below the stack covers it, csrc/main.c "Stack guard"). Returns `f`'s result and the stack
+/// bytes it used (painted, measured afterwards).
+pub fn on_big_stack<R, F: FnOnce() -> R>(size: usize, f: F) -> (R, usize) {
+    const PAINT: u64 = 0x5741_434b_5741_434b;
+    let mut stack: alloc::vec::Vec<u64> = alloc::vec![PAINT; size / 8];
+    let mut st: (Option<F>, Option<R>) = (Some(f), None);
+    extern "C" fn tramp<R, F: FnOnce() -> R>(p: *mut u8) {
+        // SAFETY: `p` is `st` below, alive for the whole call.
+        let st = unsafe { &mut *(p as *mut (Option<F>, Option<R>)) };
+        st.1 = st.0.take().map(|f| f());
+    }
+    // SAFETY: the block outlives the call; its end is 16-byte aligned (n32), the trampoline
+    // restores the stack pointer.
+    unsafe {
+        let top = (stack.as_mut_ptr().add(stack.len()) as usize & !15) as *mut u8;
+        ffi::n64_call_on_stack(tramp::<R, F>, &mut st as *mut _ as *mut u8, top);
+    }
+    let used = size - 8 * stack.iter().take_while(|&&w| w == PAINT).count();
+    (st.1.expect("on_big_stack: f did not run"), used)
+}
+
 /// libdragon heap (C and Rust allocations): (total, used) bytes.
 pub fn heap_stats() -> HeapStats {
     let mut s = HeapStats::default();

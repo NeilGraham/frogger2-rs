@@ -66,6 +66,52 @@ tools/n64/replay-all.sh /mnt/c/Frogger2-rs/recordings     # or: build + run each
 - First results (2026-10-13): a 100 s Garden 1 run (level complete at tick 3621), all 101
   checksums equal; a story session Garden -> video 03S -> Boulder Canyon, all 126 equal.
 
+### Chain mode (several levels in one boot)
+One-level recordings played back to back in ONE boot: the heaps, renderer caches and audio
+carry over from level to level as in a real session (level after level with the videos in
+between), while every segment is still checked against its own recording.
+```sh
+tools/n64/replay-chain.sh --chain fastest /mnt/c/Frogger2-rs/recordings   # = replay-all.sh --chain fastest DIR
+tools/n64/replay-chain.sh --chain random:42 --dry-run /mnt/c/Frogger2-rs/recordings   # selection only
+tools/n64/replay-chain.sh "story 02 Boulder Canyon #1.txt" "story 03 The Gold Mine #3.txt"   # these, in this order
+F2N64_BOOT=replay F2N64_KEEP_DFS=1 F2N64_REPLAY_LIST=chain.list tools/n64/build.sh        # by hand: one path per line
+```
+- Selection (`replay-chain.sh`): only recordings with a `# mode T 3` line (level complete);
+  per level (the `# f2rec` header) `--chain fastest` (lowest level-complete tick, default) |
+  `slowest` | `random[:SEED]` (the seed is printed) | `all`; story chapters in order, then the
+  practice / retro levels. Files named on the command line are all chained, in that order.
+  It builds one ROM, runs ares (`N64TEST` default `/mnt/c/f2-n64test-chain`, `DELAY` default
+  5400 s, `-stopon "replay chain done|REPLAY DESYNC|REPLAY FAILED"`) and prints the segment
+  lines, the `mem` line of every level load (and any heap-full / alloc-failure line) and the
+  result. Outputs in `target/n64/replays/chain.*` (list, ROM, log, screenshots).
+- ROM layout: `F2N64_REPLAY_LIST=FILE` copies the recordings to `rom:/replay/000.txt`,
+  `001.txt`, ... and writes `rom:/replay/list.txt` (`000.txt <name>` per line; names keep their
+  spaces and `#`). `F2N64_BOOT=replay` plays the chain when the list is there, else
+  `rom:/replay.txt` as before (the two variables cannot be combined).
+- At a segment's `# end` tick the next one starts as the PC started its recording: a fresh
+  simulation session (`Game::new_session`: no save, the N64 options, the hooks; on the main
+  heap as at boot), `start_frontend()`, `start_story(N)` / `start_arcade(W, L)`. The previous
+  level goes through the normal level-change path: its renderer side is freed
+  (`unload_level_render`), the old session's level state with the old `Game`, the new
+  InitLevel fills the level heap (new epoch), the chapter's video plays (autoskipped, after
+  `free_last_level`) and `load_scene` loads the renderer side. Then `# h 0` is compared.
+- A new session needs ~110 KiB of stack (`Game::new`'s frame alone is ~52 KiB), more than
+  libdragon's 64 KiB stack once the boot's stack guard is gone: it is built on a temporary
+  160 KiB stack from the heap (`rt::on_big_stack`, `n64_call_on_stack` in `csrc/abi.S`;
+  logged `replay: new session (N KiB of the 160 KiB session stack used)`), freed at once.
+- The test's own data is kept small: segments are read one at a time, after the previous
+  session is freed, onto the main heap, without their `# p` parts (re-read from the ROM only
+  after a desync); the single-file boot keeps the whole recording as before.
+- Log: `replay chain: N segments`, `replay: segment i/N <name> start: ...`, the usual tick
+  lines, `REPLAY DESYNC at tick T (segment i/N <name>)`, `replay: segment i/N <name> done: ...`,
+  `mem [replay segment i/N <name> end]`, and at the end `replay chain done: N segments of N,
+  T ticks, K checksums matched, no desync` (or `first desync at segment i/N tick T (<name>)`).
+- First result (2026-10-13): Boulder Canyon #1 -> Gold Mine #3 -> (video 05S) Pyramid Climb #1
+  -> Ants Nest #3 in one boot, 748 s in ares: `replay chain done: 4 segments of 4, 37261
+  ticks, 626 checksums matched, no desync`; no heap ran out (level heap peak 2644 of 2893 KiB,
+  0 KiB of earlier loads left at each load), but the main heap stays full in play from the
+  second level on (~27,600 `play->level` fallbacks by the end; 2324 of 2366 KiB used).
+
 ## Prerequisites
 - libdragon **preview** (pinned `39d0d60`) + its toolchain at `N64_INST`
   (default `~/opt/n64root/opt/libdragon`: GCC 16 `mips64-elf`, `mkdfs`, `mkasset`, `n64tool`…).
@@ -147,8 +193,9 @@ USA data: 36 MiB ROM.
 
 | env | effect |
 |---|---|
-| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L`, `story N` (story mode at `storySequence[N]`, FMV first), `story-finish N` (testing: `story N`, level completed after 4 s, results pressed through), `frontend-start` (testing: Start pressed on the title), `settings-test` (testing: then the settings page open, FPS counter on, 30 fps limit), `book-test` (testing: then Right, Up: the story book open), `book-select-test [N]` (testing: chapters 1..N open, FMVs skipped, title pressed through quickly, the book, select at once), `mem-tour [STEP]` (testing, memory: every story level then the retro levels 7-0..7-9, each left after 240 frames by Quit, a game over or straight into the next in turn; `mem` lines at every load, research/n64-memory.md "Level heap"), `level-book-test` (testing: story Garden 1 with its FMV, Quit to the frontend after 300 frames, then Right, Up), `gameover-book-test` (testing: story Gold Mine, game over after 300 frames, then the book), `replay` (testing: plays `rom:/replay.txt`, a PC recording, see "Replays") |
+| `F2N64_BOOT` | `frontend` (default: logo FMVs, title, frontend; progress from the SRAM save), `frontend-trained` (training level marked done), `save-test` (writes the save block at boot), `level W L`, `story N` (story mode at `storySequence[N]`, FMV first), `story-finish N` (testing: `story N`, level completed after 4 s, results pressed through), `frontend-start` (testing: Start pressed on the title), `settings-test` (testing: then the settings page open, FPS counter on, 30 fps limit), `book-test` (testing: then Right, Up: the story book open), `book-select-test [N]` (testing: chapters 1..N open, FMVs skipped, title pressed through quickly, the book, select at once), `mem-tour [STEP]` (testing, memory: every story level then the retro levels 7-0..7-9, each left after 240 frames by Quit, a game over or straight into the next in turn; `mem` lines at every load, research/n64-memory.md "Level heap"), `level-book-test` (testing: story Garden 1 with its FMV, Quit to the frontend after 300 frames, then Right, Up), `gameover-book-test` (testing: story Gold Mine, game over after 300 frames, then the book), `replay` (testing: plays `rom:/replay.txt`, a PC recording, or the chain `rom:/replay/list.txt`, see "Replays") |
 | `F2N64_REPLAY` | a PC recording copied to `rom:/replay.txt` for `F2N64_BOOT=replay` (see "Replays"); builds without it carry none |
+| `F2N64_REPLAY_LIST` | chain mode: a file naming PC recordings (one path per line), copied to `rom:/replay/` and played back to back by `F2N64_BOOT=replay` (see "Replays", "Chain mode") |
 | `F2N64_FEATURES` | `profile` (2 kHz sampling profiler, `PROF` lines with every perf log), `profile-sim` / `profile-draw` (sample inside `Game::tick` / `App::draw` only), `game-log` (the simulation's `Effect::Log`), `render-cpu` (phase-2G CPU renderer), `prep-data` (set by `F2N64_DATA=prep`), `simbench` (no game: runs the `f2_game::simbench` scenarios, logs per-tick times, phases and state checksums; research/n64-performance.md §3S) |
 | `F2N64_DATA` | `pack` (default) or `prep` (phase-2G loose files) |
 | `F2N64_CFLAGS=-DF2N64_NO_TRIS` | measurement: r3d does all its CPU work but sends no triangles (the ceiling of polygon reduction; touch `csrc/r3d.c` to rebuild) |

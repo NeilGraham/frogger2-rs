@@ -29,7 +29,8 @@
 #      "02 09 10 12": Garden, frontend, level complete), F2N64_BOOT (e.g. "level 0 0" to
 #      boot straight into Garden 1), F2N64_KEEP_DFS=1 (reuse the last filesystem),
 #      F2N64_FEATURES (crate features: profile = sampling profiler, game-log),
-#      F2N64_REPLAY=FILE (a PC recording for F2N64_BOOT=replay, as rom:/replay.txt).
+#      F2N64_REPLAY=FILE (a PC recording for F2N64_BOOT=replay, as rom:/replay.txt),
+#      F2N64_REPLAY_LIST=FILE (chain mode: recordings, one path per line, as rom:/replay/).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
@@ -169,10 +170,31 @@ else
 fi
 # F2N64_REPLAY=FILE: a PC recording (frogger --practice W L --record FILE) as rom:/replay.txt
 # for F2N64_BOOT=replay; other builds carry none.
-rm -f "$fs/replay.txt"
+# F2N64_REPLAY_LIST=FILE (chain mode): FILE names recordings, one path per line (blank lines and
+# lines starting with '#' skipped), copied to rom:/replay/000.txt, 001.txt, ... and listed in
+# rom:/replay/list.txt ("000.txt <name>"); F2N64_BOOT=replay plays them back to back.
+rm -rf "$fs/replay.txt" "$fs/replay"
+if [ -n "${F2N64_REPLAY:-}" ] && [ -n "${F2N64_REPLAY_LIST:-}" ]; then
+    echo "ERROR: F2N64_REPLAY and F2N64_REPLAY_LIST both set" >&2
+    exit 1
+fi
 if [ -n "${F2N64_REPLAY:-}" ]; then
     cp "$F2N64_REPLAY" "$fs/replay.txt"
     echo "   replay: $F2N64_REPLAY ($(stat -c %s "$fs/replay.txt") bytes)"
+fi
+if [ -n "${F2N64_REPLAY_LIST:-}" ]; then
+    mkdir -p "$fs/replay"
+    n=0
+    while IFS= read -r f || [ -n "$f" ]; do
+        f="${f%$'\r'}"
+        case "$f" in '' | '#'*) continue ;; esac
+        seg="$(printf '%03d.txt' "$n")"
+        cp "$f" "$fs/replay/$seg"
+        printf '%s %s\n' "$seg" "$(basename "$f" .txt)" >> "$fs/replay/list.txt"
+        echo "   replay chain $seg: $f ($(stat -c %s "$fs/replay/$seg") bytes)"
+        n=$((n + 1))
+    done < "$F2N64_REPLAY_LIST"
+    [ $n -gt 0 ] || { echo "ERROR: F2N64_REPLAY_LIST names no recording" >&2; exit 1; }
 fi
 
 echo "== [4/5] libdragon link + ROM"

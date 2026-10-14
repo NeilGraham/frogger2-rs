@@ -341,6 +341,9 @@ pub struct App {
     /// the last `MEM LOW` line.
     oom_tris: u64,
     oom_logged: u64,
+    /// `Boot::Replay` chain mode (`rom:/replay/list.txt`): the segments; `replay` is the one
+    /// playing.
+    chain: Option<crate::replay::Chain>,
     /// `Boot::LevelBookTest`: frames in the level before quitting to the frontend.
     level_quit: Option<u32>,
     /// [`App::free_last_level`] ran for the load in progress (before its video).
@@ -365,6 +368,28 @@ pub struct App {
     audio_mark: u32,
     avg_period: u32,
     spikes: u32,
+}
+
+/// The simulation's options on the N64 (the PC recordings' sessions use the same).
+const N64_GAME_OPTIONS: f2_game::enhance::GameOptions = f2_game::enhance::GameOptions { console: true, settings_menu: true, ..f2_game::enhance::GameOptions::AUTHENTIC };
+
+/// Chain mode: the temporary stack a new session is built on ([`rt::on_big_stack`]).
+const REPLAY_SESSION_STACK: usize = 160 * 1024;
+
+/// Reads and parses a PC recording from the ROM.
+fn read_replay(path: &str) -> Result<crate::replay::Replay, String> {
+    let b = rt::file_read(path).ok_or_else(|| format!("{path} not found"))?;
+    crate::replay::Replay::parse(&String::from_utf8_lossy(&b))
+}
+
+/// Chain mode: a segment's recording without its checksum parts (most of its size), on the
+/// main heap: the test's own data stays small and out of the level heap, whose state from
+/// level to level is what a chain is for.
+fn read_replay_lean(path: &str) -> Result<crate::replay::Replay, String> {
+    rt::mem_play(|| {
+        let b = rt::file_read(path).ok_or_else(|| format!("{path} not found"))?;
+        crate::replay::Replay::parse_with(&String::from_utf8_lossy(&b), false)
+    })
 }
 
 fn load_font(d: &N64Data<Store>, p: &str) -> Option<Font> {
@@ -430,6 +455,7 @@ impl App {
             replay: None,
             oom_tris: 0,
             oom_logged: 0,
+            chain: None,
             level_quit: None,
             tour: None,
             last_level_freed: false,
@@ -456,7 +482,7 @@ impl App {
         log!("app: save game {}", if cfg.save_data.is_some() { "loaded from SRAM" } else { "not found (new player)" });
         let t0 = ticks();
         app.game = Game::new_session(cfg);
-        app.game.set_game_options(f2_game::enhance::GameOptions { console: true, settings_menu: true, ..f2_game::enhance::GameOptions::AUTHENTIC });
+        app.game.set_game_options(N64_GAME_OPTIONS);
         app.settings = crate::settings::Settings::load();
         // F2N64_FRAME_LIMIT=30|20|0 (build time, measurement): the frame limit whatever SRAM says.
         if let Some(v) = option_env!("F2N64_FRAME_LIMIT").and_then(|v| v.trim().parse::<u8>().ok()) {
@@ -534,23 +560,25 @@ impl App {
                 app.hop_bench = Some(0);
             }
             Boot::Replay => {
-                let r = rt::file_read("rom:/replay.txt").ok_or_else(|| String::from("rom:/replay.txt not found"));
-                match r.and_then(|b| crate::replay::Replay::parse(&String::from_utf8_lossy(&b))) {
-                    Ok(r) => {
-                        log!("replay: {:?}, {} ticks", r.start, r.end);
-                        // As the PC's `--practice` / `--story` (`App::start_choice`): the
-                        // frontend session first.
-                        app.game.start_frontend();
-                        match r.start {
-                            crate::replay::Start::Practice(w, l) => app.game.start_arcade(w, l),
-                            crate::replay::Start::Story(n) => app.game.start_story(n),
-                            crate::replay::Start::None => {}
-                        }
-                        // Videos take no ticks on either build: skipped as a player would.
-                        rt::set_fmv_autoskip(true);
-                        app.replay = Some(r);
+                // Chain mode when the ROM carries a list (F2N64_REPLAY_LIST), else one file.
+                let path = match rt::file_read("rom:/replay/list.txt").map(|b| crate::replay::Chain::parse(&String::from_utf8_lossy(&b), "rom:/replay/")) {
+                    Some(Ok(c)) => {
+                        log!("replay chain: {} segments", c.segments.len());
+                        let p = c.segments[0].0.clone();
+                        app.chain = Some(c);
+                        Some(p)
                     }
-                    Err(e) => log!("REPLAY FAILED: {e}"),
+                    Some(Err(e)) => {
+                        log!("REPLAY FAILED: {e}");
+                        None
+                    }
+                    None => Some(String::from("rom:/replay.txt")),
+                };
+                let chain = app.chain.is_some();
+                match path.map(|p| if chain { read_replay_lean(&p) } else { read_replay(&p) }) {
+                    Some(Ok(r)) => app.replay_begin(r),
+                    Some(Err(e)) => log!("REPLAY FAILED: {e}"),
+                    None => {}
                 }
             }
             Boot::Story(n) | Boot::StoryFinish(n) => {
@@ -567,10 +595,7 @@ impl App {
             // Testing: the level's load-time blocks by allocation site.
             unsafe { crate::ffi::n64_mem_report(b"load".as_ptr(), 4, 16) };
         }
-        let start = app.replay.as_mut().and_then(|r| Some(r.check(0, r.start_hash()?, app.game.checksum())));
-        if let Some(c) = start {
-            app.replay_report(c);
-        }
+        app.replay_check_start();
         app.heap_log("boot");
         #[cfg(feature = "profile")]
         unsafe {
@@ -1414,6 +1439,87 @@ impl App {
         replay || crate::pacing::VARIABLE && self.game.game_state.mode as u32 != f2_game::define::mode::DEMO_MODE
     }
 
+    /// Starts a recording's session as the PC's `--practice` / `--story` did
+    /// (`App::start_choice`): the frontend session first, then the level.
+    fn replay_begin(&mut self, r: crate::replay::Replay) {
+        match &self.chain {
+            Some(c) => log!("replay: segment {} start: {:?}, {} ticks", c.label(), r.start, r.end),
+            None => log!("replay: {:?}, {} ticks", r.start, r.end),
+        }
+        self.game.start_frontend();
+        match r.start {
+            crate::replay::Start::Practice(w, l) => self.game.start_arcade(w, l),
+            crate::replay::Start::Story(n) => self.game.start_story(n),
+            crate::replay::Start::None => {}
+        }
+        // Videos take no ticks on either build: skipped as a player would.
+        rt::set_fmv_autoskip(true);
+        self.replay = Some(r);
+    }
+
+    /// After the level load: the recording's tick-0 checksum.
+    fn replay_check_start(&mut self) {
+        let start = self.replay.as_mut().and_then(|r| Some(r.check(0, r.start_hash()?, self.game.checksum())));
+        if let Some(c) = start {
+            self.replay_report(c);
+        }
+    }
+
+    /// Chain mode, at the end of a segment: the next recording in a fresh simulation session
+    /// (as the PC recorded it: `App::new`'s session, no save, the N64 options), started as
+    /// the boot does; the renderer, the heaps and the audio carry on, so the previous level
+    /// is freed by the normal level-change path (the data source's first access, the story
+    /// video, `load_scene`).
+    #[inline(never)]
+    fn replay_chain_next(&mut self) {
+        let (Some(c), Some(r)) = (self.chain.as_mut(), self.replay.as_ref()) else { return };
+        let ended = c.label();
+        if !c.finish(r) {
+            log!("replay chain done: {}", c.summary());
+            rt::mem_report("replay chain done", false);
+            return;
+        }
+        rt::mem_report(&format!("replay segment {ended} end"), false);
+        let (path, label) = (c.segments[c.cur].0.clone(), c.label());
+        self.replay = None;
+        // The level on screen is the previous session's: its renderer side goes now (the
+        // new session's first data access would do it), and the old session with its level
+        // state (as `InitLevel`'s frees would). Then the next recording, while that memory is
+        // free, and the new session.
+        PLAYING.store(false, core::sync::atomic::Ordering::Relaxed);
+        unload_level_render();
+        let slot: *mut Game = &mut self.game;
+        // SAFETY: the slot is written again below before anything reads it (nothing between
+        // touches the game; a panic stops the N64, nothing unwinds).
+        unsafe { core::ptr::drop_in_place(slot) };
+        let r = read_replay_lean(&path);
+        let mut cfg = SessionConfig::new(self.data.clone());
+        cfg.save_data = None;
+        // A session's frames (`Game::new` ~52 KiB, `new_session` ~29 KiB) do not fit the
+        // 64 KiB stack mid-run (at boot the stack guard covers them): a temporary stack from
+        // the heap (the level heap's free middle; freed again at once). The session data, as
+        // at boot (`big_init`'s MEM_MAIN): the main heap.
+        let ((), used) = rt::on_big_stack(REPLAY_SESSION_STACK, || rt::mem_play(|| unsafe { slot.write(Game::new_session(cfg)) }));
+        log!("replay: new session ({} KiB of the {} KiB session stack used)", used / 1024, REPLAY_SESSION_STACK / 1024);
+        rt::mem_play(|| {
+            self.game.set_game_options(N64_GAME_OPTIONS);
+            self.install_game_hooks();
+        });
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                log!("REPLAY FAILED: segment {label}: {e}");
+                self.chain = None;
+                return;
+            }
+        };
+        PLAYING.store(true, core::sync::atomic::Ordering::Relaxed);
+        self.replay_begin(r);
+        self.dispatch_effects();
+        self.process_level_loads();
+        self.replay_check_start();
+    }
+
     /// Logs a replay check, the parts that differ on a desync, and the end of the replay.
     fn replay_report(&mut self, c: crate::replay::Check) {
         use crate::replay::Check;
@@ -1430,8 +1536,15 @@ impl App {
                 }
             }
             Check::Desync(t, want, got) => {
-                log!("REPLAY DESYNC at tick {t}: checksum {got:016x}, the PC had {want:016x}");
-                let rec = r.parts_at(t).unwrap_or("");
+                let seg = self.chain.as_ref().map_or(String::new(), |c| format!(" (segment {})", c.label()));
+                log!("REPLAY DESYNC at tick {t}{seg}: checksum {got:016x}, the PC had {want:016x}");
+                // Chain mode keeps no parts: from the recording in the ROM again.
+                let rec = match r.parts_at(t) {
+                    Some(p) => String::from(p),
+                    None => (self.chain.as_ref().and_then(|c| c.segments.get(c.cur)))
+                        .and_then(|s| rt::mem_play(|| rt::file_read(&s.0).and_then(|b| crate::replay::parts_in(&String::from_utf8_lossy(&b), t))))
+                        .unwrap_or_default(),
+                };
                 for (name, h) in self.game.checksum_parts() {
                     let pc = rec.split_whitespace().find_map(|p| p.strip_prefix(name).and_then(|p| p.strip_prefix('=')));
                     let ours = format!("{h:016x}");
@@ -1442,9 +1555,11 @@ impl App {
             }
         }
         if r.done() {
+            // Chain mode: per segment (`replay chain done` at the very end).
+            let what = self.chain.as_ref().map_or(String::from("replay done"), |c| format!("replay: segment {} done", c.label()));
             match r.desync {
-                None => log!("replay done: {} ticks, all {} checksums match", r.tick, r.checks_ok),
-                Some((t, _, _)) => log!("replay done: {} ticks, {} checksums matched, first desync at tick {t}", r.tick, r.checks_ok),
+                None => log!("{what}: {} ticks, all {} checksums match", r.tick, r.checks_ok),
+                Some((t, _, _)) => log!("{what}: {} ticks, {} checksums matched, first desync at tick {t}", r.tick, r.checks_ok),
             }
         }
     }
@@ -1590,6 +1705,7 @@ impl App {
             }
         }
         let before = self.win;
+        let mut segment_end = false;
         for i in 0..n {
             let replay_pad = self.replay.as_mut().filter(|r| !r.done()).map(|r| r.pad());
             let mode = self.game.game_state.mode;
@@ -1603,11 +1719,18 @@ impl App {
                     log!("replay: tick {} mode {}", r.tick, game.game_state.mode);
                 }
                 self.replay_report(c);
+                segment_end = self.chain.is_some() && self.replay.as_ref().is_some_and(|r| r.done());
             }
             self.acc -= (k * TICK).min(self.acc);
             let tp = ticks();
             rt::audio_poll();
             self.win.poll += ticks().wrapping_sub(tp);
+            if segment_end {
+                break;
+            }
+        }
+        if segment_end {
+            self.replay_chain_next();
         }
         let t1 = ticks();
         self.draw();

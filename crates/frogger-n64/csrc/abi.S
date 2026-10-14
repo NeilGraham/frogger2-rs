@@ -143,3 +143,26 @@ f2n64_call:
     jr $ra
     addiu $sp, $sp, 128
     .size f2n64_call, . - f2n64_call
+
+# Rust (n32) -> Rust (n32): n64_call_on_stack(fn, arg, top) calls fn(arg) with $sp at `top`
+# (16-byte aligned, the end of a heap block): `rt::on_big_stack`, for work whose stack frames
+# do not fit libdragon's 64 KiB stack (a new `Game` session: ~110 KiB).
+    .globl n64_call_on_stack
+    .type n64_call_on_stack, @function
+    .align 5
+n64_call_on_stack:
+    addiu $sp, $sp, -32
+    sd $ra, 24($sp)
+    sd $s0, 16($sp)
+    move $s0, $sp
+    move $t9, $a0
+    move $a0, $a1
+    addiu $sp, $a2, -32
+    jalr $t9
+    nop
+    move $sp, $s0
+    ld $s0, 16($sp)
+    ld $ra, 24($sp)
+    jr $ra
+    addiu $sp, $sp, 32
+    .size n64_call_on_stack, . - n64_call_on_stack

@@ -8,8 +8,12 @@
 # "replay done", a desync or a crash (crash screen saved by run-ares.sh), keep the log.
 # Outputs in $OUT (default target/n64/replays/): <name>.z64, <name>.log, <name>*.png.
 # Env: N64TEST (default /mnt/c/f2-n64test-replay), DELAY (max seconds per run, default 1800).
+#
+#   tools/n64/replay-all.sh --chain MODE DIR    chain mode instead: one ROM, the levels back to
+#                                               back (tools/n64/replay-chain.sh)
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+case "${1:-}" in --chain | --chain=*) exec "$here/replay-chain.sh" "$@" ;; esac
 root="$(cd "$here/../.." && pwd)"
 out="${OUT:-$root/target/n64/replays}"
 export N64TEST="${N64TEST:-/mnt/c/f2-n64test-replay}"
