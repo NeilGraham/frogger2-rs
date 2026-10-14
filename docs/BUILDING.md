@@ -57,7 +57,7 @@ cargo check --workspace --all-targets --no-default-features --target aarch64-app
 
 ## Android
 
-`tools/android/build-apk.sh [--debug] [--abis arm64-v8a,x86_64]` builds `target/android/frogger2.apk`
+`tools/android/build-apk.sh [--debug] [--abis arm64-v8a,x86_64]` builds `target/android/swampys-revenge-recomp.apk`
 (needs the Android SDK/NDK, `cargo-ndk`, a JDK). Setup, data import and emulator testing:
 [ANDROID.md](ANDROID.md).
 
@@ -185,10 +185,10 @@ Each archive carries `NOTICE`, the four license texts (`licenses/`) and no game 
   or in `F2_APPIMAGETOOL`. It downloads the AppImage runtime while building; offline, pass a
   downloaded [type2 runtime](https://github.com/AppImage/type2-runtime/releases) as
   `F2_APPIMAGE_RUNTIME=/path/runtime-x86_64`. Without FUSE (containers, WSL) set
-  `APPIMAGE_EXTRACT_AND_RUN=1`. `Frogger2rs-*.AppImage f2-import <disc>` runs the importer.
-- **Flatpak**: `packaging/flatpak/net.frogger2rs.Frogger2.yml` (+ AppStream metainfo); generate
+  `APPIMAGE_EXTRACT_AND_RUN=1`. `SwampysRevengeRecomp-*.AppImage f2-import <disc>` runs the importer.
+- **Flatpak**: `packaging/flatpak/io.github.NeilGraham.SwampysRevengeRecomp.yml` (+ AppStream metainfo); generate
   `cargo-sources.json` with flatpak-cargo-generator first (steps in the manifest header).
-- **Desktop entry / icon**: `packaging/frogger2-rs.desktop`, `packaging/frogger2-rs.svg`
+- **Desktop entry / icon**: `packaging/swampys-revenge-recomp.desktop`, `packaging/icon/` (SVG master, PNG sizes, `.ico`; regenerate with `tools/icon/build-icons.sh`, needs `cargo install resvg`)
   (placeholder art, not from the game).
 
 CI (`.github/workflows/ci.yml`): `lint` (fmt + clippy), `test` (build + test on ubuntu, windows,

@@ -268,8 +268,8 @@ impl Screen {
             }
         };
         rect(r, 0.0, 0.0, wf, line * 3.2, BAND);
-        r.draw_text(f, 0.0, line * 0.6, "FROGGER 2: SWAMPY'S REVENGE", TITLE, s * 1.6, Some(wf / 2.0));
-        r.draw_text(f, 0.0, line * 2.1, "Import your game", TEXT, s, Some(wf / 2.0));
+        r.draw_text(f, 0.0, line * 0.6, "SWAMPY'S REVENGE RECOMP", TITLE, s * 1.6, Some(wf / 2.0));
+        r.draw_text(f, 0.0, line * 2.1, "Import your Frogger 2 game", TEXT, s, Some(wf / 2.0));
         let x0 = line * 1.5;
         let mut y = line * 4.0;
         self.hit.clear();
@@ -441,6 +441,7 @@ impl WindowApp for Screen {
         if self.gfx.is_some() {
             return;
         }
+        crate::appicon::set_default(window);
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())));
         let res = (|| -> Result<Gfx, String> {
@@ -550,7 +551,7 @@ impl Screen {
 /// Runs the import screen. Returns true when data was imported (the caller restarts).
 pub fn run(cfg: &Config, reason: &str) -> bool {
     let mut wc = WindowConfig::from_config(cfg);
-    wc.title = "Frogger 2: Swampy's Revenge - Import".into();
+    wc.title = "Swampy's Revenge Recomp - Import".into();
     wc.mode = f2_platform::WindowMode::Windowed;
     wc.resolution = None;
     let mut s = Screen::new(cfg.data_root(), reason);

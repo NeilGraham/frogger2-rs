@@ -10,6 +10,7 @@ pub mod data;
 pub mod editor;
 pub use f2_draw::fx;
 pub mod gameplay;
+pub mod icon;
 pub mod mods;
 pub mod netplay;
 pub use f2_draw::overlay;

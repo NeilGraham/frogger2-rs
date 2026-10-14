@@ -30,11 +30,11 @@ stage_docs() {
 pkg_linux() {
   [[ -n "${F2_SKIP_BUILD:-}" ]] || cargo build --release -p frogger -p f2-import -p f2-viewer
   local arch; arch="$(uname -m)"
-  local name="frogger2-rs-$VER-linux-$arch" st="$OUT/stage/linux"
+  local name="swampys-revenge-recomp-$VER-linux-$arch" st="$OUT/stage/linux"
   rm -rf "$st"; mkdir -p "$st/$name"
   for b in "${BINS[@]}"; do install -m755 "$TGT/release/$b" "$st/$name/"; done
   strip "$st/$name"/* 2>/dev/null || true
-  install -m644 packaging/frogger2-rs.desktop packaging/frogger2-rs.svg "$st/$name/"
+  install -m644 packaging/swampys-revenge-recomp.desktop packaging/icon/swampys-revenge-recomp.svg "$st/$name/"
   stage_docs "$st/$name"
   tar -C "$st" -czf "$OUT/$name.tar.gz" "$name"
   echo "wrote $OUT/$name.tar.gz"
@@ -49,16 +49,16 @@ pkg_linux() {
     echo "appimagetool not found; skipping AppImage (see tools/package/package.sh pkg_linux)"
     return 0
   fi
-  local ad="$OUT/stage/Frogger2rs.AppDir"
+  local ad="$OUT/stage/SwampysRevengeRecomp.AppDir"
   rm -rf "$ad"
-  mkdir -p "$ad/usr/bin" "$ad/usr/share/licenses/frogger2-rs" "$ad/usr/share/applications" \
+  mkdir -p "$ad/usr/bin" "$ad/usr/share/licenses/swampys-revenge-recomp" "$ad/usr/share/applications" \
     "$ad/usr/share/icons/hicolor/scalable/apps"
   for b in "${BINS[@]}"; do install -m755 "$st/$name/$b" "$ad/usr/bin/"; done
-  install -m644 packaging/frogger2-rs.desktop "$ad/usr/share/applications/"
-  install -m644 packaging/frogger2-rs.svg "$ad/usr/share/icons/hicolor/scalable/apps/"
-  cp packaging/frogger2-rs.desktop packaging/frogger2-rs.svg "$ad/"
-  ln -sf frogger2-rs.svg "$ad/.DirIcon"
-  cp NOTICE LICENSE-* "$ad/usr/share/licenses/frogger2-rs/"
+  install -m644 packaging/swampys-revenge-recomp.desktop "$ad/usr/share/applications/"
+  install -m644 packaging/icon/swampys-revenge-recomp.svg "$ad/usr/share/icons/hicolor/scalable/apps/"
+  cp packaging/swampys-revenge-recomp.desktop packaging/icon/swampys-revenge-recomp.svg "$ad/"
+  ln -sf swampys-revenge-recomp.svg "$ad/.DirIcon"
+  cp NOTICE LICENSE-* "$ad/usr/share/licenses/swampys-revenge-recomp/"
   # AppRun: `frogger` by default; `<AppImage> f2-import ...` / `<AppImage> f2-viewer` run the tools.
   cat > "$ad/AppRun" <<'APPRUN'
 #!/bin/sh
@@ -71,14 +71,14 @@ APPRUN
   chmod +x "$ad/AppRun"
   local rt=()
   [[ -n "${F2_APPIMAGE_RUNTIME:-}" ]] && rt=(--runtime-file "$F2_APPIMAGE_RUNTIME")
-  ARCH="$arch" "$tool" ${rt[@]+"${rt[@]}"} --no-appstream "$ad" "$OUT/Frogger2rs-$VER-$arch.AppImage"
-  echo "wrote $OUT/Frogger2rs-$VER-$arch.AppImage"
+  ARCH="$arch" "$tool" ${rt[@]+"${rt[@]}"} --no-appstream "$ad" "$OUT/SwampysRevengeRecomp-$VER-$arch.AppImage"
+  echo "wrote $OUT/SwampysRevengeRecomp-$VER-$arch.AppImage"
 }
 
 pkg_windows() {
   local bindir="${F2_WIN_BIN_DIR:-$OUT/win-bin}"
   [[ -n "${F2_SKIP_BUILD:-}" || -n "${F2_WIN_BIN_DIR:-}" ]] || tools/package/build-windows.sh
-  local name="frogger2-rs-$VER-windows-x86_64" st="$OUT/stage/windows"
+  local name="swampys-revenge-recomp-$VER-windows-x86_64" st="$OUT/stage/windows"
   rm -rf "$st"; mkdir -p "$st/$name"
   for b in "${BINS[@]}"; do cp "$bindir/$b.exe" "$st/$name/"; done
   stage_docs "$st/$name"
@@ -113,20 +113,20 @@ pkg_macos() {
     arch="$(uname -m)"
     [[ -n "${F2_SKIP_BUILD:-}" ]] || cargo build --release -p frogger -p f2-import -p f2-viewer
   fi
-  local name="frogger2-rs-$VER-macos-$arch" st="$OUT/stage/macos"
+  local name="swampys-revenge-recomp-$VER-macos-$arch" st="$OUT/stage/macos"
   rm -rf "$st"; mkdir -p "$st/$name"
-  local bundle="$st/$name/Frogger2rs.app" app="$st/$name/Frogger2rs.app/Contents"
+  local bundle="$st/$name/SwampysRevengeRecomp.app" app="$st/$name/SwampysRevengeRecomp.app/Contents"
   mkdir -p "$app/MacOS" "$app/Resources"
   for b in "${BINS[@]}"; do install -m755 "$bindir/$b" "$app/MacOS/"; done
   cat > "$app/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>Frogger2rs</string>
-  <key>CFBundleDisplayName</key><string>Frogger 2 (Rust port)</string>
-  <key>CFBundleIdentifier</key><string>net.frogger2rs.Frogger2</string>
+  <key>CFBundleName</key><string>SwampysRevengeRecomp</string>
+  <key>CFBundleDisplayName</key><string>Swampy's Revenge Recomp</string>
+  <key>CFBundleIdentifier</key><string>io.github.NeilGraham.SwampysRevengeRecomp</string>
   <key>CFBundleExecutable</key><string>frogger</string>
-  <key>CFBundleIconFile</key><string>frogger2-rs</string>
+  <key>CFBundleIconFile</key><string>swampys-revenge-recomp</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
@@ -139,16 +139,16 @@ pkg_macos() {
 </dict></plist>
 PLIST
   if command -v plutil >/dev/null; then plutil -lint "$app/Info.plist"; fi
-  # Icon: the placeholder SVG -> .icns when rsvg-convert (brew install librsvg) and iconutil
-  # exist; otherwise the SVG is shipped and Finder shows the generic app icon.
-  cp packaging/frogger2-rs.svg "$app/Resources/"
-  if command -v rsvg-convert >/dev/null && command -v iconutil >/dev/null; then
-    local set="$st/frogger2-rs.iconset"; mkdir -p "$set"
+  # Icon: the pre-rendered PNGs (packaging/icon/png, tools/icon/build-icons.sh) -> .icns with
+  # iconutil (macOS); the SVG is shipped as well.
+  cp packaging/icon/swampys-revenge-recomp.svg "$app/Resources/"
+  if command -v iconutil >/dev/null; then
+    local set="$st/swampys-revenge-recomp.iconset"; mkdir -p "$set"
     for s in 16 32 128 256 512; do
-      rsvg-convert -w $s -h $s packaging/frogger2-rs.svg -o "$set/icon_${s}x${s}.png"
-      rsvg-convert -w $((s * 2)) -h $((s * 2)) packaging/frogger2-rs.svg -o "$set/icon_${s}x${s}@2x.png"
+      cp "packaging/icon/png/$s.png" "$set/icon_${s}x${s}.png"
+      cp "packaging/icon/png/$((s * 2)).png" "$set/icon_${s}x${s}@2x.png"
     done
-    iconutil -c icns "$set" -o "$app/Resources/frogger2-rs.icns"
+    iconutil -c icns "$set" -o "$app/Resources/swampys-revenge-recomp.icns"
   fi
   mkdir -p "$app/Resources/licenses"
   cp NOTICE LICENSE-* "$app/Resources/licenses/"

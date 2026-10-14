@@ -1,14 +1,20 @@
-package org.frogger2rs.game;
+package io.github.neilgraham.swampysrevengerecomp;
 
+import android.app.ActivityManager;
 import android.app.NativeActivity;
 import android.content.Intent;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Rect;
+import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.util.Log;
-import android.graphics.Rect;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -27,7 +33,7 @@ import java.util.Collections;
  * (Storage Access Framework) for importing the user's own disc image. Picked documents are
  * copied into files/import/; the native import screen picks them up from there.
  */
-public class FroggerActivity extends NativeActivity {
+public class MainActivity extends NativeActivity {
     private static final String TAG = "frogger";
     private static final int PICK = 1;
 
@@ -75,6 +81,44 @@ public class FroggerActivity extends NativeActivity {
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
         }
+    }
+
+    /**
+     * Called from native code (any thread) with a PNG made from the player's own game
+     * artwork: the task (recents) icon, and when offerShortcut, a pinned home-screen
+     * shortcut request (the launcher asks the player to confirm).
+     */
+    public void useGameArtIcon(final byte[] png, final boolean offerShortcut) {
+        runOnUiThread(() -> {
+            Bitmap bmp = BitmapFactory.decodeByteArray(png, 0, png.length);
+            if (bmp == null) return;
+            String label = getApplicationInfo().loadLabel(getPackageManager()).toString();
+            try {
+                setTaskDescription(new ActivityManager.TaskDescription(label, bmp));
+            } catch (Exception e) {
+                Log.e(TAG, "task icon: " + e);
+            }
+            if (!offerShortcut) return;
+            ShortcutManager sm = getSystemService(ShortcutManager.class);
+            if (sm == null || !sm.isRequestPinShortcutSupported()) {
+                Log.i(TAG, "launcher does not support pinned shortcuts");
+                return;
+            }
+            Intent launch = new Intent(Intent.ACTION_MAIN)
+                .setClass(this, MainActivity.class)
+                .addCategory(Intent.CATEGORY_LAUNCHER);
+            ShortcutInfo info = new ShortcutInfo.Builder(this, "game-art")
+                .setShortLabel(label)
+                .setLongLabel(label)
+                .setIcon(Icon.createWithAdaptiveBitmap(bmp))
+                .setIntent(launch)
+                .build();
+            try {
+                sm.requestPinShortcut(info, null);
+            } catch (Exception e) {
+                Log.e(TAG, "pin shortcut: " + e);
+            }
+        });
     }
 
     /** Called from native code (any thread): opens the system file picker. */

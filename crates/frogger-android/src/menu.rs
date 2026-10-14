@@ -1,5 +1,5 @@
-//! The Android overlay menu: swipe in from the left edge to open a small panel (for now one
-//! switch: the on-screen touch controls). Tapping outside the panel, "Close" or Back closes
+//! The Android overlay menu: swipe in from the left edge to open a small panel (the on-screen touch
+//! controls switch and the home-screen icon). Tapping outside the panel, "Close" or Back closes
 //! it; the game is paused while it is open. Layout and gestures are pure (unit-tested on the
 //! host); [`Menu::draw`] queues quads and text into the host's UI renderer.
 
@@ -13,16 +13,19 @@ pub enum Action {
     /// The swipe opened the menu (the host lifts the touch controls' fingers).
     Opened,
     ToggleTouch,
+    /// Offer the home-screen shortcut with the player's game artwork again.
+    GameArtIcon,
     Closed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
     Touch,
+    ArtIcon,
     Close,
 }
 
-const ROWS: [Row; 2] = [Row::Touch, Row::Close];
+const ROWS: [Row; 3] = [Row::Touch, Row::ArtIcon, Row::Close];
 
 pub struct Menu {
     pub open: bool,
@@ -83,6 +86,7 @@ impl Menu {
             }
             return match self.row_at(x, y) {
                 Some(Row::Touch) => (true, Action::ToggleTouch),
+                Some(Row::ArtIcon) => (true, Action::GameArtIcon),
                 Some(Row::Close) => {
                     self.close();
                     (true, Action::Closed)
@@ -143,6 +147,7 @@ impl Menu {
             rect(r, [rr[0] + 8.0 * d, rr[1] + 2.0 * d, rr[2] - 16.0 * d, rr[3] - 4.0 * d], [40, 70, 40, 255]);
             let label = match row {
                 Row::Touch => format!("Touch controls: {}", if touch_on { "ON" } else { "OFF" }),
+                Row::ArtIcon => "Add home-screen icon".to_string(),
                 Row::Close => "Close".to_string(),
             };
             r.draw_text(font, rr[0] + 16.0 * d, text_y(rr[1], rr[3]), &label, [235, 235, 235, 255], s, None);
@@ -193,7 +198,8 @@ mod tests {
         assert_eq!(m.touch(5, Phase::Started, t[0] + 20.0, t[1] + 10.0), (true, Action::ToggleTouch));
         assert!(m.open);
         assert_eq!(m.touch(5, Phase::Ended, t[0] + 20.0, t[1] + 10.0), (true, Action::None));
-        let c = m.row_rect(1);
+        assert_eq!(m.touch(8, Phase::Started, m.row_rect(1)[0] + 20.0, m.row_rect(1)[1] + 10.0), (true, Action::GameArtIcon));
+        let c = m.row_rect(2);
         assert_eq!(m.touch(6, Phase::Started, c[0] + 20.0, c[1] + 10.0), (true, Action::Closed));
         assert!(!m.open);
         m.open = true;

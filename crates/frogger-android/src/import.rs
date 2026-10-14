@@ -44,7 +44,7 @@ pub struct Screen {
     tapped: bool,
     /// "Choose a disc image" button (x, y, w, h) as last drawn; `None` without a picker.
     button: Option<[f32; 4]>,
-    /// Opens the system file picker (`FroggerActivity.pickDiscImage`).
+    /// Opens the system file picker (`MainActivity.pickDiscImage`).
     picker: Option<Box<dyn Fn()>>,
     /// `import/.status` written by the activity while it copies picked files.
     copy_status: String,
@@ -175,8 +175,8 @@ impl Screen {
         const TEXT: [u8; 4] = [230, 230, 230, 255];
         const DIM: [u8; 4] = [160, 170, 160, 255];
         rect(r, 0.0, 0.0, wf, line * 3.0, [20, 60, 20, 255]);
-        r.draw_text(f, 0.0, line * 0.5, "FROGGER 2: SWAMPY'S REVENGE", TITLE, s * 1.4, Some(wf / 2.0));
-        r.draw_text(f, 0.0, line * 1.9, "Import your game", TEXT, s * 0.9, Some(wf / 2.0));
+        r.draw_text(f, 0.0, line * 0.5, "SWAMPY'S REVENGE RECOMP", TITLE, s * 1.4, Some(wf / 2.0));
+        r.draw_text(f, 0.0, line * 1.9, "Import your Frogger 2 game", TEXT, s * 0.9, Some(wf / 2.0));
         let x0 = line;
         let cols = ((wf - 2.0 * x0) / (6.0 * s * 0.7)).max(16.0) as usize;
         let mut y = line * 3.8;
@@ -206,7 +206,7 @@ impl Screen {
                     para(r, "Copy the image or the disc's files into:", DIM, &mut y);
                 }
                 para(r, &self.files.display().to_string(), TITLE, &mut y);
-                para(r, "e.g. adb push Frogger2.iso /sdcard/Android/data/org.frogger2rs.game/files/ - the import starts by itself. Data already imported on a PC can be copied to files/data/ instead.", DIM, &mut y);
+                para(r, "e.g. adb push Frogger2.iso /sdcard/Android/data/io.github.neilgraham.swampysrevengerecomp/files/ - the import starts by itself. Data already imported on a PC can be copied to files/data/ instead.", DIM, &mut y);
             }
             State::Importing { source, .. } => {
                 para(r, &format!("Importing {}", source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), TEXT, &mut y);

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- AppStream metadata for the Flatpak (placeholder app id; see net.frogger2rs.Frogger2.yml). -->
+<!-- AppStream metadata for the Flatpak (see io.github.NeilGraham.SwampysRevengeRecomp.yml). -->
 <component type="desktop-application">
-  <id>net.frogger2rs.Frogger2</id>
-  <name>Frogger 2 (Rust port)</name>
-  <summary>Rust port of Frogger 2: Swampy's Revenge; requires your own game data</summary>
+  <id>io.github.NeilGraham.SwampysRevengeRecomp</id>
+  <name>Swampy's Revenge Recomp</name>
+  <summary>Recompiled engine for Frogger 2: Swampy's Revenge; requires your own copy of the game</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <description>
@@ -12,7 +12,7 @@
       data: import the content from your own CD or disc image with the bundled f2-import tool.
     </p>
   </description>
-  <launchable type="desktop-id">net.frogger2rs.Frogger2.desktop</launchable>
+  <launchable type="desktop-id">io.github.NeilGraham.SwampysRevengeRecomp.desktop</launchable>
   <categories>
     <category>Game</category>
     <category>ArcadeGame</category>

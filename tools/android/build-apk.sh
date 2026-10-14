@@ -8,7 +8,7 @@
 # `cargo install cargo-ndk`; `rustup target add aarch64-linux-android x86_64-linux-android`;
 # a JDK (javac, keytool). Signs with $F2_ANDROID_KEYSTORE (default: the Android debug key
 # ~/.android/debug.keystore, created if missing; password $F2_ANDROID_KS_PASS or "android").
-# Output: target/android/frogger2.apk. See docs/ANDROID.md.
+# Output: target/android/swampys-revenge-recomp.apk. See docs/ANDROID.md.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -48,7 +48,8 @@ for so in "$WORK"/apk/lib/*/libfrogger_android.so; do
 done
 
 echo "== resources"
-python3 -I "$HERE/make_icon.py" "$WORK/res"
+# Launcher icon (legacy + adaptive), generated from the SVG master by tools/icon/build-icons.sh.
+cp -r "$ROOT/packaging/android/res/." "$WORK/res/"
 "$BT/aapt2" compile --dir "$WORK/res" -o "$WORK/res.zip"
 "$BT/aapt2" link -o "$WORK/base.apk" -I "$JAR" --manifest "$ROOT/packaging/android/AndroidManifest.xml" \
     --min-sdk-version "$MIN_API" "$WORK/res.zip"
@@ -68,6 +69,6 @@ if [ ! -f "$KS" ]; then
     keytool -genkeypair -keystore "$KS" -storepass "$PASS" -keypass "$PASS" -alias androiddebugkey \
         -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" >/dev/null
 fi
-"$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$PASS" --out "$OUT/frogger2.apk" "$WORK/aligned.apk"
-"$BT/apksigner" verify "$OUT/frogger2.apk"
-ls -l "$OUT/frogger2.apk"
+"$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$PASS" --out "$OUT/swampys-revenge-recomp.apk" "$WORK/aligned.apk"
+"$BT/apksigner" verify "$OUT/swampys-revenge-recomp.apk"
+ls -l "$OUT/swampys-revenge-recomp.apk"

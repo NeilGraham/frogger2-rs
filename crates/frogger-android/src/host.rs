@@ -73,8 +73,9 @@ pub fn main(android: AndroidApp) {
         gamepad: Gamepad::default(),
         prev_pad: RawPad::default(),
         focused: true,
-        // JavaVM / FroggerActivity global refs (valid for the process; the file picker).
+        // JavaVM / MainActivity global refs (valid for the process; the file picker).
         jni_ptrs: (android.vm_as_ptr() as usize, android.activity_as_ptr() as usize),
+        game_art_png: None,
         last: Instant::now(),
         error: None,
     };
@@ -132,6 +133,8 @@ impl HasDisplayHandle for AndroidWindow {
 /// Android-only settings (`android.toml` next to `config.toml`).
 struct Prefs {
     touch_controls: bool,
+    /// The home-screen shortcut with the player's game artwork was offered once already.
+    game_art_shortcut_offered: bool,
 }
 
 impl Prefs {
@@ -142,11 +145,17 @@ impl Prefs {
     fn load(files: &std::path::Path) -> Prefs {
         let text = std::fs::read_to_string(Self::path(files)).unwrap_or_default();
         let get = |k: &str| text.lines().filter_map(|l| l.split_once('=')).find(|(a, _)| a.trim() == k).map(|(_, v)| v.trim().to_string());
-        Prefs { touch_controls: get("touch_controls").is_none_or(|v| v != "false") }
+        Prefs {
+            touch_controls: get("touch_controls").is_none_or(|v| v != "false"),
+            game_art_shortcut_offered: get("game_art_shortcut_offered").is_some_and(|v| v == "true"),
+        }
     }
 
     fn save(&self, files: &std::path::Path) {
-        let text = format!("# Android settings (also in the swipe-from-the-left menu).\ntouch_controls = {}\n", self.touch_controls);
+        let text = format!(
+            "# Android settings (also in the swipe-from-the-left menu).\ntouch_controls = {}\ngame_art_shortcut_offered = {}\n",
+            self.touch_controls, self.game_art_shortcut_offered
+        );
         if let Err(e) = std::fs::write(Self::path(files), text) {
             eprintln!("frogger: saving android.toml: {e}");
         }
@@ -187,6 +196,8 @@ struct Host {
     focused: bool,
     /// `JavaVM*` and the activity's `jobject`.
     jni_ptrs: (usize, usize),
+    /// Adaptive-icon PNG made from the player's game artwork (once data is loaded).
+    game_art_png: Option<Vec<u8>>,
     last: Instant,
     error: Option<String>,
 }
@@ -297,6 +308,9 @@ impl Host {
         // alongside.
         let mut mapper = cfg.input_mapper();
         mapper.controllers[0] = Controller::Joypad(0);
+        // The icon from the player's own artwork (recents icon; home-screen shortcut offered once).
+        self.game_art_png =
+            frogger::icon::game_art(&data).map(|art| frogger::icon::encode_png(&frogger::icon::adaptive(&frogger::icon::square(&art, 480), 432)));
         let mut app = App::new(data, &g.ctx.device, &g.ctx.queue, s.config.format, audio, mapper);
         app.set_config(cfg.clone());
         app.apply_master_volume();
@@ -309,6 +323,37 @@ impl Host {
         app.push_steps([Step::Boot]);
         self.app = Some(app);
         self.last = Instant::now();
+        let offer = !self.prefs.game_art_shortcut_offered;
+        if self.use_game_art_icon(offer) && offer {
+            self.prefs.game_art_shortcut_offered = true;
+            self.prefs.save(&self.files);
+        }
+    }
+
+    /// Hands the game-art icon to the activity (`MainActivity.useGameArtIcon`); false when
+    /// there is none (no artwork in the data) or the call failed.
+    fn use_game_art_icon(&self, offer_shortcut: bool) -> bool {
+        let Some(png) = &self.game_art_png else { return false };
+        let (vm, activity) = self.jni_ptrs;
+        let res = (|| -> jni::errors::Result<()> {
+            let vm = unsafe { jni::JavaVM::from_raw(vm as *mut jni::sys::JavaVM)? };
+            let mut env = vm.attach_current_thread()?;
+            let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+            let bytes = env.byte_array_from_slice(png)?;
+            let r = env.call_method(&activity, "useGameArtIcon", "([BZ)V", &[(&bytes).into(), offer_shortcut.into()]);
+            if env.exception_check()? {
+                env.exception_describe()?;
+                env.exception_clear()?;
+            }
+            r.map(|_| ())
+        })();
+        match res {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("frogger: game-art icon: {e}");
+                false
+            }
+        }
     }
 
     fn save_config(&mut self) {
@@ -432,6 +477,9 @@ impl Host {
                 self.prefs.touch_controls = !self.prefs.touch_controls;
                 self.prefs.save(&self.files);
                 eprintln!("frogger: touch controls {}", if self.prefs.touch_controls { "on" } else { "off" });
+            }
+            menu::Action::GameArtIcon => {
+                self.use_game_art_icon(true);
             }
             menu::Action::Closed => self.last = Instant::now(),
             menu::Action::None => {}
@@ -573,7 +621,7 @@ impl Host {
     }
 }
 
-/// Opens the system file picker (`FroggerActivity.pickDiscImage`); the activity copies the
+/// Opens the system file picker (`MainActivity.pickDiscImage`); the activity copies the
 /// picked files into `files/import/`, where the import screen finds them.
 fn pick_disc_image((vm, activity): (usize, usize)) {
     let res = (|| -> jni::errors::Result<()> {

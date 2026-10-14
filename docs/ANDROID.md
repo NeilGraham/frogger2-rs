@@ -16,9 +16,9 @@ story levels, touch controls, gamepad, background/resume.
 | Touch controls | `crates/frogger-android/src/touch.rs`: d-pad, PlayStation face buttons, L1/L2/R1/R2, Select/Start; procedurally drawn atlas |
 | Import screen | `crates/frogger-android/src/import.rs`: finds a disc image in the app folder, runs `f2_import` on a thread with progress |
 | Logging | `crates/frogger-android/src/logcat.rs`: stdout/stderr → logcat tag `frogger` |
-| Java activity | `packaging/android/java/.../FroggerActivity.java`: `NativeActivity` subclass for immersive full screen, keep-screen-on, the system file picker and a system-gesture exclusion on the left edge (the menu swipe) |
-| Manifest | `packaging/android/AndroidManifest.xml` (package `org.frogger2rs.game`, min API 26, target 35, landscape, launcher + Android TV launcher) |
-| Build | `tools/android/build-apk.sh` (no Gradle), `make_icon.py` (procedural launcher icon), `apk_add.py` |
+| Java activity | `packaging/android/java/.../MainActivity.java`: `NativeActivity` subclass for immersive full screen, keep-screen-on, the system file picker and a system-gesture exclusion on the left edge (the menu swipe) |
+| Manifest | `packaging/android/AndroidManifest.xml` (package `io.github.neilgraham.swampysrevengerecomp`, min API 26, target 35, landscape, launcher + Android TV launcher) |
+| Build | `tools/android/build-apk.sh` (no Gradle), `apk_add.py`; launcher icon from `packaging/android/res` (`tools/icon/build-icons.sh`) |
 
 Why not winit: winit 0.30's Android backend drains the input queue itself and turns every
 motion event into touch positions (AXIS_X/Y only), so analogue sticks lost their meaning and
@@ -46,7 +46,7 @@ cargo install cargo-ndk
 Then:
 
 ```sh
-tools/android/build-apk.sh                 # release, arm64-v8a + x86_64 -> target/android/frogger2.apk
+tools/android/build-apk.sh                 # release, arm64-v8a + x86_64 -> target/android/swampys-revenge-recomp.apk
 tools/android/build-apk.sh --abis x86_64   # emulator-only, faster
 ```
 
@@ -59,17 +59,17 @@ signs. Without `F2_ANDROID_KEYSTORE` it signs with the standard debug key
 ## Installing and the game data
 
 ```sh
-adb install -r target/android/frogger2.apk
+adb install -r target/android/swampys-revenge-recomp.apk
 ```
 
 No game data ships in the APK. Everything lives in the app's external files folder,
-`/sdcard/Android/data/org.frogger2rs.game/files/` (`data/`, `config.toml`, `saves/`, `mods/`).
+`/sdcard/Android/data/io.github.neilgraham.swampysrevengerecomp/files/` (`data/`, `config.toml`, `saves/`, `mods/`).
 On first start with no data the import screen offers:
 
 - **Choose disc image**: the system file picker. Pick the Redump `.zip`, an `.iso`, or for
   BIN/CUE select both the `.cue` and the `.bin`. The activity copies them into `files/import/`
   (shown as "Copying ... MB"), the import runs, and `files/import/` is deleted afterwards.
-- **adb**: `adb push "Frogger 2 - Swampy's Revenge (USA).zip" /sdcard/Android/data/org.frogger2rs.game/files/import/`.
+- **adb**: `adb push "Frogger 2 - Swampy's Revenge (USA).zip" /sdcard/Android/data/io.github.neilgraham.swampysrevengerecomp/files/import/`.
   Files are picked up once they have stopped changing for 3 s.
 - **Already imported on a PC**: copy the rendition folder (e.g. `game-data/usa`, the one with
   `game/`, `music/`, `video/`) to `files/data/usa/` and start the app.
@@ -117,8 +117,8 @@ new surface and continues. The simulation is paused while in the background (no 
 sdkmanager "emulator" "system-images;android-35;google_apis;x86_64"
 avdmanager create avd -n f2test -k "system-images;android-35;google_apis;x86_64" -d pixel_6
 emulator -avd f2test -no-window -no-snapshot -gpu swiftshader_indirect -memory 4096 &
-adb install -r target/android/frogger2.apk
-adb shell am start -n org.frogger2rs.game/.FroggerActivity
+adb install -r target/android/swampys-revenge-recomp.apk
+adb shell am start -n io.github.neilgraham.swampysrevengerecomp/.MainActivity
 adb logcat -s frogger                       # game log
 adb exec-out screencap -p > shot.png        # screenshot
 adb shell input tap X Y                     # touch (2400x1080 landscape on pixel_6)

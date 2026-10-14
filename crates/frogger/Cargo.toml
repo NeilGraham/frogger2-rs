@@ -55,4 +55,10 @@ f2-import = { path = "../f2-import" }
 # read the generated files bundled with the data).
 f2-fontgen = { path = "../f2-fontgen", optional = true }
 f2-media = { path = "../f2-media" }
+# App icons (icon.rs): the embedded icon and icons made from the player's own artwork.
+png = "=0.18.1"
 wgpu = { version = "=30.0.1", optional = true }
+
+# The exe's icon resource (build.rs), built natively on Windows (tools/package/build-windows.sh).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

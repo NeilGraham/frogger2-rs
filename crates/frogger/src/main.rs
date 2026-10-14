@@ -29,6 +29,7 @@
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
+mod appicon;
 mod firstrun;
 
 #[cfg(test)]
@@ -697,7 +698,9 @@ impl WindowApp for Host {
                     g.surface.config.format,
                     if audio.is_realtime() { "on" } else { "muted" }
                 );
-                let mut app = App::new(self.data.take().expect("data"), &g.ctx.device, &g.ctx.queue, g.surface.config.format, audio, mapper);
+                let data = self.data.take().expect("data");
+                appicon::use_game_art(window, &data);
+                let mut app = App::new(data, &g.ctx.device, &g.ctx.queue, g.surface.config.format, audio, mapper);
                 app.set_config(self.cfg.clone());
                 app.apply_master_volume();
                 app.set_display(self.cfg.profile, self.cfg.display_settings(Profile::Enhanced));
@@ -1000,7 +1003,7 @@ fn run_window(data: data::Data, mut cfg: Config, args: &Args, steps: Vec<Step>, 
         cfg.video.window_mode = cfg.video.fullscreen_type.mode();
     }
     let mut wc = WindowConfig::from_config(&cfg);
-    wc.title = "Frogger 2: Swampy's Revenge".into();
+    wc.title = "Swampy's Revenge Recomp".into();
     let editor_setup = (editor_target(args, &cfg), args.editor_cmds.clone());
     let host = Host {
         data: Some(data),

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Frogger 2 port for Android. Built by tools/android/build-apk.sh (no Gradle): aapt2 links
+<!-- Swampy's Revenge Recomp (Frogger 2 engine recomp) for Android. Built by tools/android/build-apk.sh (no Gradle): aapt2 links
      this manifest, the Java activity (java/) is compiled with javac + d8, and the native
      library libfrogger_android.so comes from crates/frogger-android (cargo-ndk). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="org.frogger2rs.game"
+    package="io.github.neilgraham.swampysrevengerecomp"
     android:versionCode="1"
     android:versionName="0.1.0">
 
@@ -18,7 +18,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:label="Frogger 2"
+        android:label="Swampy's Revenge Recomp"
         android:icon="@mipmap/ic_launcher"
         android:banner="@mipmap/ic_launcher"
         android:appCategory="game"
@@ -27,7 +27,7 @@
         android:extractNativeLibs="false"
         android:hasFragileUserData="true">
         <activity
-            android:name=".FroggerActivity"
+            android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"

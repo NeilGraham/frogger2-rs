@@ -11,15 +11,15 @@
 #      flatpak install flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 \
 #        org.freedesktop.Sdk.Extension.rust-stable//24.08
 # 3. Build + install + run:
-#      flatpak-builder --user --install --force-clean build-dir packaging/flatpak/net.frogger2rs.Frogger2.yml
-#      flatpak run net.frogger2rs.Frogger2.f2-import ...   # see "Importing" below
-#      flatpak run net.frogger2rs.Frogger2
+#      flatpak-builder --user --install --force-clean build-dir packaging/flatpak/io.github.NeilGraham.SwampysRevengeRecomp.yml
+#      flatpak run io.github.NeilGraham.SwampysRevengeRecomp.f2-import ...   # see "Importing" below
+#      flatpak run io.github.NeilGraham.SwampysRevengeRecomp
 #
 # Importing game data: paths follow XDG inside the sandbox (~/.var/app/<id>/data/frogger2-rs/data,
 # config in ~/.var/app/<id>/config/frogger2-rs). Disc images in ~/Downloads, mounted discs under
 # /media and /run/media are readable (see finish-args); anything else needs e.g.
-#   flatpak run --filesystem=~/isos:ro --command=f2-import net.frogger2rs.Frogger2 ~/isos/frogger2.cue
-app-id: net.frogger2rs.Frogger2
+#   flatpak run --filesystem=~/isos:ro --command=f2-import io.github.NeilGraham.SwampysRevengeRecomp ~/isos/frogger2.cue
+app-id: io.github.NeilGraham.SwampysRevengeRecomp
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
@@ -56,12 +56,12 @@ modules:
       - install -Dm755 target/release/frogger /app/bin/frogger
       - install -Dm755 target/release/f2-import /app/bin/f2-import
       - install -Dm755 target/release/f2-viewer /app/bin/f2-viewer
-      - install -Dm644 packaging/frogger2-rs.desktop /app/share/applications/net.frogger2rs.Frogger2.desktop
-      - desktop-file-edit --set-icon=net.frogger2rs.Frogger2 /app/share/applications/net.frogger2rs.Frogger2.desktop
-      - install -Dm644 packaging/frogger2-rs.svg /app/share/icons/hicolor/scalable/apps/net.frogger2rs.Frogger2.svg
-      - install -Dm644 packaging/flatpak/net.frogger2rs.Frogger2.metainfo.xml -t /app/share/metainfo/
-      - install -Dm644 NOTICE /app/share/licenses/net.frogger2rs.Frogger2/NOTICE
-      - install -Dm644 LICENSE-GPL-3.0 LICENSE-MIT LICENSE-APACHE LICENSE-LGPL-2.1 -t /app/share/licenses/net.frogger2rs.Frogger2/
+      - install -Dm644 packaging/swampys-revenge-recomp.desktop /app/share/applications/io.github.NeilGraham.SwampysRevengeRecomp.desktop
+      - desktop-file-edit --set-icon=io.github.NeilGraham.SwampysRevengeRecomp /app/share/applications/io.github.NeilGraham.SwampysRevengeRecomp.desktop
+      - install -Dm644 packaging/icon/swampys-revenge-recomp.svg /app/share/icons/hicolor/scalable/apps/io.github.NeilGraham.SwampysRevengeRecomp.svg
+      - install -Dm644 packaging/flatpak/io.github.NeilGraham.SwampysRevengeRecomp.metainfo.xml -t /app/share/metainfo/
+      - install -Dm644 NOTICE /app/share/licenses/io.github.NeilGraham.SwampysRevengeRecomp/NOTICE
+      - install -Dm644 LICENSE-GPL-3.0 LICENSE-MIT LICENSE-APACHE LICENSE-LGPL-2.1 -t /app/share/licenses/io.github.NeilGraham.SwampysRevengeRecomp/
     sources:
       - type: dir
         path: ../..
