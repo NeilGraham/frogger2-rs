@@ -715,6 +715,8 @@ struct QDraw {
     /// List (bits 0-2) and `Q_*` bits.
     lf: u8,
     modge: u8,
+    /// With [`Q_SLIDE`]: the texture slide ([`slide_st`], `R3dDrawUniform::st_off` t).
+    slide: i16,
 }
 
 const Q_SKINNED: u8 = 8;
@@ -723,6 +725,8 @@ const Q_SKINNED: u8 = 8;
 pub const Q_CHECK_CULLED: u8 = 64;
 const Q_NO_CLIP: u8 = 16;
 const Q_OBJECT_FOG: u8 = 32;
+/// A draw of a model whose texture slides (`QDraw::slide`).
+const Q_SLIDE: u8 = 128;
 /// `QDraw::mesh` of a raw draw not resolved yet / of a draw not to draw.
 const MESH_UNRESOLVED: u16 = 0xFFFE;
 const MESH_SKIP: u16 = 0xFFFF;
@@ -866,6 +870,19 @@ fn enclosing_sphere(parts: &[Part]) -> ([f32; 3], f32) {
         })
         .fold(0.0f32, f32::max);
     (c, r * 1.0001 + 1.0)
+}
+
+/// The `faceTC` slide after which `SlideObjectTextures` has every face back where it started
+/// (it subtracts the speed from each face's `v` and adds 8192 when one drops below 4096).
+pub const SLIDE_PERIOD: i32 = 8192;
+
+/// The texture-coordinate offset (`R3dDrawUniform::st_off` t) of a model whose texture slid
+/// by `acc` `faceTC` units (mod [`SLIDE_PERIOD`]) in total: `-acc` in F2NM units (1/1024 of
+/// a period, [`f2_n64fmt::mdx_uv_to_st`]) less whole periods, which do not show (sliding
+/// models are drawn in the wrapping list, `ACTOR_WRAPTC`): -1023..=0, so the shifted
+/// coordinates stay as small as the mesh's own.
+pub fn slide_st(acc: i32) -> i16 {
+    -(f2_n64fmt::mdx_uv_to_st(acc.rem_euclid(SLIDE_PERIOD) as i16).rem_euclid(1024)) as i16
 }
 
 /// The renderer (one per program).
@@ -1173,12 +1190,22 @@ pub fn draw_uniform_into(m: &Mat4, p: &DrawParams, out: &mut R3dDrawUniform) {
     let am = (p.alpha_mul.clamp(0.0, 1.0) * 32767.0) as i16;
     let (cmul, cadd) = match p.gouraud {
         None => ([0x7FFF, 0x7FFF, 0x7FFF, am], [0x7F; 4]),
-        Some(g) => {
-            let c = |v: f32| (((v.clamp(0.0, 1.0) * 255.0 + 0.5) as i16) << 7) | 0x7F;
-            ([0, 0, 0, am], [c(g[0]), c(g[1]), c(g[2]), 0x7F])
-        }
+        Some(g) => gouraud_fields(g, am),
     };
     (out.cmul, out.cadd, out.fogc, out.fogm) = (cmul, cadd, [0; 4], [0xFF, 0, 0, 0]);
+    out.st_off = [0; 4];
+}
+
+/// The colour fields of a draw with Gouraud colours `g` ([`draw_uniform_into`]). Out of line on
+/// purpose: inlined, LLVM computed this for every draw (floating-point arithmetic counts as
+/// free of side effects, so it evaluated both arms and selected), i.e. also on the
+/// uninitialised payload of a `None`; the VR4300 traps on a denormal operand (Unimplemented
+/// Operation), which stack junk such as the integer 1000000 is: a CPU exception in a replay.
+#[cold]
+#[inline(never)]
+fn gouraud_fields(g: [f32; 3], am: i16) -> ([i16; 4], [i16; 4]) {
+    let c = |v: f32| (((v.clamp(0.0, 1.0) * 255.0 + 0.5) as i16) << 7) | 0x7F;
+    ([0, 0, 0, am], [c(g[0]), c(g[1]), c(g[2]), 0x7F])
 }
 
 /// The RSP's fold (`F2FoldRow` in rsp_f2mdx.S) of a draw uniform's model rows with the
@@ -2096,12 +2123,12 @@ impl R3d {
 
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
-    fn draw_slot_pid(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32) {
+    fn draw_slot_pid(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32, slide: Option<i16>) {
         if !R3D_PROF {
-            return self.draw_slot_inner(list, mesh, model, p, pid, slot, stamp);
+            return self.draw_slot_inner(list, mesh, model, p, pid, slot, stamp, slide);
         }
         let (t0, h, v) = (prof_ticks(), self.cache_hits, self.view_hits);
-        self.draw_slot_inner(list, mesh, model, p, pid, slot, stamp);
+        self.draw_slot_inner(list, mesh, model, p, pid, slot, stamp, slide);
         let dt = prof_ticks().wrapping_sub(t0);
         if self.view_hits != v {
             self.prof.view_ticks = self.prof.view_ticks.wrapping_add(dt);
@@ -2114,7 +2141,7 @@ impl R3d {
 
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
-    fn draw_slot_inner(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32) {
+    fn draw_slot_inner(&mut self, list: List, mesh: MeshId, model: &Model34, p: &DrawParams, pid: u16, slot: u16, stamp: u32, slide: Option<i16>) {
         let Some(res) = self.mhot.get(mesh.0 as usize) else { return };
         self.queued_tris += res.tris;
         let pos_scale = res.pos_scale;
@@ -2147,6 +2174,7 @@ impl R3d {
             let n = self.cull_world(mesh.0 as usize, &wc, s, model, p.no_clip);
             if n != 0 {
                 let mut u = draw_uniform(&mp, p);
+                u.st_off[1] = slide.unwrap_or(0);
                 let w0 = if p.object_fog && self.view.fog.is_some() { self.origin_w34(model) } else { 0.0 };
                 draw_fog(&mut u, &self.view, p, w0);
                 self.push_rec(list, mesh, p, u, vis_first, n);
@@ -2158,9 +2186,16 @@ impl R3d {
             self.grow_slots(i + 1);
         }
         let prev = self.frame_no.wrapping_sub(1);
-        let e = &mut self.slots[i];
+        let e = &self.slots[i];
         let same = e.frame == prev && e.stamp == stamp && e.mesh as u32 == mesh.0 && e.pid as u16 == pid && pid < PID_NONE;
-        if same && self.view_same {
+        // A sliding texture's draw keeps its uniform only while the slide is the same (the
+        // slide moves once per game tick, the model matrix and culling stay reusable).
+        let slide_same = match slide {
+            None => true,
+            Some(t) => self.slot_slide(i) == Some(t),
+        };
+        let e = &mut self.slots[i];
+        if same && self.view_same && (slide_same || e.cf & SLOT_U != 0) {
             // Nothing changed: last frame's uniform and visible parts.
             self.cache_hits += 1;
             e.frame = self.frame_no;
@@ -2168,13 +2203,23 @@ impl R3d {
                 return;
             }
             // Queued last frame, so its ring is still its own (`UNI_REUSE_FRAMES`).
-            let (a, n, cur) = (e.vis_first as usize, e.vis_count as usize, (e.cf & SLOT_CUR) as usize);
+            let (a, n, mut cur) = (e.vis_first as usize, e.vis_count as usize, (e.cf & SLOT_CUR) as usize);
             let vis_first = self.vis.len() as u32;
             e.vis_first = vis_first as u16;
             self.vis.extend_from_slice(&self.prev_vis[a..a + n]);
             let r = self.slot_ui[i] as usize;
             self.uni_used[r] = self.frame_no;
-            let uptr: *const R3dDrawUniform = &self.rings[r / SLOT_CHUNK][r % SLOT_CHUNK].u[cur];
+            let su = &mut self.rings[r / SLOT_CHUNK][r % SLOT_CHUNK];
+            if !slide_same {
+                // Only the texture slide moved (once per game tick): the ring's next uniform,
+                // a copy with the new slide (the current one may still be read by the RSP).
+                let next = if cur >= 2 { 0 } else { cur + 1 };
+                su.u[next] = su.u[cur];
+                su.u[next].st_off[1] = slide.unwrap_or(0);
+                e.cf = (e.cf & !SLOT_CUR) | next as u8;
+                cur = next;
+            }
+            let uptr: *const R3dDrawUniform = &su.u[cur];
             self.push_rec_ptr(list, mesh, p, uptr, vis_first, n as u32);
             return;
         }
@@ -2215,16 +2260,29 @@ impl R3d {
         // The ring's current uniform is this draw's with that frame's fog: with the same fog it
         // is this frame's too (no write, in flight or not). Else the next one, from the model.
         let mut cur = (e.cf & SLOT_CUR) as usize;
-        let keep = e.cf & SLOT_U != 0 && if nofog { e.cf & SLOT_U_NOFOG != 0 } else { su.u[cur].fogc == fogc && su.u[cur].fogm == fogm };
+        let keep = slide_same && e.cf & SLOT_U != 0 && if nofog { e.cf & SLOT_U_NOFOG != 0 } else { su.u[cur].fogc == fogc && su.u[cur].fogm == fogm };
         if !keep {
             cur = if cur >= 2 { 0 } else { cur + 1 };
             let u = &mut su.u[cur];
             draw_uniform_into(&model_scaled(&to44(model), pos_scale), p, u);
             (u.fogc, u.fogm) = (fogc, fogm);
+            u.st_off[1] = slide.unwrap_or(0);
             e.cf = cur as u8 | SLOT_U | if nofog { SLOT_U_NOFOG } else { 0 };
         }
         let uptr: *const R3dDrawUniform = &su.u[cur];
         self.push_rec_ptr(list, mesh, p, uptr, vis_first, n);
+    }
+
+    /// The texture slide (`st_off` t) of slot `i`'s current uniform, if it has one.
+    #[inline(never)]
+    fn slot_slide(&self, i: usize) -> Option<i16> {
+        let e = &self.slots[i];
+        let r = self.slot_ui[i];
+        if r == NO_UNI || e.cf & SLOT_U == 0 {
+            return None;
+        }
+        let r = r as usize;
+        Some(self.rings[r / SLOT_CHUNK][r % SLOT_CHUNK].u[(e.cf & SLOT_CUR) as usize].st_off[1])
     }
 
     /// Makes room for `n` draw slots (their uniform rings come with their first draw).
@@ -2355,11 +2413,12 @@ impl R3d {
         let lf = list as u8 | if p.no_clip { Q_NO_CLIP } else { 0 } | if p.object_fog { Q_OBJECT_FOG } else { 0 };
         let ovr = p.override_tex.map_or(0, |t| t.0 + 1);
         let m = mesh.0 as u16;
-        self.queue_core(lf, 0, m, m, ovr, mats, p.alpha_mul, p.gouraud, skinned, slot, stamp, modge, modge_frame);
+        self.queue_core(lf, 0, m, m, ovr, mats, p.alpha_mul, p.gouraud, skinned, slot, stamp, modge, modge_frame, 0);
     }
 
     /// [`queue`](Self::queue) of the game's draw loop: the game's model id and object (the
-    /// mesh is resolved in [`run_queue_with`](Self::run_queue_with)).
+    /// mesh is resolved in [`run_queue_with`](Self::run_queue_with)); `slide`: the model's
+    /// texture slide ([`slide_st`]) if its texture slides.
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
     #[allow(clippy::too_many_arguments)]
     pub fn queue_raw(
@@ -2376,11 +2435,12 @@ impl R3d {
         stamp: u32,
         modge: u8,
         modge_frame: u32,
+        slide: Option<i16>,
     ) {
         let (no_clip, object_fog, skinned) = flags;
-        let lf = list as u8 | if no_clip { Q_NO_CLIP } else { 0 } | if object_fog { Q_OBJECT_FOG } else { 0 } | self.extra_lf;
+        let lf = list as u8 | if no_clip { Q_NO_CLIP } else { 0 } | if object_fog { Q_OBJECT_FOG } else { 0 } | if slide.is_some() { Q_SLIDE } else { 0 } | self.extra_lf;
         let ovr = override_tex.map_or(0, |t| t.0 + 1);
-        self.queue_core(lf, model, MESH_UNRESOLVED, object, ovr, mats, alpha, gouraud, skinned, slot, stamp, modge, modge_frame);
+        self.queue_core(lf, model, MESH_UNRESOLVED, object, ovr, mats, alpha, gouraud, skinned, slot, stamp, modge, modge_frame, slide.unwrap_or(0));
     }
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_d")]
@@ -2401,10 +2461,11 @@ impl R3d {
         stamp: u32,
         modge: u8,
         modge_frame: u32,
+        slide: i16,
     ) {
         let Some(m0) = mats.first() else { return };
         if skinned || gouraud.is_some() || slot >= NO_SLOT as u32 || stamp == 0 {
-            return self.queue_rare(lf, model, mesh, key, ovr, mats, alpha, gouraud, skinned, slot, stamp, modge, modge_frame);
+            return self.queue_rare(lf, model, mesh, key, ovr, mats, alpha, gouraud, skinned, slot, stamp, modge, modge_frame, slide);
         }
         // The slot's model matrix, written only when its (stamp, key) changed (a stamp versions
         // an actor's pose: its objects, and all landscape objects, share one).
@@ -2414,7 +2475,7 @@ impl R3d {
             Some(sm) => *sm = (stamp, key, to34(m0)),
             None => self.grow_slot_model(i, stamp, key, m0),
         }
-        self.q.push(QDraw { stamp, modge_frame, alpha, model, slot: slot as u16, mesh, key, ovr, gour: 0, lf, modge });
+        self.q.push(QDraw { stamp, modge_frame, alpha, model, slot: slot as u16, mesh, key, ovr, gour: 0, lf, modge, slide });
     }
 
     #[cold]
@@ -2443,6 +2504,7 @@ impl R3d {
         stamp: u32,
         modge: u8,
         modge_frame: u32,
+        slide: i16,
     ) {
         let gour = match gouraud {
             None => 0,
@@ -2470,7 +2532,7 @@ impl R3d {
             (self.qmodels.len() as u32 - 1, NO_SLOT)
         };
         let lf = lf | if skinned { Q_SKINNED } else { 0 };
-        self.q.push(QDraw { stamp, modge_frame, alpha, model, slot, mesh, key, ovr, gour, lf, modge });
+        self.q.push(QDraw { stamp, modge_frame, alpha, model, slot, mesh, key, ovr, gour, lf, modge, slide });
     }
 
     /// Draws queued so far.
@@ -2521,12 +2583,13 @@ impl R3d {
                 object_fog: d.lf & Q_OBJECT_FOG != 0,
             };
             let pid = self.intern_params(&p);
+            let slide = if d.lf & Q_SLIDE != 0 { Some(d.slide) } else { None };
             if matches!(list, List::Additive | List::LateAdditive) {
                 self.ensure_additive(mesh);
             }
             if d.lf & Q_SKINNED != 0 {
                 let bones = core::mem::take(&mut self.qbones);
-                self.draw_skinned_q(list, mesh, &bones[d.stamp as usize..d.stamp as usize + d.slot as usize], &p);
+                self.draw_skinned_q(list, mesh, &bones[d.stamp as usize..d.stamp as usize + d.slot as usize], &p, slide);
                 self.qbones = bones;
                 continue;
             }
@@ -2542,7 +2605,7 @@ impl R3d {
             let pushed = self.pushed;
             // SAFETY: `qmodels` and `slot_model` are only changed by `queue`, not while the
             // queue runs.
-            self.draw_slot_pid(list, mesh, unsafe { &*model }, &p, pid, d.slot, if d.slot == NO_SLOT { 0 } else { d.stamp });
+            self.draw_slot_pid(list, mesh, unsafe { &*model }, &p, pid, d.slot, if d.slot == NO_SLOT { 0 } else { d.stamp }, slide);
             if d.lf & Q_CHECK_CULLED != 0 {
                 self.cull_check_draw(d.model, d.key, self.pushed != pushed);
             }
@@ -2613,9 +2676,9 @@ impl R3d {
 
     /// The batch's skinned draw (`run_queue`).
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
-    fn draw_skinned_q(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
+    fn draw_skinned_q(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams, slide: Option<i16>) {
         let t0 = prof_ticks();
-        self.draw_skinned_inner(list, mesh, bones, p);
+        self.draw_skinned_inner(list, mesh, bones, p, slide);
         if R3D_PROF {
             self.prof.skin_ticks = self.prof.skin_ticks.wrapping_add(prof_ticks().wrapping_sub(t0));
             self.prof.skin_draws += 1;
@@ -2623,7 +2686,7 @@ impl R3d {
     }
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
-    fn draw_skinned_inner(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams) {
+    fn draw_skinned_inner(&mut self, list: List, mesh: MeshId, bones: &[Mat4], p: &DrawParams, slide: Option<i16>) {
         let Some(res) = self.meshes.get(mesh.0 as usize) else { return };
         if bones.is_empty() {
             return;
@@ -2639,6 +2702,7 @@ impl R3d {
         for (b, u) in bones.iter().zip(&mut arena[first as usize..]) {
             draw_uniform_into(&model_scaled(b, pos_scale), p, u);
             (u.fogc, u.fogm) = (fogc, fogm);
+            u.st_off[1] = slide.unwrap_or(0);
         }
         let res = &self.meshes[mesh.0 as usize];
         self.queued_tris += res.tris;
@@ -3334,7 +3398,7 @@ mod tests {
         let ids = r.load_file(bytes.clone()).unwrap();
         for f in 0..2 {
             r.begin_frame(&view);
-            r.queue_raw(List::Normal, 5, 0, &[m], 1.0, None, None, (false, false, false), 40, 9, 0, 0);
+            r.queue_raw(List::Normal, 5, 0, &[m], 1.0, None, None, (false, false, false), 40, 9, 0, 0, None);
             r.run_queue_with(&mut |_| Some(ids[0]));
             r.flush(|_| {});
             let _ = f;
@@ -3346,11 +3410,73 @@ mod tests {
         let fids = fresh.load_file(bytes).unwrap();
         for (x, id) in [(&mut r, ids[0]), (&mut fresh, fids[0])] {
             x.begin_frame(&view);
-            x.queue_raw(List::Normal, 5, 0, &[m], 1.0, None, None, (false, false, false), 40, 9, 0, 0);
+            x.queue_raw(List::Normal, 5, 0, &[m], 1.0, None, None, (false, false, false), 40, 9, 0, 0, None);
             x.run_queue_with(&mut |_| Some(id));
         }
         assert_eq!(snap(&r), snap(&fresh));
         assert!(!snap(&r).is_empty());
+    }
+
+    /// `slide_st`: `-acc` in F2NM units less whole periods; a full `SLIDE_PERIOD` is no slide.
+    #[test]
+    fn slide_st_units() {
+        assert_eq!(slide_st(0), 0);
+        assert_eq!(slide_st(16), -16);
+        assert_eq!(slide_st(1026), 0); // one period (1024 F2NM units)
+        assert_eq!(slide_st(1042), -16);
+        assert_eq!(slide_st(SLIDE_PERIOD), 0);
+        assert_eq!(slide_st(SLIDE_PERIOD + 16), -16);
+        for acc in 0..SLIDE_PERIOD {
+            let t = slide_st(acc);
+            assert!((-1023..=0).contains(&t), "{acc}: {t}");
+            assert_eq!((t as i32 + f2_n64fmt::mdx_uv_to_st(acc as i16)).rem_euclid(1024), 0, "{acc}");
+        }
+    }
+
+    /// A sliding draw (same pose stamp every frame, slide changing per game tick) gets a
+    /// uniform with this frame's slide, and is reused from the slot while the slide stays;
+    /// other draws keep a zero offset.
+    #[test]
+    fn sliding_draws_follow_their_slide() {
+        let bytes = super::cull_tests::terrain();
+        let mut view = ViewParams::pc_default(320.0, 240.0);
+        view.view = camera_view([0.0, 300.0, -700.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let m: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [10.0, 0.0, 20.0, 1.0]];
+        let mut r = R3d::new();
+        let ids = r.load_file(bytes).unwrap();
+        let unis = |r: &R3d| -> Vec<R3dDrawUniform> {
+            r.lists[List::Wrap as usize].iter().map(|d| if d.uptr.is_null() { r.uni[r.uni_frame][d.u as usize] } else { unsafe { *d.uptr } }).collect()
+        };
+        let (mut first, mut last) = (None, None);
+        for (f, slide) in [-16i16, -16, -32, -32, -48, 0, 0].into_iter().enumerate() {
+            r.begin_frame(&view);
+            // Slot 3: sliding (stamp fixed: the actor does not move); slot 4: not sliding;
+            // a sliding draw without a slot.
+            r.queue_raw(List::Wrap, 5, 0, &[m], 1.0, None, None, (false, false, false), 3, 9, 0, 0, Some(slide));
+            r.queue_raw(List::Wrap, 6, 0, &[m], 1.0, None, None, (false, false, false), 4, 9, 0, 0, None);
+            r.queue_raw(List::Wrap, 7, 0, &[m], 1.0, None, None, (false, false, false), u32::MAX, 0, 0, 0, Some(slide));
+            r.run_queue_with(&mut |_| Some(ids[0]));
+            let u = unis(&r);
+            assert_eq!(u.len(), 3, "frame {f}");
+            assert_eq!(u[0].st_off, [0, slide, 0, 0], "frame {f}");
+            assert_eq!(u[1].st_off, [0; 4], "frame {f}");
+            assert_eq!(u[2].st_off, [0, slide, 0, 0], "frame {f}");
+            // Everything else as a draw without a slide.
+            let mut plain = u[0];
+            plain.st_off = [0; 4];
+            assert_eq!(plain, u[1], "frame {f}");
+            let f0 = *first.get_or_insert(u[1]);
+            assert_eq!(f0, u[1]);
+            // Both slot draws come from the cache after the first frame; a new slide is a new
+            // uniform of the ring (the previous one may still be in flight), a repeated one not.
+            assert_eq!(r.cache_hits, if f == 0 { 0 } else { 2 }, "frame {f}");
+            let ptr = r.lists[List::Wrap as usize][0].uptr;
+            if let Some((prev_ptr, prev_slide)) = last {
+                assert_eq!(ptr == prev_ptr, slide == prev_slide, "frame {f}");
+            }
+            last = Some((ptr, slide));
+            r.flush(|_| {});
+        }
     }
 
     /// Raw draws (the game's model/object, resolved after the draw loop) give what draws
@@ -3383,9 +3509,9 @@ mod tests {
             let p = DrawParams { alpha_mul: 0.5, object_fog: true, override_tex: Some(TexId(4)), ..Default::default() };
             a.queue(List::Normal, ia[0], &[*m], &p, false, 0, 7 + f, 0, 0);
             a.queue(List::Xlu, ia[0], &[m1], &DrawParams::default(), false, 1, 3, 0, 0);
-            b.queue_raw(List::Normal, 0x1234, 2, &[*m], 0.5, None, Some(TexId(4)), (false, true, false), 0, 7 + f, 0, 0);
-            b.queue_raw(List::Xlu, 0x1234, 3, &[m1], 1.0, None, None, (false, false, false), 1, 3, 0, 0);
-            b.queue_raw(List::Normal, 0x9999, 0, &[m1], 1.0, None, None, (false, false, false), 2, 3, 0, 0);
+            b.queue_raw(List::Normal, 0x1234, 2, &[*m], 0.5, None, Some(TexId(4)), (false, true, false), 0, 7 + f, 0, 0, None);
+            b.queue_raw(List::Xlu, 0x1234, 3, &[m1], 1.0, None, None, (false, false, false), 1, 3, 0, 0, None);
+            b.queue_raw(List::Normal, 0x9999, 0, &[m1], 1.0, None, None, (false, false, false), 2, 3, 0, 0, None);
             a.run_queue();
             let mut asked = Vec::new();
             b.run_queue_with(&mut |d| {

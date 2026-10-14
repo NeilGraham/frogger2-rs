@@ -103,6 +103,14 @@ visible blocks, loading a texture (a 144-byte RDP command descriptor processed i
 magma overlay) when it changes. See `crates/frogger-n64/src/r3d.rs` and
 `research/n64-performance.md` (phase 2R).
 
+Texture sliding (`CopyActorList`/`SlideObjectTextures`: flowing water, sludge, lava, conveyor
+belts, the `spl_`/`spm_`/`spf_` scenery such as the Subterranean ant columns): the PC edits the
+model's `faceTC.v`; F2NM vertices are static, so the draw's `F2_DRAW` uniform carries an st
+offset (`st_off`, 1/1024-period units like the vertices) that the shader adds before the
+texture scale. The offset is the model's total slide (`render_r3d::R3dLevel::slide_textures`,
+once per game tick) mod 8192 `faceTC` units (the PC's per-face +8192 wrap), less whole periods
+(`r3d::slide_st`: -1023..=0; sliding actors are `ACTOR_WRAPTC`, drawn with wrapping).
+
 ## Object banks (phase 3I, `f2_n64fmt::bank`, feature `objbank`)
 The pack stores one F2NM file per object bank (`objects/<bank>.dll.f2nm`, meshes only:
 textures come from the NTX1 banks and are resolved by CRC). Mesh ids are

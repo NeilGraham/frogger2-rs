@@ -804,6 +804,10 @@ impl App {
 
     fn process_level_loads(&mut self) {
         if let Some(l) = self.game.take_level_loads().pop() {
+            #[cfg(not(feature = "render-cpu"))]
+            if let Some(lvl) = lv().as_mut() {
+                lvl.r3d.reset_slides();
+            }
             self.load_scene(l.world, l.level, &l.assets);
         }
     }
@@ -1078,10 +1082,24 @@ impl App {
         }
         self.dispatch_effects();
         self.process_level_loads();
+        self.slide_textures();
         self.grab_textures();
         self.update_game_view();
         if self.game.backdrop.tiled_backdrop.is_some() {
             self.tile_scroll.step(self.game.game_speed);
+        }
+    }
+
+    /// `CopyActorList`'s texture sliding, once per game frame (PC `App::tick`: water, sludge,
+    /// lava, conveyor belts, the Subterranean ant columns).
+    fn slide_textures(&mut self) {
+        let mut g = lv();
+        let Some(l) = g.as_mut() else { return };
+        #[cfg(not(feature = "render-cpu"))]
+        l.r3d.slide_textures(&self.game, l.scene.as_ref());
+        #[cfg(feature = "render-cpu")]
+        if let Some(scene) = l.scene.as_mut() {
+            render::slide_object_textures(scene, &self.game);
         }
     }
 
@@ -1593,7 +1611,9 @@ impl App {
             if let Some(h) = option_env!("F2N64_REPLAY_HOLD").and_then(|h| h.trim().parse::<u64>().ok()) {
                 let r = self.replay.as_ref().unwrap();
                 n = n.min(h.saturating_sub(r.tick) as u32);
-                if n == 0 && !self.replay_held {
+                // At the hold tick (`n` is also 0 in frames that owe no tick, e.g. while the
+                // story video plays: not a hold).
+                if r.tick >= h && !self.replay_held {
                     self.replay_held = true;
                     log!("replay: holding at tick {}", r.tick);
                 }

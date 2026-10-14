@@ -661,23 +661,53 @@ const SLIDE_SPEEDS: [i32; 4] = [0, 16, 32, 64];
 /// (`wat_f*`, `slu_f*`, `xx_g_*`) and the scenery strips `spl_*`/`spm_*`/`spf_*` (e.g. the
 /// Subterranean ant columns) move this way. Render state only; the simulation is read.
 pub fn slide_object_textures(scene: &mut LevelScene, game: &Game) {
+    texture_slides(game, |mid, speed| {
+        if let Some(&(b, m)) = scene.models.get(&mid) {
+            slide_model(&mut scene.banks[b].models[m], speed);
+        }
+    });
+}
+
+/// The slides of [`slide_object_textures`] in order, as `f(model id, speed)` (`speed`: what
+/// `SlideObjectTextures` subtracts from every `faceTC.v` of the model).
+pub fn texture_slides(game: &Game, mut f: impl FnMut(u32, i32)) {
     use f2_game::actor2::ACTOR_SLOWSLIDE;
     let gs = game.game_speed;
     for id in game.actor2.act_list.ids(&game.actor2.actors) {
         let a2 = &game.actor2.actors[id];
-        let slide = ((a2.flags >> 5) & 3) as usize;
-        if slide == 0 && a2.flags & ACTOR_SLOWSLIDE == 0 {
+        if !actor_slides_texture(a2) {
             continue;
         }
-        let Some(&(b, m)) = a2.actor.actual_actor.object_controller.and_then(|mid| scene.models.get(&mid)) else { continue };
-        let model = &mut scene.banks[b].models[m];
+        let Some(mid) = a2.actor.actual_actor.object_controller else { continue };
+        let slide = ((a2.flags >> 5) & 3) as usize;
         if slide != 0 {
-            slide_model(model, SLIDE_SPEEDS[slide].wrapping_mul(gs) >> 12);
+            f(mid, SLIDE_SPEEDS[slide].wrapping_mul(gs) >> 12);
         }
         if a2.flags & ACTOR_SLOWSLIDE != 0 {
-            slide_model(model, gs >> 8);
+            f(mid, gs >> 8);
         }
     }
+}
+
+/// Whether actor `a2`'s texture slides (`ACTOR_SLIDYTEX`/`ACTOR_SLIDYTEX2`/`ACTOR_SLOWSLIDE`,
+/// set when the actor is created, from its name).
+pub fn actor_slides_texture(a2: &f2_game::actor2::Actor2) -> bool {
+    a2.flags & (3 << 5 | f2_game::actor2::ACTOR_SLOWSLIDE) != 0
+}
+
+/// The total `faceTC.v` slide of one game frame at game speed `gs` of an actor with `flags`
+/// (the sum of its [`texture_slides`]): for back ends that do not edit the meshes (the N64
+/// offsets the texture coordinates per draw) and keep their own list of the sliding actors.
+pub fn texture_slide_speed(flags: u16, gs: i32) -> i32 {
+    let slide = ((flags >> 5) & 3) as usize;
+    let mut speed = 0i32;
+    if slide != 0 {
+        speed = speed.wrapping_add(SLIDE_SPEEDS[slide].wrapping_mul(gs) >> 12);
+    }
+    if flags & f2_game::actor2::ACTOR_SLOWSLIDE != 0 {
+        speed = speed.wrapping_add(gs >> 8);
+    }
+    speed
 }
 
 /// `SlideObjectTextures(objectController->object, speed)` on the root and (`next`) its

@@ -135,7 +135,7 @@ pub struct R3dGroupDesc {
 /// `F2_DRAW` uniform (96 bytes): the model matrix (`r3d::model_scaled`: rows x, y, z,
 /// translation; lanes x, y, z) as floats (the RSP converts it to s15.16 exactly like
 /// `r3d::to_fixed`, then folds it with the frame's view x projection); the conversion flag
-/// (0); colour multiplier and addend; fog.
+/// (0); colour multiplier and addend; fog; texture coordinate offset.
 #[repr(C, align(8))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct R3dDrawUniform {
@@ -147,7 +147,10 @@ pub struct R3dDrawUniform {
     pub fogc: [i16; 4],
     /// VCC masks `[keep colour alpha (0xFF; 0x77 = constant fog), per-vertex fog (0x88), 0, 0]`.
     pub fogm: [u16; 4],
-    pub pad: [u32; 2],
+    /// `[s, t, 0, 0]` added to every vertex's texture coordinates before the texture scale
+    /// (F2NM units: 1/1024 of a texture period): `CopyActorList`'s texture sliding
+    /// (`r3d::slide_st`), which the original does by editing the mesh's `faceTC`.
+    pub st_off: [i16; 4],
 }
 
 /// `F2_FRAME` uniform (first 120 bytes) + host fields.

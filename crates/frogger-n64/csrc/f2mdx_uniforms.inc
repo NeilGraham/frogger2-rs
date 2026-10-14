@@ -12,7 +12,7 @@ MgBeginShaderUniforms
         F2_CADD:        .ds.b 8     # r g b a addends (<<7 units, + rounding bias)
         F2_FOGC:        .ds.b 8     # 0, constant unfogged fraction (per-object fog, 0..0x7FFF), 0, 0
         F2_FOGM:        .ds.b 8     # VCC masks: keep-colour (else constant fog), per-vertex fog, 0, 0
-        F2_DRAW_PAD:    .ds.b 8
+        F2_STOFF:       .ds.b 8     # s, t offsets added to the input st (1/1024 periods), 0, 0
     MgEndUniform
     MgBeginUniform F2_TEX, 1
         F2_TEX_I:       .ds.b 8     # s, t integer multipliers

@@ -16,7 +16,8 @@
 #   rgb = rgba * CMUL + CADD        (alpha_mul, SetObjectGouraudValues)
 #   a   = unfogged fraction when fog is on (per vertex: clamp((W - E) * -k) = PC FOG(vz);
 #         per object: a constant), the shade alpha of the RDP fog blender (RDPQ_FOG_STANDARD)
-#   st  = st * TEX_I + st*TEX_F/65536 + TEX_O   (1/1024-period units -> s10.5 texels)
+#   st  = (st + STOFF) * TEX_I + (st + STOFF)*TEX_F/65536 + TEX_O   (1/1024-period units ->
+#         s10.5 texels; STOFF: the draw's texture slide)
 #
 # Face rejection (PCRenderObject) is expressed through magma's per-vertex codes:
 #   * trivial-reject byte (RDPQ "REJFLAGS", 1 = inside): bit0 = sx strictly inside
@@ -251,6 +252,14 @@ F2_Converted:
     ldv vtexf.e4, 8,t0
     ldv vtexo.e0, 16,t0
     ldv vtexo.e4, 16,t0
+    # The draw's texture slide (F2_STOFF, 0 for most draws): O += STOFF * I + STOFF * F / 65536,
+    # i.e. the offset joins the input st before the scale (r3d.rs slide_st).
+    li t0, %lo(F2_STOFF)
+    ldv vtmp.e0, 0,t0
+    ldv vtmp.e4, 0,t0
+    vmudh v___, vtexo, K1
+    vmadm v___, vtmp, vtexf
+    vmadh vtexo, vtmp, vtexi
     li t0, %lo(F2_VO)
     ldv voff.e0, 0,t0
     ldv voff.e4, 0,t0

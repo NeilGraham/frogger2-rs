@@ -89,7 +89,7 @@ typedef struct {
 
 /* F2_DRAW uniform (96 bytes): the model matrix as floats (rows x, y, z, translation; lanes
  * x y z; the shader converts it to s15.16, see rsp_f2mdx.S F2_Convert), the conversion flag
- * (0 from the CPU), colour multiplier/addend, fog. */
+ * (0 from the CPU), colour multiplier/addend, fog, texture coordinate offset. */
 typedef struct {
     float mtx[12];
     uint32_t cvt[2];
@@ -97,7 +97,7 @@ typedef struct {
     int16_t cadd[4];
     int16_t fogc[4];        /* 0, constant unfogged fraction, 0, 0 */
     uint16_t fogm[4];       /* VCC masks: keep colour alpha (else constant), per-vertex fog */
-    uint32_t pad[2];
+    int16_t st_off[4];      /* s, t added to the vertices' st (1/1024 texture periods): sliding textures */
 } __attribute__((aligned(8))) n64_r3d_draw_uniform_t;
 
 /* F2_FRAME uniform (128 bytes) + host fields. clip_* / modge_* are filled by C. */

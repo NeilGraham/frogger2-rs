@@ -26,6 +26,15 @@ use alloc::vec::Vec;
 use f2_engine::{Frame, MeshBackend, MeshDraw, ObjDraw, ObjSphere, Renderer, TextureRegistry, View, MESH_SKIN};
 use f2_formats::objbank::ObjectBank;
 
+/// A sliding actor ([`R3dLevel::slide_textures`]): its slot, its flags and the `slides` entry
+/// of its model (both fixed since its creation).
+#[derive(Clone, Copy, Debug)]
+struct SlideActor {
+    slot: u32,
+    flags: u16,
+    entry: u16,
+}
+
 /// Per-frame counters.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct R3dFrameStats {
@@ -72,6 +81,15 @@ pub struct R3dLevel {
     stat_imgs: Vec<(u32, u32, u32, u32)>,
     stat_users: Vec<u32>,
     seen: alloc::collections::BTreeSet<u32>,
+    /// `CopyActorList`'s texture sliding: per model that slides, (model id, total slide in
+    /// `faceTC` units mod [`r3d::SLIDE_PERIOD`](crate::r3d::SLIDE_PERIOD), its draws'
+    /// texture offset [`slide_st`](crate::r3d::slide_st)). A handful per level at most.
+    slides: Vec<(u32, i32, i16)>,
+    /// The sliding actors, how many actor slots were looked at, and the (slot count,
+    /// `actList` count) they were updated for.
+    slide_actors: Vec<SlideActor>,
+    slide_scanned: usize,
+    slide_sig: (usize, i32),
 }
 
 // SAFETY: the N64 runs one thread; the raw pointers inside R3d point into buffers it owns
@@ -122,6 +140,10 @@ impl R3dLevel {
             dyn_entries: Vec::new(),
             stat_imgs: Vec::new(),
             stat_users: Vec::new(),
+            slides: Vec::new(),
+            slide_actors: Vec::new(),
+            slide_scanned: 0,
+            slide_sig: (0, 0),
         }
     }
 
@@ -135,6 +157,84 @@ impl R3dLevel {
         self.dyn_entries.clear();
         self.stat_imgs.clear();
         self.stat_users.clear();
+        self.reset_slides();
+    }
+
+    /// One game frame of `CopyActorList`'s texture sliding (PC: `f2_draw::render::
+    /// slide_object_textures`, which edits the meshes' `faceTC`; the F2NM meshes are static,
+    /// so each sliding model's draws offset their texture coordinates instead). Call once per
+    /// simulation tick, after it. `scene` names the models in the log.
+    ///
+    /// No actor is read in most ticks: walking `actList` costs ~500 us per tick here (cache
+    /// misses on every actor), so the sliding actors are kept in a list. Within a level actor
+    /// slots are only appended (a freed one stays empty) and every filled slot is in
+    /// `actList`, so the actor set changed only when the slot count or `actList`'s count did:
+    /// then the new slots are scanned and the freed actors dropped. An actor's slide flags and
+    /// model are fixed once it is created (flags from its name; `ChangeModel` only swaps the
+    /// frogs' models, which do not slide). The sum per model does not depend on `actList`
+    /// order. [`reset_slides`](Self::reset_slides) at every level load.
+    pub fn slide_textures(&mut self, game: &f2_game::Game, scene: Option<&f2_draw::render::LevelScene>) {
+        let slots = &game.actor2.actors.slots;
+        let sig = (slots.len(), game.actor2.act_list.count);
+        if sig != self.slide_sig {
+            self.slide_sig = sig;
+            if slots.len() < self.slide_scanned {
+                // A new actor list (a level load not seen by `reset_slides`).
+                self.slide_scanned = 0;
+                self.slide_actors.clear();
+            }
+            self.slide_actors.retain(|sa| slots[sa.slot as usize].is_some());
+            for i in self.slide_scanned..slots.len() {
+                let Some(a) = slots[i].as_ref().filter(|a| f2_draw::render::actor_slides_texture(a)) else { continue };
+                let Some(model) = a.actor.actual_actor.object_controller else { continue };
+                let entry = self.slide_entry(model, a.flags, game.game_speed, scene);
+                self.slide_actors.push(SlideActor { slot: i as u32, flags: a.flags, entry });
+            }
+            self.slide_scanned = slots.len();
+        }
+        let gs = game.game_speed;
+        if gs == 0 {
+            return;
+        }
+        for sa in &self.slide_actors {
+            let e = &mut self.slides[sa.entry as usize];
+            e.1 = e.1.wrapping_add(f2_draw::render::texture_slide_speed(sa.flags, gs));
+        }
+        for e in &mut self.slides {
+            e.1 = e.1.rem_euclid(crate::r3d::SLIDE_PERIOD);
+            e.2 = crate::r3d::slide_st(e.1);
+        }
+    }
+
+    /// The `slides` entry of `model` (made and logged on first use).
+    #[cold]
+    #[inline(never)]
+    fn slide_entry(&mut self, model: u32, flags: u16, gs: i32, scene: Option<&f2_draw::render::LevelScene>) -> u16 {
+        if let Some(i) = self.slides.iter().position(|e| e.0 == model) {
+            return i as u16;
+        }
+        let name = scene.and_then(|s| s.models.get(&model).map(|&(b, m)| s.banks[b].models[m].name()));
+        let speed = f2_draw::render::texture_slide_speed(flags, gs);
+        crate::log!("r3d: model {model:08x} ({}) slides its texture (speed {speed})", name.unwrap_or("?"));
+        self.slides.push((model, 0, 0));
+        (self.slides.len() - 1) as u16
+    }
+
+    /// Forgets the slides and the sliding actors (a level load: new actors, fresh meshes).
+    pub fn reset_slides(&mut self) {
+        self.slides.clear();
+        self.slide_actors.clear();
+        self.slide_scanned = 0;
+        self.slide_sig = (0, 0);
+    }
+
+    /// The texture offset of `model`'s draws if its texture slides.
+    #[inline(always)]
+    fn slide_of(&self, model: u32) -> Option<i16> {
+        if self.slides.is_empty() {
+            return None;
+        }
+        self.slides.iter().find(|e| e.0 == model).map(|e| e.2)
     }
 
     pub fn num_meshes(&self) -> usize {
@@ -311,7 +411,8 @@ impl R3dLevel {
                 None => return, // PC: no texture, nothing drawn
             },
         };
-        self.r.queue_raw(list, d.model, d.object, mats, d.alpha_mul, d.gouraud, ovr, flags, slot as u32, d.stamp, d.modge, d.modge_frame);
+        let slide = self.slide_of(d.model);
+        self.r.queue_raw(list, d.model, d.object, mats, d.alpha_mul, d.gouraud, ovr, flags, slot as u32, d.stamp, d.modge, d.modge_frame, slide);
     }
 
     /// [`record`](Self::record) of every draw of a rigid actor ([`MeshBackend::actor`]): the
@@ -338,6 +439,7 @@ impl R3dLevel {
             },
         };
         let flags = (base.no_clip, base.object_fog, false);
+        let slide = self.slide_of(base.model);
         for (k, o) in objs.iter().enumerate() {
             let slot = first + k as u32;
             let Some(mut list) = list_of(o.frame) else { continue };
@@ -349,7 +451,7 @@ impl R3dLevel {
                 rt::audio_poll_due();
             }
             let i = o.object as usize;
-            self.r.queue_raw(list, base.model, o.object, &mats[i..i + 1], base.alpha_mul, base.gouraud, ovr, flags, slot, base.stamp, o.modge, base.modge_frame);
+            self.r.queue_raw(list, base.model, o.object, &mats[i..i + 1], base.alpha_mul, base.gouraud, ovr, flags, slot, base.stamp, o.modge, base.modge_frame, slide);
         }
         if crate::r3d::R3D_PROF {
             self.r.prof.record_ticks = self.r.prof.record_ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
