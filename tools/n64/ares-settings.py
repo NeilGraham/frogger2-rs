@@ -10,12 +10,14 @@ Starting from ares' own settings.bml (created next to ares.exe on first run), it
   - General/ShowStatusBar: false (screenshots are the bare 4:3 picture)
   - Input/Defocus: Block (keep running unfocused, but ignore the host keyboard then)
   - Video/WindowWidth/Height 640x480 (2x)
+  - Audio/Blocking: false, Audio/Mute: true (unthrottled; ARES_REALTIME=1 keeps real time)
   - VirtualPad1 bound to keyboard keys (ares/ruby keyboard device id 0x1, button group 0,
     rawinput key index), so the harness can press N64 buttons with keybd_event:
         arrows = D-pad, X = A, Z = B, Return = Start, PageUp/PageDown = L/R, Home = Z
         (ares maps N64 Z to the virtual pad's R-Trigger),
         I/K/J/L = analog stick.
 """
+import os
 import sys
 
 KEYS = {  # ruby rawinput keyboard button indices (zero-based)
@@ -35,6 +37,10 @@ SET = {
     ("Input", "Defocus"): "Block",
     ("Video", "WindowWidth"): "640",
     ("Video", "WindowHeight"): "480",
+    # Unthrottled: ares runs as fast as the host emulates (audio sync paces it to real time
+    # otherwise). The ROM sees only emulated time, so runs are identical at any speed.
+    # ARES_REALTIME=1 keeps real-time pacing (watching a run, listening to it).
+    **({} if os.environ.get("ARES_REALTIME") else {("Audio", "Blocking"): "false", ("Audio", "Mute"): "true"}),
 }
 
 
