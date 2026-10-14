@@ -1,27 +1,35 @@
 # Android
 
 The Android port runs the same `frogger::app::App` as the desktop executable (simulation,
-renderer, audio, FMV, menus, saves) inside a NativeActivity. Status (2026-10-14): **builds,
-imports a disc image on the device and plays in the Android 15 emulator** (x86_64, SwiftShader
-Vulkan): boot FMVs, frontend, story levels, touch controls, background/resume.
-Not yet run on a physical phone.
+renderer, audio, FMV, menus, saves) inside a NativeActivity. Status (2026-10-14): **plays on
+an AYANEO Pocket EVO** (Android 13, Adreno 740, Vulkan; imported from the Redump zip with the
+file picker) and in the Android 15 emulator (x86_64, SwiftShader Vulkan): boot FMVs, frontend,
+story levels, touch controls, gamepad, background/resume.
 
 ## Layout
 
 | Piece | Where |
 |---|---|
-| Native host (`android_main`) | `crates/frogger-android/src/host.rs`: winit `android-native-activity` event loop, wgpu surface lifecycle, input, frame loop |
+| Native host (`android_main`) | `crates/frogger-android/src/host.rs`: `android-activity` main loop (not winit, see below), wgpu surface lifecycle, input, render-resolution pass, frame loop |
+| Gamepad / keyboard mapping | `crates/frogger-android/src/pad.rs`: `KEYCODE_*` and joystick axes (sticks, HAT d-pad, triggers) → player 1's `RawPad`, keyboard → DirectInput codes |
+| Overlay menu | `crates/frogger-android/src/menu.rs`: swipe in from the left edge; touch controls on/off (`android.toml`) |
 | Touch controls | `crates/frogger-android/src/touch.rs`: d-pad, PlayStation face buttons, L1/L2/R1/R2, Select/Start; procedurally drawn atlas |
 | Import screen | `crates/frogger-android/src/import.rs`: finds a disc image in the app folder, runs `f2_import` on a thread with progress |
 | Logging | `crates/frogger-android/src/logcat.rs`: stdout/stderr → logcat tag `frogger` |
-| Java activity | `packaging/android/java/.../FroggerActivity.java`: `NativeActivity` subclass for immersive full screen, keep-screen-on and the system file picker |
+| Java activity | `packaging/android/java/.../FroggerActivity.java`: `NativeActivity` subclass for immersive full screen, keep-screen-on, the system file picker and a system-gesture exclusion on the left edge (the menu swipe) |
 | Manifest | `packaging/android/AndroidManifest.xml` (package `org.frogger2rs.game`, min API 26, target 35, landscape, launcher + Android TV launcher) |
 | Build | `tools/android/build-apk.sh` (no Gradle), `make_icon.py` (procedural launcher icon), `apk_add.py` |
 
-Shared-crate changes made for Android: `f2_platform::window::run_with` (host-built event loop)
-and `WindowApp::suspended` (the window/surface goes away in the background); the Android Back
-button maps to Escape; `frogger`'s `fontgen` feature (separate from `desktop`); the built-in
-5×7 font moved to `frogger::tinyfont`.
+Why not winit: winit 0.30's Android backend drains the input queue itself and turns every
+motion event into touch positions (AXIS_X/Y only), so analogue sticks lost their meaning and
+d-pads that report HAT axes (most built-in and Xbox-style controllers) never reached the game.
+The host runs `android-activity` directly and reads the motion events' source and axes.
+
+Shared-crate changes made for Android: `frogger`'s `fontgen` feature (separate from
+`desktop`); the built-in 5×7 font moved to `frogger::tinyfont`; the present pass moved into the
+library (`frogger::present`); `WinInfo::fixed_mode` (Display page without window mode /
+refresh rate); `Renderer::overlay` in `f2-engine` (a UI pass that draws over the presented
+frame instead of clearing it; off by default, so the game's rendering is unchanged).
 
 ## Building
 
@@ -76,12 +84,26 @@ imported on a PC that already ran the game has them.
   in PlayStation colours; button prompts in the game use PlayStation icons), shoulders on the
   left/right edges, Select/Start at the top. They hide while a gamepad or keyboard is used and
   come back on the next touch.
-- **Gamepads** (Bluetooth/USB): buttons arrive as Android key events (`KEYCODE_BUTTON_*`) and are
-  player 1's joypad; the d-pad arrives as arrow keys. Analogue sticks are not read yet (winit
-  0.30 does not forward joystick motion events).
-- **Back** = Escape (closes menus; on the start screen it quits, like Esc on the desktop).
+- **Gamepads** (built-in, Bluetooth, USB) are player 1's joypad: buttons (`KEYCODE_BUTTON_*`),
+  the d-pad as HAT axes or `KEYCODE_DPAD_*` keys, the left stick (moves, like the desktop's
+  default bindings), right stick, analogue triggers as L2/R2. Rebinding works on the Controls
+  settings page as on the desktop.
+- **Keyboards**: mapped to the desktop's keys (F10 opens the settings screen).
+- **Back** = Escape (closes menus; on the start screen it quits, like Esc on the desktop); with
+  the overlay menu open it closes the menu.
+- **Overlay menu**: swipe in from the middle of the left edge. The game pauses while it is
+  open; it has one switch for now, **Touch controls on/off** (saved in `files/android.toml`).
+  Tap outside the panel, "Close" or Back to return.
 - Player 1 is `Joypad(0)` with the keyboard still active; local multiplayer needs more pads,
   which are not mapped yet.
+
+## Resolution
+
+Settings → Display → Resolution: **Auto** renders at the screen's resolution (shown, e.g.
+`Auto (1920x1080)`). A fixed size (640x480 up to the screen size) renders at that size and is
+scaled to fit with black bars, e.g. 640x480 shows the 4:3 picture centred on a 16:9 screen.
+The touch controls and the overlay menu are drawn afterwards at the screen's resolution, so
+they can sit in the bars.
 
 ## Lifecycle
 
@@ -105,7 +127,8 @@ adb shell input tap X Y                     # touch (2400x1080 landscape on pixe
 ## Known gaps / next steps
 
 - Not yet run on a physical device (Mali/Adreno Vulkan drivers, real AAudio latency).
-- Analogue sticks, rumble, multiple gamepads (local multiplayer).
+- Rumble; more than one gamepad (local multiplayer).
 - Touch layout is fixed (no editor, no opacity setting); Select/Start overlap the menu title.
+- The overlay menu has only the touch-controls switch.
 - Release signing / Play Store packaging (AAB) not done; distribution is sideloading only.
 - Online play needs the INTERNET permission (present) but was not tested on Android.

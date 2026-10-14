@@ -565,7 +565,7 @@ impl Shot {
 /// Resolution row shows the output instead of the render size and offers no switch.
 fn win_info(size: (u32, u32), out: (u32, u32)) -> frogger::app::WinInfo {
     let m = f2_platform::config::VideoMode { width: out.0, height: out.1, refresh_mhz: 59_940 };
-    frogger::app::WinInfo { size, mode: f2_platform::WindowMode::Fullscreen, modes: vec![m], desktop: Some(m), console: true }
+    frogger::app::WinInfo { size, mode: f2_platform::WindowMode::Fullscreen, modes: vec![m], desktop: Some(m), console: true, fixed_mode: false }
 }
 
 /// One frame's common work: input, update, config saves. Returns false to quit.

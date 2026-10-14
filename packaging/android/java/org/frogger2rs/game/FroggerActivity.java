@@ -8,6 +8,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.util.Log;
+import android.graphics.Rect;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -18,6 +19,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 
 /**
  * The game runs in native code (crates/frogger-android, android_main). This subclass only
@@ -39,6 +41,17 @@ public class FroggerActivity extends NativeActivity {
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         immersive();
+        // Swiping in from the left edge opens the game's overlay menu: keep the system Back
+        // gesture off the middle of that edge (Android allows up to 200 dp per edge).
+        if (Build.VERSION.SDK_INT >= 29) {
+            final View decor = getWindow().getDecorView();
+            decor.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+                float dp = getResources().getDisplayMetrics().density;
+                int band = (int) (200 * dp), edge = (int) (48 * dp), mid = (b - t) / 2;
+                decor.setSystemGestureExclusionRects(
+                    Collections.singletonList(new Rect(0, Math.max(0, mid - band / 2), edge, mid + band / 2)));
+            });
+        }
     }
 
     @Override

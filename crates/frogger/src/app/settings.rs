@@ -45,6 +45,10 @@ pub struct WinInfo {
     /// asks the host to switch), `desktop` the mode in use. The window mode, VSync and frame
     /// cap rows are hidden.
     pub console: bool,
+    /// The host has a single, fullscreen window mode (Android): `mode` is borderless and the
+    /// Window mode and Refresh rate rows are hidden; Resolution picks the render size,
+    /// scaled to the screen with black bars.
+    pub fixed_mode: bool,
 }
 
 /// Common resolutions offered next to the monitor's video modes.
@@ -636,7 +640,7 @@ impl App {
         match ui.page() {
             Page::Display => {
                 let console = self.win.console;
-                if !console {
+                if !console && !self.win.fixed_mode {
                     add(
                         Id::WindowMode,
                         "Window mode",
@@ -659,6 +663,11 @@ impl App {
                     WindowMode::Windowed => "Auto follows the window size; a fixed size resizes the window.",
                     WindowMode::Borderless => "Auto renders at the desktop size; a fixed size renders at that size, scaled to the screen.",
                     WindowMode::Fullscreen => "The exclusive fullscreen video mode (Auto = desktop size).",
+                };
+                let res_desc = if self.win.fixed_mode {
+                    "Auto renders at the screen's resolution; a fixed size renders at that size, scaled to fit with black bars."
+                } else {
+                    res_desc
                 };
                 let res_desc = if console {
                     "Size of the frames sent out (Auto = largest). The console scales them to its video output resolution, set in its Screen and Video settings."
@@ -685,7 +694,9 @@ impl App {
                 } else {
                     "Exclusive fullscreen only."
                 };
-                add(Id::Refresh, "Refresh rate", rate, rate_desc, fs, true);
+                if !self.win.fixed_mode {
+                    add(Id::Refresh, "Refresh rate", rate, rate_desc, fs, true);
+                }
                 if !console {
                     add(Id::VSync, "VSync", on_off(v.vsync), "Wait for the display refresh (no tearing).", true, true);
                     let cap = match v.frame_cap {
@@ -1640,6 +1651,7 @@ mod tests {
             modes: vec![m(1920, 1080, 60000), m(1920, 1080, 144000), m(1280, 720, 60000)],
             desktop: Some(m(1920, 1080, 144000)),
             console: false,
+            fixed_mode: false,
         };
         let fs = wi.resolutions(WindowMode::Fullscreen);
         assert_eq!(fs, vec![(1280, 720), (1920, 1080)]);
@@ -1654,6 +1666,7 @@ mod tests {
             modes: vec![m(3840, 2160, 119880), m(3840, 2160, 59940), m(2560, 1440, 119880), m(2560, 1440, 59940)],
             desktop: Some(m(3840, 2160, 119880)),
             console: true,
+            fixed_mode: false,
         };
         assert_eq!(con.resolutions(WindowMode::Windowed), vec![(2560, 1440), (3840, 2160)]);
         assert_eq!(con.rates(None), vec![119880, 59940]);

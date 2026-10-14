@@ -270,7 +270,7 @@ fn win_info(present: &dyn Present) -> frogger::app::WinInfo {
     if modes.is_empty() {
         modes.push(mode);
     }
-    frogger::app::WinInfo { size, mode: f2_platform::WindowMode::Fullscreen, modes, desktop: Some(mode), console: true }
+    frogger::app::WinInfo { size, mode: f2_platform::WindowMode::Fullscreen, modes, desktop: Some(mode), console: true, fixed_mode: false }
 }
 
 /// Render threads for the CPU renderer: the hardware threads available (`fallback` when

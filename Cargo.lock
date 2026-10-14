@@ -989,6 +989,7 @@ dependencies = [
 name = "frogger-android"
 version = "0.1.0"
 dependencies = [
+ "android-activity",
  "f2-audio",
  "f2-engine",
  "f2-import",
@@ -996,8 +997,9 @@ dependencies = [
  "frogger",
  "jni 0.21.1",
  "libc",
+ "ndk 0.9.0",
+ "raw-window-handle",
  "wgpu",
- "winit",
 ]
 
 [[package]]

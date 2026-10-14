@@ -1,5 +1,5 @@
-//! Final present pass (host): used only when the frame cannot go straight to the window
-//! surface, i.e. a brightness other than 100 % (`[video] brightness`, a final multiply) or
+//! Final present pass (desktop and Android hosts): used only when the frame cannot go straight
+//! to the window surface, i.e. a brightness other than 100 % (`[video] brightness`, a final multiply) or
 //! an explicit render resolution in borderless fullscreen (`[video] resolution`). The frame
 //! is rendered into an offscreen target of the render size and drawn onto the surface,
 //! scaled to fit with black bars, multiplied by the brightness. Without either option the

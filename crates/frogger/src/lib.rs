@@ -14,6 +14,8 @@ pub mod mods;
 pub mod netplay;
 pub use f2_draw::overlay;
 pub mod padscript;
+#[cfg(feature = "gpu")]
+pub mod present;
 pub mod record;
 pub mod render;
 pub mod tinyfont;

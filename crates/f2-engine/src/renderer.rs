@@ -328,6 +328,10 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     #[cfg(feature = "gpu")]
     pub format: wgpu::TextureFormat,
+    /// Draw over what the target already holds instead of clearing it (a host's UI pass on
+    /// top of the presented frame). Only honoured without MSAA and render scaling.
+    #[cfg(feature = "gpu")]
+    pub overlay: bool,
     pub textures: TextureRegistry,
     pub view: View,
     pub options: RenderOptions,
@@ -509,6 +513,7 @@ impl Renderer {
             device,
             queue,
             format,
+            overlay: false,
             textures: TextureRegistry::new(),
             view: View::new(640, 480),
             options: RenderOptions::default(),
@@ -1484,7 +1489,11 @@ impl Renderer {
                 depth_slice: None,
                 resolve_target: resolve,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
+                    load: if self.overlay && samples == 1 && !scaled {
+                        wgpu::LoadOp::Load
+                    } else {
+                        wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] })
+                    },
                     store: if samples > 1 { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
                 },
             })],

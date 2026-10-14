@@ -30,11 +30,10 @@
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
 mod firstrun;
-mod present;
 
 #[cfg(test)]
 use frogger::render;
-use frogger::{app, data, gameplay, netplay, padscript, record};
+use frogger::{app, data, gameplay, netplay, padscript, present, record};
 
 use app::{App, NetRequest, Step};
 use f2_audio::AudioEngine;

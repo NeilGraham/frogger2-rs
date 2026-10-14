@@ -47,7 +47,7 @@ Build instructions: [BUILDING.md](BUILDING.md). Packaging: `tools/package/`, `pa
 | WSL2 (WSLg) | works (dev setup) | native Linux | X11 via XWayland (native Wayland crashes WSLg's Weston), llvmpipe/lavapipe | Pulse via ALSA plugin | usbipd only | — |
 | PS4 / PS5 (homebrew) | **builds; runs in the shadPS4 emulator**; not yet run on hardware | `tools/ps4/build-pkg.sh` (OpenOrbis, `x86_64-unknown-freebsd` std) | VideoOut + CPU renderer (`f2-engine/soft.rs`) | sceAudioOut | scePad | PS4 fPKG (also installs on a jailbroken PS5) |
 | PS5 (native homebrew) | **builds; runs in the KytyPS5 emulator** (4K, 120 Hz); not yet run on hardware | `tools/ps5/build.sh` (ps5-payload-sdk stubs, PS5_Vulkan packaging, `x86_64-unknown-freebsd` std) | tiled VideoOut + CPU renderer; optional wgpu on PS5 RADV (`--gpu`, untested) | sceAudioOut | scePad | PS5 app folder / `.ffpkg` |
-| Android (arm64, x86_64) | **builds; imports and plays in the Android 15 emulator**; not yet run on a phone | `tools/android/build-apk.sh` (cargo-ndk, no Gradle) | winit NativeActivity / Vulkan or GLES | cpal AAudio (Oboe) | touch overlay + Android gamepad buttons | APK, sideload ([ANDROID.md](ANDROID.md)) |
+| Android (arm64, x86_64) | **plays on an AYANEO Pocket EVO** (Android 13) and the Android 15 emulator | `tools/android/build-apk.sh` (cargo-ndk, no Gradle) | android-activity NativeActivity / Vulkan or GLES | cpal AAudio (Oboe) | touch overlay + Android gamepads (buttons, sticks, HAT d-pad) | APK, sideload ([ANDROID.md](ANDROID.md)) |
 | Web, iOS, Switch, PS2/PS3, N64 | not started | see §4 | | | | |
 
 Verified for this document (2026-10-10): Linux release build, workspace test suite (no game
@@ -197,11 +197,11 @@ General constraints:
 
 ### Android
 - **Done (first cut)**: `crates/frogger-android`, details in [ANDROID.md](ANDROID.md). wgpu
-  (Vulkan/GLES), winit (`android-native-activity`), cpal (Oboe, C++ runtime linked statically);
-  touch controls and Android gamepad key events become player 1's joypad; a small Java
+  (Vulkan/GLES), `android-activity` directly (winit's Android backend drops joystick axes),
+  cpal (Oboe, C++ runtime linked statically); touch controls and Android gamepads (buttons,
+  sticks, HAT d-pad) become player 1's joypad; a small Java
   `NativeActivity` subclass adds immersive mode and the Storage Access Framework picker for
-  importing a disc image on the device. Remaining: physical-device testing, analogue sticks,
-  multiple pads, release signing.
+  importing a disc image on the device. Remaining: rumble, multiple pads, release signing.
 
 ### iOS
 - wgpu Metal, winit iOS, cpal CoreAudio all supported; gilrs has no iOS backend (needs a small

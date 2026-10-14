@@ -1,29 +1,34 @@
-//! The Android activity: paths, event loop, GPU surface lifecycle (the window goes away
-//! whenever the app is backgrounded), input and the frame loop around `frogger::app::App`.
+//! The Android activity: paths, the `android-activity` main loop, GPU surface lifecycle (the
+//! native window goes away whenever the app is backgrounded), input and the frame loop
+//! around `frogger::app::App`.
+//!
+//! The loop runs on `android-activity` directly (not winit): winit's Android backend turns
+//! every motion event into touch positions, so gamepad sticks and d-pads that report HAT
+//! axes never reached the game.
 
 use crate::import;
+use crate::menu::{self, Menu};
+use crate::pad::{self, Axes, Gamepad};
 use crate::touch::{Phase, TouchPad};
+use android_activity::input::{Axis, InputEvent, KeyAction, MotionAction, MotionEvent};
+use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use f2_audio::AudioEngine;
-use f2_engine::{GpuContext, WindowSurface};
-use f2_platform::window::{self, winit, Flow, WindowApp, WindowConfig};
-use f2_platform::{Config, Controller, ControllerFamily, PadButton, Profile, RawPad};
-use frogger::app::{App, Step};
-use frogger::{data, gameplay};
+use f2_engine::{FontId, GpuContext, Renderer, WindowSurface};
+use f2_platform::config::VideoMode;
+use f2_platform::{Config, Controller, ControllerFamily, KeyboardState, PadButton, Profile, RawPad, WindowMode};
+use frogger::app::{App, Step, WinInfo};
+use frogger::{data, gameplay, present};
+use ndk::native_window::NativeWindow;
+use raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::event::{ElementState, TouchPhase, WindowEvent};
-use winit::event_loop::EventLoop;
-use winit::keyboard::{NativeKeyCode, PhysicalKey};
-use winit::platform::android::activity::AndroidApp;
-use winit::platform::android::EventLoopBuilderExtAndroid;
 
 pub fn main(android: AndroidApp) {
     // Everything user-visible lives in the external files dir (reachable with adb / USB):
-    // `data/` (imported game), `config.toml`, `saves/`, `mods/`.
+    // `data/` (imported game), `config.toml`, `android.toml`, `saves/`, `mods/`.
     let internal = android.internal_data_path().unwrap_or_else(|| PathBuf::from("/data/local/tmp/frogger2"));
     let files = android.external_data_path().unwrap_or_else(|| internal.clone());
-    // Single-threaded here: before the logcat thread and the event loop.
+    // Single-threaded here: before the logcat thread.
     std::env::set_var("F2_DATA_ROOT", files.join("data"));
     std::env::set_var("HOME", &internal);
     f2_platform::paths::set_config_dir(files.clone());
@@ -51,50 +56,118 @@ pub fn main(android: AndroidApp) {
             None
         }
     };
-    // JavaVM / FroggerActivity global refs (valid for the process; used by the file picker).
-    let jni_ptrs = (android.vm_as_ptr() as usize, android.activity_as_ptr() as usize);
-    let el = match EventLoop::builder().with_android_app(android).build() {
-        Ok(el) => el,
-        Err(e) => {
-            eprintln!("frogger: event loop: {e}");
-            return;
-        }
-    };
-    let host = Host {
+    let prefs = Prefs::load(&files);
+    let mut host = Host {
         save_path: f2_platform::paths::save_dir().join("savegame.dat"),
         cfg,
+        prefs,
         files,
         data,
         import: None,
         gfx: None,
         app: None,
         touch: None,
-        gamepad: RawPad::default(),
+        menu: None,
+        dp: android.config().density().map_or(2.0, |d| d as f32 / 160.0),
+        kb: KeyboardState::default(),
+        gamepad: Gamepad::default(),
         prev_pad: RawPad::default(),
-        jni_ptrs,
+        focused: true,
+        // JavaVM / FroggerActivity global refs (valid for the process; the file picker).
+        jni_ptrs: (android.vm_as_ptr() as usize, android.activity_as_ptr() as usize),
         last: Instant::now(),
         error: None,
     };
-    let wc = WindowConfig { title: "Frogger 2".into(), ..WindowConfig::default() };
-    match window::run_with(el, wc, host) {
-        Ok(h) => {
-            if let Some(e) = h.error {
-                eprintln!("frogger: {e}");
+
+    let mut exit = false;
+    while !exit {
+        // Without a window nothing is drawn: sleep until the next lifecycle event.
+        let timeout = if host.has_surface() { Some(Duration::ZERO) } else { None };
+        android.poll_events(timeout, |ev| {
+            if let PollEvent::Main(m) = ev {
+                match m {
+                    MainEvent::InitWindow { .. } => host.window_created(android.native_window()),
+                    MainEvent::TerminateWindow { .. } => host.window_destroyed(),
+                    MainEvent::GainedFocus => host.focused = true,
+                    MainEvent::LostFocus => {
+                        host.focused = false;
+                        host.release_inputs();
+                    }
+                    // Android may kill a paused app without notice.
+                    MainEvent::Pause => host.save_config(),
+                    MainEvent::Destroy => exit = true,
+                    _ => {}
+                }
             }
+        });
+        if let Ok(mut it) = android.input_events_iter() {
+            while it.next(|e| host.input(e)) {}
         }
-        Err(e) => eprintln!("frogger: {e}"),
+        if !exit && host.frame() {
+            exit = true;
+        }
+    }
+    host.save_config();
+    if let Some(e) = host.error {
+        eprintln!("frogger: {e}");
     }
     eprintln!("frogger: exit");
+}
+
+/// The native window as a wgpu surface target.
+struct AndroidWindow(NativeWindow);
+
+impl HasWindowHandle for AndroidWindow {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        self.0.window_handle()
+    }
+}
+
+impl HasDisplayHandle for AndroidWindow {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        Ok(DisplayHandle::android())
+    }
+}
+
+/// Android-only settings (`android.toml` next to `config.toml`).
+struct Prefs {
+    touch_controls: bool,
+}
+
+impl Prefs {
+    fn path(files: &std::path::Path) -> PathBuf {
+        files.join("android.toml")
+    }
+
+    fn load(files: &std::path::Path) -> Prefs {
+        let text = std::fs::read_to_string(Self::path(files)).unwrap_or_default();
+        let get = |k: &str| text.lines().filter_map(|l| l.split_once('=')).find(|(a, _)| a.trim() == k).map(|(_, v)| v.trim().to_string());
+        Prefs { touch_controls: get("touch_controls").is_none_or(|v| v != "false") }
+    }
+
+    fn save(&self, files: &std::path::Path) {
+        let text = format!("# Android settings (also in the swipe-from-the-left menu).\ntouch_controls = {}\n", self.touch_controls);
+        if let Err(e) = std::fs::write(Self::path(files), text) {
+            eprintln!("frogger: saving android.toml: {e}");
+        }
+    }
 }
 
 struct Gfx {
     ctx: GpuContext,
     /// `None` while the app is in the background.
     surface: Option<WindowSurface>,
+    window: Option<NativeWindow>,
+    /// Touch controls and the overlay menu, drawn over the presented frame.
+    ui: Renderer,
+    ui_font: FontId,
+    /// Render-resolution pass (fixed resolutions, brightness), created on demand.
+    present: Option<present::Present>,
 }
 
 struct Host {
     cfg: Config,
+    prefs: Prefs,
     files: PathBuf,
     save_path: PathBuf,
     /// Located game data waiting for the GPU (the app is created on the first window).
@@ -103,59 +176,103 @@ struct Host {
     gfx: Option<Gfx>,
     app: Option<App>,
     touch: Option<TouchPad>,
-    /// Android gamepad buttons (key events) held now.
-    gamepad: RawPad,
+    menu: Option<Menu>,
+    /// Pixels per dp.
+    dp: f32,
+    /// Hardware / Bluetooth keyboard (and Back = Escape).
+    kb: KeyboardState,
+    gamepad: Gamepad,
     /// Player 1's pad last frame (press edges become `App::pad_event`s).
     prev_pad: RawPad,
+    focused: bool,
     /// `JavaVM*` and the activity's `jobject`.
     jni_ptrs: (usize, usize),
     last: Instant,
     error: Option<String>,
 }
 
-/// Android `KEYCODE_BUTTON_*` -> pad button.
-fn gamepad_button(code: u32) -> Option<PadButton> {
-    Some(match code {
-        96 => PadButton::South,  // BUTTON_A
-        97 => PadButton::East,   // BUTTON_B
-        99 => PadButton::West,   // BUTTON_X
-        100 => PadButton::North, // BUTTON_Y
-        102 => PadButton::L1,
-        103 => PadButton::R1,
-        104 => PadButton::L2,
-        105 => PadButton::R2,
-        106 => PadButton::L3, // BUTTON_THUMBL
-        107 => PadButton::R3,
-        108 => PadButton::Start,
-        109 => PadButton::Select,
-        110 => PadButton::Mode,
-        _ => return None,
-    })
-}
-
 impl Host {
-    fn make_surface(&mut self, window: &Arc<window::Window>) -> Result<(), String> {
-        let size = window.inner_size();
+    fn has_surface(&self) -> bool {
+        self.gfx.as_ref().is_some_and(|g| g.surface.is_some())
+    }
+
+    fn window_created(&mut self, window: Option<NativeWindow>) {
+        let Some(window) = window else { return };
+        let (w, h) = (window.width().max(1) as u32, window.height().max(1) as u32);
+        if let Err(e) = self.make_surface(window, w, h) {
+            self.error = Some(e);
+            return;
+        }
+        match &mut self.touch {
+            Some(t) => t.resize(w as f32, h as f32, self.dp),
+            None => self.touch = Some(TouchPad::new(w as f32, h as f32, self.dp)),
+        }
+        match &mut self.menu {
+            Some(m) => m.resize(w as f32, h as f32, self.dp),
+            None => self.menu = Some(Menu::new(w as f32, h as f32, self.dp)),
+        }
+        if let Some(app) = &mut self.app {
+            // Back from the background.
+            app.apply_master_volume();
+        } else if let Some(d) = self.data.take() {
+            self.start_game(d);
+        } else if self.import.is_none() {
+            let g = self.gfx.as_ref().unwrap();
+            let fmt = g.surface.as_ref().unwrap().config.format;
+            let ptrs = self.jni_ptrs;
+            let picker: Box<dyn Fn()> = Box::new(move || pick_disc_image(ptrs));
+            self.import =
+                Some(import::Screen::new(&g.ctx.device, &g.ctx.queue, fmt, self.files.clone(), f2_platform::paths::default_data_root(), Some(picker)));
+        }
+        self.last = Instant::now();
+    }
+
+    fn window_destroyed(&mut self) {
+        if let Some(g) = &mut self.gfx {
+            g.surface = None;
+            g.window = None;
+        }
+        self.release_inputs();
+        if let Some(app) = &mut self.app {
+            app.audio.set_master_volume(0.0);
+        }
+        self.save_config();
+    }
+
+    fn release_inputs(&mut self) {
+        if let Some(t) = &mut self.touch {
+            t.release_all();
+        }
+        self.gamepad.clear();
+        self.kb.clear();
+    }
+
+    fn make_surface(&mut self, window: NativeWindow, w: u32, h: u32) -> Result<(), String> {
         let vsync = self.cfg.video.vsync;
         let make = |ctx: &GpuContext, surface: wgpu::Surface<'static>| -> Result<WindowSurface, String> {
-            let mut s = WindowSurface::new(ctx, surface, size.width.max(1), size.height.max(1)).map_err(|e| e.to_string())?;
+            let mut s = WindowSurface::new(ctx, surface, w, h).map_err(|e| e.to_string())?;
             s.config.present_mode = if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
             s.surface.configure(&ctx.device, &s.config);
             Ok(s)
         };
+        let target = AndroidWindow(window.clone());
         match &mut self.gfx {
             Some(g) => {
-                let surface = g.ctx.instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+                let surface = g.ctx.instance.create_surface(target).map_err(|e| e.to_string())?;
                 g.surface = Some(make(&g.ctx, surface)?);
+                g.window = Some(window);
             }
             None => {
-                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())));
-                let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+                let surface = instance.create_surface(target).map_err(|e| e.to_string())?;
                 let ctx = GpuContext::with_instance(instance, Some(&surface)).map_err(|e| e.to_string())?;
                 let s = make(&ctx, surface)?;
                 let info = ctx.adapter.get_info();
-                eprintln!("frogger: {} {:?} ({:?}) {}x{}", info.name, info.backend, s.config.format, size.width, size.height);
-                self.gfx = Some(Gfx { ctx, surface: Some(s) });
+                eprintln!("frogger: {} {:?} ({:?}) {w}x{h}, {:.2} px/dp", info.name, info.backend, s.config.format, self.dp);
+                let mut ui = Renderer::new(&ctx.device, &ctx.queue, s.config.format);
+                ui.overlay = true;
+                let ui_font = ui.add_font(frogger::tinyfont::builtin_font());
+                self.gfx = Some(Gfx { ctx, surface: Some(s), window: Some(window), ui, ui_font, present: None });
             }
         }
         Ok(())
@@ -176,8 +293,8 @@ impl Host {
         audio.set_music_volume(cfg.audio.music as i32);
         audio.set_sfx_volume(cfg.audio.sfx as i32);
         eprintln!("frogger: audio {}", if audio.is_realtime() { "on" } else { "muted" });
-        // Player 1 = joypad 0 (touch controls + Android gamepad buttons); a keyboard (or a
-        // gamepad's d-pad, which Android reports as arrow keys) works alongside.
+        // Player 1 = joypad 0 (touch controls + the Android gamepad); a keyboard works
+        // alongside.
         let mut mapper = cfg.input_mapper();
         mapper.controllers[0] = Controller::Joypad(0);
         let mut app = App::new(data, &g.ctx.device, &g.ctx.queue, s.config.format, audio, mapper);
@@ -202,113 +319,165 @@ impl Host {
             eprintln!("frogger: saving config: {e}");
         }
     }
-}
 
-impl WindowApp for Host {
-    fn init(&mut self, window: &Arc<window::Window>) {
-        if let Err(e) = self.make_surface(window) {
-            self.error = Some(e);
+    fn input(&mut self, ev: &InputEvent) -> InputStatus {
+        match ev {
+            InputEvent::KeyEvent(k) => {
+                let code: u32 = k.key_code().into();
+                if pad::system_key(code) {
+                    return InputStatus::Unhandled;
+                }
+                let down = match k.action() {
+                    KeyAction::Down => true,
+                    KeyAction::Up => false,
+                    _ => return InputStatus::Handled,
+                };
+                if code == pad::key::BACK {
+                    if let Some(m) = self.menu.as_mut().filter(|m| m.open) {
+                        if down {
+                            m.close();
+                        }
+                        return InputStatus::Handled;
+                    }
+                }
+                if self.gamepad.key(code, down) {
+                    self.hide_touch();
+                    return InputStatus::Handled;
+                }
+                match pad::dik(code) {
+                    Some(d) => {
+                        if down && k.repeat_count() == 0 {
+                            self.kb.key_down(d);
+                        } else if !down {
+                            self.kb.key_up(d);
+                        }
+                        if code != pad::key::BACK {
+                            self.hide_touch();
+                        }
+                        InputStatus::Handled
+                    }
+                    None => InputStatus::Unhandled,
+                }
+            }
+            InputEvent::MotionEvent(m) => {
+                let source = m.source();
+                if source.is_joystick_class() {
+                    self.joystick(m);
+                    InputStatus::Handled
+                } else if source.is_pointer_class() {
+                    self.pointer(m);
+                    InputStatus::Handled
+                } else {
+                    InputStatus::Unhandled
+                }
+            }
+            _ => InputStatus::Unhandled,
+        }
+    }
+
+    fn joystick(&mut self, m: &MotionEvent) {
+        let p = m.pointer_at_index(0);
+        let ax = |a: Axis| p.axis_value(a);
+        self.gamepad.motion(Axes {
+            x: ax(Axis::X),
+            y: ax(Axis::Y),
+            z: ax(Axis::Z),
+            rz: ax(Axis::Rz),
+            hat_x: ax(Axis::HatX),
+            hat_y: ax(Axis::HatY),
+            lt: ax(Axis::Ltrigger).max(ax(Axis::Brake)),
+            rt: ax(Axis::Rtrigger).max(ax(Axis::Gas)),
+        });
+        if self.gamepad.active() {
+            self.hide_touch();
+        }
+    }
+
+    fn pointer(&mut self, m: &MotionEvent) {
+        let one = |phase: Phase| {
+            let p = m.pointer_at_index(m.pointer_index());
+            vec![(p.pointer_id() as u64, phase, p.x(), p.y())]
+        };
+        let all = |phase: Phase| m.pointers().map(|p| (p.pointer_id() as u64, phase, p.x(), p.y())).collect::<Vec<_>>();
+        let touches = match m.action() {
+            MotionAction::Down | MotionAction::PointerDown => one(Phase::Started),
+            MotionAction::Up | MotionAction::PointerUp => one(Phase::Ended),
+            MotionAction::Move => all(Phase::Moved),
+            MotionAction::Cancel => all(Phase::Ended),
+            _ => Vec::new(),
+        };
+        for (id, phase, x, y) in touches {
+            self.touch_point(id, phase, x, y);
+        }
+    }
+
+    fn touch_point(&mut self, id: u64, phase: Phase, x: f32, y: f32) {
+        if let Some(s) = &mut self.import {
+            if phase == Phase::Started {
+                s.tap(x, y);
+            }
             return;
         }
-        let size = window.inner_size();
-        let dp = window.scale_factor() as f32;
-        match &mut self.touch {
-            Some(t) => t.resize(size.width as f32, size.height as f32, dp),
-            None => self.touch = Some(TouchPad::new(size.width as f32, size.height as f32, dp)),
+        let (taken, action) = match &mut self.menu {
+            Some(m) => m.touch(id, phase, x, y),
+            None => (false, menu::Action::None),
+        };
+        match action {
+            menu::Action::Opened => {
+                if let Some(t) = &mut self.touch {
+                    t.release_all();
+                }
+            }
+            menu::Action::ToggleTouch => {
+                self.prefs.touch_controls = !self.prefs.touch_controls;
+                self.prefs.save(&self.files);
+                eprintln!("frogger: touch controls {}", if self.prefs.touch_controls { "on" } else { "off" });
+            }
+            menu::Action::Closed => self.last = Instant::now(),
+            menu::Action::None => {}
         }
-        if let Some(app) = &mut self.app {
-            // Back from the background.
-            app.apply_master_volume();
-        } else if let Some(d) = self.data.take() {
-            self.start_game(d);
-        } else if self.import.is_none() {
-            let g = self.gfx.as_ref().unwrap();
-            let fmt = g.surface.as_ref().unwrap().config.format;
-            let ptrs = self.jni_ptrs;
-            let picker: Box<dyn Fn()> = Box::new(move || pick_disc_image(ptrs));
-            self.import =
-                Some(import::Screen::new(&g.ctx.device, &g.ctx.queue, fmt, self.files.clone(), f2_platform::paths::default_data_root(), Some(picker)));
-        }
-        self.last = Instant::now();
-    }
-
-    fn suspended(&mut self) {
-        if let Some(g) = &mut self.gfx {
-            g.surface = None;
+        if taken || !self.prefs.touch_controls {
+            return;
         }
         if let Some(t) = &mut self.touch {
-            t.release_all();
+            t.touch(id, phase, x, y);
         }
-        self.gamepad = RawPad::default();
-        if let Some(app) = &mut self.app {
-            app.audio.set_master_volume(0.0);
-        }
-        // Android may kill a backgrounded app without notice.
-        self.save_config();
     }
 
-    fn event(&mut self, _w: &Arc<window::Window>, event: &WindowEvent) -> Flow {
-        match event {
-            WindowEvent::Touch(t) => {
-                let phase = match t.phase {
-                    TouchPhase::Started => Phase::Started,
-                    TouchPhase::Moved => Phase::Moved,
-                    TouchPhase::Ended | TouchPhase::Cancelled => Phase::Ended,
-                };
-                if let Some(tp) = &mut self.touch {
-                    tp.touch(t.id, phase, t.location.x as f32, t.location.y as f32);
-                }
-                if phase == Phase::Started {
-                    if let Some(s) = &mut self.import {
-                        s.tap(t.location.x as f32, t.location.y as f32);
-                    }
-                }
-            }
-            WindowEvent::KeyboardInput { event: k, .. } => {
-                if let PhysicalKey::Unidentified(NativeKeyCode::Android(code)) = k.physical_key {
-                    if let Some(b) = gamepad_button(code) {
-                        self.gamepad.set_button(b, k.state == ElementState::Pressed);
-                    }
-                }
-                // A physical controller or keyboard in use: hide the touch controls until
-                // the screen is touched again.
-                if k.state == ElementState::Pressed {
-                    if let Some(tp) = &mut self.touch {
-                        tp.visible = false;
-                    }
-                }
-            }
-            WindowEvent::Resized(s) => {
-                if let Some(Gfx { ctx, surface: Some(surf) }) = &mut self.gfx {
-                    surf.resize(&ctx.device, s.width.max(1), s.height.max(1));
-                }
-            }
-            _ => {}
-        }
-        Flow::Continue
-    }
-
-    fn resized(&mut self, w: &Arc<window::Window>, size: winit::dpi::PhysicalSize<u32>) {
+    fn hide_touch(&mut self) {
         if let Some(t) = &mut self.touch {
-            t.resize(size.width as f32, size.height as f32, w.scale_factor() as f32);
+            t.visible = false;
         }
     }
 
-    fn frame(&mut self, frame: window::Frame<'_>) -> Flow {
+    /// One frame; true = quit.
+    fn frame(&mut self) -> bool {
         if let Some(e) = &self.error {
             eprintln!("frogger: {e}");
-            return Flow::Exit;
+            return true;
         }
+        let Some(g) = &mut self.gfx else { return false };
+        let (Some(s), Some(win)) = (&mut g.surface, &g.window) else { return false };
+        // Follow the window size (rotation, split screen, cutout changes).
+        let (ww, wh) = (win.width().max(1) as u32, win.height().max(1) as u32);
+        if (ww, wh) != (s.config.width, s.config.height) {
+            s.resize(&g.ctx.device, ww, wh);
+            if let Some(t) = &mut self.touch {
+                t.resize(ww as f32, wh as f32, self.dp);
+            }
+            if let Some(m) = &mut self.menu {
+                m.resize(ww as f32, wh as f32, self.dp);
+            }
+        }
+        let (w, h) = (s.config.width, s.config.height);
+
         // Import screen until data exists.
         if let Some(screen) = &mut self.import {
             let done = screen.update();
-            let Some(Gfx { ctx, surface: Some(s) }) = &mut self.gfx else { return Flow::Continue };
-            let Some(tex) = acquire(ctx, s, frame.window) else { return Flow::Continue };
+            let Some(tex) = acquire(&g.ctx, s) else { return false };
             let view = tex.texture.create_view(&Default::default());
-            let (w, h) = (s.config.width, s.config.height);
             screen.render(&view, w, h);
-            frame.window.pre_present_notify();
-            ctx.queue.present(tex);
+            g.ctx.queue.present(tex);
             if done {
                 self.import = None;
                 match data::Data::locate(&self.cfg, None) {
@@ -316,27 +485,31 @@ impl WindowApp for Host {
                     Err(e) => self.error = Some(e),
                 }
             }
-            return Flow::Continue;
+            return false;
         }
-        let (Some(app), Some(Gfx { ctx, surface: Some(s) }), Some(touch)) = (&mut self.app, &mut self.gfx, &mut self.touch) else {
-            return Flow::Continue;
-        };
+        let (Some(app), Some(touch), Some(menu)) = (&mut self.app, &mut self.touch, &self.menu) else { return false };
         let now = Instant::now();
         let dt = now - self.last;
         self.last = now;
 
-        let mut pad = touch.pad();
-        pad.buttons |= self.gamepad.buttons;
-        // Newly pressed buttons as raw events (FMV skipping, the controls settings page),
-        // like the desktop's gamepad events.
-        let prev = std::mem::replace(&mut self.prev_pad, pad);
-        for b in PadButton::ALL {
-            if pad.button(b) && !prev.button(b) {
-                app.pad_event(f2_platform::RawEvent::PadButton(b));
-            }
+        // The game sees the physical pad (and the touch controls when they are on); nothing
+        // runs while the overlay menu is open.
+        let mut pad = self.gamepad.pad();
+        if self.prefs.touch_controls {
+            pad = pad::merge(pad, touch.pad());
         }
-        let raw = [Some(pad), None, None, None];
-        app.update(dt, frame.keyboard, &raw, frame.focused);
+        if !menu.open {
+            // Newly pressed buttons as raw events (FMV skipping, the controls settings
+            // page), like the desktop's gamepad events.
+            let prev = std::mem::replace(&mut self.prev_pad, pad);
+            for b in PadButton::ALL {
+                if pad.button(b) && !prev.button(b) {
+                    app.pad_event(f2_platform::RawEvent::PadButton(b));
+                }
+            }
+            app.update(dt, &self.kb, &[Some(pad), None, None, None], self.focused);
+        }
+        self.kb.end_frame();
         app.rumble.clear();
         let rq = &mut app.requests;
         let save = std::mem::take(&mut rq.save_bindings)
@@ -345,30 +518,46 @@ impl WindowApp for Host {
             | std::mem::take(&mut rq.save_config);
         if std::mem::take(&mut rq.apply_vsync) {
             s.config.present_mode = if app.cfg.video.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
-            s.surface.configure(&ctx.device, &s.config);
+            s.surface.configure(&g.ctx.device, &s.config);
         }
-        // Window modes do not exist here.
+        // One fullscreen mode; the resolution is read every frame below.
         rq.toggle_fullscreen = false;
         rq.apply_window = false;
         rq.apply_input = false;
         if app.requests.quit || app.idle() {
             self.save_config();
-            return Flow::Exit;
+            return true;
         }
-        let inner = frame.window.inner_size();
-        if inner.width > 0 && inner.height > 0 && (inner.width, inner.height) != (s.config.width, s.config.height) {
-            s.resize(&ctx.device, inner.width, inner.height);
-            touch.resize(inner.width as f32, inner.height as f32, frame.window.scale_factor() as f32);
-        }
-        let (w, h) = (s.config.width, s.config.height);
-        app.draw(w, h);
-        touch.draw(&mut app.r);
-        let Some(tex) = acquire(ctx, s, frame.window) else { return Flow::Continue };
+        // The Display page: Auto = the screen; explicit sizes render at that size and are
+        // scaled to fit with black bars.
+        let screen = VideoMode { width: w, height: h, refresh_mhz: 60_000 };
+        app.win = WinInfo { mode: WindowMode::Borderless, size: (w, h), modes: Vec::new(), desktop: Some(screen), console: false, fixed_mode: true };
+
+        let v = &app.cfg.video;
+        let (rs, via_present) = present::plan((w, h), true, v.resolution, v.brightness);
+        let brightness = v.brightness;
+        app.draw(rs.0, rs.1);
+        let Some(tex) = acquire(&g.ctx, s) else { return false };
         let view = tex.texture.create_view(&Default::default());
         let clear = app.clear_color();
-        app.r.render(&view, w, h, clear);
-        frame.window.pre_present_notify();
-        ctx.queue.present(tex);
+        if via_present {
+            let p = g.present.get_or_insert_with(|| present::Present::new(&g.ctx.device, s.config.format));
+            {
+                let off = p.target(&g.ctx.device, rs.0, rs.1);
+                app.r.render(off, rs.0, rs.1, clear);
+            }
+            p.blit(&g.ctx.device, &g.ctx.queue, &view, w, h, brightness);
+        } else {
+            app.r.render(&view, w, h, clear);
+        }
+        // Touch controls and the menu over the final image (in the black bars too).
+        g.ui.begin_frame(w, h);
+        if self.prefs.touch_controls && !menu.open {
+            touch.draw(&mut g.ui);
+        }
+        menu.draw(&mut g.ui, g.ui_font, self.prefs.touch_controls);
+        g.ui.render(&view, w, h, [0.0; 4]);
+        g.ctx.queue.present(tex);
         if save {
             self.save_config();
         }
@@ -380,7 +569,7 @@ impl WindowApp for Host {
                 std::thread::sleep(period - spent);
             }
         }
-        Flow::Continue
+        false
     }
 }
 
@@ -404,12 +593,12 @@ fn pick_disc_image((vm, activity): (usize, usize)) {
 }
 
 /// The next swapchain image, re-configuring the surface when it went stale.
-fn acquire(ctx: &GpuContext, s: &mut WindowSurface, window: &window::Window) -> Option<wgpu::SurfaceTexture> {
+fn acquire(ctx: &GpuContext, s: &mut WindowSurface) -> Option<wgpu::SurfaceTexture> {
     match s.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
         wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-            let sz = window.inner_size();
-            s.resize(&ctx.device, sz.width.max(1), sz.height.max(1));
+            let (w, h) = (s.config.width, s.config.height);
+            s.resize(&ctx.device, w, h);
             None
         }
         _ => {

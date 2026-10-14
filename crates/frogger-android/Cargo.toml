@@ -1,6 +1,6 @@
 [package]
 name = "frogger-android"
-description = "Android host for the Frogger 2 port: NativeActivity via winit, wgpu (Vulkan/GLES), cpal (AAudio), touch controls and Android gamepads, in-app import."
+description = "Android host for the Frogger 2 port: NativeActivity via android-activity, wgpu (Vulkan/GLES), cpal (AAudio), touch controls and Android gamepads, in-app import."
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
@@ -15,13 +15,16 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 frogger = { path = "../frogger", default-features = false, features = ["gpu", "audio-device", "fontgen"] }
 f2-engine = { path = "../f2-engine", default-features = false, features = ["std", "gpu"] }
-f2-platform = { path = "../f2-platform", default-features = false, features = ["window"] }
+f2-platform = { path = "../f2-platform", default-features = false }
 f2-audio = { path = "../f2-audio", default-features = false }
 f2-import = { path = "../f2-import" }
 wgpu = "=30.0.1"
-winit = { version = "0.30", features = ["android-native-activity"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
+# The activity glue and main loop (the same version winit uses on the desktop lockfile).
+android-activity = { version = "0.6", features = ["native-activity"] }
+ndk = "0.9"
+raw-window-handle = "0.6"
 libc = "0.2"
 # Calls into FroggerActivity (the file picker); same versions cpal already uses.
 jni = "0.21"
