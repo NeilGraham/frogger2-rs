@@ -142,6 +142,33 @@ The fix is to keep blocks with different lifetimes in separate memory, and to me
   - Remaining: under 2 KiB of strings (training hints, ≤128-byte blocks).
   - Find more with `F2N64_MEM_TRACE_SIZE` (tools/n64/README.md).
 
+### Play-time working set (real play recordings, 2026-10-13)
+`mem-tour` measures loads; real play (PC recordings replayed in ares, tools/n64/README.md
+"Replays") ran out of memory mid-level: Grindstone (1-2) 35 s in, Research Facility (5-1)
+after ~5 minutes, both in a draw list's `Vec` growth (the user's original crash too). A census
+of both heaps by allocation site (`F2N64_MEM_LIVE_TRACE` / `_LOAD` / `_MAIN_TRACE`) showed
+no unbounded leak; the renderer's working set grows to its bound as new things come on screen
+(r3d slots, per-actor pose caches, MODGE state, additive texture variants, sprite lists) on
+top of levels that load to ~95 % of RAM, plus boot reservations nothing used:
+
+| freed | what |
+|---:|---|
+| 184 KiB | RenderCpu's `submit` buffers (4096 verts + 512 rects), unused by the r3d build |
+| ~140 KiB (1-2) | r3d slot uniform rings only for slots that draw (pool, reclaimed after 3 frames) |
+| ~127 KiB (1-2) | f2-game actor arena trimmed after InitLevel (doubling: 512 x 556 B for 283 actors) |
+| 108 KiB | r3d per-frame uniform arenas 3 x 512 -> 3 x 128 (peak use ~40) |
+| ~140 KiB | replay boot's own checksum parts (test overhead, now read lean) |
+
+Plus: a triangle list that cannot grow drops the triangle (`MEM LOW` in the log) instead of
+aborting. Result: all 22 recordings replay with every checksum equal and no dropped
+triangle; peaks (libdragon used, of ~5256 KiB) 3.9-4.9 MiB, worst Grindstone 4900 KiB.
+A 12-level chain (one boot, story 2-12 + Garden) peaks at 4936 KiB in Grindstone (third):
+level-to-level carry-over is small, nothing alive across loads.
+Remaining candidates if more is needed: the F2Z decoder + dictionaries kept for the session
+(99 KiB, needed at each load), the story-book font subset as RGBA8 (82 KiB), the hi-res
+fonts as RGBA16 (146 KiB; IA formats would halve or quarter them), 3 -> 2 framebuffers
+(150 KiB).
+
 ### Stack overflow (found by this work)
 libdragon gives the stack the top 64 KiB of RDRAM, directly above the heap, with no guard.
 `App::new` builds the App on the stack and goes **~135 KiB below** that 64 KiB. This was
