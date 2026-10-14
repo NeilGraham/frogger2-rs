@@ -435,6 +435,13 @@ pub fn draw_loop(r: &mut Renderer, scene: Option<&mut LevelScene>, game: &Game, 
 /// far clipping.
 fn draw_background(r: &mut Renderer, scene: &LevelScene, game: &Game, cam: &Camera) {
     let Some(bg) = game.actor2.back_gnd.and_then(|id| game.actor2.actors.get(id)) else { return };
+    // DrawActor (mdxActor.cpp:232) returns for an invisible MDX actor: CopyActorList
+    // (PC/Main.cpp:645) clears `visible` while the actor's `draw` is 0, e.g. after
+    // StartLevelComplete hid every actor in actList, backGnd included. (DrawBackground's
+    // `backGnd->actor->visible = 1` sets the game ACTOR's field, not the MDX_ACTOR's.)
+    if bg.actor.actual_actor.placement.visible == 0 {
+        return;
+    }
     let Some(&(b, m)) = bg.actor.actual_actor.object_controller.and_then(|id| scene.models.get(&id)) else { return };
     let s = bg.actor.size;
     let mut a = Actor {
