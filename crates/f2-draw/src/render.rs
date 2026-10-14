@@ -157,6 +157,8 @@ pub struct LevelScene {
     pub world_model: Option<(usize, usize)>,
     /// `farClip = fog.max * 0.1` (drawloop.cpp:198), render units.
     pub far_clip: f32,
+    /// The level's fog colour (`levelVisualData` fog): the enhanced fog's colour and then
+    /// the clear colour (retail never uses it and clears black, `App::clear_color`).
     pub clear: [f64; 4],
     /// Engine actor per game actor slot (keyframe search hints persist across frames), with
     /// its model id and that model's `models` entry (looked up once, not every frame).

@@ -1789,9 +1789,15 @@ impl App {
         self.r.draw_text_overlay(font, 1800.0, 3650.0, "CENTRE", white, 1.0);
     }
 
+    /// The frame's clear colour. Retail always clears black: `D3DClearView` clears to
+    /// `fogR/G/B`, which `SetupFogParams(fog.min,0,0,0,0)` zeroes every frame
+    /// (drawloop.cpp:186; the call with the level's fog colour is commented out). Black
+    /// shows where no geometry is drawn and around the edges of alpha-blended cut-outs drawn
+    /// before what is behind them (vines). The enhanced fog clears to the level's fog
+    /// colour instead, so geometry fades into the background.
     pub fn clear_color(&self) -> [f64; 4] {
         match (&self.video, &self.scene) {
-            (None, Some(s)) => s.clear,
+            (None, Some(s)) if self.r.options.fog.enabled => s.clear,
             _ => [0.0, 0.0, 0.0, 1.0],
         }
     }

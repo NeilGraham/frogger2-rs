@@ -431,7 +431,7 @@ pub(crate) struct EmitCtx<'a> {
 /// Port of `PCRenderObject` (mdxRender.cpp:2090) (`overrideTex` from the context):
 /// pushes the visible faces of `mesh` using the transformed vertices `tv`.
 /// `per_object_fog` reproduces the object path (`cFog` from the first face);
-/// the landscape path fogs per vertex.
+/// the landscape path (`false`) fogs per vertex and keeps faces without a loaded texture.
 pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, per_object_fog: bool, modge: Option<&Modge>, out: &mut Frames) {
     let view = cx.view;
     let [vx, vy, vw, vh] = view.vp();
@@ -442,8 +442,16 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, pe
     let c_fog = mesh.faces.first().and_then(|f| tv.get(f[0] as usize).copied().flatten()).map_or(1.0, |v| fog_factor(v[2]));
     for (fi, face) in mesh.faces.iter().enumerate() {
         let crc = mesh.textures.get(fi).copied().unwrap_or(0);
-        // Faces whose texture is not loaded are skipped (`tex` NULL).
-        let Some(tex) = cx.override_tex.or_else(|| cx.textures.current(crc)) else { continue };
+        // A face whose texture is not loaded (`tex` NULL): objects skip it (`PCRenderObject`
+        // draws only `if (... && (tex))`); the landscape draws it untextured
+        // (`PCRenderLandscape` pushes every face, `PushPolys` binds a NULL surface and D3D's
+        // MODULATE then gives the vertex colour), e.g. the frontend tree's thorns, whose
+        // `janrock4` is only in Garden.fla.
+        let tex = match cx.override_tex.or_else(|| cx.textures.current(crc)) {
+            Some(t) => Some(t),
+            None if !per_object_fog => None,
+            None => continue,
+        };
         let get = |k: usize| tv.get(face[k] as usize).copied().flatten();
         let (Some(a), Some(b), Some(c)) = (get(0), get(1), get(2)) else { continue };
         let p = [a, b, c];
@@ -489,7 +497,7 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, pe
                 alpha_ref: 0.0,
             };
         }
-        out.push(frame, Tri { v, tex: Some(tex) });
+        out.push(frame, Tri { v, tex });
     }
 }
 

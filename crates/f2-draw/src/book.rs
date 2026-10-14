@@ -297,8 +297,8 @@ impl Canvas {
                 let inv = (255 << 8) - a.min(255 << 8);
                 for c in 0..3 {
                     let s = (lerp(c) >> 8) * cm[c]; // 0..255 << 16
-                    // dst * (1 - alpha) << 16 = dst * inv * 256 / 255 (inv is (1 - alpha) * 255 << 8);
-                    // * 256 / 255 as d + d/256 + d/65536 (no division).
+                                                    // dst * (1 - alpha) << 16 = dst * inv * 256 / 255 (inv is (1 - alpha) * 255 << 8);
+                                                    // * 256 / 255 as d + d/256 + d/65536 (no division).
                     let d = if inv == 0 { 0 } else { self.rgba[i + c] as u32 * inv };
                     let d = d + (d >> 8) + (d >> 16);
                     let v = (s + d + (1 << 15)) >> 16;
