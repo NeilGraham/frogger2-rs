@@ -13,7 +13,9 @@ name = "frogger_android"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-frogger = { path = "../frogger", default-features = false, features = ["gpu", "audio-device", "fontgen"] }
+# Audio output (cpal) only when building for Android: on other hosts the crate is only
+# unit-tested, and enabling it would pull cpal's CoreAudio into the macOS cross-checks.
+frogger = { path = "../frogger", default-features = false, features = ["gpu", "fontgen"] }
 f2-engine = { path = "../f2-engine", default-features = false, features = ["std", "gpu"] }
 f2-platform = { path = "../f2-platform", default-features = false }
 f2-audio = { path = "../f2-audio", default-features = false }
@@ -23,6 +25,7 @@ wgpu = "=30.0.1"
 serde_json.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
+frogger = { path = "../frogger", default-features = false, features = ["gpu", "fontgen", "audio-device"] }
 # The activity glue and main loop (the same version winit uses on the desktop lockfile).
 android-activity = { version = "0.6", features = ["native-activity"] }
 ndk = "0.9"
