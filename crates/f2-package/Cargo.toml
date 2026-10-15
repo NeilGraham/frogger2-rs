@@ -8,3 +8,10 @@ publish.workspace = true
 
 [dependencies]
 png = "=0.18.1"
+# PS4 fPKG / PS5 export (src/ps4*, src/ps5*): hashing, AES, RSA arithmetic, runtime zips.
+sha2 = "0.10"
+hmac = "0.12"
+aes = "0.8"
+num-bigint = { version = "0.4", default-features = false, features = ["std"] }
+zip.workspace = true
+serde_json.workspace = true
