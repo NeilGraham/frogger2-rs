@@ -23,6 +23,7 @@ members = [
     "crates/frogger",
     "crates/console-host",
     "crates/frogger-android",
+    "crates/f2-package",
     "tools/f2-export",
     "tools/f2-viewer",
     "tools/f2-trace",

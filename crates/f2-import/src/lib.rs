@@ -186,6 +186,10 @@ pub struct Manifest {
     pub videos: Vec<String>,
     pub stale_files: Vec<String>,
     pub files: BTreeMap<String, String>,
+    /// The product name the disc's installer carries (`FROGGER2/DATA.TAG` `Application=`, else
+    /// `SETUP.INI` `AppName=`), e.g. `Frogger2`: the exported builds' name comes from it.
+    #[serde(default)]
+    pub disc_app_name: Option<String>,
 }
 
 thread_local! {
@@ -461,6 +465,28 @@ pub fn import_drive(info: &DriveInfo, data_root: &Path, opts: &Options) -> io::R
 }
 
 /// Imports from an already opened source (also used by tests with an emulated drive).
+/// The product name in the installer's tag files (`DATA.TAG` `Application=`, `SETUP.INI`
+/// `AppName=`), e.g. `Frogger2`.
+fn disc_app_name(fs_: &mut dyn Vfs) -> Option<String> {
+    for (file, key) in [("FROGGER2/DATA.TAG", "Application"), ("FROGGER2/SETUP.INI", "AppName")] {
+        let Some(i) = fs_.find(file) else { continue };
+        let Ok(bytes) = fs_.read_file(i) else { continue };
+        if let Some(v) = ini_value(&String::from_utf8_lossy(&bytes), key) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// `key=value` from an INI text (case-insensitive key, first match, trimmed, non-empty).
+fn ini_value(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .filter_map(|l| l.split_once('='))
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+        .map(|(_, v)| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 pub fn import_opened(src: Opened, data_root: &Path, opts: &Options) -> io::Result<Manifest> {
     let _g = opts.sink.is_some().then(|| SinkGuard::new(opts.sink.clone()));
     let Opened { fs: mut fs_, audio, kind, install, desc } = src;
@@ -487,6 +513,7 @@ pub fn import_opened(src: Opened, data_root: &Path, opts: &Options) -> io::Resul
         videos: vec![],
         stale_files: vec![],
         files: BTreeMap::new(),
+        disc_app_name: None,
     };
 
     if install {
@@ -514,6 +541,7 @@ pub fn import_opened(src: Opened, data_root: &Path, opts: &Options) -> io::Resul
         m.rendition = opts.rendition.clone().unwrap_or_else(|| "install".into());
         m.title = "Frogger 2 (from install folder)".into();
     } else {
+        m.disc_app_name = disc_app_name(fs_.as_mut());
         let idx = fs_.find("FROGGER2/DATA1.CAB").ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "FROGGER2/DATA1.CAB not found on disc"))?;
         log("Reading FROGGER2/DATA1.CAB");
         let cab_bytes = fs_.read_file(idx)?;

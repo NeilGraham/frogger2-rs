@@ -88,6 +88,12 @@ struct Args {
     mods_dir: Option<PathBuf>,
     editor: bool,
     editor_cmds: Vec<String>,
+    /// `--export TARGET[,TARGET...]|all` (docs/EXPORT.md).
+    export: Vec<frogger::export::Target>,
+    /// `--runtime PATH`: the runtime for a single `--export` target instead of the release one.
+    runtime: Option<PathBuf>,
+    /// `--out DIR` for `--export` (default: `exports` in the current folder).
+    out: Option<PathBuf>,
 }
 
 fn usage() -> ! {
@@ -103,6 +109,7 @@ fn usage() -> ! {
          \x20      [--screenshot-settings controls|gameplay|levels] (headless: Shift+F10 page in the screenshot)\n\
          \x20      [--screenshot-page display|audio|controls|gameplay[:ROW]] [--screenshot-keymap normal|capture|conflict] [--show-fps]\n\
          editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
+         export: --export windows|macos|linux|android|ps4|ps5|n64|all[,...] [--out DIR] [--runtime PATH]  (docs/EXPORT.md)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 settings, Shift+F10 advanced (level select), F11 / Alt+Enter fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -150,6 +157,9 @@ fn parse_args() -> Args {
         mods_dir: None,
         editor: false,
         editor_cmds: Vec::new(),
+        export: Vec::new(),
+        runtime: None,
+        out: None,
     };
     let mut it = std::env::args().skip(1);
     let num = |s: Option<String>| -> u32 { s.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
@@ -175,6 +185,24 @@ fn parse_args() -> Args {
             "--mod" => a.mods.get_or_insert_with(Vec::new).push(it.next().unwrap_or_else(|| usage())), // alias of --mods (stacks)
             "--editor" => a.editor = true,
             "--editor-cmd" => a.editor_cmds.push(it.next().unwrap_or_else(|| usage())),
+            "--export" => {
+                let v = it.next().unwrap_or_else(|| usage());
+                for t in v.split(',') {
+                    if t.eq_ignore_ascii_case("all") {
+                        a.export.extend(frogger::export::Target::exportable());
+                    } else {
+                        match frogger::export::Target::parse(t) {
+                            Some(t) => a.export.push(t),
+                            None => {
+                                eprintln!("frogger: unknown export target {t} (windows, macos, linux, android, ps4, ps5, n64, all)");
+                                std::process::exit(2);
+                            }
+                        }
+                    }
+                }
+            }
+            "--runtime" => a.runtime = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--out" => a.out = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--video" => a.video = Some(it.next().unwrap_or_else(|| usage())),
             "--boot" => a.boot = true,
             "--multi" => {
@@ -272,6 +300,9 @@ fn main() {
         }
     };
     eprintln!("frogger: data {}", data.rendition.display());
+    if !args.export.is_empty() {
+        std::process::exit(run_exports(&data, &args));
+    }
     let mod_ids = args.mods.clone().unwrap_or_else(|| cfg.mods.enabled.clone());
     let mods_dir = args.mods_dir.clone().unwrap_or_else(|| cfg.mods_dir());
     if let Err(e) = data.enable_mods(&mods_dir, &mod_ids) {
@@ -327,6 +358,28 @@ fn main() {
         eprintln!("frogger: {e}");
         std::process::exit(1);
     }
+}
+
+/// `--export`: builds each requested target; exit status 0 when all succeeded.
+fn run_exports(data: &data::Data, args: &Args) -> i32 {
+    let out = args.out.clone().unwrap_or_else(|| PathBuf::from("exports"));
+    if args.runtime.is_some() && args.export.len() > 1 {
+        eprintln!("frogger: --runtime applies to one --export target at a time");
+        return 2;
+    }
+    let log = |l: &str| eprintln!("frogger: {l}");
+    let mut failed = 0;
+    for &t in &args.export {
+        match frogger::export::export(data, t, args.runtime.as_deref(), &out, &log) {
+            Ok(p) => eprintln!("frogger: {}: wrote {}", t.name(), p.display()),
+            Err(e) => {
+                eprintln!("frogger: {}: {e}", t.name());
+                failed += 1;
+            }
+        }
+    }
+    eprintln!("frogger: the exported builds contain your game data: keep them for your own devices, do not share them");
+    (failed > 0) as i32
 }
 
 /// `--dev-unlock`: a save block (`MakeSaveGameBlock`) with every level open and

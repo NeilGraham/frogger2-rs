@@ -8,6 +8,7 @@ pub mod book;
 pub mod controls;
 pub mod data;
 pub mod editor;
+pub mod export;
 pub use f2_draw::fx;
 pub mod gameplay;
 pub mod icon;

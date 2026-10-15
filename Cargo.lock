@@ -846,6 +846,13 @@ name = "f2-net"
 version = "0.1.0"
 
 [[package]]
+name = "f2-package"
+version = "0.1.0"
+dependencies = [
+ "png 0.18.1",
+]
+
+[[package]]
 name = "f2-parity"
 version = "0.1.0"
 dependencies = [
@@ -981,8 +988,10 @@ dependencies = [
  "f2-modkit",
  "f2-mods",
  "f2-net",
+ "f2-package",
  "f2-platform",
  "png 0.18.1",
+ "serde_json",
  "wgpu",
  "winresource",
 ]

@@ -57,6 +57,9 @@ f2-fontgen = { path = "../f2-fontgen", optional = true }
 f2-media = { path = "../f2-media" }
 # App icons (icon.rs): the embedded icon and icons made from the player's own artwork.
 png = "=0.18.1"
+# "Export to…" packaging (export.rs, docs/EXPORT.md).
+f2-package = { path = "../f2-package" }
+serde_json.workspace = true
 wgpu = { version = "=30.0.1", optional = true }
 
 # The exe's icon resource (build.rs), built natively on Windows (tools/package/build-windows.sh).

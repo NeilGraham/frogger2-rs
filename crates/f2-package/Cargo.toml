@@ -1,0 +1,10 @@
+[package]
+name = "f2-package"
+description = "Builds ready-to-run packages (Windows, macOS, Linux AppImage, Android APK, PS4 fPKG, PS5 app folder, N64 ROM) from the player's imported game and a prebuilt, data-free runtime."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[dependencies]
+png = "=0.18.1"

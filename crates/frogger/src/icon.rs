@@ -32,11 +32,64 @@ pub fn game_art(data: &Data) -> Option<Rgba> {
     Some(Rgba { width: t.width as u32, height: t.height as u32, pixels: t.to_rgba8() })
 }
 
-/// The centre square of `img` scaled to `size`×`size` (area average).
+/// The centre square of `img` scaled to `size`×`size` (area average when shrinking,
+/// bilinear when growing).
 pub fn square(img: &Rgba, size: u32) -> Rgba {
     let side = img.width.min(img.height);
     let (x0, y0) = ((img.width - side) / 2, (img.height - side) / 2);
+    if size > side {
+        return bilinear(img, [x0, y0, side, side], size);
+    }
     resample(img, [x0, y0, side, side], size, size)
+}
+
+/// `src` square of `img` scaled up to `size`×`size`, bilinear.
+fn bilinear(img: &Rgba, [sx, sy, sw, sh]: [u32; 4], size: u32) -> Rgba {
+    let px = |x: u32, y: u32, c: usize| img.pixels[((y * img.width + x) * 4) as usize + c] as f32;
+    let mut out = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        let fy = ((y as f32 + 0.5) * sh as f32 / size as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+        let (y0, ty) = (fy.floor() as u32, fy.fract());
+        let y1 = (y0 + 1).min(sh - 1);
+        for x in 0..size {
+            let fx = ((x as f32 + 0.5) * sw as f32 / size as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+            let (x0, tx) = (fx.floor() as u32, fx.fract());
+            let x1 = (x0 + 1).min(sw - 1);
+            for c in 0..4 {
+                let top = px(sx + x0, sy + y0, c) * (1.0 - tx) + px(sx + x1, sy + y0, c) * tx;
+                let bot = px(sx + x0, sy + y1, c) * (1.0 - tx) + px(sx + x1, sy + y1, c) * tx;
+                out.push((top * (1.0 - ty) + bot * ty).round() as u8);
+            }
+        }
+    }
+    Rgba { width: size, height: size, pixels: out }
+}
+
+/// `img` with rounded corners (radius `radius` × the side), transparent outside, with a
+/// 4×4-supersampled edge.
+pub fn rounded(img: &Rgba, radius: f32) -> Rgba {
+    let (w, h) = (img.width as f32, img.height as f32);
+    let r = radius * w.min(h);
+    let mut out = img.clone();
+    for y in 0..img.height {
+        for x in 0..img.width {
+            let mut cover = 0u32;
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    let (px, py) = (x as f32 + (sx as f32 + 0.5) / 4.0, y as f32 + (sy as f32 + 0.5) / 4.0);
+                    let cx = px.clamp(r, w - r);
+                    let cy = py.clamp(r, h - r);
+                    let inside = (px - cx).powi(2) + (py - cy).powi(2) <= r * r;
+                    cover += inside as u32;
+                }
+            }
+            if cover < 16 {
+                let i = ((y * img.width + x) * 4 + 3) as usize;
+                out.pixels[i] = (out.pixels[i] as u32 * cover / 16) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// `src` rectangle `[x, y, w, h]` of `img` resampled to `w`×`h` (area average when
@@ -215,6 +268,17 @@ mod tests {
             std::fs::write(dir.join("game-art-adaptive.png"), encode_png(&ad)).unwrap();
             std::fs::write(dir.join("game-art.ico"), ico).unwrap();
         }
+    }
+
+    #[test]
+    fn rounded_corners() {
+        let r = rounded(&solid(100, 100, [9, 9, 9, 255]), 0.2);
+        assert_eq!(r.pixels[3], 0, "corner transparent");
+        assert_eq!(r.pixels[((50 * 100 + 50) * 4 + 3) as usize], 255, "centre opaque");
+        assert_eq!(r.pixels[((50 * 100) * 4 + 3) as usize], 255, "edge middle opaque");
+        let up = square(&solid(48, 32, [1, 2, 3, 255]), 64);
+        assert_eq!((up.width, up.height), (64, 64));
+        assert!(up.pixels.chunks(4).all(|p| p == [1, 2, 3, 255]));
     }
 
     #[test]
