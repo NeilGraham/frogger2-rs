@@ -7,4 +7,8 @@ license = "MIT OR Apache-2.0"
 publish.workspace = true
 
 [dependencies]
+backhand = { version = "0.25.5", default-features = false, features = ["gzip"] }
+editpe = { version = "0.2.4", default-features = false, features = ["std"] }
+plist = "1.10.1"
 png = "=0.18.1"
+ruzstd = "0.9.1"

@@ -257,29 +257,22 @@ impl Data {
         Some(out)
     }
 
-    /// Finds the rendition: `--data <dir>` (a rendition or a data root), else the config's
-    /// data root/rendition, else `$F2_GAME_DIR` / `game-data` (developer checkouts).
+    /// Finds the rendition: `--data <dir>` (a rendition or a data root), else an explicit
+    /// data root (`config.toml` `data_root`, `$F2_DATA_ROOT`), else the game data bundled with
+    /// an exported build ([`bundled_data_dirs`]), else the default data root, else
+    /// `$F2_GAME_DIR` / `game-data` (developer checkouts).
     pub fn locate(cfg: &Config, arg: Option<PathBuf>) -> Result<Data, String> {
         let mut tried = Vec::new();
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        if let Some(a) = arg {
-            candidates.push(a);
-        } else {
-            let root = cfg.data_root();
-            if let Some(r) = &cfg.rendition {
-                candidates.push(root.join(r));
-            }
-            candidates.push(root);
-            if let Some(g) = std::env::var_os("F2_GAME_DIR") {
-                candidates.push(PathBuf::from(g));
-            }
-            candidates.push(PathBuf::from("game-data"));
-        }
-        for c in candidates {
+        let exe = std::env::current_exe().ok();
+        let candidates = candidates(cfg, arg, &|k| std::env::var_os(k).filter(|v| !v.is_empty()), exe.as_deref());
+        for (c, bundled) in candidates {
             if let Some(r) = find_rendition(&c) {
                 return Ok(Data::new(Vfs::with_rendition(&r), r));
             }
-            tried.push(c.display().to_string());
+            // (Absent bundles are only noise: most builds are not exported ones.)
+            if !bundled || c.exists() {
+                tried.push(c.display().to_string());
+            }
         }
         Err(format!(
             "no imported game data found (looked in: {}).\n\
@@ -290,6 +283,56 @@ impl Data {
     }
 }
 
+/// Where an exported build (docs/EXPORT.md) keeps its game data, from the running exe:
+/// Windows/Linux folder `<exe dir>/game-data`, Linux AppImage `$APPDIR/usr/share/game-data`
+/// (`$APPDIR` is set by the AppImage runtime, also with `APPIMAGE_EXTRACT_AND_RUN`), macOS
+/// `<exe dir>/../Resources/game-data` (`Contents/MacOS/frogger`).
+pub fn bundled_data_dirs(env: &dyn Fn(&str) -> Option<std::ffi::OsString>, exe: Option<&Path>) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Some(appdir) = env("APPDIR") {
+        v.push(PathBuf::from(appdir).join("usr/share/game-data"));
+    }
+    if let Some(dir) = exe.and_then(Path::parent) {
+        v.push(dir.join("game-data"));
+        v.push(dir.join("../Resources/game-data"));
+    }
+    v
+}
+
+/// The directories [`Data::locate`] tries, in order (each a rendition or a data root), and
+/// whether each is an exported build's bundle.
+fn candidates(cfg: &Config, arg: Option<PathBuf>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>, exe: Option<&Path>) -> Vec<(PathBuf, bool)> {
+    if let Some(a) = arg {
+        return vec![(a, false)];
+    }
+    let mut v = Vec::new();
+    let explicit = cfg.data_root.clone().or_else(|| env("F2_DATA_ROOT").map(PathBuf::from));
+    if let Some(root) = &explicit {
+        if let Some(r) = &cfg.rendition {
+            v.push((root.join(r), false));
+        }
+        v.push((root.clone(), false));
+    }
+    for b in bundled_data_dirs(env, exe) {
+        if let Some(r) = &cfg.rendition {
+            v.push((b.join(r), true));
+        }
+        v.push((b, true));
+    }
+    if explicit.is_none() {
+        let root = cfg.data_root();
+        if let Some(r) = &cfg.rendition {
+            v.push((root.join(r), false));
+        }
+        v.push((root, false));
+    }
+    if let Some(g) = env("F2_GAME_DIR") {
+        v.push((PathBuf::from(g), false));
+    }
+    v.push((PathBuf::from("game-data"), false));
+    v
+}
+
 fn find_rendition(p: &Path) -> Option<PathBuf> {
     if p.join("game").is_dir() {
         return Some(p.to_path_buf());
@@ -297,4 +340,60 @@ fn find_rendition(p: &Path) -> Option<PathBuf> {
     let mut subs: Vec<PathBuf> = std::fs::read_dir(p).ok()?.flatten().map(|e| e.path()).filter(|d| d.join("game").is_dir()).collect();
     subs.sort();
     subs.into_iter().next()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |k| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(v))
+    }
+
+    fn paths(v: Vec<(PathBuf, bool)>) -> Vec<String> {
+        v.into_iter().map(|(p, b)| format!("{}{}", p.display(), if b { " (bundle)" } else { "" })).collect()
+    }
+
+    #[test]
+    fn explicit_data_wins() {
+        let exe = Path::new("/x/frogger");
+        assert_eq!(paths(candidates(&Config::default(), Some("/d".into()), &env(&[("APPDIR", "/a")]), Some(exe))), ["/d"]);
+        let cfg = Config { data_root: Some("/root".into()), rendition: Some("eu".into()), ..Config::default() };
+        let c = paths(candidates(&cfg, None, &env(&[]), Some(exe)));
+        assert_eq!(&c[..4], ["/root/eu", "/root", "/x/game-data/eu (bundle)", "/x/game-data (bundle)"]);
+        let c = paths(candidates(&Config::default(), None, &env(&[("F2_DATA_ROOT", "/env")]), Some(exe)));
+        assert_eq!(&c[..2], ["/env", "/x/game-data (bundle)"]);
+    }
+
+    #[test]
+    fn bundled_data_before_the_default_root() {
+        let default = f2_platform::paths::default_data_root().display().to_string();
+        // Windows / Linux folder export.
+        let c = paths(candidates(&Config::default(), None, &env(&[]), Some(Path::new("/games/F2/frogger"))));
+        assert_eq!(c, ["/games/F2/game-data (bundle)", "/games/F2/../Resources/game-data (bundle)", default.as_str(), "game-data"]);
+        // AppImage: $APPDIR first.
+        let c = paths(candidates(
+            &Config::default(),
+            None,
+            &env(&[("APPDIR", "/tmp/.mount_X"), ("F2_GAME_DIR", "/g")]),
+            Some(Path::new("/tmp/.mount_X/usr/bin/frogger")),
+        ));
+        assert_eq!(c[0], "/tmp/.mount_X/usr/share/game-data (bundle)");
+        assert_eq!(&c[c.len() - 2..], ["/g", "game-data"]);
+        // macOS bundle.
+        let c = paths(candidates(&Config::default(), None, &env(&[]), Some(Path::new("/Applications/F2.app/Contents/MacOS/frogger"))));
+        assert!(c.contains(&"/Applications/F2.app/Contents/MacOS/../Resources/game-data (bundle)".to_string()));
+        assert!(c.iter().position(|p| p.contains("Resources")) < c.iter().position(|p| *p == default));
+    }
+
+    #[test]
+    fn finds_a_bundled_rendition() {
+        let tmp = std::env::temp_dir().join(format!("f2-bundle-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("game-data/usa/game")).unwrap();
+        let c = candidates(&Config::default(), None, &env(&[]), Some(&tmp.join("frogger")));
+        let found = c.iter().find_map(|(p, _)| find_rendition(p)).unwrap();
+        assert_eq!(found, tmp.join("game-data/usa"));
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
 }

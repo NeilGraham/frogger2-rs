@@ -81,3 +81,130 @@ The desktop packages are the release builds themselves (`tools/package/package.s
 | N64 | the ROM's asset pack (`f2-n64pack`) |
 
 <!-- Per-target sections (runtime layout, packing steps, testing) follow, written with each packer. -->
+
+## Desktop exports (Windows, macOS, Linux)
+
+Each desktop app exports **its own OS** from itself: the runtime is the running app
+(`frogger::export::host_runtime`), so no download is needed. The packers are pure Rust
+(`editpe` for PE resources, `plist` for `Info.plist`, `backhand` + `ruzstd` for squashfs) and
+build on Windows MSVC, macOS and Linux. Every export ships only the rendition's `game/`,
+`music/`, `video/` and `manifest.json` (`f2_package::util::rendition_files`).
+
+### Where an exported build looks for its data
+
+`frogger::data::Data::locate` tries, in order: `--data`; an explicit data root
+(`config.toml` `data_root`, `$F2_DATA_ROOT`); **the bundled data**
+(`frogger::data::bundled_data_dirs`): `$APPDIR/usr/share/game-data` (AppImage),
+`<exe dir>/game-data` (Windows / Linux folder), `<exe dir>/../Resources/game-data` (macOS);
+then the default data root, `$F2_GAME_DIR` and `./game-data`. Each is a rendition or a folder
+of renditions (`config.toml` `rendition` picks one when several exist). An exported build
+therefore runs from its own data on a machine with no import, and uses the player's normal
+install only when they pointed the config at it explicitly.
+
+## Windows
+
+`frogger.exe --export windows [--out DIR]` (`crates/f2-package/src/windows.rs`) writes:
+
+```
+<out>/Frogger 2 - Swampy's Revenge/
+  Frogger 2 - Swampy's Revenge.exe     frogger.exe, rebranded (below)
+  NOTICE, README.md, licenses/         copied from the app's folder when present
+  game-data/<rendition>/               game/, music/, video/, manifest.json
+```
+
+- The exe is the running `frogger.exe` with its resources rewritten by `editpe` (the code is
+  untouched): every `RT_ICON`/`RT_GROUP_ICON` is removed and one icon group is added from the
+  branding icon at 16, 20, 24, 32, 40, 48, 64, 96, 128 px (32-bit DIBs) and 256 px (PNG); the
+  version info's `ProductName` and `FileDescription` become the title (Explorer's "File
+  description", Task Manager, the taskbar's pinned name).
+- The exe is not signed (neither is the release build): SmartScreen may warn the first time.
+- Folder only; zip it to move it.
+
+**Tested** (WSL, cross-built with `tools/package/build-windows.sh`): the Windows `frogger.exe`
+exported itself (`--data <usa> --export windows --out C:\f2-export-test\out`, 466 MB, ~8 s).
+The shell's view of the exported exe, read with a small native check (`ExtractAssociatedIconW`,
+`PrivateExtractIconsW` at 256/48/16 px, `GetFileVersionInfoW`; PowerShell's
+`[System.Drawing.Icon]::ExtractAssociatedIcon` does the same): the rounded game art at every
+size (the source exe shows the recomp's own icon), `ProductName`/`FileDescription` "Frogger 2:
+Swampy's Revenge". Run with `--headless --frames 60 --frontend --screenshot` and no `--data`
+(empty `F2_CONFIG_DIR`) it loaded `<folder>\game-data\usa` and rendered the front end.
+
+## macOS
+
+`frogger --export macos` (`crates/f2-package/src/macos.rs`) copies the running `.app`
+(permissions and symlinks kept) to `<out>/Frogger 2 - Swampy's Revenge.app` and edits it:
+
+- `Contents/Info.plist`: `CFBundleName` and `CFBundleDisplayName` = the title,
+  `CFBundleIdentifier` = `io.github.NeilGraham.SwampysRevengeRecomp.game` (its own identity:
+  separate from the recomp app in Launchpad, privacy prompts and controller permissions),
+  `CFBundleIconFile` = `game-icon` (`CFBundleIconName` removed so the asset catalog, if any,
+  does not win). Other keys (executable, minimum OS, high-DPI, controllers) are kept.
+- `Contents/Resources/game-icon.icns`, written in Rust from the branding icon: PNG entries
+  `ic11` 32, `ic12` 64, `ic07` 128, `ic13`/`ic08` 256, `ic14`/`ic09` 512, `ic10` 1024 (macOS
+  10.7+). The recomp's own `.icns` is removed.
+- `Contents/Resources/game-data/<rendition>/`.
+
+**Signing.** Editing the bundle invalidates its code-signature seal (`_CodeSignature/`).
+On macOS the export re-signs the copy ad hoc (`codesign --force --deep -s -`, part of base
+macOS), which is all an Apple Silicon Mac needs to run it locally. The macOS export only runs
+on macOS (`Target::exportable`), but `f2_package::export` itself works anywhere; a bundle
+produced elsewhere, or one copied to another Mac (downloads and AirDrop add the quarantine
+flag; Gatekeeper then reports it as "damaged"), needs once, in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine "Frogger 2 - Swampy's Revenge.app"
+codesign --force --deep -s - "Frogger 2 - Swampy's Revenge.app"
+```
+
+The executable's own (linker / ad-hoc) signature is untouched by the export, so a copy that
+is not quarantined launches even before re-signing; only Gatekeeper's bundle check fails.
+No pure-Rust signer is used (the only complete one, `apple-codesign`, is far larger than this
+crate).
+
+**Tested**: unit tests on Linux (`Info.plist` round trip with the keys above, `.icns` entry
+table decoded back to PNGs of the right sizes, data layout, executable permissions kept) and
+`cargo check --target aarch64-apple-darwin -p f2-package -p frogger --no-default-features
+--features gpu`. **Not yet run on a Mac** (export, launch, Finder icon, codesign).
+
+## Linux
+
+`frogger --export linux` (`crates/f2-package/src/linux.rs`) has two forms, by what the
+running app is:
+
+**From the AppImage** (`$APPIMAGE`): `<out>/Frogger 2 - Swampy's Revenge.AppImage`, made
+without `appimagetool` or squashfs-tools:
+
+1. The runtime: the bytes of the source AppImage before its squashfs (the ELF's size from its
+   header, as `--appimage-offset` computes it), with the `.upd_info` (update information,
+   which would "update" the export to the plain recomp), `.sha256_sig` and `.sig_key`
+   sections zeroed.
+2. A new squashfs (written with `backhand`, gzip level 6, 128 KiB blocks; the type 2 runtime
+   reads zlib, zstd and xz) containing the source AppImage's AppDir (read with `backhand`;
+   appimagetool's default zstd is decoded with `ruzstd`) except its `.desktop` files,
+   `.DirIcon`, root icon, `usr/share/icons`, `usr/share/applications`, `usr/share/metainfo`
+   and any previous `usr/share/game-data`, plus:
+
+```
+frogger-2-swampys-revenge.desktop          Name=<title>, Icon=frogger-2-swampys-revenge
+frogger-2-swampys-revenge.png, .DirIcon    256 px branding icon
+usr/share/applications/frogger-2-swampys-revenge.desktop
+usr/share/icons/hicolor/{256x256,512x512}/apps/frogger-2-swampys-revenge.png
+usr/share/game-data/<rendition>/           game/, music/, video/, manifest.json
+```
+
+`AppRun`, the binaries and the licenses are kept as they are. The game finds the data through
+`$APPDIR` (set by the runtime when mounted and with `APPIMAGE_EXTRACT_AND_RUN=1`).
+
+**From a folder** (release tarball, `target/release`): `<out>/Frogger 2 - Swampy's Revenge/`
+with `frogger`, `NOTICE`/`README.md`/`licenses/` when present, the `.desktop` file and PNG
+icon above, and `game-data/<rendition>/` (found next to the binary).
+
+**Tested** (WSL2, x86_64): `tools/package/package.sh linux` with appimagetool (continuous,
+zstd) built the recomp AppImage; that AppImage exported itself in ~7 s
+(`--data game-data/usa --export linux`, 437 MB); `unsquashfs -s/-ll` reads the result (gzip,
+the layout above); the export run with `--headless --frames 60 --frontend --screenshot` and
+no `--data` (empty `F2_CONFIG_DIR`, no `F2_DATA_ROOT`) loaded
+`/tmp/.mount_*/usr/share/game-data/usa` via FUSE and, identically, from
+`APPIMAGE_EXTRACT_AND_RUN=1`; `--appimage-updateinformation` is empty. The folder export from
+`target/release/frogger` ran the same way from `<folder>/game-data/usa`. Unit tests build a
+fake AppImage (fake ELF runtime + squashfs AppDir), export it and read it back.
