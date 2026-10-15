@@ -6,10 +6,10 @@
 //! every motion event into touch positions, so gamepad sticks and d-pads that report HAT
 //! axes never reached the game.
 
-use crate::import;
 use crate::menu::{self, Menu};
 use crate::pad::{self, Axes, Gamepad};
 use crate::touch::{Phase, TouchPad};
+use crate::{bundle, import};
 use android_activity::input::{Axis, InputEvent, KeyAction, MotionAction, MotionEvent};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use f2_audio::AudioEngine;
@@ -18,8 +18,11 @@ use f2_platform::config::VideoMode;
 use f2_platform::{Config, Controller, ControllerFamily, KeyboardState, PadButton, Profile, RawPad, WindowMode};
 use frogger::app::{App, Step, WinInfo};
 use frogger::{data, gameplay, present};
+use ndk::asset::AssetManager;
 use ndk::native_window::NativeWindow;
 use raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle};
+use std::ffi::CString;
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -43,18 +46,18 @@ pub fn main(android: AndroidApp) {
         eprintln!("frogger: config: {e} (using defaults)");
         Config::default()
     });
-    let data = match data::Data::locate(&cfg, None) {
-        Ok(mut d) => {
-            eprintln!("frogger: data {}", d.rendition.display());
-            if let Err(e) = d.enable_mods(&cfg.mods_dir(), &cfg.mods.enabled) {
-                eprintln!("frogger: mods: {e}");
-            }
-            Some(d)
-        }
-        Err(e) => {
-            eprintln!("frogger: {e}");
+    // An exported APK carries the game (`assets/game-data/`): unpacked once into
+    // `files/data/<rendition>/` (see bundle.rs), then used like imported data.
+    let assets = android.asset_manager();
+    let bundle = read_bundle(&assets);
+    let data_root = files.join("data");
+    let data = match &bundle {
+        Some(b) if !b.installed(&data_root) => {
+            eprintln!("frogger: bundled game ({}, {} MB) not unpacked yet", b.rendition, b.bytes >> 20);
             None
         }
+        Some(b) => load_data(&cfg, Some(data_root.join(&b.rendition))),
+        None => load_data(&cfg, None),
     };
     let prefs = Prefs::load(&files);
     let mut host = Host {
@@ -63,6 +66,9 @@ pub fn main(android: AndroidApp) {
         prefs,
         files,
         data,
+        bundle,
+        data_root,
+        assets_ptr: assets.ptr().as_ptr() as usize,
         import: None,
         gfx: None,
         app: None,
@@ -181,6 +187,12 @@ struct Host {
     save_path: PathBuf,
     /// Located game data waiting for the GPU (the app is created on the first window).
     data: Option<data::Data>,
+    /// The game bundled in this APK (exported builds), see bundle.rs.
+    bundle: Option<bundle::Index>,
+    /// `files/data`.
+    data_root: PathBuf,
+    /// The activity's `AAssetManager*` (valid for the process).
+    assets_ptr: usize,
     import: Option<import::Screen>,
     gfx: Option<Gfx>,
     app: Option<App>,
@@ -230,6 +242,12 @@ impl Host {
         } else if self.import.is_none() {
             let g = self.gfx.as_ref().unwrap();
             let fmt = g.surface.as_ref().unwrap().config.format;
+            if let Some(b) = &self.bundle {
+                let job = unpack_job(b.clone(), self.data_root.clone(), self.assets_ptr);
+                self.import = Some(import::Screen::unpacking(&g.ctx.device, &g.ctx.queue, fmt, self.files.clone(), job));
+                self.last = Instant::now();
+                return;
+            }
             let ptrs = self.jni_ptrs;
             let picker: Box<dyn Fn()> = Box::new(move || pick_disc_image(ptrs));
             self.import =
@@ -323,7 +341,8 @@ impl Host {
         app.push_steps([Step::Boot]);
         self.app = Some(app);
         self.last = Instant::now();
-        let offer = !self.prefs.game_art_shortcut_offered;
+        // An exported APK's launcher icon already is the game artwork: no shortcut offer.
+        let offer = !self.prefs.game_art_shortcut_offered && self.bundle.is_none();
         if self.use_game_art_icon(offer) && offer {
             self.prefs.game_art_shortcut_offered = true;
             self.prefs.save(&self.files);
@@ -528,7 +547,8 @@ impl Host {
             g.ctx.queue.present(tex);
             if done {
                 self.import = None;
-                match data::Data::locate(&self.cfg, None) {
+                let arg = self.bundle.as_ref().map(|b| self.data_root.join(&b.rendition));
+                match data::Data::locate(&self.cfg, arg) {
                     Ok(d) => self.start_game(d),
                     Err(e) => self.error = Some(e),
                 }
@@ -619,6 +639,64 @@ impl Host {
         }
         false
     }
+}
+
+/// The located game data with the enabled mods; `None` (logged) when there is none.
+fn load_data(cfg: &Config, arg: Option<PathBuf>) -> Option<data::Data> {
+    match data::Data::locate(cfg, arg) {
+        Ok(mut d) => {
+            eprintln!("frogger: data {}", d.rendition.display());
+            if let Err(e) = d.enable_mods(&cfg.mods_dir(), &cfg.mods.enabled) {
+                eprintln!("frogger: mods: {e}");
+            }
+            Some(d)
+        }
+        Err(e) => {
+            eprintln!("frogger: {e}");
+            None
+        }
+    }
+}
+
+/// The bundle index of an exported APK (`assets/game-data/bundle.json`), if any.
+fn read_bundle(assets: &AssetManager) -> Option<bundle::Index> {
+    let mut a = assets.open(&CString::new(bundle::INDEX).unwrap())?;
+    let mut text = String::new();
+    if let Err(e) = a.read_to_string(&mut text) {
+        eprintln!("frogger: {}: {e}", bundle::INDEX);
+        return None;
+    }
+    match bundle::Index::parse(&text) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            eprintln!("frogger: {e}");
+            None
+        }
+    }
+}
+
+/// The worker that unpacks the bundled game, reading the APK's assets.
+fn unpack_job(b: bundle::Index, data_root: PathBuf, assets_ptr: usize) -> Box<dyn FnOnce(&dyn Fn(String, f32)) -> Result<(), String> + Send> {
+    Box::new(move |report| {
+        // SAFETY: the activity's AAssetManager lives as long as the process; AAssetManager
+        // is thread-safe.
+        let am = unsafe { AssetManager::from_ptr(std::ptr::NonNull::new(assets_ptr as *mut _).expect("asset manager")) };
+        let open = |p: &str| -> std::io::Result<Box<dyn Read>> {
+            let c = CString::new(p).map_err(std::io::Error::other)?;
+            am.open(&c).map(|a| Box::new(a) as Box<dyn Read>).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
+        };
+        let started = Instant::now();
+        let mut shown = 0.0f32;
+        let r = b.unpack(&data_root, &open, &mut |done, total, rel| {
+            let f = done as f32 / total.max(1) as f32;
+            if f - shown >= 0.002 || done == total {
+                shown = f;
+                report(format!("{rel}: {} of {} MB", done >> 20, total >> 20), f);
+            }
+        });
+        eprintln!("frogger: unpacked the bundled game in {:.1} s: {r:?}", started.elapsed().as_secs_f32());
+        r
+    })
 }
 
 /// Opens the system file picker (`MainActivity.pickDiscImage`); the activity copies the

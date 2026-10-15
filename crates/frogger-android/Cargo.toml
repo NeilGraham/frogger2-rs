@@ -19,6 +19,8 @@ f2-platform = { path = "../f2-platform", default-features = false }
 f2-audio = { path = "../f2-audio", default-features = false }
 f2-import = { path = "../f2-import" }
 wgpu = "=30.0.1"
+# The bundle index of exported APKs (bundle.rs).
+serde_json.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 # The activity glue and main loop (the same version winit uses on the desktop lockfile).

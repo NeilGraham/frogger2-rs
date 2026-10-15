@@ -129,7 +129,8 @@ pub fn export(data: &Data, target: Target, runtime_path: Option<&Path>, out_dir:
     let branding = branding(data)?;
     log(&format!("Exporting \"{}\" for {}", branding.title, target.name()));
     let runtime = runtime(target, runtime_path, log)?;
-    let job = f2_package::Job { target, rendition: &data.rendition, runtime: &runtime, out_dir, branding: &branding, log };
+    let keys = f2_platform::paths::config_dir().join("keys");
+    let job = f2_package::Job { target, rendition: &data.rendition, runtime: &runtime, out_dir, branding: &branding, keys_dir: Some(&keys), log };
     f2_package::export(&job)
 }
 
