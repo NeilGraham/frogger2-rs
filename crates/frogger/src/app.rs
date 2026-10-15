@@ -1,6 +1,7 @@
 //! The game host: fixed 60 Hz simulation, effect dispatch (audio, video, saves) and
 //! interpolated rendering (`docs/architecture.md` §3).
 
+mod export_ui;
 mod settings;
 
 pub use settings::{nav as settings_nav, FpsMeter, Page as SettingsPage, SettingsUi, WinInfo};
@@ -196,6 +197,9 @@ pub struct App {
     pub settings: Option<SettingsUi>,
     /// Adds the "Settings" items to the game's menus (`GameOptions::settings_menu`).
     pub settings_menu: bool,
+    /// Settings → Export state (export_ui.rs).
+    #[cfg_attr(not(feature = "export"), allow(dead_code))]
+    exports: export_ui::ExportUi,
     /// Rendered frame rate.
     pub fps: FpsMeter,
     /// Pad bits masked from player 1 until released (after closing the settings screen).
@@ -358,6 +362,7 @@ impl App {
             win: WinInfo { size: (640, 480), ..Default::default() },
             settings: None,
             settings_menu: true,
+            exports: Default::default(),
             fps: FpsMeter::default(),
             pad_hold: 0,
             focused: true,

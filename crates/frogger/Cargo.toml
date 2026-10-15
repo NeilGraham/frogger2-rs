@@ -22,7 +22,9 @@ required-features = ["ps5-vulkan"]
 default = ["desktop", "audio-device"]
 # Window, GPU and gamepads (winit, wgpu, gilrs): the desktop executable. Without it the
 # library builds for hosts that bring their own platform layer and use the CPU renderer.
-desktop = ["gpu", "f2-platform/window", "f2-platform/gamepad", "fontgen"]
+desktop = ["gpu", "f2-platform/window", "f2-platform/gamepad", "fontgen", "export"]
+# "Export to…" other platforms (export.rs, docs/EXPORT.md): desktop builds only.
+export = ["dep:f2-package"]
 # Builds the modern fonts on first run when the typeface is found (desktop; Android finds
 # it only in `<data>/fonts`).
 fontgen = ["dep:f2-fontgen"]
@@ -58,7 +60,7 @@ f2-media = { path = "../f2-media" }
 # App icons (icon.rs): the embedded icon and icons made from the player's own artwork.
 png = "=0.18.1"
 # "Export to…" packaging (export.rs, docs/EXPORT.md).
-f2-package = { path = "../f2-package" }
+f2-package = { path = "../f2-package", optional = true }
 serde_json.workspace = true
 wgpu = { version = "=30.0.1", optional = true }
 

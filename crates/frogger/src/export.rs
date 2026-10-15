@@ -50,14 +50,21 @@ pub fn subtitle(data: &Data) -> Option<String> {
     table.get("STR_STORYMODE", lang).or_else(|| table.get("STR_STORYMODE", Language::Uk)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// The full title from the player's disc ("Frogger 2: Swampy's Revenge"); errors when the
+/// import predates `disc_app_name`.
+pub fn title(data: &Data) -> Result<String, String> {
+    let short = short_title(&data.rendition).ok_or("the imported game has no disc product name (DATA.TAG): re-import your Frogger 2 disc with this version")?;
+    Ok(match subtitle(data) {
+        Some(sub) => format!("{short}: {sub}"),
+        None => short,
+    })
+}
+
 /// Name and icon for exported builds, from the player's disc. Errors when the data lacks
 /// what is needed (re-import the disc with this version to record its product name).
 pub fn branding(data: &Data) -> Result<Branding, String> {
-    let short = short_title(&data.rendition).ok_or("the imported game has no disc product name (DATA.TAG): re-import your Frogger 2 disc with this version")?;
-    let title = match subtitle(data) {
-        Some(sub) => format!("{short}: {sub}"),
-        None => short.clone(),
-    };
+    let title = title(data)?;
+    let short = short_title(&data.rendition).unwrap_or_else(|| title.clone());
     let art = icon::game_art(data).ok_or_else(|| format!("{} not found in the imported game", icon::GAME_ART))?;
     let square = icon::square(&art, 1024);
     let rounded = icon::rounded(&square, 0.18);

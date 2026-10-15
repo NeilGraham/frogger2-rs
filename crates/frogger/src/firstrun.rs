@@ -643,6 +643,7 @@ mod tests {
             videos: vec![],
             stale_files: vec![],
             files: Default::default(),
+            disc_app_name: Some("Frogger2".into()),
         });
         m.music_note = Some(f2_import::NO_AUDIO_NOTE.into());
         s.status = Status::Done(Box::new(m));

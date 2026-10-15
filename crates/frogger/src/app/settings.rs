@@ -119,10 +119,15 @@ pub enum Page {
     Audio,
     Controls,
     Gameplay,
+    /// "Export to…" other platforms (desktop builds; docs/EXPORT.md).
+    Export,
 }
 
+/// Number of settings pages.
+const PAGES: usize = 5;
+
 impl Page {
-    pub const ALL: [Page; 4] = [Page::Display, Page::Audio, Page::Controls, Page::Gameplay];
+    pub const ALL: [Page; PAGES] = [Page::Display, Page::Audio, Page::Controls, Page::Gameplay, Page::Export];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -130,6 +135,7 @@ impl Page {
             Page::Audio => "Audio",
             Page::Controls => "Controls",
             Page::Gameplay => "Gameplay",
+            Page::Export => "Export",
         }
     }
 
@@ -188,6 +194,10 @@ pub enum Id {
     MapPlayer,
     MapAction(u16),
     MapResetAll,
+    // export page
+    /// Export for `Target::exportable()[n]`.
+    Export(u8),
+    OpenExports,
 }
 
 /// A row as drawn.
@@ -290,8 +300,8 @@ pub mod nav {
 pub struct SettingsUi {
     pub page: usize,
     /// Selected row per page (`None` = the page tabs).
-    pub row: [Option<usize>; 4],
-    pub scroll: [usize; 4],
+    pub row: [Option<usize>; PAGES],
+    pub scroll: [usize; PAGES],
     pub map: Option<MapPage>,
     /// Pad bits held when the screen opened / last frame (debounce).
     prev: u16,
@@ -312,7 +322,17 @@ const ROW_H: f32 = 255.0;
 impl SettingsUi {
     pub fn new(page: Page, held: u16) -> SettingsUi {
         let p = Page::ALL.iter().position(|&x| x == page).unwrap_or(0);
-        SettingsUi { page: p, row: [Some(0); 4], scroll: [0; 4], map: None, prev: held, fresh: true, repeat: None, t0: Instant::now(), msg: String::new() }
+        SettingsUi {
+            page: p,
+            row: [Some(0); PAGES],
+            scroll: [0; PAGES],
+            map: None,
+            prev: held,
+            fresh: true,
+            repeat: None,
+            t0: Instant::now(),
+            msg: String::new(),
+        }
     }
 
     pub fn page(&self) -> Page {
@@ -558,7 +578,7 @@ impl App {
         let mut moved = false;
         if ev & (nav::PREV | nav::NEXT) != 0 || (ui.row[p].is_none() && ev & (nav::LEFT | nav::RIGHT) != 0) {
             let d = if ev & (nav::PREV | nav::LEFT) != 0 { -1 } else { 1 };
-            ui.page = (p as i32 + d).rem_euclid(4) as usize;
+            ui.page = (p as i32 + d).rem_euclid(PAGES as i32) as usize;
             self.menu_sfx(false);
             return;
         }
@@ -837,6 +857,7 @@ impl App {
                 );
                 add(Id::ResetControls, "Reset to defaults", String::new(), "Restores all key bindings and controller settings.", true, false);
             }
+            Page::Export => self.export_items(&mut add),
             Page::Gameplay => {
                 let g = &self.gameplay;
                 add(Id::InfiniteLives, "Infinite lives", on_off(g.infinite_lives), &gate(enh, "Assist: dying never costs a life."), enh, true);
@@ -1100,6 +1121,18 @@ impl App {
                 self.apply_game_options();
             }
             Id::MapPlayer | Id::MapAction(_) | Id::MapResetAll => return false,
+            Id::Export(n) => {
+                if !ok {
+                    return false;
+                }
+                self.start_export(n as usize);
+            }
+            Id::OpenExports => {
+                if !ok {
+                    return false;
+                }
+                self.open_exports_folder();
+            }
         }
         true
     }
@@ -1374,7 +1407,7 @@ impl App {
         if map.is_none() {
             let on_tabs = ui.row[ui.page].is_none();
             for (i, p) in Page::ALL.iter().enumerate() {
-                let x = 2048.0 + (i as f32 - 1.5) * 880.0;
+                let x = 2048.0 + (i as f32 - (PAGES as f32 - 1.0) / 2.0) * 740.0;
                 let col = if i == ui.page {
                     if on_tabs {
                         hi

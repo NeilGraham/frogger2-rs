@@ -1,5 +1,6 @@
-//! Desktop app icon: our own icon until game data exists, then a square crop of the player's
-//! own game artwork (`frogger::icon`). The window/taskbar icon is set at run time; the
+//! Desktop app icon and title: ours until game data exists, then a rounded square crop of the
+//! player's own game artwork (`frogger::icon`) and the title from their disc
+//! (`frogger::export::title`). The window/taskbar icon is set at run time; the
 //! artwork icon is also written to `<config>/icons/` (`game-art.png`, `game-art.ico`) and, on
 //! Windows, the game's shortcuts (Desktop, Start menu, install folder) are pointed at it.
 
@@ -25,17 +26,22 @@ pub fn use_game_art(window: &Window, data: &data::Data) {
         set_default(window);
         return;
     };
-    set(window, &icon::square(&art, 64));
+    let icon_at = |size: u32| icon::rounded(&icon::square(&art, size), 0.18);
+    set(window, &icon_at(64));
+    // The window title from the player's disc ("Frogger 2: Swampy's Revenge").
+    if let Ok(title) = frogger::export::title(data) {
+        window.set_title(&title);
+    }
     let dir = f2_platform::paths::config_dir().join("icons");
     let ico = dir.join("game-art.ico");
-    let bytes = icon::encode_ico(&[16, 24, 32, 48, 64, 128, 256].map(|s| icon::square(&art, s)));
+    let bytes = icon::encode_ico(&[16, 24, 32, 48, 64, 128, 256].map(icon_at));
     // Written once per change (the import is the only thing that changes it).
     if std::fs::read(&ico).is_ok_and(|b| b == bytes) {
         return;
     }
     let res = std::fs::create_dir_all(&dir)
         .and_then(|_| std::fs::write(&ico, &bytes))
-        .and_then(|_| std::fs::write(dir.join("game-art.png"), icon::encode_png(&icon::square(&art, 256))));
+        .and_then(|_| std::fs::write(dir.join("game-art.png"), icon::encode_png(&icon_at(256))));
     match res {
         Ok(()) => {
             eprintln!("frogger: app icon from your game artwork: {}", ico.display());
