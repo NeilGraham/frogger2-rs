@@ -54,7 +54,7 @@ Imports made before `disc_app_name` existed must be re-imported (the export says
   builds and runs on Windows, macOS and Linux.
 - `crates/frogger/src/export.rs`: branding, runtime lookup (`--runtime`, the running app for
   its own OS, else `<config>/runtimes/<asset>` downloaded with `curl` from
-  `https://github.com/NeilGraham/frogger-2-recomp/releases/download/v<version>/`, override
+  `https://github.com/NeilGraham/swampys-revenge-recomp/releases/download/v<version>/`, override
   with `F2_RUNTIME_BASE_URL`), the `--export` command.
 
 ## Runtimes
