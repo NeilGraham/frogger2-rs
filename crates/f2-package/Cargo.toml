@@ -7,6 +7,9 @@ license = "MIT OR Apache-2.0"
 publish.workspace = true
 
 [dependencies]
+backhand = { version = "0.25.5", default-features = false, features = ["gzip"] }
+editpe = { version = "0.2.4", default-features = false, features = ["std"] }
+plist = "1.10.1"
 png = "=0.18.1"
 # Android: reading the shell APK (inflate), zip CRCs, APK Signature Scheme v2 (ECDSA P-256 /
 # SHA-256). All pure Rust (no C / asm builds), so exports work on Windows, macOS and Linux.
@@ -16,3 +19,4 @@ sha2 = { version = "0.10", default-features = false, features = ["std"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde_json.workspace = true
+ruzstd = "0.9.1"
