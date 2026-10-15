@@ -191,11 +191,63 @@ Each archive carries `NOTICE`, the four license texts (`licenses/`) and no game 
 - **Desktop entry / icon**: `packaging/swampys-revenge-recomp.desktop`, `packaging/icon/` (SVG master, PNG sizes, `.ico`; regenerate with `tools/icon/build-icons.sh`, needs `cargo install resvg`)
   (placeholder art, not from the game).
 
-CI (`.github/workflows/ci.yml`): `lint` (fmt + clippy), `test` (build + test on ubuntu, windows,
-macos-14; no game data), `cross-check` (macOS targets and the no_std core — `f2-math`, `f2-formats`, `f2-game`,
-`f2-engine` without default features — from Linux), `nostd-mips` (the same core on big-endian
-MIPS with nightly `-Zbuild-std=core,alloc`, for the N64 port), and a
-manual `release` job that runs these scripts per OS and uploads the archives.
+`F2_PKG_VERSION=0.1.0` names the archives with that version instead of `<version>-<commit>`;
+`F2_MACOS_TARGET=x86_64-apple-darwin` packages one non-host macOS architecture. Release
+builds are made by CI: see the next section.
+
+## Releases / CI
+
+**CI** (`.github/workflows/ci.yml`, every push and pull request; no game data): `lint` (fmt +
+clippy), `test` (build + test on ubuntu, windows, macos-14), `cross-check` (macOS targets and the
+no_std core — `f2-math`, `f2-formats`, `f2-game`, `f2-engine` without default features — from
+Linux), `nostd-mips` (the same core on big-endian MIPS with nightly `-Zbuild-std=core,alloc`,
+for the N64 port), `android-check` (`cargo ndk check -p frogger-android` for arm64).
+
+**Release** (`.github/workflows/release.yml`). To cut one:
+
+1. Set `[workspace.package] version` in `Cargo.toml` (e.g. `0.2.0`), commit, push.
+2. `git tag v0.2.0 && git push origin v0.2.0`. The workflow fails at once if the tag and the
+   Cargo version differ (the desktop app downloads the console runtimes of its own version).
+3. When every job passes, the `release` job creates the GitHub release for the tag with all
+   assets, `SHA256SUMS.txt` and notes saying that no game data is included and that exported
+   builds must not be shared. A version with a `-` (`0.2.0-rc.1`) is marked pre-release.
+   Re-running a failed workflow re-uploads (`--clobber`) to the existing release.
+
+Running the workflow by hand (Actions → release → Run workflow, any branch) is a **dry run**:
+the same builds at the Cargo version, uploaded as workflow artifacts (`release-*`), no release.
+
+| Job | Runner | Asset |
+|---|---|---|
+| `windows` | windows-latest (MSVC) | `swampys-revenge-recomp-<v>-windows-x86_64.zip` (exe icon via `crates/frogger/build.rs`) |
+| `macos` | macos-14 (x86_64 cross-built) | `swampys-revenge-recomp-<v>-macos-arm64.zip`, `-macos-x86_64.zip` (ad-hoc signed `.app`) |
+| `linux` | ubuntu-22.04 (glibc 2.35 baseline) | `SwampysRevengeRecomp-<v>-x86_64.AppImage`, `swampys-revenge-recomp-<v>-linux-x86_64.tar.gz` |
+| `android` | ubuntu-24.04 | `swampys-revenge-recomp-<v>-android.apk` (shell app, `tools/android/build-apk.sh`) |
+| `runtime` (ps4, ps5, n64) | ubuntu-24.04 | `runtime-<target>-<v>.zip` from `tools/runtime/build-<target>.sh OUT_DIR VERSION` |
+| `release` | ubuntu-latest | checks every asset is there and has no game data, publishes |
+
+Toolchains are pinned in `.github/workflows/toolchains/*.sh` (they install into `~/opt`, the
+build scripts' defaults, and are cached between runs; run one with another `HOME` to try it
+locally): OpenOrbis PS4 toolchain v0.5.4 + libssl 1.1.1f (PkgTool.Core); ps5-payload-sdk
+v0.43, PS5_Vulkan `252bf91`, bc7enc_rdo `b943862`; libdragon `39d0d60` with the 3P/3A patches
+on libdragon's GCC 16.2 toolchain; Rust `nightly-2026-10-11` (what `cargo +nightly`
+resolves to); Android cmdline-tools 12.0, platform 35, build-tools 35.0.0, NDK
+27.2.12479018, cargo-ndk 4.1.2, JDK 17; appimagetool 1.9.0. Downloads are checked against
+their SHA-256. libdragon publishes its toolchain only as a rolling release: when it is
+replaced, `toolchains/n64.sh` fails on the hash; re-test and update the pin.
+
+**Secrets** (Settings → Secrets and variables → Actions), all optional:
+
+| Secret | Use |
+|---|---|
+| `ANDROID_KEYSTORE_B64` | release keystore for the APK, base64 (`base64 -w0 release.keystore`). One key in it; its key password the same as the store password. |
+| `ANDROID_KEYSTORE_PASS` | that password (`F2_ANDROID_KS_PASS`) |
+
+Without them the APK is signed with a debug key made for that run, so an installed copy cannot
+be updated in place by the next release (Android refuses a different signature): set them before
+the first public release and keep the keystore safe; it can never change afterwards.
+Create one with
+`keytool -genkeypair -keystore release.keystore -alias swampys-revenge-recomp -keyalg RSA -keysize 4096 -validity 10000`.
+The release itself needs no secret (the workflow's `GITHUB_TOKEN` with `contents: write`).
 
 ## WSL2 notes
 

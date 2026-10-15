@@ -1,0 +1,342 @@
+# Release builds of Swampy's Revenge Recomp (docs/BUILDING.md "Releases / CI").
+#
+# A pushed tag v<version> builds every release asset and publishes the GitHub release for it;
+# the tag must match [workspace.package] version in Cargo.toml, because the desktop app
+# downloads the runtimes of its own version (docs/EXPORT.md). Run it by hand
+# (workflow_dispatch) for a dry run: the same builds, uploaded as workflow artifacts, no release.
+#
+# Assets (names are a contract with crates/f2-package and crates/frogger/src/export.rs):
+#   swampys-revenge-recomp-<v>-windows-x86_64.zip      Windows (MSVC)
+#   swampys-revenge-recomp-<v>-macos-arm64.zip         macOS .app, Apple silicon
+#   swampys-revenge-recomp-<v>-macos-x86_64.zip        macOS .app, Intel
+#   SwampysRevengeRecomp-<v>-x86_64.AppImage           Linux (+ the plain -linux-x86_64.tar.gz)
+#   swampys-revenge-recomp-<v>-android.apk             Android shell app
+#   runtime-ps4-<v>.zip, runtime-ps5-<v>.zip, runtime-n64-<v>.zip   console runtimes
+#
+# Nothing here ever has game data: CI has none, and the release job checks the archives.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # tools/memcap.sh (cargo runner, console build scripts) guards a shared WSL VM; runners are
+  # disposable VMs.
+  MEMCAP: "off"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          cargo_ver="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          [ -n "$cargo_ver" ] || { echo "::error::no [workspace.package] version in Cargo.toml"; exit 1; }
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
+            ver="${REF_NAME#v}"
+            if [ "$ver" != "$cargo_ver" ]; then
+              echo "::error::tag $REF_NAME does not match Cargo.toml [workspace.package] version $cargo_ver (bump it, commit, tag again)"
+              exit 1
+            fi
+            publish=true
+          else
+            ver="$cargo_ver"
+            publish=false
+            echo "::notice::dry run (no tag): building version $ver, artifacts only, no release"
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      F2_PKG_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      # The exe icon and version info come from crates/frogger/build.rs (winresource, rc.exe).
+      - run: cargo build --release -p frogger -p f2-import -p f2-viewer
+      - shell: bash
+        env:
+          F2_WIN_BIN_DIR: target/release
+        run: tools/package/package.sh windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-windows-x86_64.zip
+          if-no-files-found: error
+
+  # Both architectures from one Apple silicon runner (x86_64 is a cross build); each .app is
+  # ad-hoc signed (tools/package/README-macos.md) and zipped with ditto.
+  macos:
+    needs: version
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      F2_PKG_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: arm64
+        env:
+          F2_MACOS_TARGET: aarch64-apple-darwin
+        run: tools/package/package.sh macos
+      - name: x86_64
+        env:
+          F2_MACOS_TARGET: x86_64-apple-darwin
+        run: tools/package/package.sh macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-macos-*.zip
+          if-no-files-found: error
+
+  # ubuntu-22.04 (glibc 2.35): the binaries and the AppImage run on older distributions too.
+  linux:
+    needs: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      F2_PKG_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: Dependencies and appimagetool 1.9.0
+        run: |
+          # desktop-file-validate: appimagetool refuses to run without it.
+          sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev file desktop-file-utils
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --retry 3 -o "$HOME/.local/bin/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          echo "46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1  $HOME/.local/bin/appimagetool" | sha256sum -c
+          chmod +x "$HOME/.local/bin/appimagetool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # No FUSE on hosted runners: appimagetool extracts itself.
+      - env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: tools/package/package.sh linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            target/package/SwampysRevengeRecomp-${{ needs.version.outputs.version }}-x86_64.AppImage
+            target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  # The Android shell app (no game data; the export bundles the player's data into a copy).
+  # Signed with the release keystore from the repository secrets when they are set, else with
+  # a debug key generated for this run (then installs of one release cannot be updated in
+  # place by the next: set the secrets for real releases; docs/BUILDING.md).
+  android:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-android
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/android-sdk
+            ~/opt/dl
+          key: android-sdk-${{ hashFiles('.github/workflows/toolchains/android.sh') }}
+      - name: Android SDK 35, NDK 27.2.12479018, cargo-ndk
+        run: .github/workflows/toolchains/android.sh
+      - name: Release keystore (optional)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "F2_ANDROID_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "signing with the release keystore (ANDROID_KEYSTORE_B64)"
+          else
+            echo "::warning::ANDROID_KEYSTORE_B64 is not set: the APK is signed with a throwaway debug key"
+          fi
+      - name: Build the APK
+        env:
+          F2_ANDROID_KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          tools/android/build-apk.sh
+          mkdir -p dist
+          cp target/android/swampys-revenge-recomp.apk "dist/swampys-revenge-recomp-$VERSION-android.apk"
+          rm -f "$RUNNER_TEMP/release.keystore"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: dist/swampys-revenge-recomp-${{ needs.version.outputs.version }}-android.apk
+          if-no-files-found: error
+
+  # Console runtimes for the desktop app's "Export to..." (docs/EXPORT.md "Runtimes"):
+  # tools/runtime/build-<target>.sh OUT_DIR VERSION writes OUT_DIR/runtime-<target>-<v>.zip.
+  # Toolchains: .github/workflows/toolchains/<target>.sh (pinned, cached in ~/opt) and the
+  # pinned nightly (toolchains/nightly.sh) that `cargo +nightly` resolves to.
+  runtime:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ps4, ps5, n64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang-18 lld-18 llvm-18 cmake ffmpeg python3 wget unzip
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Pinned nightly with rust-src
+        run: .github/workflows/toolchains/nightly.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: runtime-${{ matrix.target }}
+          cache-all-crates: true
+      - uses: actions/cache@v4
+        with:
+          path: ~/opt
+          key: tc-${{ matrix.target }}-${{ hashFiles(format('.github/workflows/toolchains/{0}.sh', matrix.target), '.github/workflows/toolchains/lib.sh', 'tools/n64/libdragon-3*') }}
+      - name: ${{ matrix.target }} toolchain
+        run: .github/workflows/toolchains/${{ matrix.target }}.sh
+      - name: Build runtime-${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          script="tools/runtime/build-$TARGET.sh"
+          [ -x "$script" ] || { echo "::error::$script is missing or not executable"; exit 1; }
+          "$script" "$PWD/dist" "$VERSION"
+          asset="dist/runtime-$TARGET-$VERSION.zip"
+          [ -f "$asset" ] || { echo "::error::$script did not write $asset"; ls -la dist || true; exit 1; }
+          unzip -l "$asset"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-runtime-${{ matrix.target }}
+          path: dist/runtime-${{ matrix.target }}-${{ needs.version.outputs.version }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: [version, windows, macos, linux, android, runtime]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Check the assets
+        env:
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          cd dist
+          expected=(
+            "swampys-revenge-recomp-$V-windows-x86_64.zip"
+            "swampys-revenge-recomp-$V-macos-arm64.zip"
+            "swampys-revenge-recomp-$V-macos-x86_64.zip"
+            "SwampysRevengeRecomp-$V-x86_64.AppImage"
+            "swampys-revenge-recomp-$V-linux-x86_64.tar.gz"
+            "swampys-revenge-recomp-$V-android.apk"
+            "runtime-ps4-$V.zip" "runtime-ps5-$V.zip" "runtime-n64-$V.zip"
+          )
+          for f in "${expected[@]}"; do [ -f "$f" ] || { echo "::error::missing asset $f"; exit 1; }; done
+          ls -la
+          # No game data: no imported rendition folder and none of the game's own archives
+          # (.fla) or videos (.bik) in any of them.
+          bad='(^|/)game-data/|\.(fla|bik)$'
+          for f in *.zip *.apk; do
+            if unzip -Z1 "$f" | grep -Ei "$bad"; then echo "::error::$f looks like it contains game data"; exit 1; fi
+          done
+          if tar -tzf "swampys-revenge-recomp-$V-linux-x86_64.tar.gz" | grep -Ei "$bad"; then
+            echo "::error::the Linux tarball looks like it contains game data"; exit 1
+          fi
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Release notes
+        env:
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          Swampy's Revenge Recomp $V: a recompiled engine for *Frogger 2: Swampy's Revenge* (PC, 2000).
+
+          **No game data is included.** Every download here is built from source by CI and
+          contains no files from the game. You need your own copy of the game (the original
+          disc or an image of it): the app imports it on first start (\`f2-import\` on the
+          command line).
+
+          | Download | For |
+          |---|---|
+          | \`swampys-revenge-recomp-$V-windows-x86_64.zip\` | Windows 10/11 (x86_64) |
+          | \`swampys-revenge-recomp-$V-macos-arm64.zip\` / \`-macos-x86_64.zip\` | macOS 11+ (Apple silicon / Intel; ad-hoc signed: right-click > Open the first time) |
+          | \`SwampysRevengeRecomp-$V-x86_64.AppImage\` | Linux (x86_64; also as \`-linux-x86_64.tar.gz\`) |
+          | \`swampys-revenge-recomp-$V-android.apk\` | Android 8+ (arm64, x86_64): import on the device |
+          | \`runtime-ps4-$V.zip\`, \`runtime-ps5-$V.zip\`, \`runtime-n64-$V.zip\` | not to be installed by hand: the desktop app's **Export to...** downloads them |
+
+          **Exported builds must not be shared.** "Export to..." (\`frogger --export\`) bundles
+          *your* imported game data into the build it makes (APK, PS4/PS5 package, N64 ROM,
+          desktop folder). Those builds are for your own devices only; do not upload or
+          distribute them.
+
+          Checksums: \`SHA256SUMS.txt\`.
+          EOF
+          sed -i 's/^          //' notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          pre=()
+          case "$V" in *-*) pre=(--prerelease) ;; esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "Swampy's Revenge Recomp $V" \
+              --notes-file notes.md "${pre[@]}"
+          fi

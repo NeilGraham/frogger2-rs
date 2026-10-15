@@ -3,16 +3,18 @@
 #   tools/package/package.sh linux     # tar.gz (+ AppImage if appimagetool is found)
 #   tools/package/package.sh windows   # zip (cross-builds via tools/package/build-windows.sh unless
 #                                      #      F2_WIN_BIN_DIR points at prebuilt .exe files)
-#   tools/package/package.sh macos     # .app bundle + tar.gz (run on macOS; CI: macos-14)
+#   tools/package/package.sh macos     # .app bundle in a zip + tar.gz (run on macOS; CI: macos-14)
 #   tools/package/package.sh all       # linux + windows (when cargo.exe exists)
 # Set F2_SKIP_BUILD=1 to package already-built binaries. No game data is ever included.
+# F2_PKG_VERSION=0.1.0 names the archives with that version instead of <version>-<commit>
+# (the release workflow, .github/workflows/release.yml, passes the tag's version).
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 OUT="$REPO/target/package"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
-VER="$VERSION-$SHA"
+VER="${F2_PKG_VERSION:-$VERSION-$SHA}"
 BINS=(frogger f2-import f2-viewer)
 TGT="${CARGO_TARGET_DIR:-target}"
 mkdir -p "$OUT"
@@ -82,19 +84,29 @@ pkg_windows() {
   rm -rf "$st"; mkdir -p "$st/$name"
   for b in "${BINS[@]}"; do cp "$bindir/$b.exe" "$st/$name/"; done
   stage_docs "$st/$name"
-  rm -f "$OUT/$name.zip"
+  zip_dir "$st" "$name"
+}
+
+# zip_dir PARENT NAME: $OUT/NAME.zip holding the folder PARENT/NAME.
+zip_dir() {
+  rm -f "$OUT/$2.zip"
   if command -v zip >/dev/null; then
-    (cd "$st" && zip -qr "$OUT/$name.zip" "$name")
+    (cd "$1" && zip -qr "$OUT/$2.zip" "$2")
+  elif command -v 7z >/dev/null; then
+    # Git Bash on Windows (CI runners) has no zip(1) but 7-Zip.
+    (cd "$1" && 7z a -tzip -bso0 -bsp0 "$OUT/$2.zip" "$2")
   else
     # no zip(1): use Python's stdlib (ZIP_DEFLATED)
-    python3 -I -c 'import shutil,sys;shutil.make_archive(sys.argv[1],"zip",sys.argv[2],sys.argv[3])' \
-      "$OUT/$name" "$st" "$name"
+    local py; py="$(command -v python3 || command -v python)"
+    "$py" -I -c 'import shutil,sys;shutil.make_archive(sys.argv[1],"zip",sys.argv[2],sys.argv[3])' \
+      "$OUT/$2" "$1" "$2"
   fi
-  echo "wrote $OUT/$name.zip"
+  echo "wrote $OUT/$2.zip"
 }
 
 # macOS .app bundle (run on macOS; see tools/package/README-macos.md).
 #   F2_MACOS_UNIVERSAL=1  build aarch64 + x86_64 and lipo them into universal binaries
+#   F2_MACOS_TARGET=x86_64-apple-darwin  one architecture other than the host's (cross-build)
 #   F2_CODESIGN_ID="Developer ID Application: ..."  sign with a real identity (default: ad-hoc "-")
 pkg_macos() {
   local arch bindir="$TGT/release"
@@ -109,6 +121,10 @@ pkg_macos() {
     for b in "${BINS[@]}"; do
       lipo -create -output "$bindir/$b" "$TGT/aarch64-apple-darwin/release/$b" "$TGT/x86_64-apple-darwin/release/$b"
     done
+  elif [[ -n "${F2_MACOS_TARGET:-}" ]]; then
+    bindir="$TGT/$F2_MACOS_TARGET/release"
+    arch="${F2_MACOS_TARGET%%-*}"; [[ "$arch" == aarch64 ]] && arch=arm64
+    [[ -n "${F2_SKIP_BUILD:-}" ]] || cargo build --release --target "$F2_MACOS_TARGET" -p frogger -p f2-import -p f2-viewer
   else
     arch="$(uname -m)"
     [[ -n "${F2_SKIP_BUILD:-}" ]] || cargo build --release -p frogger -p f2-import -p f2-viewer
@@ -166,6 +182,15 @@ PLIST
   fi
   tar -C "$st" -czf "$OUT/$name.tar.gz" "$name"
   echo "wrote $OUT/$name.tar.gz"
+  # The zip (the release asset) with ditto, which keeps the bundle's signature, symlinks and
+  # extended attributes intact.
+  if command -v ditto >/dev/null; then
+    rm -f "$OUT/$name.zip"
+    ditto -c -k --keepParent "$st/$name" "$OUT/$name.zip"
+    echo "wrote $OUT/$name.zip"
+  else
+    zip_dir "$st" "$name"
+  fi
 }
 
 case "${1:-}" in

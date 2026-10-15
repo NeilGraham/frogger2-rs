@@ -15,7 +15,6 @@ env:
 jobs:
   # Formatting and lints once (they are not platform-specific).
   lint:
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -29,7 +28,6 @@ jobs:
 
   # Native build + headless test suite on each desktop OS.
   test:
-    if: github.event_name != 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -57,7 +55,6 @@ jobs:
   # needs the macOS SDK headers (the macos-14 test job builds it for real); frogger/desktop keeps
   # the windowed binary (its default feature) in the check.
   cross-check:
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -74,7 +71,6 @@ jobs:
   # -Zbuild-std of core + alloc only. mips-unknown-linux-gnu is a stand-in with the N64's
   # endianness and pointer width; the crates are no_std, so its OS does not matter.
   nostd-mips:
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -84,54 +80,25 @@ jobs:
           components: rust-src
       - run: cargo +nightly check -Zbuild-std=core,alloc --target mips-unknown-linux-gnu -p f2-math -p f2-formats -p f2-game -p f2-engine --no-default-features
 
-  # Manual dispatch only: release archives via tools/package (never any game data).
-  release:
-    if: github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {os: ubuntu-22.04, target: linux}
-          - {os: windows-latest, target: windows}
-          - {os: macos-14, target: macos}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+  # The Android host (crates/frogger-android) type-checks for arm64 with the NDK the release
+  # uses (27.2.12479018; installed into the runner's SDK when the image lacks it). The full
+  # APK build is in release.yml (also runnable by hand there as a dry run).
+  android-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target == 'macos' && 'aarch64-apple-darwin, x86_64-apple-darwin' || '' }}
-      # ubuntu-22.04 (glibc 2.35) so the binaries/AppImage run on older distros too.
-      - if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev file
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL -o "$HOME/.local/bin/appimagetool" \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x "$HOME/.local/bin/appimagetool"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      # Windows: build natively, then package the exes without the WSL cross-build.
-      - if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          cargo build --release -p frogger -p f2-import -p f2-viewer
-          mkdir -p target/package/win-bin
-          cp target/release/frogger.exe target/release/f2-import.exe target/release/f2-viewer.exe target/package/win-bin/
-          F2_SKIP_BUILD=1 tools/package/package.sh windows
-      # AppImage tooling runs without FUSE on hosted runners.
-      - if: runner.os == 'Linux'
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: tools/package/package.sh linux
-      # Universal (arm64 + x86_64) .app, ad-hoc signed; see tools/package/README-macos.md.
-      - if: runner.os == 'macOS'
-        env:
-          F2_MACOS_UNIVERSAL: "1"
-        run: tools/package/package.sh macos
-      - uses: actions/upload-artifact@v4
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
         with:
-          name: frogger2-rs-${{ matrix.target }}
-          path: |
-            target/package/*.tar.gz
-            target/package/*.zip
-            target/package/*.AppImage
+          key: android-check
+      - run: cargo install cargo-ndk --version 4.1.2 --locked
+      - run: |
+          ndk="$ANDROID_HOME/ndk/27.2.12479018"
+          [ -d "$ndk" ] || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" >/dev/null
+          ANDROID_NDK_HOME="$ndk" cargo ndk --platform 26 -t arm64-v8a check -p frogger-android
+
+# Release builds (every desktop OS, Android, console runtimes) and publishing:
+# .github/workflows/release.yml (tags v*, or by hand for a dry run).

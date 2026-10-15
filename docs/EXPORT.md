@@ -64,6 +64,7 @@ with no game data. Each console runtime is a zip produced by `tools/runtime/buil
 OUT_DIR VERSION` (Linux, with that target's toolchain) and contains a `runtime.json`
 (`{"target": "...", "version": "...", "format": 1, ...}`) describing its layout; the layout
 details are documented in each section below by the packer that consumes it.
+Cutting a release, the CI jobs, pinned toolchains and secrets: `docs/BUILDING.md` "Releases / CI".
 
 The desktop packages are the release builds themselves (`tools/package/package.sh`):
 `swampys-revenge-recomp-<v>-windows-x86_64.zip`, `swampys-revenge-recomp-<v>-macos-<arch>.zip`,

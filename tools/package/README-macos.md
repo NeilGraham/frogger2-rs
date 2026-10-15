@@ -2,11 +2,14 @@
 
 `tools/package/package.sh macos` (run on a Mac with the Xcode command line tools) builds
 `frogger`, `f2-import`, `f2-viewer`, wraps them in `SwampysRevengeRecomp.app` and writes
-`target/package/frogger2-rs-<ver>-macos-<arch>.tar.gz`.
+`target/package/swampys-revenge-recomp-<ver>-macos-<arch>.zip` (with `ditto`, the release
+asset) and `.tar.gz`.
 
 | Variable | Effect |
 |---|---|
 | `F2_MACOS_UNIVERSAL=1` | build `aarch64-apple-darwin` + `x86_64-apple-darwin` and `lipo` them (needs both targets: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`) |
+| `F2_MACOS_TARGET=x86_64-apple-darwin` | one architecture other than the host's (the release workflow builds `arm64` and `x86_64` this way on one Apple silicon runner) |
+| `F2_PKG_VERSION=0.1.0` | archive names with this version instead of `<version>-<commit>` |
 | `F2_SKIP_BUILD=1` | package already-built binaries (`$CARGO_TARGET_DIR` honoured) |
 | `F2_CODESIGN_ID` | signing identity; default `-` (ad-hoc) |
 
@@ -42,9 +45,10 @@ xcrun stapler staple target/package/stage/macos/<name>/SwampysRevengeRecomp.app
 spctl --assess --type execute -vv target/package/stage/macos/<name>/SwampysRevengeRecomp.app
 ```
 
-Then re-create the tarball (or a `.dmg` with `hdiutil create -srcfolder ... -format UDZO`).
+Then re-create the zip (or a `.dmg` with `hdiutil create -srcfolder ... -format UDZO`).
 In CI, the signing certificate (.p12) and notarytool credentials would be repository secrets
-imported into a temporary keychain; the `release` job currently only ad-hoc signs.
+imported into a temporary keychain; the `macos` job of `.github/workflows/release.yml`
+currently only ad-hoc signs.
 
 ## Testing status
 
