@@ -3,7 +3,8 @@
 # A pushed tag v<version> builds every release asset and publishes the GitHub release for it;
 # the tag must match [workspace.package] version in Cargo.toml, because the desktop app
 # downloads the runtimes of its own version (docs/EXPORT.md). Run it by hand
-# (workflow_dispatch) for a dry run: the same builds, uploaded as workflow artifacts, no release.
+# (workflow_dispatch) or push the branch release-dry-run for a dry run: the same builds,
+# uploaded as workflow artifacts, no release.
 #
 # Assets (names are a contract with crates/f2-package and crates/frogger/src/export.rs):
 #   swampys-revenge-recomp-<v>-windows-x86_64.zip      Windows (MSVC)
@@ -18,6 +19,9 @@ name: release
 on:
   push:
     tags: ["v*"]
+    # A push to release-dry-run runs the whole pipeline as a dry run (no release), for
+    # checking the workflow without a tag or the workflow_dispatch button.
+    branches: ["release-dry-run"]
   workflow_dispatch:
 
 permissions:
