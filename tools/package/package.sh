@@ -2,7 +2,8 @@
 # Produce release archives under target/package/.
 #   tools/package/package.sh linux     # tar.gz (+ AppImage if appimagetool is found)
 #   tools/package/package.sh windows   # zip (cross-builds via tools/package/build-windows.sh unless
-#                                      #      F2_WIN_BIN_DIR points at prebuilt .exe files)
+#                                      #      F2_WIN_BIN_DIR points at prebuilt .exe files;
+#                                      #      F2_WIN_ARCH=aarch64 names an ARM64 build)
 #   tools/package/package.sh macos     # .app bundle in a zip + tar.gz (run on macOS; CI: macos-14)
 #   tools/package/package.sh all       # linux + windows (when cargo.exe exists)
 # Set F2_SKIP_BUILD=1 to package already-built binaries. No game data is ever included.
@@ -80,7 +81,7 @@ APPRUN
 pkg_windows() {
   local bindir="${F2_WIN_BIN_DIR:-$OUT/win-bin}"
   [[ -n "${F2_SKIP_BUILD:-}" || -n "${F2_WIN_BIN_DIR:-}" ]] || tools/package/build-windows.sh
-  local name="swampys-revenge-recomp-$VER-windows-x86_64" st="$OUT/stage/windows"
+  local name="swampys-revenge-recomp-$VER-windows-${F2_WIN_ARCH:-x86_64}" st="$OUT/stage/windows"
   rm -rf "$st"; mkdir -p "$st/$name"
   for b in "${BINS[@]}"; do cp "$bindir/$b.exe" "$st/$name/"; done
   stage_docs "$st/$name"

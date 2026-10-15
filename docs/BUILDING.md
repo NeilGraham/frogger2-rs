@@ -218,9 +218,9 @@ the same builds at the Cargo version, uploaded as workflow artifacts (`release-*
 
 | Job | Runner | Asset |
 |---|---|---|
-| `windows` | windows-latest (MSVC) | `swampys-revenge-recomp-<v>-windows-x86_64.zip` (exe icon via `crates/frogger/build.rs`) |
-| `macos` | macos-14 (x86_64 cross-built) | `swampys-revenge-recomp-<v>-macos-arm64.zip`, `-macos-x86_64.zip` (ad-hoc signed `.app`) |
-| `linux` | ubuntu-22.04 (glibc 2.35 baseline) | `SwampysRevengeRecomp-<v>-x86_64.AppImage`, `swampys-revenge-recomp-<v>-linux-x86_64.tar.gz` |
+| `windows` (x86_64, aarch64) | windows-latest (MSVC; ARM64 cross-built, not run in CI) | `swampys-revenge-recomp-<v>-windows-<arch>.zip` (exe icon via `crates/frogger/build.rs`) |
+| `macos` | macos-14 (x86_64 cross-built, `lipo`'d) | `swampys-revenge-recomp-<v>-macos-universal.zip` (ad-hoc signed universal `.app`) |
+| `linux` (x86_64, aarch64) | ubuntu-22.04 / ubuntu-22.04-arm (glibc 2.35 baseline) | `SwampysRevengeRecomp-<v>-<arch>.AppImage`, `swampys-revenge-recomp-<v>-linux-<arch>.tar.gz` |
 | `android` | ubuntu-24.04 | `swampys-revenge-recomp-<v>-android.apk` (shell app, `tools/android/build-apk.sh`) |
 | `runtime` (ps4, ps5, n64) | ubuntu-24.04 | `runtime-<target>-<v>.zip` from `tools/runtime/build-<target>.sh OUT_DIR VERSION` |
 | `release` | ubuntu-latest | checks every asset is there and has no game data, publishes |
@@ -231,7 +231,7 @@ locally): OpenOrbis PS4 toolchain v0.5.4 + libssl 1.1.1f (PkgTool.Core); ps5-pay
 v0.43, PS5_Vulkan `252bf91`, bc7enc_rdo `b943862`; libdragon `39d0d60` with the 3P/3A patches
 on libdragon's GCC 16.2 toolchain; Rust `nightly-2026-10-11` (what `cargo +nightly`
 resolves to); Android cmdline-tools 12.0, platform 35, build-tools 35.0.0, NDK
-27.2.12479018, cargo-ndk 4.1.2, JDK 17; appimagetool 1.9.0. Downloads are checked against
+27.2.12479018, cargo-ndk 4.1.2, JDK 17; appimagetool 1.9.0 (x86_64 and aarch64). Downloads are checked against
 their SHA-256. libdragon publishes its toolchain only as a rolling release: when it is
 replaced, `toolchains/n64.sh` fails on the hash; re-test and update the pin.
 

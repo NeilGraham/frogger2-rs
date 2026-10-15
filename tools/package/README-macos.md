@@ -3,7 +3,7 @@
 `tools/package/package.sh macos` (run on a Mac with the Xcode command line tools) builds
 `frogger`, `f2-import`, `f2-viewer`, wraps them in `SwampysRevengeRecomp.app` and writes
 `target/package/swampys-revenge-recomp-<ver>-macos-<arch>.zip` (with `ditto`, the release
-asset) and `.tar.gz`.
+asset) and `.tar.gz`. The release builds `F2_MACOS_UNIVERSAL=1` (`<arch>` = `universal`).
 
 | Variable | Effect |
 |---|---|

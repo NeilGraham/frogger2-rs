@@ -7,10 +7,9 @@
 # uploaded as workflow artifacts, no release.
 #
 # Assets (names are a contract with crates/f2-package and crates/frogger/src/export.rs):
-#   swampys-revenge-recomp-<v>-windows-x86_64.zip      Windows (MSVC)
-#   swampys-revenge-recomp-<v>-macos-arm64.zip         macOS .app, Apple silicon
-#   swampys-revenge-recomp-<v>-macos-x86_64.zip        macOS .app, Intel
-#   SwampysRevengeRecomp-<v>-x86_64.AppImage           Linux (+ the plain -linux-x86_64.tar.gz)
+#   swampys-revenge-recomp-<v>-windows-<arch>.zip      Windows (MSVC), arch x86_64 / aarch64
+#   swampys-revenge-recomp-<v>-macos-universal.zip     macOS .app, Apple silicon + Intel
+#   SwampysRevengeRecomp-<v>-<arch>.AppImage           Linux x86_64 / aarch64 (+ -linux-<arch>.tar.gz)
 #   swampys-revenge-recomp-<v>-android.apk             Android shell app
 #   runtime-ps4-<v>.zip, runtime-ps5-<v>.zip, runtime-n64-<v>.zip   console runtimes
 #
@@ -73,32 +72,45 @@ jobs:
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
+  # x86_64 natively; ARM64 cross-built on the same x64 runner with the MSVC ARM64 tools the
+  # image ships (not run here: Windows on ARM runners are not offered to private repositories).
   windows:
     needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-pc-windows-msvc
+          - arch: aarch64
+            target: aarch64-pc-windows-msvc
     runs-on: windows-latest
     timeout-minutes: 60
     env:
       F2_PKG_VERSION: ${{ needs.version.outputs.version }}
+      F2_WIN_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release
+          key: release-${{ matrix.arch }}
       # The exe icon and version info come from crates/frogger/build.rs (winresource, rc.exe).
-      - run: cargo build --release -p frogger -p f2-import -p f2-viewer
+      - run: cargo build --release --target ${{ matrix.target }} -p frogger -p f2-import -p f2-viewer
       - shell: bash
         env:
-          F2_WIN_BIN_DIR: target/release
+          F2_WIN_BIN_DIR: target/${{ matrix.target }}/release
         run: tools/package/package.sh windows
       - uses: actions/upload-artifact@v4
         with:
-          name: release-windows
-          path: target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-windows-x86_64.zip
+          name: release-windows-${{ matrix.arch }}
+          path: target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-windows-${{ matrix.arch }}.zip
           if-no-files-found: error
 
-  # Both architectures from one Apple silicon runner (x86_64 is a cross build); each .app is
-  # ad-hoc signed (tools/package/README-macos.md) and zipped with ditto.
+  # One universal .app (arm64 + x86_64 lipo'd; x86_64 is a cross build on the Apple silicon
+  # runner), ad-hoc signed (tools/package/README-macos.md) and zipped with ditto.
   macos:
     needs: version
     runs-on: macos-14
@@ -113,24 +125,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release
-      - name: arm64
+      - name: Universal .app
         env:
-          F2_MACOS_TARGET: aarch64-apple-darwin
-        run: tools/package/package.sh macos
-      - name: x86_64
-        env:
-          F2_MACOS_TARGET: x86_64-apple-darwin
-        run: tools/package/package.sh macos
+          F2_MACOS_UNIVERSAL: "1"
+        run: |
+          tools/package/package.sh macos
+          lipo -archs target/universal-apple-darwin/release/frogger
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
-          path: target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-macos-*.zip
+          path: target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-macos-universal.zip
           if-no-files-found: error
 
-  # ubuntu-22.04 (glibc 2.35): the binaries and the AppImage run on older distributions too.
+  # Ubuntu 22.04 (glibc 2.35): the binaries and the AppImage run on older distributions too.
+  # Each architecture natively on its own runner.
   linux:
     needs: version
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+            appimagetool_sha256: 46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+            appimagetool_sha256: 04f45ea45b5aa07bb2b071aed9dbf7a5185d3953b11b47358c1311f11ea94a96
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
       F2_PKG_VERSION: ${{ needs.version.outputs.version }}
@@ -139,27 +160,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release
+          key: release-${{ matrix.arch }}
       - name: Dependencies and appimagetool 1.9.0
+        env:
+          ARCH: ${{ matrix.arch }}
+          SHA256: ${{ matrix.appimagetool_sha256 }}
         run: |
           # desktop-file-validate: appimagetool refuses to run without it.
           sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev file desktop-file-utils
           mkdir -p "$HOME/.local/bin"
           curl -fsSL --retry 3 -o "$HOME/.local/bin/appimagetool" \
-            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
-          echo "46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1  $HOME/.local/bin/appimagetool" | sha256sum -c
+            "https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-$ARCH.AppImage"
+          [ "$(uname -m)" = "$ARCH" ] || { echo "::error::runner is $(uname -m), expected $ARCH"; exit 1; }
+          echo "$SHA256  $HOME/.local/bin/appimagetool" | sha256sum -c
           chmod +x "$HOME/.local/bin/appimagetool"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # No FUSE on hosted runners: appimagetool extracts itself.
       - env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: tools/package/package.sh linux
+      # Smoke test of the packaged binary on its own architecture (no window, no game data).
+      - run: ./target/package/stage/linux/swampys-revenge-recomp-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}/f2-import --help
       - uses: actions/upload-artifact@v4
         with:
-          name: release-linux
+          name: release-linux-${{ matrix.arch }}
           path: |
-            target/package/SwampysRevengeRecomp-${{ needs.version.outputs.version }}-x86_64.AppImage
-            target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
+            target/package/SwampysRevengeRecomp-${{ needs.version.outputs.version }}-${{ matrix.arch }}.AppImage
+            target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
   # The Android shell app (no game data; the export bundles the player's data into a copy).
@@ -284,10 +311,12 @@ jobs:
           cd dist
           expected=(
             "swampys-revenge-recomp-$V-windows-x86_64.zip"
-            "swampys-revenge-recomp-$V-macos-arm64.zip"
-            "swampys-revenge-recomp-$V-macos-x86_64.zip"
+            "swampys-revenge-recomp-$V-windows-aarch64.zip"
+            "swampys-revenge-recomp-$V-macos-universal.zip"
             "SwampysRevengeRecomp-$V-x86_64.AppImage"
+            "SwampysRevengeRecomp-$V-aarch64.AppImage"
             "swampys-revenge-recomp-$V-linux-x86_64.tar.gz"
+            "swampys-revenge-recomp-$V-linux-aarch64.tar.gz"
             "swampys-revenge-recomp-$V-android.apk"
             "runtime-ps4-$V.zip" "runtime-ps5-$V.zip" "runtime-n64-$V.zip"
           )
@@ -299,9 +328,9 @@ jobs:
           for f in *.zip *.apk; do
             if unzip -Z1 "$f" | grep -Ei "$bad"; then echo "::error::$f looks like it contains game data"; exit 1; fi
           done
-          if tar -tzf "swampys-revenge-recomp-$V-linux-x86_64.tar.gz" | grep -Ei "$bad"; then
-            echo "::error::the Linux tarball looks like it contains game data"; exit 1
-          fi
+          for f in *.tar.gz; do
+            if tar -tzf "$f" | grep -Ei "$bad"; then echo "::error::$f looks like it contains game data"; exit 1; fi
+          done
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Release notes
@@ -318,9 +347,10 @@ jobs:
 
           | Download | For |
           |---|---|
-          | \`swampys-revenge-recomp-$V-windows-x86_64.zip\` | Windows 10/11 (x86_64) |
-          | \`swampys-revenge-recomp-$V-macos-arm64.zip\` / \`-macos-x86_64.zip\` | macOS 11+ (Apple silicon / Intel; ad-hoc signed: right-click > Open the first time) |
-          | \`SwampysRevengeRecomp-$V-x86_64.AppImage\` | Linux (x86_64; also as \`-linux-x86_64.tar.gz\`) |
+          | \`swampys-revenge-recomp-$V-windows-x86_64.zip\` | Windows 10/11 (x86_64: Intel / AMD) |
+          | \`swampys-revenge-recomp-$V-windows-aarch64.zip\` | Windows 11 on ARM (Snapdragon and other ARM64 PCs) |
+          | \`swampys-revenge-recomp-$V-macos-universal.zip\` | macOS 11+ (Apple silicon and Intel; ad-hoc signed: right-click > Open the first time) |
+          | \`SwampysRevengeRecomp-$V-x86_64.AppImage\` / \`-aarch64.AppImage\` | Linux (x86_64 / ARM64; also as \`-linux-<arch>.tar.gz\`) |
           | \`swampys-revenge-recomp-$V-android.apk\` | Android 8+ (arm64, x86_64): import on the device |
           | \`runtime-ps4-$V.zip\`, \`runtime-ps5-$V.zip\`, \`runtime-n64-$V.zip\` | not to be installed by hand: the desktop app's **Export to...** downloads them |
 

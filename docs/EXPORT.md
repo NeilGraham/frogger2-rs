@@ -67,8 +67,11 @@ details are documented in each section below by the packer that consumes it.
 Cutting a release, the CI jobs, pinned toolchains and secrets: `docs/BUILDING.md` "Releases / CI".
 
 The desktop packages are the release builds themselves (`tools/package/package.sh`):
-`swampys-revenge-recomp-<v>-windows-x86_64.zip`, `swampys-revenge-recomp-<v>-macos-<arch>.zip`,
-`SwampysRevengeRecomp-<v>-x86_64.AppImage`.
+`swampys-revenge-recomp-<v>-windows-<arch>.zip` (x86_64, aarch64),
+`swampys-revenge-recomp-<v>-macos-universal.zip`, `SwampysRevengeRecomp-<v>-<arch>.AppImage`
+(x86_64, aarch64). Exporting for the host OS copies the running app, so an export has the
+architecture(s) of the build that made it; the console and Android runtimes are the same for
+every desktop architecture.
 
 ### Where an exported build finds its data
 
