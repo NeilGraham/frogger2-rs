@@ -26,6 +26,7 @@ fn main() {
         tools: ctx::default_tools(),
         jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
         quick: false,
+        portable: false,
     };
     let mut i = 0;
     while i < args.len() {

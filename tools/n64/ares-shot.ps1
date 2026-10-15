@@ -40,7 +40,7 @@ public class W { [DllImport("user32.dll")] public static extern bool GetWindowRe
 [W]::SetProcessDPIAware() | Out-Null
 $exe = "C:\Users\<you>\Emulation\emulators\ares-v148\ares.exe"
 $args = @('--settings-file', "`"$settings`"", '--system', '"Nintendo 64"', '--no-file-prompt', "`"$rom`"")
-$p = Start-Process -FilePath $exe -ArgumentList $args -PassThru -RedirectStandardOutput $log -RedirectStandardError ($log + ".err") -WorkingDirectory "C:\f2-n64test"
+$p = Start-Process -FilePath $exe -ArgumentList $args -PassThru -RedirectStandardOutput $log -RedirectStandardError ($log + ".err") -WorkingDirectory (Split-Path -Parent $rom)
 $crashRe = 'ASSERTION FAILED|CPU EXCEPTION|RUST PANIC'
 $stopped = ""
 $t0 = Get-Date

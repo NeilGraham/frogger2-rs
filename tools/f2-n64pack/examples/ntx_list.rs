@@ -14,6 +14,7 @@ fn main() {
         tools: f2_n64pack::ctx::default_tools(),
         jobs: 8,
         quick: false,
+        portable: false,
     };
     let (assets, _) = f2_n64pack::textures::convert(&ctx).expect("convert");
     let files: std::collections::BTreeMap<String, Vec<u8>> = assets.into_iter().map(|a| (a.path, a.data)).collect();

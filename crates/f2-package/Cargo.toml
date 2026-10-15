@@ -8,3 +8,8 @@ publish.workspace = true
 
 [dependencies]
 png = "=0.18.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+zip = { workspace = true }
+# N64: the asset pack (portable profile: pure-Rust encoders) and the DFS writer.
+f2-n64pack = { path = "../../tools/f2-n64pack" }

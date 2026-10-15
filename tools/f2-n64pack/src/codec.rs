@@ -194,11 +194,20 @@ fn pack_mkasset(ctx: &Ctx, class: Class, assets: &[RawAsset], level: u8) -> Resu
     // to stay inside the 8 GB memory cap.
     let jobs = match level {
         3 => ctx.jobs.min(6),
+        // in process (portable): ~0.4 GB each, inside the desktop app
+        2 if ctx.portable => ctx.jobs.min(4),
         2 => ctx.jobs.min(8),
         _ => ctx.jobs,
     };
     let results = crate::tools::par_map(&idx, jobs, |&i| -> Result<Vec<u8>> {
         let a = &assets[i];
+        if ctx.portable {
+            // The same bytes as `mkasset -c 2 -w 256`, in process (crate::dca).
+            return match level {
+                2 => Ok(crate::dca::mkasset_aplib(&a.data, 256 * 1024)),
+                _ => Err(format!("{}: mkasset level {level} has no pure-Rust encoder (portable pack: aPLib only)", a.path)),
+            };
+        }
         let dir = tmp.join(format!("{i:04}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("out")).map_err(|e| e.to_string())?;

@@ -16,6 +16,12 @@ pub struct Ctx {
     pub jobs: usize,
     /// Fast mode for development: cheaper encoder settings, may skip FMV/music search.
     pub quick: bool,
+    /// Portable pack (`--portable`, the desktop app's N64 export, docs/EXPORT.md "N64"): only
+    /// the pure-Rust encoders, no external tool is run. aPLib ([`crate::dca`], identical to
+    /// `mkasset -c 2`), VADPCM sound effects ([`crate::wav64`], identical to `audioconv64`),
+    /// music as VADPCM at the best sample rate that fits (instead of ULC), no FMV (no
+    /// H.264 encoder in Rust), DFS sizes from [`crate::dfs`].
+    pub portable: bool,
 }
 
 impl Ctx {
@@ -72,4 +78,15 @@ pub fn find_rendition(start: &Path) -> Option<PathBuf> {
         cur = c.parent();
     }
     None
+}
+
+/// A libdragon host tool if installed (`$N64_INST/bin/<name>`, else the prefixes
+/// `tools/n64/build.sh` looks for), for tests that compare against the real tools.
+pub fn libdragon_tool(name: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let mut cands: Vec<PathBuf> = std::env::var_os("N64_INST").map(|i| PathBuf::from(i).join("bin").join(name)).into_iter().collect();
+    for v in ["opt/n64root-3a", "opt/n64root-3p", "opt/n64root"] {
+        cands.push(home.join(v).join("opt/libdragon/bin").join(name));
+    }
+    cands.into_iter().find(|p| p.is_file())
 }

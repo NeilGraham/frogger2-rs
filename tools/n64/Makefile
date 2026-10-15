@@ -5,6 +5,7 @@
 F2_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 BUILD_DIR = build
 SOURCE_DIR = $(CSRC)
+# DFS root (build.sh --runtime passes N64_MKDFS_ROOT=runtime-fs: the data-free runtime ROM).
 N64_MKDFS_ROOT = filesystem
 # magma (libdragon's RSP 3D pipeline, used by r3d.c) is a preview API.
 LIBDRAGON_PREVIEW = 2
@@ -95,7 +96,7 @@ N64_LDFLAGS := $(subst -Tn64.ld,-T$(CURDIR)/$(BUILD_DIR)/f2.ld,$(N64_LDFLAGS))
 # Large-block pool (csrc/main.c): every malloc in the program, libdragon included.
 N64_LDFLAGS += --wrap malloc --wrap free --wrap memalign --wrap calloc --wrap realloc
 
-$(BUILD_DIR)/frogger2.dfs: $(wildcard filesystem/*)
+$(BUILD_DIR)/frogger2.dfs: $(wildcard $(N64_MKDFS_ROOT)/*)
 $(BUILD_DIR)/frogger2.elf: $(BUILD_DIR)/main.o $(BUILD_DIR)/r3d.o $(BUILD_DIR)/abi.o $(RSP_OBJS) $(RUST_LIB) $(BUILD_DIR)/f2.ld
 
 frogger2.z64: $(BUILD_DIR)/frogger2.dfs

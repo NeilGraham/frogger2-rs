@@ -823,6 +823,7 @@ dependencies = [
  "f2-formats",
  "f2-n64fmt",
  "f2-n64z",
+ "libm",
  "postcard",
  "serde",
  "serde_json",
@@ -849,7 +850,11 @@ version = "0.1.0"
 name = "f2-package"
 version = "0.1.0"
 dependencies = [
+ "f2-n64pack",
  "png 0.18.1",
+ "serde",
+ "serde_json",
+ "zip",
 ]
 
 [[package]]
