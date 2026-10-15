@@ -5,6 +5,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_dry_run:
+        description: "Also run the release pipeline (release.yml) as a dry run: every asset, uploaded as artifacts, no release"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -102,3 +107,11 @@ jobs:
 
 # Release builds (every desktop OS, Android, console runtimes) and publishing:
 # .github/workflows/release.yml (tags v*, or by hand for a dry run).
+
+  # Optional: the whole release pipeline as a dry run (no release is created: release.yml only
+  # publishes for a pushed v* tag). `contents: write` is what its publish job declares.
+  release-dry-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write

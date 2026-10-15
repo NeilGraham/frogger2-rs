@@ -23,6 +23,9 @@ on:
     # checking the workflow without a tag or the workflow_dispatch button.
     branches: ["release-dry-run"]
   workflow_dispatch:
+  # ci.yml "Run workflow" with release_dry_run: the same dry run, startable from any branch
+  # (GitHub only offers workflow_dispatch for workflows on the default branch).
+  workflow_call:
 
 permissions:
   contents: read
