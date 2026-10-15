@@ -265,3 +265,37 @@ fn compare_with_pkgtool() {
 }
 
 use super::reader::Inode;
+
+/// Extracts a package into an app folder (what a console installs), for running it in an
+/// emulator without a package installer (shadPS4: `shadPS4.exe -g <dir>/eboot.bin`):
+/// `F2_PS4_PKG=x.pkg F2_PS4_EXTRACT_TO=dir cargo test -p f2-package --release extract_package -- --ignored`.
+#[test]
+#[ignore]
+fn extract_package() {
+    let (Ok(p), Ok(to)) = (std::env::var("F2_PS4_PKG"), std::env::var("F2_PS4_EXTRACT_TO")) else {
+        eprintln!("set F2_PS4_PKG and F2_PS4_EXTRACT_TO");
+        return;
+    };
+    let to = PathBuf::from(to);
+    let pkg = Pkg::parse(std::fs::read(p).unwrap(), PASSCODE);
+    check_package(&pkg);
+    let outer_img = pkg.outer_image(PASSCODE);
+    let outer = Pfs::parse(&outer_img);
+    let inner = Pfs::parse(pfsc_payload(outer.file(outer.tree["/pfs_image.dat"])));
+    let mut n = 0;
+    for (path, &ino) in &inner.tree {
+        let dst = to.join(path.trim_start_matches('/'));
+        if inner.inodes[ino as usize].mode & 0x4000 != 0 {
+            std::fs::create_dir_all(&dst).unwrap();
+        } else {
+            std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+            std::fs::write(&dst, inner.file(ino)).unwrap();
+            n += 1;
+        }
+    }
+    for e in pkg.entries.iter().filter(|e| e.id >= 0x1000 && !e.name.is_empty() && !e.name.starts_with("playgo")) {
+        std::fs::write(to.join("sce_sys").join(&e.name), &e.data).unwrap();
+        n += 1;
+    }
+    println!("extracted {n} files to {}", to.display());
+}

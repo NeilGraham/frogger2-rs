@@ -44,6 +44,13 @@ refuses the output-mode size. shadPS4 in Neo mode runs E (4K linear framebuffers
 for your console only and must not be shared. Neither the package nor the artwork is
 committed (`target/`, `game-data/` are ignored).
 
+**Players don't need any of this.** The desktop app exports the same package from the
+player's imported game on Windows, macOS or Linux without OpenOrbis, PkgTool or .NET
+(`frogger --export ps4`, docs/EXPORT.md "PS4"): `crates/f2-package/src/ps4*` writes the PKG and
+both PFS images in Rust from the data-free runtime `tools/runtime/build-ps4.sh` makes (which
+runs this script with `--stage-only`: program files only, no PkgTool needed). The two
+packages agree structurally (`compare_with_pkgtool` in `crates/f2-package/src/ps4/tests.rs`).
+
 ## Game data on the console
 
 Without `--data`, import your CD on a PC (`f2-import`, see `docs/BUILDING.md`) and copy

@@ -23,6 +23,10 @@
 #                F2_PS4_AUTHINFO=default|piglet|<hex>.
 #   --smoke      a minimal Rust smoke test instead of the game (title FROG20001, conservative
 #                settings): klog lines, std checks, a pulsing green (pass) or red screen.
+#   --stage-only stop after staging the program files (eboot.bin, sce_module/, sce_sys/about/)
+#                in OUT/stage and writing OUT/stage.env (title / content ID, version, ...): no
+#                param.sfo, artwork, data or package, so PkgTool and ffmpeg are not needed.
+#                tools/runtime/build-ps4.sh uses it for the export runtime (docs/EXPORT.md).
 #
 # Needs: the OpenOrbis PS4 toolchain ($OO_PS4_TOOLCHAIN, default ~/opt/openorbis/OpenOrbis/
 # PS4Toolchain), clang + ld.lld (LLVM 18), the nightly Rust toolchain with rust-src (std is
@@ -36,6 +40,7 @@ DATA=""
 ICON=""
 OUT="$ROOT/target/ps4"
 VARIANT=conservative
+STAGE_ONLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --data) DATA="$(cd "$2" && pwd)"; shift 2 ;;
@@ -43,7 +48,8 @@ while [ $# -gt 0 ]; do
         --out) OUT="$(realpath -m "$2")"; shift 2 ;;
         --enhanced) VARIANT=enhanced; shift ;;
         --smoke) VARIANT=smoke; shift ;;
-        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+        --stage-only) STAGE_ONLY=1; shift ;;
+        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -124,6 +130,13 @@ echo "variant $VARIANT: title $TITLE_ID, ATTRIBUTE $ATTRIBUTE, framebuffers $([ 
 echo "== sce_sys"
 cp "$TC/src/modules/right.sprx" "$STAGE/sce_sys/about/right.sprx"
 cp "$TC/src/modules/libc.prx" "$TC/src/modules/libSceFios2.prx" "$STAGE/sce_module/"
+if [ "$STAGE_ONLY" = 1 ]; then
+    # What the packer needs to write param.sfo itself (crates/f2-package/src/ps4.rs).
+    printf '%s\n' "TITLE_ID=$TITLE_ID" "CONTENT_ID=$CONTENT_ID" "APP_VER=$VERSION" "ATTRIBUTE=$ATTRIBUTE" \
+        "DOWNLOAD_DATA_SIZE=64" "SYSTEM_VER=0" "APP_TYPE=1" "VARIANT=$VARIANT" > "$OUT/stage.env"
+    echo "staged: $STAGE ($OUT/stage.env)"
+    exit 0
+fi
 SFO="$STAGE/sce_sys/param.sfo"
 PKGTOOL sfo_new "$SFO"
 PKGTOOL sfo_setentry "$SFO" APP_TYPE --type Integer --maxsize 4 --value 1
