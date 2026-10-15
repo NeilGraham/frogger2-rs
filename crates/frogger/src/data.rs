@@ -352,7 +352,8 @@ mod tests {
     }
 
     fn paths(v: Vec<(PathBuf, bool)>) -> Vec<String> {
-        v.into_iter().map(|(p, b)| format!("{}{}", p.display(), if b { " (bundle)" } else { "" })).collect()
+        // `/` separators everywhere (Windows joins with `\\`).
+        v.into_iter().map(|(p, b)| format!("{}{}", p.display(), if b { " (bundle)" } else { "" }).replace('\\', "/")).collect()
     }
 
     #[test]
@@ -368,7 +369,7 @@ mod tests {
 
     #[test]
     fn bundled_data_before_the_default_root() {
-        let default = f2_platform::paths::default_data_root().display().to_string();
+        let default = f2_platform::paths::default_data_root().display().to_string().replace('\\', "/");
         // Windows / Linux folder export.
         let c = paths(candidates(&Config::default(), None, &env(&[]), Some(Path::new("/games/F2/frogger"))));
         assert_eq!(c, ["/games/F2/game-data (bundle)", "/games/F2/../Resources/game-data (bundle)", default.as_str(), "game-data"]);
