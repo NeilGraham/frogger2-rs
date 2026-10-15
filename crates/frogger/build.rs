@@ -6,8 +6,8 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("../../packaging/icon/swampys-revenge-recomp.ico");
-        res.set("ProductName", "Swampy{2019}s Revenge Recomp");
-        res.set("FileDescription", "Swampy{2019}s Revenge Recomp");
+        res.set("ProductName", "Swampy\u{2019}s Revenge Recomp");
+        res.set("FileDescription", "Swampy\u{2019}s Revenge Recomp");
         if let Err(e) = res.compile() {
             println!("cargo:warning=exe icon not embedded: {e}");
         }
