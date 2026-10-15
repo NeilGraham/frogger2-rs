@@ -23,6 +23,15 @@ systems using **your own copy** of the game.
   machine (window/taskbar and Windows shortcuts; on Android the recents icon and an optional
   home-screen shortcut).
 
+## Export to other platforms
+
+Every desktop build can turn your imported game into ready-to-run builds for **Android, PS4,
+PS5, N64** and its own OS (Settings → Export, or `frogger --export all`), named and iconed from
+your own disc ("Frogger 2: Swampy's Revenge"). No SDKs needed; the data-free runtimes come from
+each GitHub release. Those builds contain your game data: keep them for your own devices.
+See [docs/EXPORT.md](docs/EXPORT.md); releases are built by `.github/workflows/release.yml`
+([docs/BUILDING.md](docs/BUILDING.md#releases--ci)).
+
 ## Getting started (importing your copy)
 
 ```sh
