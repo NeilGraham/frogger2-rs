@@ -63,6 +63,13 @@ needs [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) at PS5_Vulkan's pin
 `$F2_BC7ENC`, default `~/opt/ref/bc7enc_rdo/build/bc7enc`); the headers are normalised as
 PS5_Vulkan's `prepare-assets.sh` does (single level, BC7_UNORM, straight alpha).
 
+**Players don't need any of this.** The desktop app exports the app folder from the player's
+imported game on Windows, macOS or Linux (`frogger --export ps5`, docs/EXPORT.md "PS5"):
+`crates/f2-package/src/ps5*` assembles `eboot.bin` + `libc.prx` from the data-free runtime
+`tools/runtime/build-ps5.sh` makes (this script with `--stage-only`: no bc7enc / ffmpeg), writes
+`param.json` with the disc's title, the PNG + BC7 DDS artwork and `data/`. The `.pkg`, `.ffpkg`
+and `.ffpfsc` forms are not exported (yet); they still come from this script.
+
 ## How it works
 
 **Toolchain.** The public [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)

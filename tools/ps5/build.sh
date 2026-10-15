@@ -26,6 +26,10 @@
 #   --gpu        eboot.bin = the wgpu renderer on PS5_Vulkan's RADV driver (needs
 #                tools/ps5/build-vulkan-driver.sh and lld-21; tools/ps5/VULKAN.md), with the
 #                CPU build as eboot_cpu.bin, started instead when Vulkan does not come up.
+#   --stage-only stop after the program files (eboot.bin, sce_module/libc.prx) and
+#                sce_sys/param.json are in OUT/TITLE_ID and OUT/stage.env is written: no
+#                artwork, data or images (no bc7enc / ffmpeg needed). Used by
+#                tools/runtime/build-ps5.sh for the export runtime (docs/EXPORT.md).
 #
 # Needs (see tools/ps5/README.md): the ps5-payload-sdk ($PS5_PAYLOAD_SDK, default
 # ~/opt/ps5-payload-sdk; its stubs, ld.lld wrapper), a PS5_Vulkan checkout for its native
@@ -47,6 +51,7 @@ PKG=0
 FFPKG=0
 FFPFSC=0
 GPU=0
+STAGE_ONLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --data) DATA="$(cd "$2" && pwd)"; shift 2 ;;
@@ -58,7 +63,8 @@ while [ $# -gt 0 ]; do
         --ffpkg) FFPKG=1; shift ;;
         --ffpfsc) FFPFSC=1; shift ;;
         --gpu) GPU=1; shift ;;
-        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+        --stage-only) STAGE_ONLY=1; shift ;;
+        -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -95,7 +101,7 @@ BC7ENC="${F2_BC7ENC:-}"
 for c in "$HOME/opt/ref/bc7enc_rdo/build/bc7enc" "$PS5VK/.deps/native/bc7enc_rdo/build/bc7enc"; do
     [ -z "$BC7ENC" ] && [ -x "$c" ] && BC7ENC="$c"
 done
-[ -x "$BC7ENC" ] || { echo "bc7enc_rdo not found (set F2_BC7ENC; see tools/ps5/README.md)" >&2; exit 1; }
+[ -x "$BC7ENC" ] || [ "$STAGE_ONLY" = 1 ] || { echo "bc7enc_rdo not found (set F2_BC7ENC; see tools/ps5/README.md)" >&2; exit 1; }
 
 TOOLS="$OUT/tools"
 BUILD="$OUT/build/$TITLE_ID"
@@ -288,6 +294,12 @@ with open(out, "w", encoding="utf-8") as f:
     json.dump(param, f, indent=2)
     f.write("\n")
 PY
+if [ "$STAGE_ONLY" = 1 ]; then
+    # What the export packer needs besides the files (crates/f2-package/src/ps5.rs).
+    printf '%s\n' "TITLE_ID=$TITLE_ID" "CONTENT_ID=$CONTENT_ID" "CONTENT_VERSION=$VERSION" "KIND=$KIND" "GPU=$GPU" > "$OUT/stage.env"
+    echo "staged: $APP ($OUT/stage.env)"
+    exit 0
+fi
 
 echo "== artwork (icon0.png + icon0.dds 512x512, pic0/pic1 .dds + .png 3840x2160)"
 if [ -z "$ICON" ] && [ -n "$DATA" ] && [ "$KIND" = game ]; then

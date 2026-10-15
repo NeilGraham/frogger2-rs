@@ -20,3 +20,12 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde_json.workspace = true
 ruzstd = "0.9.1"
+# PS4 fPKG / PS5 export (src/ps4*, src/ps5*): hashing, AES, RSA arithmetic, runtime zips.
+hmac = "0.12"
+aes = "0.8"
+num-bigint = { version = "0.4", default-features = false, features = ["std"] }
+zip.workspace = true
+
+[dev-dependencies]
+# An independent BC7 decoder to check the PS5 artwork encoder against.
+bcdec_rs = "0.2"
