@@ -808,6 +808,7 @@ impl Game {
         self.update_events(); // wave D
 
         self.modscript_level_start(world, level); // P7b (no-op without mod scripts)
+
         // Host memory only (no behaviour): the actor arena grew by doubling while the level
         // loaded (512 slots of 556 bytes for Ancients 3's 283 actors on the N64): trimmed to
         // the actors plus room for the ones play creates, which RAM-tight consoles need.

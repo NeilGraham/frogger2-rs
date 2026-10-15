@@ -55,8 +55,11 @@ pub struct Actor {
     /// The recorded path's draws of the model's objects that have a mesh, in pre-order
     /// (`((model id, extra_flags, xlu fade, wrap_tc), draws)`): walked instead of the object
     /// tree every frame (same objects, same order, same frames).
-    pub mesh_draws: Option<((u32, i16, bool, bool), Vec<crate::scene::ObjDraw>)>,
+    pub mesh_draws: Option<MeshDraws>,
 }
+
+/// [`Actor::mesh_draws`]: `((model id, extra_flags, xlu fade, wrap_tc), draws)`.
+pub type MeshDraws = ((u32, i16, bool, bool), Vec<crate::scene::ObjDraw>);
 
 /// Inputs and result of the last [`xform_actor_cached`] of an [`Actor`].
 #[derive(Clone, Debug, Default)]

@@ -760,7 +760,7 @@ pub(crate) fn skip_actor(model: &Model, actor: &mut Actor, sink: &mut MeshSink) 
 
 #[cold]
 #[inline(never)]
-fn new_draws(model: &Model, slot: &mut Option<((u32, i16, bool, bool), Vec<ObjDraw>)>, key: (u32, i16, bool, bool)) {
+fn new_draws(model: &Model, slot: &mut Option<crate::anim::MeshDraws>, key: (u32, i16, bool, bool)) {
     *slot = Some((key, object_draws(model, key.1, key.2, key.3)));
 }
 

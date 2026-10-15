@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 
 const IMAGE_EXTS: [&str; 9] = ["cue", "iso", "bin", "img", "ccd", "mds", "nrg", "toc", "zip"];
 
+/// Work the screen runs on its worker thread, reporting `(stage, fraction)`.
+type ImportJob = Box<dyn FnOnce(&dyn Fn(String, f32)) -> Result<(), String> + Send>;
+
 enum Msg {
     Log(String),
     Progress(String, f32),
@@ -83,13 +86,7 @@ impl Screen {
 
     /// The first start of an exported APK: `job` unpacks the game bundled in the APK
     /// (reporting `(stage, fraction)`) on a worker thread; no import choices are shown.
-    pub fn unpacking(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-        files: PathBuf,
-        job: Box<dyn FnOnce(&dyn Fn(String, f32)) -> Result<(), String> + Send>,
-    ) -> Screen {
+    pub fn unpacking(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, files: PathBuf, job: ImportJob) -> Screen {
         let mut r = Renderer::new(device, queue, format);
         let font = r.add_font(frogger::tinyfont::builtin_font());
         let (tx, rx) = channel();
@@ -323,41 +320,6 @@ fn candidates_settled(dir: &Path, settle: Duration) -> Vec<PathBuf> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn copy_status_lines() {
-        assert_eq!(copy_status("copy Frogger 2.bin 8388608 16777216").as_deref(), Some("Copying Frogger 2.bin: 8 of 16 MB"));
-        assert_eq!(copy_status("error disk full").as_deref(), Some("Copy failed: disk full"));
-        assert_eq!(copy_status("copied 2"), None);
-    }
-
-    #[test]
-    fn wraps_long_words() {
-        assert_eq!(wrap("a bb ccc", 4), vec!["a bb", "ccc"]);
-        assert_eq!(wrap("/storage/emulated", 8), vec!["/storage", "/emulate", "d"]);
-    }
-
-    #[test]
-    fn finds_images() {
-        let d = std::env::temp_dir().join(format!("f2-android-import-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("import")).unwrap();
-        std::fs::create_dir_all(d.join("data")).unwrap();
-        std::fs::create_dir_all(d.join("import/.incoming")).unwrap();
-        for f in ["Frogger2.cue", "Frogger2.bin", "notes.txt", "import/other.ISO", "import/.status", "import/.incoming/half.iso"] {
-            std::fs::write(d.join(f), b"x").unwrap();
-        }
-        // Just written: nothing yet.
-        assert!(candidates(&d).is_empty());
-        let c = candidates_settled(&d, Duration::ZERO);
-        assert_eq!(c, vec![d.join("Frogger2.cue"), d.join("import/other.ISO")]);
-        std::fs::remove_dir_all(&d).unwrap();
-    }
-}
-
 /// The activity's copy progress line (`copy NAME DONE TOTAL`, `copied N`, `error MSG`,
 /// `cancelled`) for display.
 fn copy_status(s: &str) -> Option<String> {
@@ -401,4 +363,39 @@ fn wrap(t: &str, width: usize) -> Vec<String> {
         lines.push(cur);
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_status_lines() {
+        assert_eq!(copy_status("copy Frogger 2.bin 8388608 16777216").as_deref(), Some("Copying Frogger 2.bin: 8 of 16 MB"));
+        assert_eq!(copy_status("error disk full").as_deref(), Some("Copy failed: disk full"));
+        assert_eq!(copy_status("copied 2"), None);
+    }
+
+    #[test]
+    fn wraps_long_words() {
+        assert_eq!(wrap("a bb ccc", 4), vec!["a bb", "ccc"]);
+        assert_eq!(wrap("/storage/emulated", 8), vec!["/storage", "/emulate", "d"]);
+    }
+
+    #[test]
+    fn finds_images() {
+        let d = std::env::temp_dir().join(format!("f2-android-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("import")).unwrap();
+        std::fs::create_dir_all(d.join("data")).unwrap();
+        std::fs::create_dir_all(d.join("import/.incoming")).unwrap();
+        for f in ["Frogger2.cue", "Frogger2.bin", "notes.txt", "import/other.ISO", "import/.status", "import/.incoming/half.iso"] {
+            std::fs::write(d.join(f), b"x").unwrap();
+        }
+        // Just written: nothing yet.
+        assert!(candidates(&d).is_empty());
+        let c = candidates_settled(&d, Duration::ZERO);
+        assert_eq!(c, vec![d.join("Frogger2.cue"), d.join("import/other.ISO")]);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 }

@@ -295,6 +295,7 @@ impl Canvas {
                 }
                 let i = (row + cx as usize) * 4;
                 let inv = (255 << 8) - a.min(255 << 8);
+                #[allow(clippy::needless_range_loop)] // c also indexes lerp() and the pixel
                 for c in 0..3 {
                     let s = (lerp(c) >> 8) * cm[c]; // 0..255 << 16
                                                     // dst * (1 - alpha) << 16 = dst * inv * 256 / 255 (inv is (1 - alpha) * 255 << 8);

@@ -122,7 +122,9 @@ fn quat_mul(s1: [f32; 4], s2: [f32; 4]) -> [f32; 4] {
 /// lie on a few distinct tile normals (mostly straight up), and the `acos` / `sin_cos` /
 /// normalisation behind each is costly on a console FPU. Same values as computing it.
 fn normal_rotation(normal: V3) -> Mat4 {
-    static CACHE: spin::Mutex<([([u32; 3], Mat4); 4], usize)> = spin::Mutex::new(([([u32::MAX; 3], [[0.0; 4]; 4]); 4], 0));
+    /// The last 4 (normal bits, matrix) pairs and the next slot to replace.
+    type Cache = ([([u32; 3], Mat4); 4], usize);
+    static CACHE: spin::Mutex<Cache> = spin::Mutex::new(([([u32::MAX; 3], [[0.0; 4]; 4]); 4], 0));
     let key = normal.map(f32::to_bits);
     let mut c = CACHE.lock();
     if let Some((_, m)) = c.0.iter().find(|(k, _)| *k == key) {
