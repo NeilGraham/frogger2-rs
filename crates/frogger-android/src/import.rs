@@ -48,6 +48,8 @@ pub struct Screen {
     picker: Option<Box<dyn Fn()>>,
     /// `import/.status` written by the activity while it copies picked files.
     copy_status: String,
+    /// Unpacking the game bundled in an exported APK instead of importing a disc.
+    unpacking: bool,
 }
 
 impl Screen {
@@ -73,9 +75,49 @@ impl Screen {
             button: None,
             picker,
             copy_status: String::new(),
+            unpacking: false,
         };
         s.scan();
         s
+    }
+
+    /// The first start of an exported APK: `job` unpacks the game bundled in the APK
+    /// (reporting `(stage, fraction)`) on a worker thread; no import choices are shown.
+    pub fn unpacking(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        files: PathBuf,
+        job: Box<dyn FnOnce(&dyn Fn(String, f32)) -> Result<(), String> + Send>,
+    ) -> Screen {
+        let mut r = Renderer::new(device, queue, format);
+        let font = r.add_font(frogger::tinyfont::builtin_font());
+        let (tx, rx) = channel();
+        let progress_tx = std::sync::Mutex::new(tx.clone());
+        let spawned = std::thread::Builder::new().name("unpack".into()).spawn(move || {
+            let report = |stage: String, f: f32| {
+                let _ = progress_tx.lock().unwrap().send(Msg::Progress(stage, f));
+            };
+            let _ = tx.send(Msg::Done(job(&report)));
+        });
+        let state = match spawned {
+            Ok(_) => State::Importing { source: PathBuf::from("the game data"), rx },
+            Err(e) => State::Failed(e.to_string()),
+        };
+        Screen {
+            r,
+            font,
+            files: files.clone(),
+            data_root: files,
+            state,
+            log: Vec::new(),
+            progress: None,
+            tapped: false,
+            button: None,
+            picker: None,
+            copy_status: String::new(),
+            unpacking: true,
+        }
     }
 
     /// A tap at (x, y) in pixels.
@@ -118,7 +160,8 @@ impl Screen {
                     }
                 }
             }
-            State::Failed(_) if std::mem::take(&mut self.tapped) => {
+            // A failed unpack cannot be retried from here (the app restarts it).
+            State::Failed(_) if !self.unpacking && std::mem::take(&mut self.tapped) => {
                 self.log.clear();
                 self.progress = None;
                 self.state = State::Waiting { last_scan: Instant::now() };
@@ -176,7 +219,8 @@ impl Screen {
         const DIM: [u8; 4] = [160, 170, 160, 255];
         rect(r, 0.0, 0.0, wf, line * 3.0, [20, 60, 20, 255]);
         r.draw_text(f, 0.0, line * 0.5, "SWAMPY'S REVENGE RECOMP", TITLE, s * 1.4, Some(wf / 2.0));
-        r.draw_text(f, 0.0, line * 1.9, "Import your Frogger 2 game", TEXT, s * 0.9, Some(wf / 2.0));
+        let subtitle = if self.unpacking { "Preparing the game (first start only)" } else { "Import your Frogger 2 game" };
+        r.draw_text(f, 0.0, line * 1.9, subtitle, TEXT, s * 0.9, Some(wf / 2.0));
         let x0 = line;
         let cols = ((wf - 2.0 * x0) / (6.0 * s * 0.7)).max(16.0) as usize;
         let mut y = line * 3.8;
@@ -209,7 +253,11 @@ impl Screen {
                 para(r, "e.g. adb push Frogger2.iso /sdcard/Android/data/io.github.neilgraham.swampysrevengerecomp/files/ - the import starts by itself. Data already imported on a PC can be copied to files/data/ instead.", DIM, &mut y);
             }
             State::Importing { source, .. } => {
-                para(r, &format!("Importing {}", source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), TEXT, &mut y);
+                if self.unpacking {
+                    para(r, "Unpacking the game data from the app. This happens once and takes a minute.", TEXT, &mut y);
+                } else {
+                    para(r, &format!("Importing {}", source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), TEXT, &mut y);
+                }
                 if let Some((stage, frac)) = &self.progress {
                     let bw = wf - 2.0 * x0;
                     rect(r, x0, y, bw, line * 0.6, [60, 60, 60, 255]);
@@ -225,9 +273,9 @@ impl Screen {
                 }
             }
             State::Failed(e) => {
-                para(r, "The import failed:", [255, 120, 120, 255], &mut y);
+                para(r, if self.unpacking { "Unpacking the game data failed:" } else { "The import failed:" }, [255, 120, 120, 255], &mut y);
                 para(r, e, TEXT, &mut y);
-                para(r, "Tap the screen to try again.", DIM, &mut y);
+                para(r, if self.unpacking { "Free some storage space and start the app again." } else { "Tap the screen to try again." }, DIM, &mut y);
             }
             State::Finished => para(r, "Import complete. Starting the game...", TEXT, &mut y),
         }

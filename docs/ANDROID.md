@@ -15,6 +15,7 @@ story levels, touch controls, gamepad, background/resume.
 | Overlay menu | `crates/frogger-android/src/menu.rs`: swipe in from the left edge; touch controls on/off (`android.toml`) |
 | Touch controls | `crates/frogger-android/src/touch.rs`: d-pad, PlayStation face buttons, L1/L2/R1/R2, Select/Start; procedurally drawn atlas |
 | Import screen | `crates/frogger-android/src/import.rs`: finds a disc image in the app folder, runs `f2_import` on a thread with progress |
+| Bundled game (exported APKs) | `crates/frogger-android/src/bundle.rs`: `assets/game-data/bundle.json` index, one-time unpack into `files/data/<rendition>/` |
 | Logging | `crates/frogger-android/src/logcat.rs`: stdout/stderr → logcat tag `frogger` |
 | Java activity | `packaging/android/java/.../MainActivity.java`: `NativeActivity` subclass for immersive full screen, keep-screen-on, the system file picker and a system-gesture exclusion on the left edge (the menu swipe) |
 | Manifest | `packaging/android/AndroidManifest.xml` (package `io.github.neilgraham.swampysrevengerecomp`, min API 26, target 35, landscape, launcher + Android TV launcher) |
@@ -73,6 +74,12 @@ On first start with no data the import screen offers:
   Files are picked up once they have stopped changing for 3 s.
 - **Already imported on a PC**: copy the rendition folder (e.g. `game-data/usa`, the one with
   `game/`, `music/`, `video/`) to `files/data/usa/` and start the app.
+
+**Exported APKs** (`frogger --export android` on a desktop, docs/EXPORT.md "Android") are
+this app with the player's game inside, package `io.github.neilgraham.swampysrevengerecomp.game`,
+label "Frogger 2" and the game-art icon. On the first start they unpack the bundled data
+into their own `files/data/<rendition>/` (`crates/frogger-android/src/bundle.rs`, progress
+screen) and go straight to the game; no import screen, no shortcut offer.
 
 The modern (hi-res) fonts are generated from the system typeface on the desktop; on Android
 they are only built if the typeface file is put in `files/data/<rendition>/fonts/`. Data

@@ -148,6 +148,10 @@ pub struct Job<'a> {
     /// Directory the result is written into (created if missing).
     pub out_dir: &'a Path,
     pub branding: &'a Branding,
+    /// Where per-machine signing keys are kept (created on first use), e.g.
+    /// `<config>/keys`: Android `android-export.key` / `.cer`, so re-exports install as
+    /// updates. `None`: a one-off key.
+    pub keys_dir: Option<&'a Path>,
     /// Progress lines for the UI / terminal.
     pub log: &'a dyn Fn(&str),
 }
