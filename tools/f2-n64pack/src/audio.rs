@@ -179,6 +179,16 @@ fn sample_key(s: &Sample) -> String {
 
 /// Encodes one unique sample with the given codec; cached by content.
 fn encode_sample(ctx: &Ctx, s: &Sample, codec: Codec) -> Result<Vec<u8>> {
+    if ctx.portable {
+        // In process, the same bytes as `audioconv64 --wav-compress vadpcm,huffman=false`.
+        return match codec {
+            Codec::Vadpcm => Ok(crate::wav64::vadpcm_wav64(
+                &crate::wav64::Pcm { samples: s.pcm_i16(), channels: s.channels, rate: s.sample_rate },
+                &crate::wav64::Wav64Opts { looping: s.looped },
+            )),
+            Codec::Opus => Err("Opus has no pure-Rust encoder (portable pack)".into()),
+        };
+    }
     let cache = ctx.cache_dir("sfx").map_err(|e| e.to_string())?;
     let tag = match codec {
         Codec::Vadpcm => "vadpcm-nohuff".to_string(),
@@ -246,7 +256,7 @@ impl Default for SfxOpts {
 fn encode_best(ctx: &Ctx, s: &Sample, opts: &SfxOpts) -> Result<Encoded> {
     let v = encode_sample(ctx, s, Codec::Vadpcm)?;
     let vadpcm_bytes = v.len();
-    if opus_candidate(s) {
+    if opus_candidate(s) && !(ctx.portable && opts.opus_max_ratio == 0.0) {
         let o = encode_sample(ctx, s, Codec::Opus)?;
         let opus_bytes = Some(o.len());
         if o.len() as f64 <= opts.opus_max_ratio * v.len() as f64 {
@@ -464,6 +474,110 @@ pub fn pack_music(ctx: &Ctx, kbps: u32) -> Result<ClassReport> {
     Ok(rep)
 }
 
+// ---------------------------------------------------------------------------------------------
+// Portable music (Ctx::portable): VADPCM
+// ---------------------------------------------------------------------------------------------
+
+/// Sample rates tried for the portable (VADPCM) music, best first: the highest whose files
+/// fit the space left is used. ULC (libdragon's transform codec) has no Rust encoder; VADPCM
+/// costs ~2.3x the bytes of ULC at 128 kbps for the same rate but decodes on the RSP.
+pub const MUSIC_VADPCM_RATES: [u32; 8] = [32000, 28000, 24000, 22050, 20000, 18000, 16000, 11025];
+
+/// Reads a PCM WAV (8 or 16 bits) as interleaved 16-bit samples (8-bit expanded like
+/// dr_wav's `s16` reader): `(samples, channels, rate)`.
+pub fn read_wav16(p: &Path) -> Result<(Vec<i16>, u16, u32)> {
+    let b = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return Err(format!("{}: not a RIFF/WAVE", p.display()));
+    }
+    let (mut fmt, mut ch, mut rate, mut bits) = (0u16, 0u16, 0u32, 0u16);
+    let mut at = 12usize;
+    while at + 8 <= b.len() {
+        let id = &b[at..at + 4];
+        let len = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap()) as usize;
+        let body = &b[at + 8..(at + 8 + len).min(b.len())];
+        if id == b"fmt " && body.len() >= 16 {
+            fmt = u16::from_le_bytes([body[0], body[1]]);
+            ch = u16::from_le_bytes([body[2], body[3]]);
+            rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
+            bits = u16::from_le_bytes([body[14], body[15]]);
+        } else if id == b"data" {
+            if fmt != 1 || ch == 0 || !(bits == 8 || bits == 16) {
+                return Err(format!("{}: unsupported WAV (format {fmt}, {ch} channels, {bits} bits): 8/16-bit PCM only", p.display()));
+            }
+            let frame = usize::from(ch) * usize::from(bits / 8);
+            let body = &body[..body.len() / frame * frame];
+            let s: Vec<i16> = if bits == 16 {
+                body.as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes(*c)).collect()
+            } else {
+                body.iter().map(|&v| (i16::from(v) - 128) << 8).collect()
+            };
+            return Ok((s, ch, rate));
+        }
+        at += 8 + len + (len & 1);
+    }
+    Err(format!("{}: no data chunk", p.display()))
+}
+
+/// Size of a VADPCM wav64 (looped, no Huffman) of `frames` frames x `channels`.
+pub fn vadpcm_wav64_bytes(frames: u64, channels: u64) -> u64 {
+    // wav64 header 32 + VADPCM header 20 + Huffman context 72 + 4, codebooks 136 per channel,
+    // one skip point (the loop) 8 + its state 16 per channel, then 9-byte frames of 16 samples
+    // (the length padded to 32 samples).
+    let data = frames.div_ceil(32) * 32 / 16 * 9 * channels;
+    128 + 136 * channels + 8 + 16 * channels + data
+}
+
+/// The rate the portable music uses for a track recorded at `src_rate`: `rate`, never above
+/// the source rate.
+fn music_rate(src_rate: u32, rate: u32) -> u32 {
+    rate.min(src_rate)
+}
+
+/// Predicted total size of the portable music at `rate` (exact up to the WAV parsing).
+pub fn predict_music_vadpcm_bytes(ctx: &Ctx, rate: u32) -> u64 {
+    music_tracks(ctx)
+        .iter()
+        .filter_map(|(_, p)| wav_info(p).ok())
+        .map(|(r, ch, _, n)| vadpcm_wav64_bytes(crate::resample::output_len(n as usize, r, music_rate(r, rate)) as u64, u64::from(ch)))
+        .sum()
+}
+
+/// Encodes the music tracks as VADPCM at `rate` (resampled with [`crate::resample`]), looping
+/// flag set (the runtime clears it for tracks played once), in process.
+pub fn pack_music_vadpcm(ctx: &Ctx, rate: u32) -> Result<ClassReport> {
+    let tracks = music_tracks(ctx);
+    if tracks.is_empty() {
+        return Err(format!("no music tracks under {}", ctx.rendition.join("music").display()));
+    }
+    type Track = (Vec<u8>, u32, u16, u32);
+    let results: Vec<Result<Track>> = par_map(&tracks, ctx.jobs.min(4), |(_, p)| {
+        let (pcm, ch, src) = read_wav16(p)?;
+        let to = music_rate(src, rate);
+        let pcm = crate::resample::resample(&pcm, usize::from(ch), src, to);
+        let w = crate::wav64::vadpcm_wav64(&crate::wav64::Pcm { samples: pcm, channels: ch, rate: to }, &crate::wav64::Wav64Opts { looping: true });
+        Ok((w, src, ch, to))
+    });
+    let mut rep = ClassReport::default();
+    let mut total = 0u64;
+    for ((n, p), r) in tracks.iter().zip(results) {
+        let (bytes, src, ch, to) = r.map_err(|e| format!("track{n:02}: {e}"))?;
+        let rel = format!("music/track{n:02}.wav64");
+        std::fs::write(ctx.out_path(&rel).map_err(|e| e.to_string())?, &bytes).map_err(|e| e.to_string())?;
+        total += bytes.len() as u64;
+        rep.files.push(PackedFile {
+            path: rel,
+            class: Class::Music,
+            bytes: bytes.len() as u64,
+            source_bytes: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
+            format: format!("vadpcm {to} Hz x{ch} loop"),
+            notes: vec![format!("from {src} Hz")],
+        });
+    }
+    rep.notes.push(format!("music: {} tracks, {:.1}s, VADPCM at {rate} Hz (portable pack): {total} bytes", tracks.len(), music_seconds(ctx)));
+    Ok(rep)
+}
+
 /// Encodes the music tracks at (about) `kbps` per stereo track, Opus, looping flag set (the runtime
 /// clears it with `wav64_set_loop(w, false)` for tracks the game plays once, `PrepareSong(.., FALSE)`).
 pub fn pack_music_opus(ctx: &Ctx, kbps: u32) -> Result<ClassReport> {
@@ -577,7 +691,8 @@ mod tests {
     #[test]
     fn real_banks_dedupe() {
         let Some(rend) = crate::ctx::find_rendition(Path::new(env!("CARGO_MANIFEST_DIR"))) else { return };
-        let ctx = Ctx { rendition: rend, out: PathBuf::new(), cache: PathBuf::new(), tools: crate::ctx::default_tools(), jobs: 1, quick: true };
+        let ctx =
+            Ctx { rendition: rend, out: PathBuf::new(), cache: PathBuf::new(), tools: crate::ctx::default_tools(), jobs: 1, quick: true, portable: false };
         let (banks, dd) = load_banks(&ctx).unwrap();
         assert_eq!(banks.len(), 19);
         assert!(dd.unique.len() < banks.iter().map(|b| b.1.len()).sum::<usize>());

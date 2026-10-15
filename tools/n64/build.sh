@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the Frogger 2 N64 ROM: target/n64/frogger2.z64.
 #
-#   tools/n64/build.sh [--debug] [--small] [--bringup | --r3d-test]
+#   tools/n64/build.sh [--debug] [--small] [--portable] [--bringup | --r3d-test | --runtime]
 #
 # Steps: (1) Rust staticlib crates/frogger-n64 for the custom VR4300 n32 target
 # (nightly, -Zbuild-std=core,alloc); (2) relabel its objects n32 -> o64 so GNU ld accepts
@@ -16,6 +16,13 @@
 # sound effects with the F2SX index, Opus music, H.264 FMV), copied to the DFS root.
 # --small: the pack without music and FMV (target/n64/pack-small): a ROM under ares'
 # 0x3FF0000-byte ISViewer limit, so debugf logging works.
+# --portable: the pack of the desktop app's N64 export (docs/EXPORT.md "N64"): f2-n64pack
+# --portable (pure-Rust encoders: the same aPLib/VADPCM bytes, music VADPCM at the best rate
+# that fits instead of ULC, no FMV) into target/n64/pack-portable; the ROM is byte-identical to
+# `frogger --export n64` with the runtime of the same engine build (tools/n64/export-check.sh).
+# --runtime: the engine without game data (empty DFS from target/n64/runtime-fs) for the export
+# runtime (tools/runtime/build-n64.sh); replaces target/n64/frogger2.z64 with that data-free
+# ROM. The engine is the default release build (no F2N64_BOOT / F2N64_FEATURES allowed).
 #
 # F2N64_DATA=prep: the phase-2G layout instead: tools/f2-n64prep lays out
 # target/n64/filesystem from F2_GAME_DIR (object banks pre-parsed to postcard, sound banks
@@ -54,17 +61,29 @@ profile=release
 bringup=0
 r3dtest=0
 small=0
+portable=0
+runtime=0
 for a in "$@"; do
     case "$a" in
     --debug) profile=dev ;;
     --bringup) bringup=1 ;;
     --r3d-test) r3dtest=1 ;;
     --small) small=1 ;;
+    --portable) portable=1 ;;
+    --runtime) runtime=1 ;;
     *) echo "unknown option $a" >&2; exit 2 ;;
     esac
 done
+if [ $runtime = 1 ]; then
+    if [ $bringup = 1 ] || [ $r3dtest = 1 ] || [ $small = 1 ] || [ $portable = 1 ] || [ -n "${F2N64_BOOT:-}" ] || [ -n "${F2N64_FEATURES:-}" ] || [ "${F2N64_DATA:-pack}" != pack ]; then
+        echo "ERROR: --runtime builds the default release engine: no --small/--portable/--bringup/--r3d-test, F2N64_BOOT, F2N64_FEATURES or F2N64_DATA" >&2
+        exit 2
+    fi
+fi
 out="$root/target/n64"
 fs="$out/filesystem"
+# The runtime build's (empty) DFS root: the game filesystem stays as it is.
+[ $runtime = 1 ] && fs="$out/runtime-fs"
 mkdir -p "$out"
 
 features="${F2N64_FEATURES:-}"
@@ -98,7 +117,11 @@ python3 -I "$here/n32-to-o64.py" "$lib" "$out/libfrogger_n64_o64.a"
 "$N64_INST/bin/mips64-elf-ranlib" "$out/libfrogger_n64_o64.a"
 
 echo "== [3/5] DFS filesystem"
-if [ $bringup = 1 ]; then
+if [ $runtime = 1 ]; then
+    rm -rf "$fs"
+    mkdir -p "$fs"
+    echo "   runtime: empty DFS (the export adds the player's data)"
+elif [ $bringup = 1 ]; then
     rm -rf "$fs"
     mkdir -p "$fs"
     printf 'Hello from the Frogger 2 N64 DFS!\n' > "$fs/hello.txt"
@@ -127,6 +150,10 @@ elif [ "${F2N64_DATA:-pack}" = pack ]; then
     if [ $small = 1 ]; then
         pack="$out/pack-small"
         only=(--only levels,models,textures,sfx)
+    fi
+    if [ $portable = 1 ]; then
+        pack="$pack-portable"
+        only+=(--portable)
     fi
     cargo build --release -q --manifest-path "$root/Cargo.toml" -p f2-n64pack
     (cd "$root" && "$root/target/release/f2-n64pack" --rendition "$rendition" --out "$pack" --cache "$out/cache" "${only[@]}")
@@ -174,6 +201,10 @@ fi
 # lines starting with '#' skipped), copied to rom:/replay/000.txt, 001.txt, ... and listed in
 # rom:/replay/list.txt ("000.txt <name>"); F2N64_BOOT=replay plays them back to back.
 rm -rf "$fs/replay.txt" "$fs/replay"
+if [ $runtime = 1 ] && { [ -n "${F2N64_REPLAY:-}" ] || [ -n "${F2N64_REPLAY_LIST:-}" ]; }; then
+    echo "ERROR: --runtime takes no replay" >&2
+    exit 1
+fi
 if [ -n "${F2N64_REPLAY:-}" ] && [ -n "${F2N64_REPLAY_LIST:-}" ]; then
     echo "ERROR: F2N64_REPLAY and F2N64_REPLAY_LIST both set" >&2
     exit 1
@@ -200,7 +231,7 @@ fi
 echo "== [4/5] libdragon link + ROM"
 rm -f "$out/frogger2.z64" "$out/build/frogger2.dfs"
 make -C "$out" -f "$here/Makefile" CSRC="$root/crates/frogger-n64/csrc" \
-    RUST_LIB="$out/libfrogger_n64_o64.a" N64_INST="$N64_INST"
+    RUST_LIB="$out/libfrogger_n64_o64.a" N64_INST="$N64_INST" N64_MKDFS_ROOT="$(basename "$fs")"
 
 echo "== [5/5] size check"
 size=$(stat -c %s "$out/frogger2.z64")

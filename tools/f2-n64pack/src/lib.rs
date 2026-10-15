@@ -13,17 +13,23 @@
 //!
 //! Nothing produced here may be committed: it is all derived from the user's game data.
 
+pub mod apultra;
 pub mod audio;
 pub mod bench;
 pub mod budget;
 pub mod codec;
 pub mod ctx;
+pub mod dca;
+pub mod dfs;
 pub mod levels;
 pub mod models;
+pub mod resample;
 pub mod rmodels;
 pub mod textures;
 pub mod tools;
+pub mod vadpcm;
 pub mod video;
+pub mod wav64;
 
 pub use ctx::Ctx;
 

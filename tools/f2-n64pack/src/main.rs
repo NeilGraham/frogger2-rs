@@ -7,7 +7,7 @@ use f2_n64pack::Ctx;
 
 const USAGE: &str = "usage: f2-n64pack [--rendition DIR] [--out DIR] [--cache DIR] [--tools DIR] [--jobs N]
                   [--reserve-mib X] [--cart-mib N] [--size-weight W|inf] [--codec CLASS=NAME]... [--quick] [--only levels,models,textures,sfx,music,fmv]
-                  [--bench]
+                  [--portable] [--bench]
 
 Builds the N64 asset pack (default target/n64/pack) from an imported rendition (default: the
 first game-data/usa found upwards) and prints the cartridge budget. Fails if the pack plus the
@@ -15,7 +15,9 @@ code reserve (default 2.5 MiB) exceeds the cartridge (default 64 MiB). --bench w
 codec comparison (research/n64-compression.md numbers) to target/n64/bench.md.
 --size-weight: F2Z space-speed trade-off, decode cycles per stored byte (19 = minimum
 load time on the VR4300; inf = smallest pack, the default).
---codec: per-class codec, e.g. --codec models=f2z (defaults: models/textures aplib, levels f2z).";
+--codec: per-class codec, e.g. --codec models=f2z (defaults: models/textures aplib, levels f2z).
+--portable: the pure-Rust pack of the desktop app's N64 export (no libdragon tool or ffmpeg is
+run): the same aPLib and VADPCM bytes, music VADPCM at the best rate that fits, no FMV.";
 
 fn main() -> ExitCode {
     let mut rendition: Option<PathBuf> = None;
@@ -25,6 +27,7 @@ fn main() -> ExitCode {
     let mut jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut cfg = BudgetConfig::default();
     let mut quick = false;
+    let mut portable = false;
     let mut bench = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -59,6 +62,7 @@ fn main() -> ExitCode {
             }
             "--only" => cfg.only = Some(val().split(',').map(str::to_string).collect()),
             "--quick" => quick = true,
+            "--portable" => portable = true,
             "--bench" => bench = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -74,7 +78,7 @@ fn main() -> ExitCode {
         eprintln!("no rendition found (pass --rendition game-data/usa)");
         return ExitCode::from(2);
     };
-    let ctx = Ctx { rendition, out, cache, tools, jobs, quick };
+    let ctx = Ctx { rendition, out, cache, tools, jobs, quick, portable };
     let r = if bench { f2_n64pack::bench::run(&ctx).map(|_| true) } else { budget::build(&ctx, &cfg) };
     match r {
         Ok(true) => ExitCode::SUCCESS,

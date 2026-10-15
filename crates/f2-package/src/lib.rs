@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 mod android;
 mod linux;
 mod macos;
-mod n64;
+pub mod n64;
 mod ps4;
 mod ps5;
 pub mod util;

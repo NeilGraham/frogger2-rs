@@ -90,6 +90,9 @@ fn sum(files: &[PackedFile], c: Class) -> u64 {
 
 /// DFS image size and per-file overhead, measured with libdragon's `mkdfs`.
 fn measure_dfs(ctx: &Ctx) -> Result<u64> {
+    if ctx.portable {
+        return crate::dfs::image_size_dir(&ctx.out);
+    }
     let img = ctx.out.with_extension("dfs");
     crate::tools::run(Command::new(ctx.tool("mkdfs")).arg(&img).arg(&ctx.out))?;
     Ok(std::fs::metadata(&img).map_err(|e| e.to_string())?.len())
@@ -145,11 +148,11 @@ pub fn build(ctx: &Ctx, cfg: &BudgetConfig) -> Result<bool> {
     let avail = cfg.cart_bytes.saturating_sub(cfg.code_reserve + fixed + overhead_est);
     if cfg.wants("music") || cfg.wants("fmv") {
         step("music + FMV (filling the remaining space)");
-        let (m, f) = media(ctx, cfg, avail)?;
+        let (m, f) = if ctx.portable { media_portable(ctx, cfg, avail)? } else { media(ctx, cfg, avail)? };
         add(m, &mut files);
         add(f, &mut files);
     }
-    if cfg.wants("sfx") && cfg.wants("fmv") {
+    if cfg.wants("sfx") && cfg.wants("fmv") && !ctx.portable {
         step("quality upgrades with the remaining space");
         for n in fill(ctx, cfg, &mut files)? {
             eprintln!("  {n}");
@@ -230,6 +233,38 @@ fn fill(ctx: &Ctx, cfg: &BudgetConfig, files: &mut Vec<PackedFile>) -> Result<Ve
         replace(files, Class::Fmv, r);
     }
     Ok(notes)
+}
+
+/// Portable pack: no FMV (no H.264 encoder in Rust); music VADPCM at the highest rate of
+/// [`audio::MUSIC_VADPCM_RATES`] whose size fits `avail`, none if even the lowest does not
+/// (the "small" ROM, like `build.sh --small`).
+fn media_portable(ctx: &Ctx, cfg: &BudgetConfig, avail: u64) -> Result<(ClassReport, ClassReport)> {
+    let mut fmv = ClassReport::default();
+    if cfg.wants("fmv") {
+        fmv.notes.push("FMV: none in the portable pack (no pure-Rust H.264 encoder); the game skips its videos".into());
+    }
+    if !cfg.wants("music") {
+        return Ok((ClassReport::default(), fmv));
+    }
+    if audio::music_tracks(ctx).is_empty() {
+        let mut m = ClassReport::default();
+        m.notes.push(format!("music: no tracks under {}", ctx.rendition.join("music").display()));
+        return Ok((m, fmv));
+    }
+    for &rate in &audio::MUSIC_VADPCM_RATES {
+        let predicted = audio::predict_music_vadpcm_bytes(ctx, rate);
+        if predicted <= avail {
+            let mut m = audio::pack_music_vadpcm(ctx, rate)?;
+            m.notes.push(format!("music: VADPCM {rate} Hz is the best rate that fits ({predicted} B predicted of {avail} B available)"));
+            return Ok((m, fmv));
+        }
+    }
+    let mut m = ClassReport::default();
+    m.notes.push(format!(
+        "music: none (even VADPCM at {} Hz exceeds the {avail} B left): small ROM",
+        audio::MUSIC_VADPCM_RATES[audio::MUSIC_VADPCM_RATES.len() - 1]
+    ));
+    Ok((m, fmv))
 }
 
 /// Music + FMV: the best quality that fits `avail` bytes.

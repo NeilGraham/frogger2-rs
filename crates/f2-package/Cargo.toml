@@ -25,6 +25,9 @@ hmac = "0.12"
 aes = "0.8"
 num-bigint = { version = "0.4", default-features = false, features = ["std"] }
 zip.workspace = true
+serde.workspace = true
+# N64: the asset pack (portable profile: pure-Rust encoders) and the DFS writer.
+f2-n64pack = { path = "../../tools/f2-n64pack" }
 
 [dev-dependencies]
 # An independent BC7 decoder to check the PS5 artwork encoder against.

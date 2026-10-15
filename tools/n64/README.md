@@ -8,6 +8,8 @@ game on the RSP renderer from the 64 MB pack).
 | File | Purpose |
 |---|---|
 | `build.sh` | full build → `target/n64/frogger2.z64` (asset pack + ROM) |
+| `export-check.sh` | byte-for-byte check of the desktop N64 export (`--export n64`, pure Rust) against `build.sh --portable`, and of the runtime + Rust DFS/ROM assembly against the default ROM |
+| `../runtime/build-n64.sh` | the data-free export runtime `runtime-n64-<v>.zip` (`build.sh --runtime`) |
 | `mips-nintendo64-none.json` | rustc target spec: VR4300 (MIPS III), big-endian, **n32** |
 | `cargo-config.toml` | `-Zbuild-std=core,alloc`, JSON target specs (passed with `--config`) |
 | `n32-to-o64.py` | relabels the Rust objects as o64 so GNU ld links them with libdragon |
@@ -179,6 +181,21 @@ media encodes are cached (first run: tens of minutes for the FMV/music searches)
 it through `crates/frogger-n64/src/data.rs` (`PackStore`: magic dispatch `F2Z1` / `DCA` / raw;
 layout table in the module docs). The full ROM (61.34 MiB) stays under ares' 0x3FF0000-byte
 ISViewer limit, so `debugf` works on it too.
+
+### Desktop export (`frogger --export n64`) and its runtime
+The desktop app builds ROMs without any of these tools (docs/EXPORT.md "N64"): CI runs
+`tools/runtime/build-n64.sh OUT VERSION` = `build.sh --runtime` (the default release engine
+with an empty DFS from `target/n64/runtime-fs`; it replaces `target/n64/frogger2.z64` with that
+data-free ROM) and cuts the ROM into `runtime-n64-<v>.zip` (IPL3/header, compressed ELF,
+symbols, `runtime.json`). The exporter (`crates/f2-package/src/n64*`) builds the pack with
+`f2-n64pack`'s pure-Rust **portable** profile, writes the DFS (`f2_n64pack::dfs` = `mkdfs`)
+and lays the ROM out like `n64tool` + `ed64romconfig`. `build.sh --portable` builds the same
+pack (`target/n64/pack-portable`) with the real tools after it, so the two ROMs can be
+compared byte for byte: `F2_GAME_DIR=… tools/n64/export-check.sh` (also checks the default
+ROM against runtime + Rust DFS/ROM assembly). Portable vs default pack: identical aPLib models
+/ textures and VADPCM sound effects (Rust ports of apultra and libdragon's VADPCM encoder,
+`f2_n64pack::{apultra,dca,vadpcm,wav64}`, byte-identical to `mkasset` / `audioconv64`), music
+VADPCM at the best rate that fits instead of ULC, no FMV (the game skips its videos).
 
 Phase 2G layout (`F2N64_DATA=prep`, crate feature `prep-data`): `tools/f2-n64prep <game dir> target/n64/filesystem target/n64/wav` lays out the DFS:
 `maps/ collision/ scenics/ demos/ textures/` copied (lowercase); `objects/<x>.dll` →
