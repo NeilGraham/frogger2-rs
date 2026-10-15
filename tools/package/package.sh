@@ -176,7 +176,13 @@ PLIST
   if command -v codesign >/dev/null; then
     local id="${F2_CODESIGN_ID:--}" opts=()
     [[ "$id" != "-" ]] && opts=(--options runtime --timestamp)
-    for b in "${BINS[@]}"; do codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$app/MacOS/$b"; done
+    # The helper tools first; the main executable (`frogger`) is signed with the bundle:
+    # codesign treats a bundle's main executable as the bundle, so signing it first would seal
+    # the bundle while the tools are still unsigned (x86_64 builds from an arm64 host are not
+    # linker-signed).
+    for b in "${BINS[@]}"; do
+      [[ "$b" == frogger ]] || codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$app/MacOS/$b"
+    done
     codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$bundle"
     codesign --verify --strict "$bundle"
   fi
