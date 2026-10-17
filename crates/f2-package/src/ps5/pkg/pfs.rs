@@ -82,7 +82,7 @@ fn hash_bytes(s: &[u8]) -> u64 {
             c = ((b ^ a).rotate_left(1) ^ c).rotate_right(5);
             a = (!n12 & c) ^ n11 ^ ROUND;
             b = (!c & n11) ^ n12;
-            c = (!n11 & n12) ^ c;
+            c ^= !n11 & n12;
         }
         let rest = ((s.len() - 1) & 7) + 1;
         for j in 0..rest {

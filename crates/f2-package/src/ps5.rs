@@ -1,5 +1,5 @@
-//! Export for PS5: the native app folder of the player's game, from the prebuilt runtime
-//! (docs/EXPORT.md "PS5").
+//! Export for PS5: the native app folder of the player's game and its fake package, from the
+//! prebuilt runtime (docs/EXPORT.md "PS5").
 //!
 //! `<out>/<title> (PS5)/` holds what `tools/ps5/build.sh --data` puts in `target/ps5/PPSA99920/`:
 //! `eboot.bin` and `sce_module/libc.prx` from the runtime, `sce_sys/param.json` (the runtime's,
@@ -7,6 +7,11 @@
 //! `pic0`/`pic1` `.png`/`.dds` 3840x2160, BC7 DX10 as the shell wants) made from the branding
 //! art, and the game data in `data/` (`/app0/data`, where the console host looks first). It is
 //! installed by copying it to the console (e.g. `/data/homebrew/` for ShadowMountPlus).
+//!
+//! Beside it, `<out>/<title> (PS5).pkg` is the same app as a fake package (`ps5/pkg`, a port of
+//! LibProsperoPkg's package builder, byte-identical to `ffpfsc-pkg-tool build --deterministic`
+//! of the folder), with the runtime's raw ELF programs (`pkg_elfs` in runtime.json) in place of
+//! the signed ones, fake-signed by the package builder as LibProsperoPkg does.
 
 mod dds;
 pub(crate) mod fself;
@@ -19,8 +24,26 @@ use std::path::{Path, PathBuf};
 
 pub(crate) fn export(job: &Job) -> Result<PathBuf, String> {
     let log = job.log;
-    let rt = Runtime::load(job.runtime, "ps5", log)?;
+    let rt = Runtime::load_format(job.runtime, "ps5", 2, log)?;
     let title_id = rt.str("title_id")?.to_string();
+    let content_id = rt.str("content_id")?.to_string();
+    let pkg_elfs: Vec<(String, String)> = rt
+        .json
+        .get("pkg_elfs")
+        .and_then(|v| v.as_object())
+        .ok_or("runtime.json: missing \"pkg_elfs\"")?
+        .iter()
+        .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+        .collect();
+    for (_, z) in &pkg_elfs {
+        if rt.file(z).is_none() {
+            return Err(format!("the PS5 runtime has no {z}"));
+        }
+    }
+    #[cfg(not(test))]
+    let keys = pkg::keys::load(job.keys_dir, log)?;
+    #[cfg(test)]
+    let keys = pkg::keys::test_keyset();
     let data_dir = rt.json.get("data_dir").and_then(|v| v.as_str()).unwrap_or("data").trim_matches('/').to_string();
     let mut param = rt.json.get("param_json").cloned().ok_or("runtime.json: missing \"param_json\"")?;
     let set_title = |p: &mut serde_json::Value| -> Option<()> {
@@ -48,6 +71,9 @@ pub(crate) fn export(job: &Job) -> Result<PathBuf, String> {
     };
     let result = (|| -> Result<(), String> {
         for (path, bytes) in rt.ordered_files() {
+            if pkg_elfs.iter().any(|(_, z)| z == path) {
+                continue; // the package's raw ELFs
+            }
             write(path, bytes)?;
         }
         let mut json = serde_json::to_string_pretty(&param).map_err(|e| e.to_string())?;
@@ -80,6 +106,32 @@ pub(crate) fn export(job: &Job) -> Result<PathBuf, String> {
     }
     replace_dir(&part, &out)?;
     log(&format!("PS5 app folder: {} (title {title_id}); copy it to the console, e.g. /data/homebrew/ for ShadowMountPlus", out.display()));
+
+    // The fake package of the same folder, the programs as raw ELFs.
+    let stem = job.branding.file_stem();
+    let pkg_path = job.out_dir.join(format!("{stem} (PS5).pkg"));
+    let pkg_part = job.out_dir.join(format!(".{stem} (PS5).pkg.part"));
+    let temp = job.out_dir.join(format!(".{stem} (PS5).pkg-tmp"));
+    let mut stage = pkg::stage_from_dir(&out)?;
+    for f in &mut stage {
+        if let Some((_, z)) = pkg_elfs.iter().find(|(p, _)| *p == f.path) {
+            let b = rt.file(z).unwrap().to_vec();
+            f.len = b.len() as u64;
+            f.source = pkg::inner::Source::Bytes(b);
+        }
+    }
+    let built = pkg::build(stage, &content_id, &keys, &pkg_part, &temp, log);
+    let _ = std::fs::remove_dir_all(&temp);
+    let built = built.inspect_err(|_| {
+        let _ = std::fs::remove_file(&pkg_part);
+    })?;
+    std::fs::rename(&pkg_part, &pkg_path).map_err(|e| format!("{}: {e}", pkg_path.display()))?;
+    log(&format!(
+        "PS5 package: {} ({} MB, {content_id}, version {}); install it with an fPKG installer (kstuff, firmware 11.60 and lower)",
+        pkg_path.display(),
+        built.size >> 20,
+        built.content_version
+    ));
     Ok(out)
 }
 
@@ -108,10 +160,12 @@ mod tests {
         std::fs::create_dir_all(rt.join("sce_module")).unwrap();
         std::fs::write(rt.join("eboot.bin"), b"eboot").unwrap();
         std::fs::write(rt.join("sce_module/libc.prx"), b"libc").unwrap();
+        std::fs::create_dir_all(rt.join("pkg")).unwrap();
+        std::fs::write(rt.join("pkg/eboot.elf"), b"raw eboot").unwrap();
         std::fs::write(
             rt.join("runtime.json"),
-            r#"{"target":"ps5","version":"0.0.0","format":1,"title_id":"PPSA99920","content_id":"UP9000-PPSA99920_00-FROGGER2RUSTPORT",
-                "param_json":{"attribute3":524352,"localizedParameters":{"defaultLanguage":"en-US","en-US":{"titleName":""}},"titleId":"PPSA99920"},
+            r#"{"target":"ps5","version":"0.0.0","format":2,"pkg_elfs":{"eboot.bin":"pkg/eboot.elf"},"title_id":"PPSA99920","content_id":"UP9000-PPSA99920_00-FROGGER2RUSTPORT",
+                "param_json":{"applicationDrmType":"free","attribute3":524352,"localizedParameters":{"defaultLanguage":"en-US","en-US":{"titleName":""}},"titleId":"PPSA99920"},
                 "data_dir":"data","files":["eboot.bin","sce_module/libc.prx"]}"#,
         )
         .unwrap();
@@ -132,7 +186,13 @@ mod tests {
             assert_eq!(dds.len(), 148 + 3840 * 2160);
             assert_eq!(&dds[12..20], &[0x70, 0x08, 0, 0, 0, 0x0F, 0, 0]); // 2160 x 3840
             assert_eq!(std::fs::read(dir.join("sce_sys/icon0.dds")).unwrap().len(), 148 + 512 * 512);
+            assert!(!dir.join("pkg").exists());
+            let pkg = std::fs::read(out.join("Frogger 2 - Swampy's Revenge (PS5).pkg")).unwrap();
+            assert_eq!(&pkg[..4], b"\x7fFIH");
+            let cnt = 0x10000 + u64::from_le_bytes(pkg[24..32].try_into().unwrap()) as usize;
+            assert_eq!(&pkg[cnt..cnt + 4], b"\x7fCNT");
         }
+        assert!(std::fs::read_dir(&out).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with('.')));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -2,16 +2,19 @@
 # Builds the PS5 export runtime: the native PS5 program without any game data, as
 #   OUT_DIR/runtime-ps5-<VERSION>.zip
 # which the desktop app's "Export to PS5" (crates/f2-package/src/ps5.rs) turns into an app
-# folder with the player's own game data, title and icon (docs/EXPORT.md "PS5").
+# folder and a fake package (.pkg) with the player's own game data, title and icon
+# (docs/EXPORT.md "PS5").
 #
 #   tools/runtime/build-ps5.sh OUT_DIR VERSION
 #
 # Zip contents (paths inside the app folder, /app0 on the console):
 #   eboot.bin             the game (PS5 executable in a fake-signed SELF, tools/ps5/build.sh)
 #   sce_module/libc.prx   the libc companion module every title carries
-#   runtime.json          {"target":"ps5","version":VERSION,"format":1, title/content ID,
+#   pkg/eboot.elf         the same programs as raw ELFs, for the .pkg (whose builder
+#   pkg/libc.elf          fake-signs them itself, as LibProsperoPkg does); not in the app folder
+#   runtime.json          {"target":"ps5","version":VERSION,"format":2, title/content ID,
 #                          "param_json": sce_sys/param.json without the title, "data_dir":"data",
-#                          "files":[...]}
+#                          "files":[...], "pkg_elfs":{app path: raw ELF in the zip}}
 #
 # Prerequisites (Linux x86_64; see tools/ps5/README.md "How it works"):
 #   - ps5-payload-sdk v0.43 (https://github.com/ps5-payload-dev/sdk/releases) extracted;
@@ -28,7 +31,7 @@
 # that installs over a previous one), PS5_PAYLOAD_SDK, PS5_VULKAN, F2_ZLIB.
 set -euo pipefail
 
-[ $# -eq 2 ] || { sed -n '2,29p' "$0"; exit 2; }
+[ $# -eq 2 ] || { sed -n '2,32p' "$0"; exit 2; }
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$(realpath -m "$1")"
 VERSION="$2"
@@ -39,11 +42,17 @@ mkdir -p "$OUT"
 # shellcheck source=/dev/null
 source "$WORK/stage.env"
 APP="$WORK/$TITLE_ID"
+BUILD="$WORK/build/$TITLE_ID"
+# The raw ELFs the package builder signs (tools/ps5/build.sh --pkg uses the same ones).
+EBOOT_ELF="$BUILD/eboot.elf"
+if [ "$GPU" = 1 ]; then EBOOT_ELF="$BUILD/eboot-gpu.elf"; fi
 
-python3 -I - "$APP" "$OUT/runtime-ps5-$VERSION.zip" "$VERSION" "$TITLE_ID" "$CONTENT_ID" "$CONTENT_VERSION" <<'PY'
+python3 -I - "$APP" "$OUT/runtime-ps5-$VERSION.zip" "$VERSION" "$TITLE_ID" "$CONTENT_ID" "$CONTENT_VERSION" \
+    "$EBOOT_ELF" "$WORK/tools/libc.raw.elf" <<'PY'
 import json, os, sys, zipfile
-app, out, version, title_id, content_id, content_version = sys.argv[1:]
+app, out, version, title_id, content_id, content_version, eboot_elf, libc_elf = sys.argv[1:]
 files = ["eboot.bin", "sce_module/libc.prx"]
+elfs = {"eboot.bin": ("pkg/eboot.elf", eboot_elf), "sce_module/libc.prx": ("pkg/libc.elf", libc_elf)}
 with open(os.path.join(app, "sce_sys", "param.json")) as f:
     param = json.load(f)
 # The title comes from the player's disc at export time.
@@ -51,13 +60,14 @@ param["localizedParameters"]["en-US"]["titleName"] = ""
 info = {
     "target": "ps5",
     "version": version,
-    "format": 1,
+    "format": 2,
     "title_id": title_id,
     "content_id": content_id,
     "content_version": content_version,
     "param_json": param,
     "data_dir": "data",
     "files": files,
+    "pkg_elfs": {k: v[0] for k, v in elfs.items()},
 }
 data = (json.dumps(info, indent=2) + "\n").encode()
 with zipfile.ZipFile(out + ".part", "w", zipfile.ZIP_DEFLATED) as z:
@@ -70,6 +80,12 @@ with zipfile.ZipFile(out + ".part", "w", zipfile.ZIP_DEFLATED) as z:
         zi.compress_type = zipfile.ZIP_DEFLATED
         zi.external_attr = 0o644 << 16
         with open(os.path.join(app, name), "rb") as f:
+            z.writestr(zi, f.read())
+    for name, src in elfs.values():
+        zi = zipfile.ZipInfo(name, (2000, 1, 1, 0, 0, 0))
+        zi.compress_type = zipfile.ZIP_DEFLATED
+        zi.external_attr = 0o644 << 16
+        with open(src, "rb") as f:
             z.writestr(zi, f.read())
 os.replace(out + ".part", out)
 PY

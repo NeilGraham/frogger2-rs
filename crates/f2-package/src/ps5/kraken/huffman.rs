@@ -9,6 +9,7 @@ pub(super) struct CostInputs {
     pub header_bytes: i32,
 }
 
+#[allow(clippy::large_enum_variant)] // short-lived, one per chunk
 pub(super) enum Prepared {
     Single(u8),
     Coded { cost: CostInputs, len_of_sym: [u8; 256], reversed_code: [u16; 256], header: Vec<u8> },
@@ -391,8 +392,7 @@ fn build_code_lengths(freq: &[i32; 256]) -> Option<[u8; 256]> {
     let mut take = lens_used[l];
     for lvl in (1..=l).rev() {
         let mut next = 0usize;
-        for idx in 0..take {
-            let node = nodes[lvl][idx];
+        for &node in &nodes[lvl][..take] {
             if node & 0x4000_0000 == 0 {
                 out[node as usize] += 1;
             } else {

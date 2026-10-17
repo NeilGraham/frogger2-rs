@@ -119,8 +119,8 @@ pub(crate) fn keystone(keys: &Keyset) -> Vec<u8> {
 // ---- PlayGo (one chunk, one scenario, all languages) ----
 
 const LANGUAGES: [&str; 31] = [
-    "ja-JP", "en-US", "fr-FR", "es-ES", "de-DE", "it-IT", "nl-NL", "pt-PT", "ru-RU", "ko-KR", "zh-Hant", "zh-Hans", "fi-FI", "sv-SE", "da-DK", "no-NO", "pl-PL", "pt-BR", "en-GB", "tr-TR", "es-419",
-    "ar-AE", "fr-CA", "cs-CZ", "hu-HU", "el-GR", "ro-RO", "th-TH", "vi-VN", "id-ID", "uk-UA",
+    "ja-JP", "en-US", "fr-FR", "es-ES", "de-DE", "it-IT", "nl-NL", "pt-PT", "ru-RU", "ko-KR", "zh-Hant", "zh-Hans", "fi-FI", "sv-SE", "da-DK", "no-NO",
+    "pl-PL", "pt-BR", "en-GB", "tr-TR", "es-419", "ar-AE", "fr-CA", "cs-CZ", "hu-HU", "el-GR", "ro-RO", "th-TH", "vi-VN", "id-ID", "uk-UA",
 ];
 
 /// `BuildScenarioJson(1, all languages, 0)` (compact `Utf8JsonWriter` output).
@@ -179,9 +179,17 @@ pub(crate) fn chunk_dat(content_id: &str, main_size: u64, tail_size: u64) -> Vec
     b[48] = 17;
     w64(&mut b, 56, u64::MAX);
     b[64..100].copy_from_slice(content_id.as_bytes());
-    for (i, (at, size)) in [(chunk_at, chunk_size), (mchunk_idx_at, mchunk_idx_size), (label_at, labels_size), (mchunk_at, mchunk_size), (scen_at, scen_size), (scen_chunks_at, scen_chunks_size), (scen_label_at, scen_label_size)]
-        .into_iter()
-        .enumerate()
+    for (i, (at, size)) in [
+        (chunk_at, chunk_size),
+        (mchunk_idx_at, mchunk_idx_size),
+        (label_at, labels_size),
+        (mchunk_at, mchunk_size),
+        (scen_at, scen_size),
+        (scen_chunks_at, scen_chunks_size),
+        (scen_label_at, scen_label_size),
+    ]
+    .into_iter()
+    .enumerate()
     {
         w32(&mut b, 192 + i * 8, at as u32);
         w32(&mut b, 196 + i * 8, size as u32);
@@ -358,7 +366,9 @@ pub(crate) fn build(keys: &Keyset, inp: CntInput) -> Result<(Vec<u8>, Vec<u8>), 
     let (hash_table, ficm) = file_map(&inp.file_paths)?;
 
     let mut entries: Vec<Entry> = Vec::new();
-    let mut push = |id: u32, name: Option<&str>, data: Vec<u8>| entries.push(Entry { id, name: name.map(String::from), data, offset: 0, name_offset: 0, flags1: flags1(id) });
+    let mut push = |id: u32, name: Option<&str>, data: Vec<u8>| {
+        entries.push(Entry { id, name: name.map(String::from), data, offset: 0, name_offset: 0, flags1: flags1(id) })
+    };
     push(ID_ENTRY_KEYS, None, ek);
     push(ID_IMAGE_KEY, None, image_key);
     push(ID_GENERAL_DIGESTS, None, vec![0; 480]);
@@ -420,7 +430,7 @@ pub(crate) fn build(keys: &Keyset, inp: CntInput) -> Result<(Vec<u8>, Vec<u8>), 
     }
     let chunk_out = chunk.clone();
     entries.iter_mut().find(|e| e.id == ID_PLAYGO_CHUNK).unwrap().data = chunk;
-    let meta_bytes = |entries: &[Entry]| -> Vec<u8> {
+    entries[metas_at].data = {
         let mut v: Vec<&Entry> = entries.iter().collect();
         v.sort_by_key(|e| e.id);
         let mut out = Vec::with_capacity(v.len() * 32);
@@ -433,7 +443,6 @@ pub(crate) fn build(keys: &Keyset, inp: CntInput) -> Result<(Vec<u8>, Vec<u8>), 
         }
         out
     };
-    entries[metas_at].data = meta_bytes(&entries);
     let main_ent_data_size: usize = entries[..5].iter().map(|e| e.data.len()).sum();
     let get = |entries: &[Entry], id: u32| entries.iter().position(|e| e.id == id).unwrap();
     let imagedigs_at = get(&entries, ID_IMAGEDIGS);
@@ -544,7 +553,11 @@ pub(crate) fn build(keys: &Keyset, inp: CntInput) -> Result<(Vec<u8>, Vec<u8>), 
         &cnt[e.offset as usize..e.offset as usize + l]
     };
     let sc1: Vec<u8> = [ID_ENTRY_KEYS, ID_IMAGE_KEY, ID_GENERAL_DIGESTS, ID_METAS, ID_DIGESTS].iter().flat_map(|&id| range(id, None).to_vec()).collect();
-    let sc2: Vec<u8> = [ID_ENTRY_KEYS, ID_IMAGE_KEY, ID_GENERAL_DIGESTS].iter().flat_map(|&id| range(id, None).to_vec()).chain(range(ID_METAS, Some(6 * 32)).to_vec()).collect();
+    let sc2: Vec<u8> = [ID_ENTRY_KEYS, ID_IMAGE_KEY, ID_GENERAL_DIGESTS]
+        .iter()
+        .flat_map(|&id| range(id, None).to_vec())
+        .chain(range(ID_METAS, Some(6 * 32)).to_vec())
+        .collect();
     let mut dd = sha3(range(ID_IMAGE_KEY, None)).to_vec();
     dd.extend(sha3(range(ID_IMAGEDIGS, None)));
     h[256..288].copy_from_slice(&sha3(&sc1));

@@ -194,6 +194,7 @@ fn try_whole_chunk_array(chunk: &[u8], budget: f32) -> (Option<Vec<u8>>, f32) {
         return (None, f32::MAX);
     }
     let score = array.len() as f32 + num4;
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // as the original: `!(score < limit)`
     if !(score < (length + 3) as f32) {
         return (None, score);
     }
@@ -907,7 +908,15 @@ impl Encoder<'_> {
         );
     }
 
-    fn forward_dp(&mut self, start: i32, match_limit: i32, match_start_limit: i32, mut cc: CodeCosts, mut adapt: Option<&mut Vec<i32>>, adapt_lit_mode: i32) -> Vec<Command> {
+    fn forward_dp(
+        &mut self,
+        start: i32,
+        match_limit: i32,
+        match_start_limit: i32,
+        mut cc: CodeCosts,
+        mut adapt: Option<&mut Vec<i32>>,
+        adapt_lit_mode: i32,
+    ) -> Vec<Command> {
         let data = self.data;
         let chunk_end = match_limit + 8;
         let mut arr = vec![Arrival { cost: i32::MAX, ..Arrival::default() }; (match_limit + 1) as usize];
@@ -1019,7 +1028,8 @@ impl Encoder<'_> {
                             1 => (r4, r6),
                             _ => (r4, r5),
                         };
-                        let rep_arrival = |ml: i32| Arrival { cost: 0, r0: rd, r1: o1, r2: o2, ml, lrl: run, src: from, idx: k, dist: rd, cont_lrl: 0, cont_ml: 0 };
+                        let rep_arrival =
+                            |ml: i32| Arrival { cost: 0, r0: rd, r1: o1, r2: o2, ml, lrl: run, src: from, idx: k, dist: rd, cont_lrl: 0, cont_ml: 0 };
                         self.relax(&mut arr, m + rl, base + cost_lo_match(&cc, lit_field, rl, k) as i64, rep_arrival(rl));
                         if ((rl - 3) as u32) < 125 {
                             for sub in 2..rl {
@@ -1054,7 +1064,8 @@ impl Encoder<'_> {
                         let with_off = base + coff[c] as i64;
                         let mml = if self.use_dp_mml3 { 3 } else { 4 };
                         let fill = mml + 1;
-                        let new_arrival = |l: i32| Arrival { cost: 0, r0: dist, r1: r4, r2: r5, ml: l, lrl: run, src: from, idx: 3, dist, cont_lrl: 0, cont_ml: 0 };
+                        let new_arrival =
+                            |l: i32| Arrival { cost: 0, r0: dist, r1: r4, r2: r5, ml: l, lrl: run, src: from, idx: 3, dist, cont_lrl: 0, cont_ml: 0 };
                         self.relax(&mut arr, m + ml, with_off + cost_normal_match(&cc, lit_field, ml) as i64, new_arrival(ml));
                         if ((ml - fill) as u32) < (128 - fill) as u32 {
                             for sub in mml..ml {

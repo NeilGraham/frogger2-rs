@@ -7,14 +7,9 @@ use sha2::{Digest, Sha256};
 
 /// The SCE fake-SELF magic (little-endian `0xEEF51454`).
 pub(crate) const MAGIC: u32 = 0xEEF5_1454;
-const ORBIS_MAGIC: u32 = 0x1D3D_154F;
 
 pub(crate) fn is_elf(data: &[u8]) -> bool {
     data.len() >= 64 && data[..4] == *b"\x7fELF"
-}
-
-pub(crate) fn is_self(data: &[u8]) -> bool {
-    data.len() >= 32 && matches!(u32::from_le_bytes(data[..4].try_into().unwrap()), MAGIC | ORBIS_MAGIC)
 }
 
 fn u16_at(d: &[u8], o: usize) -> usize {
@@ -190,6 +185,5 @@ mod tests {
     #[test]
     fn rejects_non_elf() {
         assert!(make_fself(&[0u8; 100]).is_err());
-        assert!(!is_self(&[0x7f, b'E', b'L', b'F']));
     }
 }

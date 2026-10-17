@@ -4,7 +4,9 @@
 //! `ProsperoPs5InnerImageAssembler`, the "nwonly" publisher layout the package builder uses).
 
 use super::naps;
-use super::pfs::{dirent_bytes, flat_path_table, hash_path, pack_apr_entry, pack_inode_entry, sha3, Dirent, DIRENT_DIR, DIRENT_DOT, DIRENT_DOTDOT, DIRENT_FILE};
+use super::pfs::{
+    dirent_bytes, flat_path_table, hash_path, pack_apr_entry, pack_inode_entry, sha3, Dirent, DIRENT_DIR, DIRENT_DOT, DIRENT_DOTDOT, DIRENT_FILE,
+};
 use crate::ps5::kraken::{self, EncodedBlock};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Seek, SeekFrom, Write};
@@ -67,7 +69,6 @@ pub(crate) struct MetaChunk {
 /// A data file of the image in AFID order (`ProsperoPs5InnerPlacement`).
 pub(crate) struct Placement {
     pub afid: u32,
-    pub path: String,
     pub on_disk_offset: i64,
     pub logical_offset: i64,
     pub on_disk_size: i64,
@@ -103,7 +104,6 @@ pub(crate) struct InnerImage {
     pub empty_file_count: usize,
     pub placements: Vec<Placement>,
     pub nodes: Vec<Node>,
-    pub deduplicated_blocks: usize,
     /// The metadata region before compression.
     pub meta_plain: Vec<u8>,
 }
@@ -217,7 +217,8 @@ fn encode_blocks(data: &[u8], allow: bool) -> Vec<(BlockChunk, Vec<u8>, [u8; 32]
             .collect();
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let results: Vec<std::sync::Mutex<Option<(BlockChunk, Vec<u8>, [u8; 32])>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    type Slot = std::sync::Mutex<Option<(BlockChunk, Vec<u8>, [u8; 32])>>;
+    let results: Vec<Slot> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| loop {
@@ -447,7 +448,16 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
         return Err("the inner image needs at least one file".into());
     }
     // The tree.
-    let mut dir_list: Vec<Dir> = vec![Dir { name: "uroot".into(), full_path: String::new(), parent: None, sub_dirs: vec![], files: vec![], inode: 0, dirent_offset: -1, dirents: vec![] }];
+    let mut dir_list: Vec<Dir> = vec![Dir {
+        name: "uroot".into(),
+        full_path: String::new(),
+        parent: None,
+        sub_dirs: vec![],
+        files: vec![],
+        inode: 0,
+        dirent_offset: -1,
+        dirents: vec![],
+    }];
     let mut lookup: HashMap<String, usize> = HashMap::from([(String::new(), 0)]);
     fn get_dir(path: &str, dir_list: &mut Vec<Dir>, lookup: &mut HashMap<String, usize>) -> usize {
         if let Some(&d) = lookup.get(path) {
@@ -459,7 +469,16 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
         };
         let parent = get_dir(parent_path, dir_list, lookup);
         let id = dir_list.len();
-        dir_list.push(Dir { name: name.into(), full_path: path.into(), parent: Some(parent), sub_dirs: vec![], files: vec![], inode: 0, dirent_offset: -1, dirents: vec![] });
+        dir_list.push(Dir {
+            name: name.into(),
+            full_path: path.into(),
+            parent: Some(parent),
+            sub_dirs: vec![],
+            files: vec![],
+            inode: 0,
+            dirent_offset: -1,
+            dirents: vec![],
+        });
         dir_list[parent].sub_dirs.push(id);
         lookup.insert(path.into(), id);
         id
@@ -660,7 +679,9 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
     let mut phys: i64 = 0;
     let mut afid_offsets = vec![0i64; slots.len()];
     let mut holes = Vec::new();
-    let mut dedup: HashMap<(i32, i32, bool, bool, i32, i32, [u8; 32]), i64> = HashMap::new();
+    // (compressed size, uncompressed size, stored, multi-chunk, first chunk, flags, SHA3) -> offset
+    type DedupKey = (i32, i32, bool, bool, i32, i32, [u8; 32]);
+    let mut dedup: HashMap<DedupKey, i64> = HashMap::new();
     let mut dedup_count = 0usize;
     let total: i64 = candidates.iter().map(|&f| nodes[f].length).sum();
     let mut done: i64 = 0;
@@ -691,7 +712,15 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
             let encoded = encode_blocks(&data, allow);
             let mut chunks = Vec::with_capacity(encoded.len());
             for (mut chunk, bytes, digest) in encoded {
-                let key = (chunk.compressed_size, chunk.uncompressed_size, chunk.stored, chunk.multi_chunk, chunk.first_chunk_compressed_size, chunk.boundary_flags, digest);
+                let key = (
+                    chunk.compressed_size,
+                    chunk.uncompressed_size,
+                    chunk.stored,
+                    chunk.multi_chunk,
+                    chunk.first_chunk_compressed_size,
+                    chunk.boundary_flags,
+                    digest,
+                );
                 let at = match dedup.get(&key) {
                     Some(&at) => {
                         dedup_count += 1;
@@ -729,8 +758,12 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
     // The physical layout pass of the original only moves blocks when that saves at least
     // 1 MiB; the alignment gaps of an app's few executables never do.
     {
-        let movable: BTreeMap<i64, i32> =
-            slots.iter().flatten().filter(|&&f| !nodes[f].whole_block_raw).flat_map(|&f| nodes[f].blocks.iter().map(|b| (b.on_disk_offset, b.compressed_size))).collect();
+        let movable: BTreeMap<i64, i32> = slots
+            .iter()
+            .flatten()
+            .filter(|&&f| !nodes[f].whole_block_raw)
+            .flat_map(|&f| nodes[f].blocks.iter().map(|b| (b.on_disk_offset, b.compressed_size)))
+            .collect();
         let fixed: i64 = slots.iter().flatten().filter(|&&f| nodes[f].whole_block_raw).map(|&f| nodes[f].length).sum();
         let used = movable.values().map(|&v| v as i64).sum::<i64>() + fixed;
         let min_saving = 1_048_576i64.max(((original_end as f64) * 0.1 / 100.0).ceil() as i64);
@@ -912,7 +945,15 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
             parent_inode: dir_list[n.parent].inode as i32,
             dirent_offset: n.dirent_offset,
         });
-        out_nodes.push(Node { full_path: n.full_path.clone(), is_directory: false, parent_inode: dir_list[n.parent].inode as i32, mode, afid: n.afid, size: n.length, executable: n.is_executable });
+        out_nodes.push(Node {
+            full_path: n.full_path.clone(),
+            is_directory: false,
+            parent_inode: dir_list[n.parent].inode as i32,
+            mode,
+            afid: n.afid,
+            size: n.length,
+            executable: n.is_executable,
+        });
     }
     meta_nodes.sort_by_key(|n| n.inode);
     let mut all_payloads = payloads;
@@ -941,7 +982,6 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
             let n = &nodes[f];
             Placement {
                 afid: n.afid,
-                path: n.full_path.clone(),
                 on_disk_offset: n.on_disk_offset,
                 logical_offset: n.logical_offset,
                 on_disk_size: n.on_disk_size,
@@ -965,7 +1005,6 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
         empty_file_count: empty_files.len(),
         placements,
         nodes: out_nodes,
-        deduplicated_blocks: dedup_count,
         meta_plain,
     })
 }

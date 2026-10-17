@@ -11,8 +11,8 @@ pub(super) struct CodeCosts {
 
 const LOG2_MANTISSA: [u16; 65] = [
     0, 183, 364, 541, 716, 889, 1059, 1227, 1392, 1555, 1716, 1874, 2031, 2186, 2338, 2489, 2637, 2784, 2929, 3072, 3214, 3354, 3492, 3629, 3764, 3897, 4029,
-    4160, 4289, 4417, 4543, 4668, 4792, 4914, 5036, 5156, 5274, 5392, 5509, 5624, 5738, 5851, 5963, 6074, 6184, 6293, 6401, 6508, 6614, 6719, 6823, 6926,
-    7029, 7130, 7231, 7330, 7429, 7527, 7625, 7721, 7817, 7912, 8006, 8099, 8192,
+    4160, 4289, 4417, 4543, 4668, 4792, 4914, 5036, 5156, 5274, 5392, 5509, 5624, 5738, 5851, 5963, 6074, 6184, 6293, 6401, 6508, 6614, 6719, 6823, 6926, 7029,
+    7130, 7231, 7330, 7429, 7527, 7625, 7721, 7817, 7912, 8006, 8099, 8192,
 ];
 
 pub(super) fn bit_len(x: u32) -> i32 {
@@ -49,13 +49,7 @@ fn histo_to_code_cost(histo: &[i32], cost: &mut [i32; 256], bias: i32, threshold
 /// `BuildFromPassinfo`: costs from a 0x601-entry histogram set (literals, sub-literals,
 /// packets, lengths, offset buckets).
 pub(super) fn build_from_passinfo(passinfo: &[i32], lit_mode: i32) -> CodeCosts {
-    let mut cc = CodeCosts {
-        lit_sub_mask: if lit_mode != 1 { 255 } else { 0 },
-        lit: [0; 256],
-        packet: [0; 256],
-        offset_bucket: [0; 256],
-        length: [0; 256],
-    };
+    let mut cc = CodeCosts { lit_sub_mask: if lit_mode != 1 { 255 } else { 0 }, lit: [0; 256], packet: [0; 256], offset_bucket: [0; 256], length: [0; 256] };
     histo_to_code_cost(&passinfo[1025..1281], &mut cc.offset_bucket, 36, 255);
     // (The alternative offset table, passinfo[1024] > 1, is never used by the parser.)
     histo_to_code_cost(&passinfo[512..768], &mut cc.packet, 18, 255);

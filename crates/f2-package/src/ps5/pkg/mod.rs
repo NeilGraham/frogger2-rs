@@ -90,7 +90,8 @@ pub(crate) fn build(stage: Vec<StageFile>, content_id: &str, keys: &keys::Keyset
                 return Err(format!("sce_sys/{name} is not supported in a package"));
             }
         }
-        let converts = p == "eboot.bin" || p.to_ascii_lowercase().ends_with(".prx") || ["fakelib/", "sce_module/", "sce_sys/about/"].iter().any(|d| p.starts_with(d));
+        let converts =
+            p == "eboot.bin" || p.to_ascii_lowercase().ends_with(".prx") || ["fakelib/", "sce_module/", "sce_sys/about/"].iter().any(|d| p.starts_with(d));
         if converts && fself::is_elf(&head(&f.source)?) {
             let elf = f.source.read()?;
             if p != "eboot.bin" && !fself::has_sce_version(&elf) && eboot_has_version {
@@ -113,7 +114,11 @@ pub(crate) fn build(stage: Vec<StageFile>, content_id: &str, keys: &keys::Keyset
             files.push(InputFile { path: "/sce_sys/keystone".into(), len: k.len() as i64, source: Source::Bytes(k) });
         }
         if !has(&files, "/sce_sys/about/right.sprx") {
-            files.push(InputFile { path: "/sce_sys/about/right.sprx".into(), len: keys.right_sprx.len() as i64, source: Source::Bytes(keys.right_sprx.clone()) });
+            files.push(InputFile {
+                path: "/sce_sys/about/right.sprx".into(),
+                len: keys.right_sprx.len() as i64,
+                source: Source::Bytes(keys.right_sprx.clone()),
+            });
         }
     }
 
@@ -140,7 +145,7 @@ pub(crate) fn build(stage: Vec<StageFile>, content_id: &str, keys: &keys::Keyset
             },
             outer::OuterFile { name: "naps_pkg_layout.dat", len: naps.len() as u64, size_compressed: naps.len() as u64, reader: Box::new(&naps[..]) },
         ];
-        let o = outer::build(&mut f, 65536, outer_files, &mut |_, _, _| {})?;
+        let o = outer::build(&mut f, 65536, outer_files)?;
         let mut sblock = vec![0u8; 65536];
         f.seek(SeekFrom::Start(65536 + o.superblock_index as u64 * 65536)).map_err(io)?;
         f.read_exact(&mut sblock).map_err(io)?;
@@ -200,7 +205,8 @@ pub(crate) fn build(stage: Vec<StageFile>, content_id: &str, keys: &keys::Keyset
             left -= n as u64;
         }
         drop(r);
-        let mut content: Vec<(String, u64)> = file_nodes.iter().filter(|n| n.size != 0).map(|n| (n.full_path.trim_start_matches('/').to_string(), n.size as u64)).collect();
+        let mut content: Vec<(String, u64)> =
+            file_nodes.iter().filter(|n| n.size != 0).map(|n| (n.full_path.trim_start_matches('/').to_string(), n.size as u64)).collect();
         content.push(("*PFSmetadata".into(), o.pfs_size));
         let m18 = si::meta18(keys, &img, &spool, &content, o.pfs_size, &o.image_digests, &image_key, &seed)?;
         let m300 = si::meta300(img.image_length as u64);
@@ -257,5 +263,111 @@ mod tests {
         let tmp = out.with_extension("tmp");
         let b = build(stage_from_dir(&stage).unwrap(), "UP9000-PPSA99920_00-FROGGER2RUSTPORT", &keys, &out, &tmp, &|m| eprintln!("{m}")).unwrap();
         eprintln!("package {} bytes", b.size);
+    }
+
+    const SYNTH_CONTENT_ID: &str = "UP9000-PPSA99920_00-FROGGER2RUSTPORT";
+
+    /// A small synthetic stage (no game data): param.json, artwork stand-ins, a non-ELF
+    /// eboot.bin, data that compresses, data that does not, a repeated block and an empty file.
+    fn synthetic_stage(dir: &Path) {
+        let w = |rel: &str, b: &[u8]| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b).unwrap();
+        };
+        let mut x = 0x1234_5678u32;
+        let mut noise = |n: usize| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    (x >> 16) as u8
+                })
+                .collect()
+        };
+        w(
+            "sce_sys/param.json",
+            br#"{
+  "ageLevel": {"default": 0},
+  "applicationCategoryType": 0,
+  "applicationDrmType": "free",
+  "attribute": 0,
+  "attribute2": 0,
+  "attribute3": 524352,
+  "conceptId": "99920",
+  "contentBadgeType": 1,
+  "contentId": "UP9000-PPSA99920_00-FROGGER2RUSTPORT",
+  "contentVersion": "01.002.000",
+  "downloadDataSize": 256,
+  "localizedParameters": {"defaultLanguage": "en-US", "en-US": {"titleName": "Synthetic"}},
+  "masterVersion": "01.00",
+  "pubtools": {"creationDate": "2026-01-01 00:00:00", "toolVersion": "2.00"},
+  "requiredSystemSoftwareVersion": "0x0000000000000000",
+  "sdkVersion": "0x0000000000000000",
+  "titleId": "PPSA99920",
+  "versionFileUri": ""
+}
+"#,
+        );
+        let rgba = (0..512 * 512).flat_map(|i: u32| [(i % 512 / 2) as u8, (i / 512 / 2) as u8, 0x40, 0xFF]).collect();
+        let icon = crate::Image { width: 512, height: 512, rgba };
+        w("sce_sys/icon0.png", &crate::ps4::art::png_rgb(&icon));
+        w("sce_sys/icon0.dds", &crate::ps5::dds::bc7_dds(&icon));
+        w("eboot.bin", &noise(70_000));
+        let text: Vec<u8> = (0..600_000u32).map(|i| b"frogger swampy lily pad "[(i % 24) as usize] ^ ((i / 997) as u8 & 1)).collect();
+        w("data/game/text.bin", &text);
+        w("data/game/noise.bin", &noise(400_000));
+        let block = noise(262_144);
+        w("data/game/maps/twice.bin", &[block.clone(), block].concat());
+        w("data/game/maps/empty.bin", b"");
+        w("data/manifest.json", b"{}");
+    }
+
+    /// SHA-256 of `ffpfsc-pkg-tool build STAGE OUT --content-id UP9000-PPSA99920_00-FROGGER2RUSTPORT
+    /// --title-id PPSA99920 --title Synthetic --version 01.002.000 --deterministic` of the
+    /// synthetic stage (the tool's output is the reference this port matches byte for byte).
+    const SYNTH_SHA256: &str = "eef5b963fa9a0d6ab054e0798df8ad366d340f282756bb5b626fa409b1c9f9f8";
+
+    /// Writes the synthetic stage to `F2_PKG_SYNTH_DIR` (to run the reference tool on it).
+    #[test]
+    #[ignore]
+    fn write_synthetic_stage() {
+        synthetic_stage(Path::new(&std::env::var("F2_PKG_SYNTH_DIR").unwrap()));
+    }
+
+    fn build_synthetic(keys: &keys::Keyset, name: &str) -> Vec<u8> {
+        let root = std::env::temp_dir().join(format!("f2-ps5pkg-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        synthetic_stage(&root.join("stage"));
+        let out = root.join("out.pkg");
+        build(stage_from_dir(&root.join("stage")).unwrap(), SYNTH_CONTENT_ID, keys, &out, &root.join("tmp"), &|_| {}).unwrap();
+        let b = std::fs::read(&out).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        b
+    }
+
+    /// The package of the synthetic stage with the real key material (`F2_PS5_KEYS_DIR`, or the
+    /// download) is the reference tool's, byte for byte.
+    #[test]
+    #[ignore]
+    fn synthetic_matches_reference() {
+        let keys = keys::load(None, &|m| eprintln!("{m}")).unwrap();
+        let b = build_synthetic(&keys, "ref");
+        let h: String = crate::ps4::crypto::sha256(&b).iter().map(|x| format!("{x:02x}")).collect();
+        assert_eq!(h, SYNTH_SHA256);
+    }
+
+    /// With throwaway keys: deterministic, and laid out as FIH / PFS / CNT / SI.
+    #[test]
+    fn synthetic_layout() {
+        let keys = keys::test_keyset();
+        let a = build_synthetic(&keys, "a");
+        assert_eq!(a, build_synthetic(&keys, "b"));
+        assert_eq!(&a[..4], b"\x7fFIH");
+        let pfs = u64::from_le_bytes(a[24..32].try_into().unwrap()) as usize;
+        let cnt = 0x10000 + pfs;
+        assert_eq!(&a[cnt..cnt + 4], b"\x7fCNT");
+        let package_size = u64::from_be_bytes(a[cnt + 1072..cnt + 1080].try_into().unwrap()) as usize;
+        assert_eq!(&a[package_size..package_size + 4], b"PK\x03\x04");
+        assert_eq!(u64::from_be_bytes(a[cnt + 1040..cnt + 1048].try_into().unwrap()), 0x10000);
     }
 }

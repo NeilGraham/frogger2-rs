@@ -14,6 +14,11 @@ pub(crate) struct Runtime {
 impl Runtime {
     /// Loads a runtime (zip or folder) and checks it is for `target` with format 1.
     pub(crate) fn load(path: &Path, target: &str, log: &dyn Fn(&str)) -> Result<Runtime, String> {
+        Self::load_format(path, target, 1, log)
+    }
+
+    /// Loads a runtime (zip or folder) and checks it is for `target` with format `format`.
+    pub(crate) fn load_format(path: &Path, target: &str, format: u64, log: &dyn Fn(&str)) -> Result<Runtime, String> {
         let err = |e: &dyn std::fmt::Display| format!("runtime {}: {e}", path.display());
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
         if path.is_dir() {
@@ -56,8 +61,13 @@ impl Runtime {
         if rt.str("target")? != target {
             return Err(err(&format!("is for {}, not {target}", rt.str("target")?)));
         }
-        if rt.json.get("format").and_then(Value::as_u64) != Some(1) {
-            return Err(err(&"unsupported runtime format (this app reads format 1): use the runtime of this app's version"));
+        let got = rt.json.get("format").and_then(Value::as_u64).unwrap_or(0);
+        if got != format {
+            let why = if got < format { "an older runtime" } else { "a newer runtime" };
+            return Err(err(&format!(
+                "runtime format {got} ({why}); this app reads format {format}: use the {target} runtime of this app's version ({})",
+                env!("CARGO_PKG_VERSION")
+            )));
         }
         let v = rt.json.get("version").and_then(Value::as_str).unwrap_or("?");
         if v != env!("CARGO_PKG_VERSION") {

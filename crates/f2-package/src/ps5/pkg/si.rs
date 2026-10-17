@@ -166,7 +166,18 @@ fn blocks18(inner: &InnerImage, exec: &[bool]) -> Vec<Block18> {
                 } else {
                     1_074_069_504
                 };
-                list.push(Block18 { co: at as u64, cs, ps: b.uncompressed_size as u32, c0, c1, flag, owner, tail: 0, logical: p.logical_offset + off as i64, plain: Plain::File(i, off) });
+                list.push(Block18 {
+                    co: at as u64,
+                    cs,
+                    ps: b.uncompressed_size as u32,
+                    c0,
+                    c1,
+                    flag,
+                    owner,
+                    tail: 0,
+                    logical: p.logical_offset + off as i64,
+                    plain: Plain::File(i, off),
+                });
                 phys = at + cs as i64;
                 off += b.uncompressed_size as u64;
             }
@@ -175,7 +186,18 @@ fn blocks18(inner: &InnerImage, exec: &[bool]) -> Vec<Block18> {
             loop {
                 let n = UBLOCK.min((p.uncompressed_size as u64).saturating_sub(off)) as u32;
                 let c0 = n.min(131_072);
-                list.push(Block18 { co: p.on_disk_offset as u64 + off, cs: n, ps: n, c0, c1: n - c0, flag: 1_074_331_648, owner, tail: 0, logical: p.logical_offset + off as i64, plain: Plain::File(i, off) });
+                list.push(Block18 {
+                    co: p.on_disk_offset as u64 + off,
+                    cs: n,
+                    ps: n,
+                    c0,
+                    c1: n - c0,
+                    flag: 1_074_331_648,
+                    owner,
+                    tail: 0,
+                    logical: p.logical_offset + off as i64,
+                    plain: Plain::File(i, off),
+                });
                 off += n as u64;
                 if n == 0 || off >= p.uncompressed_size as u64 {
                     break;
@@ -184,7 +206,18 @@ fn blocks18(inner: &InnerImage, exec: &[bool]) -> Vec<Block18> {
         }
     }
     for &h in &inner.sparse_afid_holes {
-        list.push(Block18 { co: inner.block_info_on_disk as u64, cs: 16, ps: UBLOCK as u32, c0: 8, c1: 8, flag: 1_074_855_936, owner: 0, tail: 0, logical: inner.afid_logical_offsets[h], plain: Plain::Zero });
+        list.push(Block18 {
+            co: inner.block_info_on_disk as u64,
+            cs: 16,
+            ps: UBLOCK as u32,
+            c0: 8,
+            c1: 8,
+            flag: 1_074_855_936,
+            owner: 0,
+            tail: 0,
+            logical: inner.afid_logical_offsets[h],
+            plain: Plain::Zero,
+        });
     }
     let gap = inner.meta_base_logical - inner.data_end_logical;
     if gap > 0 {
@@ -201,7 +234,18 @@ fn blocks18(inner: &InnerImage, exec: &[bool]) -> Vec<Block18> {
                     next - 16
                 }
             };
-            list.push(Block18 { co, cs: 16, ps: size, c0: 8, c1: 8, flag: 1_074_855_936, owner: 0, tail: 1001, logical: inner.data_end_logical + (j * UBLOCK) as i64, plain: Plain::Zero });
+            list.push(Block18 {
+                co,
+                cs: 16,
+                ps: size,
+                c0: 8,
+                c1: 8,
+                flag: 1_074_855_936,
+                owner: 0,
+                tail: 1001,
+                logical: inner.data_end_logical + (j * UBLOCK) as i64,
+                plain: Plain::Zero,
+            });
         }
     }
     let mut co = inner.metadata_on_disk as u64;
@@ -218,7 +262,18 @@ fn blocks18(inner: &InnerImage, exec: &[bool]) -> Vec<Block18> {
         } else {
             1_074_069_504
         };
-        list.push(Block18 { co, cs, ps: m.uncompressed_size as u32, c0, c1, flag, owner: 0, tail: 1001, logical: inner.meta_base_logical + off as i64, plain: Plain::Meta(off) });
+        list.push(Block18 {
+            co,
+            cs,
+            ps: m.uncompressed_size as u32,
+            c0,
+            c1,
+            flag,
+            owner: 0,
+            tail: 1001,
+            logical: inner.meta_base_logical + off as i64,
+            plain: Plain::Meta(off),
+        });
         co += cs as u64;
         off += m.uncompressed_size as usize;
     }
@@ -237,7 +292,17 @@ fn record(dst: &mut Vec<u8>, tag: &str, payload: &[u8]) {
 /// `BuildMeta18` for the package's inner image. `content` is (path, size) of every non-empty
 /// file in AFID order; `physical_digests` the SHA3 of the inner image's 64 KiB blocks (the
 /// outer PFS's first digests).
-pub(crate) fn meta18(keys: &Keyset, inner: &InnerImage, inner_spool: &std::path::Path, content: &[(String, u64)], outer_pfs_size: u64, physical_digests: &[[u8; 32]], pfs_image_key: &[u8; 32], seed: &[u8; 16]) -> Result<Vec<u8>, String> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn meta18(
+    keys: &Keyset,
+    inner: &InnerImage,
+    inner_spool: &std::path::Path,
+    content: &[(String, u64)],
+    outer_pfs_size: u64,
+    physical_digests: &[[u8; 32]],
+    pfs_image_key: &[u8; 32],
+    seed: &[u8; 16],
+) -> Result<Vec<u8>, String> {
     let inner_len = inner.image_length as u64;
     let exec: Vec<bool> = inner.placements.iter().map(|p| inner.nodes.iter().any(|n| !n.is_directory && n.afid == p.afid && n.executable)).collect();
     let blocks = blocks18(inner, &exec);
@@ -302,8 +367,18 @@ pub(crate) fn meta18(keys: &Keyset, inner: &InnerImage, inner_spool: &std::path:
     let mut first = 0u32;
     for (i, (path, size)) in content.iter().enumerate() {
         let is_meta = path == "*PFSmetadata";
-        let count = if is_meta { 3 } else if i < inner.placements.len() { block_count(i) } else { 1 };
-        let holes = if !is_meta && i < inner.placements.len() { inner.sparse_afid_holes.iter().filter(|&&h| (h as u32) < inner.placements[i].afid).count() as u32 } else { 0 };
+        let count = if is_meta {
+            3
+        } else if i < inner.placements.len() {
+            block_count(i)
+        } else {
+            1
+        };
+        let holes = if !is_meta && i < inner.placements.len() {
+            inner.sparse_afid_holes.iter().filter(|&&h| (h as u32) < inner.placements[i].afid).count() as u32
+        } else {
+            0
+        };
         let start = if is_meta { meta_idx.map_or(first, |m| m as u32) } else { first + holes };
         let size = if is_meta { inner.meta_plain.len() as u64 } else { *size };
         let _ = outer_pfs_size;
@@ -458,8 +533,8 @@ mod tests {
         }
         assert_eq!(p, s as u64 | (w as u64) << 32);
         let (mut s, mut w) = (0u64, 0u64);
-        for i in 0..65536 {
-            s += d[i] as u64;
+        for &b in &d[..65536] {
+            s += b as u64;
             w += s;
         }
         assert_eq!(r, s ^ (w << 25));

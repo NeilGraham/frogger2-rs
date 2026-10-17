@@ -23,15 +23,7 @@ pub(crate) struct OuterFile<'a> {
 pub(crate) struct OuterImage {
     pub pfs_size: u64,
     pub image_digests: Vec<[u8; 32]>,
-    pub superblock_icv: [u8; 32],
     pub superblock_index: usize,
-    pub inode_table_index: usize,
-    pub super_root_index: usize,
-    pub flt_index: usize,
-    pub uroot_index: usize,
-    pub first_blocks: Vec<usize>,
-    pub block_counts: Vec<usize>,
-    pub signed: Vec<bool>,
 }
 
 struct Node {
@@ -87,15 +79,10 @@ fn plan_trees(counts: &[usize], first_meta: usize, next: &mut usize) -> Result<V
     Ok(out)
 }
 
-fn mark_signed(n: &Node, signed: &mut [bool]) {
-    signed[n.block] = true;
-    for c in &n.children {
-        mark_signed(c, signed);
-    }
-}
-
 /// `WriteIndirectTree`: writes the node's blocks through `write`, returns its hash.
-fn write_tree(n: &Node, file_first: usize, digests: &[[u8; 32]], write: &mut dyn FnMut(usize, &[u8]) -> Result<[u8; 32], String>) -> Result<[u8; 32], String> {
+type BlockWriter<'a> = dyn FnMut(usize, &[u8]) -> Result<[u8; 32], String> + 'a;
+
+fn write_tree(n: &Node, file_first: usize, digests: &[[u8; 32]], write: &mut BlockWriter) -> Result<[u8; 32], String> {
     let mut b = vec![0u8; BLOCK];
     if n.depth == 1 {
         for i in 0..n.count {
@@ -115,7 +102,17 @@ fn write_tree(n: &Node, file_first: usize, digests: &[[u8; 32]], write: &mut dyn
 
 /// A `DinodeS32` (712 bytes); `db`/`ib` are (digest, block) pairs. Times are 0.
 #[allow(clippy::too_many_arguments)]
-fn dinode32(out: &mut Vec<u8>, mode: u16, nlink: u16, flags: u32, size: i64, size_compressed: i64, blocks: u32, db: &[([u8; 32], i32)], ib: &[(usize, [u8; 32], i32)]) {
+fn dinode32(
+    out: &mut Vec<u8>,
+    mode: u16,
+    nlink: u16,
+    flags: u32,
+    size: i64,
+    size_compressed: i64,
+    blocks: u32,
+    db: &[([u8; 32], i32)],
+    ib: &[(usize, [u8; 32], i32)],
+) {
     let start = out.len();
     out.extend_from_slice(&mode.to_le_bytes());
     out.extend_from_slice(&nlink.to_le_bytes());
@@ -167,9 +164,8 @@ fn superblock(dinode_count: usize, ndblock: usize, inode_table: usize, inode_tab
     b
 }
 
-/// Writes the outer PFS of `files` at `offset` in `out`. `observe` sees every plaintext
-/// 64 KiB block of each file (file index, block index in the file, bytes).
-pub(crate) fn build<W: Write + Seek>(out: &mut W, offset: u64, mut files: Vec<OuterFile>, observe: &mut dyn FnMut(usize, usize, &[u8])) -> Result<OuterImage, String> {
+/// Writes the outer PFS of `files` at `offset` in `out`.
+pub(crate) fn build<W: Write + Seek>(out: &mut W, offset: u64, mut files: Vec<OuterFile>) -> Result<OuterImage, String> {
     let counts: Vec<usize> = files.iter().map(|f| (f.len as usize).div_ceil(BLOCK).max(1)).collect();
     let mut firsts = Vec::with_capacity(files.len());
     let mut total = 0;
@@ -182,21 +178,7 @@ pub(crate) fn build<W: Write + Seek>(out: &mut W, offset: u64, mut files: Vec<Ou
     let trees = plan_trees(&counts, flt + 1, &mut next)?;
     let uroot = next;
     let nblocks = uroot + 1;
-    let mut signed = vec![false; nblocks];
-    for (i, t) in trees.iter().enumerate() {
-        if i == 1 {
-            // naps_pkg_layout.dat is signed; pfs_image.dat is plain data.
-            for k in 0..counts[i] {
-                signed[firsts[i] + k] = true;
-            }
-        }
-        for (_, n) in t {
-            mark_signed(n, &mut signed);
-        }
-    }
-    for i in [inode_table, super_root, flt, uroot] {
-        signed[i] = true;
-    }
+    // (Which blocks count as "signed" only matters for the XTS sectors of an encrypted image.)
     let mut digests = vec![[0u8; 32]; nblocks];
     let io = |e: std::io::Error| e.to_string();
     let write = |out: &mut W, idx: usize, bytes: &[u8], digests: &mut Vec<[u8; 32]>| -> Result<[u8; 32], String> {
@@ -214,7 +196,6 @@ pub(crate) fn build<W: Write + Seek>(out: &mut W, offset: u64, mut files: Vec<Ou
             let n = left.min(BLOCK as u64) as usize;
             buf.fill(0);
             f.reader.read_exact(&mut buf[..n]).map_err(|e| format!("{}: {e}", f.name))?;
-            observe(fi, k, &buf);
             write(out, firsts[fi] + k, &buf, &mut digests)?;
             left -= n as u64;
         }
@@ -269,19 +250,5 @@ pub(crate) fn build<W: Write + Seek>(out: &mut W, offset: u64, mut files: Vec<Ou
     let it_hash = write(out, inode_table, &it, &mut digests)?;
     let sblock = superblock(3 + files.len(), nblocks, inode_table, &it_hash);
     write(out, sb, &sblock, &mut digests)?;
-    let mut icv = [0u8; 32];
-    icv.copy_from_slice(&sblock[896..928]);
-    Ok(OuterImage {
-        pfs_size: (nblocks * BLOCK) as u64,
-        image_digests: digests,
-        superblock_icv: icv,
-        superblock_index: sb,
-        inode_table_index: inode_table,
-        super_root_index: super_root,
-        flt_index: flt,
-        uroot_index: uroot,
-        first_blocks: firsts,
-        block_counts: counts,
-        signed,
-    })
+    Ok(OuterImage { pfs_size: (nblocks * BLOCK) as u64, image_digests: digests, superblock_index: sb })
 }

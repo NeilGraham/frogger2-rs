@@ -196,9 +196,13 @@ fn walk_blocks(blocks: &[PlanEntry]) -> (Vec<Info>, Vec<(usize, i64)>) {
     let mut cursor: i64 = 0;
     for (i, b) in blocks.iter().enumerate() {
         if !b.start_run && needs_cursor_preserving_run(blocks, i, list.len()) {
-            list.push(Info::Run { coffset_end_mod: (cursor & 0x3FFFF) as u32, tweak_idx_start: (cursor >> 16) as u32, coffset_start_256k: (cursor / UBLOCK) as u32 });
+            list.push(Info::Run {
+                coffset_end_mod: (cursor & 0x3FFFF) as u32,
+                tweak_idx_start: (cursor >> 16) as u32,
+                coffset_start_256k: (cursor / UBLOCK) as u32,
+            });
         }
-        if b.start_run || list.len() % 16 == 0 {
+        if b.start_run || list.len().is_multiple_of(16) {
             let end_mod = (cursor & 0x3FFFF) as u32;
             let start = if b.start_run { b.on_disk_offset } else { cursor };
             cursor = start;
@@ -272,7 +276,15 @@ pub(crate) fn append_capacity_tail(blocks: &mut Vec<PlanEntry>, logical_end: i64
         });
     }
     let end = logical_end + 4_194_304;
-    blocks.push(PlanEntry { start_run: true, on_disk_offset: physical_end, logical_offset: end, even_chunk_compressed_length: 1, stream_length: 0, terminator: true, ..Default::default() });
+    blocks.push(PlanEntry {
+        start_run: true,
+        on_disk_offset: physical_end,
+        logical_offset: end,
+        even_chunk_compressed_length: 1,
+        stream_length: 0,
+        terminator: true,
+        ..Default::default()
+    });
     ((end + UBLOCK - 1) / UBLOCK + 1).max(1) as usize
 }
 
