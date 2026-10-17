@@ -28,6 +28,15 @@ stage_docs() {
   cp NOTICE README.md "$d/"
   cp LICENSE-GPL-3.0 LICENSE-LGPL-2.1 "$d/licenses/"
   [[ -f docs/BUILDING.md ]] && cp docs/BUILDING.md "$d/"
+  cat > "$d/portable.txt" <<'TXT'
+This file makes this folder a portable install of frogger2-rs.
+
+Everything the game reads and writes stays in this folder:
+  data/        your imported game (made from your own copy of Frogger 2)
+  config.toml  settings          saves/   save games          mods/   mods
+Delete this file to use the per-user folders instead (%APPDATA%\frogger2-rs,
+~/.local/share/frogger2-rs, ~/Library/Application Support/frogger2-rs).
+TXT
   return 0
 }
 

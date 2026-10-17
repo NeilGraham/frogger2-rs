@@ -39,5 +39,5 @@ Mods: "Frogger 2 (with example mod)" enables mods\hello-mod (changes a menu stri
 Online: frogger.exe --host --multi WORLD LEVEL PLAYERS   /   frogger.exe --join CODE
 Viewer: f2-viewer.exe (models, levels, textures, sounds, videos).
 
-Settings file and saves: %APPDATA%\frogger2-rs (config.toml, saves\).
+Settings file and saves: next to the exe (config.toml, saves\, data\, mods\) because portable.txt is here; delete portable.txt to use %APPDATA%\frogger2-rs instead.
 Docs: docs\USER-GUIDE.md, docs\TOOLS.md. Licenses: licenses\.

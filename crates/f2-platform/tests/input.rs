@@ -156,3 +156,14 @@ fn data_root_matches_importer() {
     assert_eq!(f2_platform::paths::default_data_root(), f2_import::default_data_root());
     assert!(f2_platform::paths::config_file().ends_with("config.toml"));
 }
+
+#[test]
+fn portable_root_matches_importer() {
+    let t = std::env::temp_dir().join(format!("f2-portable-parity-{}", std::process::id()));
+    std::fs::create_dir_all(t.join("v/versions/x")).unwrap();
+    std::fs::write(t.join("v").join(f2_import::PORTABLE_MARKER), "x").unwrap();
+    for exe in [t.join("v/frogger2.exe"), t.join("v/versions/x/frogger2.exe"), t.join("none/frogger2.exe")] {
+        assert_eq!(f2_platform::paths::portable_root_for(Some(&exe), None), f2_import::portable_root_for(Some(&exe), None));
+    }
+    let _ = std::fs::remove_dir_all(&t);
+}

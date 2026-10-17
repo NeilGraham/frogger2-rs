@@ -20,8 +20,9 @@ Bundle layout: `Contents/MacOS/{frogger,f2-import,f2-viewer}` (the app launches 
 
 ## Where things live
 
-- Imported game data: `~/Library/Application Support/frogger2-rs/data` (or `$F2_DATA_ROOT`).
-- `config.toml`, `saves/`, `mods/`: `~/Library/Application Support/frogger2-rs/`.
+- The zip is portable: `portable.txt` sits beside the app, so the imported game (`data/`), `config.toml`,
+  `saves/` and `mods/` live in that same folder. Delete `portable.txt` to use
+  `~/Library/Application Support/frogger2-rs/` instead (or set `$F2_DATA_ROOT`).
 - Import from Terminal: `Frogger2rs.app/Contents/MacOS/f2-import /path/to/disc.cue`.
 
 ## Signing and Gatekeeper

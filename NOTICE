@@ -10,9 +10,11 @@ Swampy's Revenge. You must supply your own legitimately obtained copy
     f2-import "/path/to/your/Frogger 2 disc image, disc folder or install folder"
     f2-import --list            # show detected/imported renditions
 
-Imported data is written to $F2_DATA_ROOT, or the platform data directory
-(Linux ~/.local/share/frogger2-rs/data, Windows %APPDATA%\frogger2-rs\data,
-macOS ~/Library/Application Support/frogger2-rs/data). Then run `frogger`.
+Imported data is written to $F2_DATA_ROOT; in a portable install (the release
+zips: portable.txt next to the app) to the data/ folder beside the app;
+otherwise to the platform data directory (Linux ~/.local/share/frogger2-rs/data,
+Windows %APPDATA%\frogger2-rs\data, macOS ~/Library/Application
+Support/frogger2-rs/data). Then run `frogger`.
 
 Licenses
 --------

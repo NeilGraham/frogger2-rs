@@ -231,10 +231,46 @@ fn env_path(k: &str) -> Option<PathBuf> {
     std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// Default data root: `$F2_DATA_ROOT`, else the platform data dir + `frogger2-rs/data`.
+
+/// Marker file of a portable install: `portable.txt` in the folder that holds the app. The
+/// release zips ship it, so everything the app reads and writes (imported game data, settings,
+/// saves, mods, downloaded runtimes) stays inside that folder.
+pub const PORTABLE_MARKER: &str = "portable.txt";
+
+/// The portable install folder for an exe at `exe`, if there is one: the folder with
+/// [`PORTABLE_MARKER`] among, outermost first, `<root>/versions/<tag>/` (a version the launcher
+/// installed), the folder holding a macOS `.app`, and the exe's own folder. `forced`
+/// (`$F2_PORTABLE_ROOT`) wins without a marker.
+pub fn portable_root_for(exe: Option<&Path>, forced: Option<PathBuf>) -> Option<PathBuf> {
+    if forced.is_some() {
+        return forced;
+    }
+    let dir = exe?.parent()?;
+    let mut roots = Vec::new();
+    if let Some(versions) = dir.parent().filter(|v| v.file_name().is_some_and(|n| n == "versions")) {
+        roots.extend(versions.parent().map(Path::to_path_buf));
+    }
+    if dir.ends_with("Contents/MacOS") {
+        roots.extend(dir.parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf));
+    }
+    roots.push(dir.to_path_buf());
+    roots.into_iter().find(|r| r.join(PORTABLE_MARKER).is_file())
+}
+
+/// [`portable_root_for`] the running exe (computed once).
+pub fn portable_root() -> Option<PathBuf> {
+    static ROOT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| portable_root_for(std::env::current_exe().ok().as_deref(), env_path("F2_PORTABLE_ROOT"))).clone()
+}
+
+/// Default data root: `$F2_DATA_ROOT`, else `data/` in the portable folder, else the platform
+/// data dir + `frogger2-rs/data`.
 pub fn default_data_root() -> PathBuf {
     if let Some(p) = env_path("F2_DATA_ROOT") {
         return p;
+    }
+    if let Some(r) = portable_root() {
+        return r.join("data");
     }
     let base = if cfg!(windows) {
         env_path("APPDATA")

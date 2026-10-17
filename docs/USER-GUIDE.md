@@ -34,8 +34,10 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
    target/release/f2-import --verify-installed    # check the imported files
    ```
 
-   Data goes to `$F2_DATA_ROOT`, else the platform data dir
-   (`~/.local/share/frogger2-rs/data`, `%APPDATA%\frogger2-rs\data`,
+   Data goes to `$F2_DATA_ROOT`, else, in a **portable install** (the release zips: a
+   `portable.txt` beside the app), the `data/` folder next to the app, so the game, `config.toml`,
+   `saves/` and `mods/` all stay in the one folder you unzipped. Otherwise it goes to the platform
+   data dir (`~/.local/share/frogger2-rs/data`, `%APPDATA%\frogger2-rs\data`,
    `~/Library/Application Support/frogger2-rs/data`), in one folder per rendition (`usa`, `eu`).
    Use `--data-root DIR` to import somewhere else. See [TOOLS.md](TOOLS.md) for all importer
    options (`--flac`, `--no-music`, `--as`, `--verify`).
