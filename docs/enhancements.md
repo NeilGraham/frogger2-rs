@@ -4,7 +4,7 @@ Everything here comes **after** parity for the affected subsystem (Phase 6+), an
 profiles:
 
 - **Authentic** — matches retail behaviour (parity tests run in this profile).
-- **Enhanced** (default for players, owner decision) — bug fixes + QoL.
+- **Enhanced** (default for players, project decision) — bug fixes + QoL.
 - Per-option overrides in `config.toml`.
 
 ## Fixes (see `research/known-bugs.md` for root causes)

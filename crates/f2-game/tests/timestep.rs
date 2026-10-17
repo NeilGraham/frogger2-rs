@@ -69,7 +69,7 @@ fn speeds_2_to_4_keep_game_time_and_paths() {
 
 /// Retail `LoopFunc`: in the pause menu `gameSpeed` is 0 and `actFrameCount` stays frozen, so
 /// clock-driven path entities hold still and carry on from the same place after resuming
-/// (owner-reported: with `tick()` they kept running while paused and jumped on resume).
+/// (user-reported: with `tick()` they kept running while paused and jumped on resume).
 #[test]
 fn pause_freezes_game_time() {
     use f2_game::define::mode::PAUSE_MODE;

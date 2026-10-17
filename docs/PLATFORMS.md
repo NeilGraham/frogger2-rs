@@ -40,7 +40,7 @@ Build instructions: [BUILDING.md](BUILDING.md). Packaging: `tools/package/`, `pa
 
 | Platform | Status | Build | Window / GPU | Audio | Pads | Packaging |
 |---|---|---|---|---|---|---|
-| Windows x86_64 | **supported** (owner's main target) | native MSVC or WSL cross-build | winit / DX12, Vulkan | cpal WASAPI | gilrs (XInput, WGI) | zip (`package.sh windows`) |
+| Windows x86_64 | **supported** (maintainer's main target) | native MSVC or WSL cross-build | winit / DX12, Vulkan | cpal WASAPI | gilrs (XInput, WGI) | zip (`package.sh windows`) |
 | Linux x86_64 | **supported**, CI-tested | native | winit Wayland (native) or X11 / Vulkan, GL | cpal ALSA (PipeWire/Pulse via ALSA plugins) | gilrs (evdev + udev) | tar.gz, AppImage, Flatpak manifest |
 | Linux aarch64 | expected to work, untested | native | same | same | same | tar.gz/AppImage (`uname -m`) |
 | macOS arm64 / x86_64 | **compile-checked from Linux; CI builds + tests on macos-14**; not run on a Mac yet | native (Xcode CLT) | winit / Metal; Retina-aware | cpal CoreAudio | gilrs (IOKit) | `.app` (universal), ad-hoc signed |
@@ -102,8 +102,8 @@ AppImage built locally and run headless; `cargo check --workspace --all-targets
 General constraints:
 - **Legal**: official console SDKs (Sony, Nintendo, Microsoft) are proprietary and under NDA;
   shipping on a console requires a publisher/developer agreement and, for this game, a licence
-  from the rights holder. Everything below assumes **homebrew** toolchains on the owner's own
-  hardware with the owner's own game data, the same model as the PC port. Homebrew on
+  from the rights holder. Everything below assumes **homebrew** toolchains on the user's own
+  hardware with the user's own game data, the same model as the PC port. Homebrew on
   PS3/PS4/PS5/Switch needs custom/exploited firmware; on PS2 and N64 it runs from
   memory card / flash cart without modifying the console. No proprietary SDK code or keys may
   enter this repository.
@@ -168,7 +168,7 @@ General constraints:
   build, link recipe, emulator results and blockers in `tools/ps5/VULKAN.md`. Not yet run on
   hardware (KytyPS5 cannot run the driver).
 
-### Nintendo 64 (owner's interest)
+### Nintendo 64 (maintainer's interest)
 - Hardware: VR4300 (MIPS III, 93.75 MHz, 64-bit integer + FPU), 4 MB RDRAM (8 MB with the
   Expansion Pak), RCP: RSP microcode + RDP rasteriser with 4 KB TMEM, cartridge ROM up to 64 MB
   on period hardware (flash carts allow more).

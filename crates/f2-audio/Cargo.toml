@@ -4,6 +4,7 @@ description = "Audio: sample banks, positional voices and music streaming."
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [features]

@@ -10,7 +10,7 @@ renderer, gamepad support and rebindable controls.
 image in any common format, or an existing install folder). The importer extracts what the port
 needs into a local data directory. Nothing copyrighted is ever distributed with this project.
 
-Status: in development; see the Status section of [PLAN.md](../PLAN.md). Some menus/options
+Status: in development; see the Status section of [PLAN.md](PLAN.md). Some menus/options
 screens and FMV flow are still being finished, so expect rough edges. Online play (`--host` /
 `--join`) and mods (`--mods`) are available (see Multiplayer and Mods).
 
@@ -339,7 +339,7 @@ rendition (`eu`) is supported by the importer when present. Check `f2-import --l
 
 **Is it identical to the original?** The simulation is a line-by-line port checked against the
 retail exe with deterministic trace comparison (`f2-parity`, [TOOLS.md](TOOLS.md)); the
-authentic profile keeps retail rendering. Parity is still being widened, see PLAN.md.
+authentic profile keeps retail rendering. Parity is still being widened, see [PLAN.md](PLAN.md).
 
 **Can I play at 144 Hz / ultrawide?** Yes in the enhanced profile: the sim stays at 60 Hz and
 rendering is interpolated (`video.frame_cap = 0` uncaps); Hor+ and `display.max_aspect` handle

@@ -224,7 +224,7 @@ impl Video {
 pub enum Profile {
     /// Retail behaviour and look; parity tests and screenshots run in this profile.
     Authentic,
-    /// Fixes and QoL (owner decision: the default for players).
+    /// Fixes and QoL (project decision: the default for players).
     #[default]
     Enhanced,
 }

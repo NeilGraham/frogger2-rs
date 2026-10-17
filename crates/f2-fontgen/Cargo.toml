@@ -4,6 +4,7 @@ description = "Builds the modern (high-resolution) game fonts from the typeface 
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [[bin]]

@@ -4,6 +4,7 @@ description = "Bit-exact port of the original fixed-point and vector maths (Comm
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 build = "build.rs"
 

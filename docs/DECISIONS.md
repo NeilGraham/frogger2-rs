@@ -1,15 +1,14 @@
 # Decisions log
 
-Owner decisions from `PLAN.md` §9. Until the owner answers, the **recommended defaults are
-applied** so work can proceed; each is easy to revisit.
+Project-level decisions. Rows marked *default* are the working defaults, easy to revisit.
 
 | # | Question | Status | Applied default |
 |---|---|---|---|
-| 1 | License | default | Translated game code (`f2-math`, `f2-game`, `frogger`): **GPL-3.0-or-later** (derivative of unlicensed source; see PLAN §8). Every other crate and tool: **GPL-3.0-or-later** too, except `f2-bink` (a close translation of FFmpeg's Bink decoder): **LGPL-2.1-or-later**. Simplified on 2026-10-17 from a GPL / LGPL / MIT-or-Apache split (the combined binaries are GPL anyway). Code adapted from `theme-park-world-recomp` (MIT, same owner) is marked in file headers. |
+| 1 | License | default | Translated game code (`f2-math`, `f2-game`, `frogger`): **GPL-3.0-or-later** (derivative of unlicensed source; see [PLAN.md](PLAN.md) Legal posture). Every other crate and tool: **GPL-3.0-or-later** too, except `f2-bink` (a close translation of FFmpeg's Bink decoder): **LGPL-2.1-or-later**. Simplified on 2026-10-17 from a GPL / LGPL / MIT-or-Apache split (the combined binaries are GPL anyway). Code adapted from `theme-park-world-recomp` (MIT, same owner) is marked in file headers. |
 | 2 | Name & hosting | decided 2026-10-14 | Public name **Frogger 2: Swampy's Revenge (Rust)** (slug `frogger2-rs`; app ids `io.github.neilgraham.frogger2rs` (Android), `io.github.NeilGraham.Frogger2rs` (Flatpak, macOS)). Crate prefix `f2-`, binary `frogger`, data/config folder `frogger2-rs`. App icon: flat placeholder (`packaging/icon`) until a real logo exists; after import, an icon cut from the player's own game artwork is made on their machine (never shipped). |
 | 3 | Platforms for 1.0 | default | Windows x64, Linux x64, macOS. CI on Linux first. |
-| 4 | Oracle environment | default | Retail `Frogger2.exe` extracted only with `f2-import --oracle`, run on the Windows side via WSL interop, headless + muted (TPW harness). |
-| 5 | Shared crates with TPW | default | Copy now (attributed), extract a shared kit later. |
+| 4 | Oracle environment | default | Retail `Frogger2.exe` extracted only with `f2-import --oracle`, run on the Windows side via WSL interop, headless + muted (headless harness adapted from the author's Theme Park World project). |
+| 5 | Code shared with the Theme Park World project | default | Copied with attribution headers; a shared kit may be extracted later. |
 | 6 | Dev archive | open | Not available locally; work proceeds from `frogger2-vss`. |
 | 7 | Authentic vs fixed default | default | Parity work targets **authentic**; players' default profile decided before 1.0. |
 

@@ -129,8 +129,7 @@ All engine/game file access goes through it. Format details in [`modding.md`](mo
 
 ## 10. Oracle & testing infrastructure (Windows-side tools)
 
-See [`../research/sibling-tpw-reuse.md`](../research/sibling-tpw-reuse.md):
-`f2fix.dll` (32-bit, injected into the user's retail `Frogger2.exe` via proxy DLL) for headless,
+See [ORACLE.md](ORACLE.md): `f2fix.dll` (32-bit, injected into the user's retail `Frogger2.exe` via proxy DLL) for headless,
 muted, fixed-timestep runs with per-tick state traces and framebuffer dumps; `f2-trace` diffs those
 traces against `f2-game` running the same `.key` input.
 

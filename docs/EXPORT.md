@@ -387,7 +387,7 @@ the PS5 host has no autostart / shot hooks, so no in-game screenshot). Not verif
 hardware.
 
 **Not exported (yet):** the PS5 fake package (`.pkg`, `build.sh --pkg`, LibProsperoPkg / GPL-3,
-the form that ran on the owner's console) and the `.ffpkg` (UFS2 image, `build.sh --ffpkg`
+the form that ran on the maintainer's console) and the `.ffpkg` (UFS2 image, `build.sh --ffpkg`
 via UFS2Tool) / `.ffpfsc` (PFS image, MkPFS) images for ShadowMountPlus. Each needs its own
 file-system / package writer (UFS2 superblock, cylinder groups and inode tables; the PS5 PKG's
 PFS, PlayGo and keystone), with no way to check the result here short of a console, so the

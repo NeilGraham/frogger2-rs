@@ -60,7 +60,7 @@ Pattern of survivors: open-source code, **no assets**, data extracted at runtime
 owned copy, no distributed binaries containing copyrighted data, non-commercial.
 
 **Our position:** a translation of the unlicensed Blitz source is a *derivative work* (re3-like
-risk profile, not OpenMW-like). Mitigations in `PLAN.md` §8. Platform crates (importer, Bink
+risk profile, not OpenMW-like). Mitigations in [docs/PLAN.md](../docs/PLAN.md) (Legal and distribution posture). Platform crates (importer, Bink
 decoder, renderer, mod VFS) are original work and can be cleanly licensed.
 
 ## 5. Tooling ecosystem

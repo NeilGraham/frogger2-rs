@@ -1,6 +1,6 @@
 //! Real-data import parity across every container format and an emulated drive.
 //!
-//! Converts the owner's Redump image into each supported format in a temp dir, imports
+//! Converts the maintainer's Redump image into each supported format in a temp dir, imports
 //! each and checks the manifest's file hashes equal the Redump import's (data, videos and
 //! music), then deletes the output. Needs the Redump zip (`$F2_REDUMP_ZIP`, default
 //! `<repo>/Redump/Frogger 2 - Swampy's Revenge (USA).zip`); skips when absent. Slow

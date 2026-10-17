@@ -147,7 +147,6 @@ Requires `f2-import --oracle` to have run (`game-data/<region>/oracle/`). Other 
 
 ## Other helpers
 
-- `python3 -I tools/tasks.py status`: project task board summary.
 - `tools/package/package.sh linux|windows|macos` and `tools/package/build-windows.sh`: release
   archives ([BUILDING.md](BUILDING.md)).
 - `tools/memcap.sh <cmd>`: run a heavy command under a memory cap.

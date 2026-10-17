@@ -92,7 +92,7 @@ Everything else (controls, saves, multiplayer, troubleshooting) is in
 - [docs/BUILDING.md](docs/BUILDING.md): building, packaging, releases
 - [docs/EXPORT.md](docs/EXPORT.md): building for Android, PS4, PS5, N64 and the desktop
 - [docs/TOOLS.md](docs/TOOLS.md): importer, viewer, script compiler, modkit, trace and parity tools
-- [PLAN.md](PLAN.md), [docs/](docs/), [research/](research/): goals, design notes and findings
+- [docs/PLAN.md](docs/PLAN.md), [docs/](docs/), [research/](research/): goals, design notes and findings
 
 ## License
 

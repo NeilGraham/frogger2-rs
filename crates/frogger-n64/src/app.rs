@@ -1925,7 +1925,7 @@ impl App {
         }
         ema(&mut self.avg_draw, draw.saturating_sub(rt::FB_WAIT.load(core::sync::atomic::Ordering::Relaxed)));
         let (tick_us, draw_us) = (ticks_to_us(self.avg_tick >> 4), ticks_to_us(self.avg_draw >> 4));
-        // Unlocked by default (owner's choice: the console can be overclocked); the even-rate
+        // Unlocked by default (maintainer's choice: the console can be overclocked); the even-rate
         // cap is opt-in with `F2N64_PACE=on`.
         if !PACE {
             return;

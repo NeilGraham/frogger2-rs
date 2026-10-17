@@ -4,6 +4,7 @@ description = "Shared PlayStation 4/5 homebrew host for the Frogger 2 port: pads
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 # Used by crates/frogger-ps4 and crates/frogger-ps5 (each its own workspace, building

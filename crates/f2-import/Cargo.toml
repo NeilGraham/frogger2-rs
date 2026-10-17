@@ -4,6 +4,7 @@ description = "Imports a user-owned Frogger 2 disc image or install into the dat
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [[bin]]

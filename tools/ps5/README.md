@@ -150,7 +150,7 @@ PS5_Vulkan's hardware measurements (`docs/HARDWARE_FINDINGS.md` 2026-09-26 R92, 
 | Refresh rate: 119.88 Hz or 59.94 Hz | **Yes**, `sceVideoOutConfigureOutput` mode 15 or 1 (no other selector is accepted: 0-63 probed), only with `attribute3` 0x80040 in `param.json`, and only when the console's present output has a 120 Hz format: `sceVideoOutIsOutputSupported(15)` = 1. The console then picks the 120 Hz signal itself (it switched a 1440p monitor to `1440P_11988` when set to 1440p; at 1080p on that monitor it answered 0). |
 | Size of the scanned-out buffers (3840x2160, 2560x1440, 1920x1080) | **Yes** (`sceVideoOutRegisterBuffers2`); each fills the screen. |
 
-So the owner's case (a monitor with 1080p120 and 1440p120 but no 4K120, console resolution
+So a monitor with 1080p120 and 1440p120 but no 4K120 (console resolution
 on Automatic/4K) comes up as 1080p at 120 Hz: the console, not the game, drops to 1080p for
 120 Hz. Setting the console's Video Output > Resolution to 1440p gives 1440p at 120 Hz.
 
@@ -166,7 +166,7 @@ Frame cap, and its two output rows mean:
 
 The choice is `console_host::host::pick_output_mode` (unit-tested on the build machine):
 a fixed resolution takes its highest refresh; Auto prefers a 100 Hz+ mode over resolution
-(1440p120 over 4K60 on a list like the owner's monitor's), then the largest; a resolution or
+(1440p120 over 4K60 on a list like that monitor's), then the largest; a resolution or
 rate not offered falls back to Auto. On the PS5 the list is every buffer size at 59.94 Hz,
 plus 119.88 Hz when `IsOutputSupported(15)` said yes, so Auto = 3840x2160 at 120 Hz where
 the output allows 120 Hz. Both rows are saved in `config.toml` (`[video] resolution`,
@@ -265,12 +265,12 @@ memory`, Kyty's libc HLE), exactly as PS5_Vulkan's own titles do there (VULKAN.m
 
 ## Status / next steps (2026-10-11)
 
-- **Second hardware round** (owner's PS5, FW 11.40, kstuff-fpkg 1.13-dr-test6): the game
+- **Second hardware round** (the maintainer's PS5, FW 11.40, kstuff-fpkg 1.13-dr-test6): the game
   `.pkg` (PPSA99920) **runs well** (came up at 1080p120 on a monitor without 4K120). Its
   settings showed desktop window options and "Auto (960x540)" and Resolution did nothing:
   fixed by the console Display page and runtime output-mode switching above, package version
   01.001.000 (installs over 01.000.000). The PS4 enhanced package still crashes:
-  `tools/ps4/build-pro-bisect.sh` (tools/ps4/README.md). Next: the owner's results for the
+  `tools/ps4/build-pro-bisect.sh` (tools/ps4/README.md). Next: the results for the
   bisect packages and for switching modes on hardware.
 
 - **Emulated TLS: done** for PS4 and PS5 (custom target from `tools/ps4/console-target.py`,

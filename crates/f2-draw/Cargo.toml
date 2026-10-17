@@ -4,6 +4,7 @@ description = "Drawing the simulation state (PC/drawloop.cpp): level scene, acto
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [features]

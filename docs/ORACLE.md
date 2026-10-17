@@ -3,13 +3,13 @@
 Status (2026-10-09, task P0-3): **working.** From WSL, one command builds a run root on the
 Windows side, starts the retail USA `frogger2.exe` off-screen and muted, and collects PNG
 framebuffer dumps. A run plays the logo FMVs (Hasbro, Blitz, intro `01S`), reaches the
-**frontend main menu** after about 58 s, and then the attract-mode **demo** (3D in-game). The owner's
+**frontend main menu** after about 58 s, and then the attract-mode **demo** (3D in-game). The maintainer's
 desktop is not disturbed: the game never takes the foreground, its window is never on a
 monitor, the display mode doesn't change, and no audio is heard.
 
-The design and some code come from the sibling project `../theme-park-world-recomp`
-(`crates/tpwfix`, `tools/run`, `docs/NOTES-headless.md`; MIT, same owner). The copied files
-carry an attribution header.
+The design and some code come from the author's Theme Park World recomp project
+(`crates/tpwfix`, `tools/run`, `docs/NOTES-headless.md`; MIT). The copied files carry an
+attribution header.
 
 ## Quick start
 

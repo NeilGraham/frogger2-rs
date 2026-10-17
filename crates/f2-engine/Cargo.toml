@@ -4,6 +4,7 @@ description = "wgpu renderer replacing the MDX library: models, textures, sprite
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [features]

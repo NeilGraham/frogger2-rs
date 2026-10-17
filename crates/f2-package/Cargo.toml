@@ -4,6 +4,7 @@ description = "Builds ready-to-run packages (Windows, macOS, Linux AppImage, And
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [dependencies]

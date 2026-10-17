@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 # Close translation of FFmpeg's Bink demuxer/decoders, which are LGPL-2.1-or-later.
 license = "LGPL-2.1-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [dependencies]

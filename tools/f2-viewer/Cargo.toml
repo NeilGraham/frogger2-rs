@@ -4,6 +4,7 @@ description = "Asset viewer for banks, models, textures and levels."
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [features]

@@ -40,7 +40,7 @@ pub const KNOWN: &[(&str, &str, &str)] = &[
 
 /// Per-track SHA-1 of Redump dumps (tracks 1–12).
 /// EU: checked against the redump.org entry (serial 99220.DL, write offset -12).
-/// USA: computed from the owner's Redump-named dump; not yet cross-checked with redump.org.
+/// USA: computed from a Redump-named dump; not yet cross-checked with redump.org.
 pub const KNOWN_TRACKS: &[(&str, [&str; 12])] = &[
     (
         "eu",

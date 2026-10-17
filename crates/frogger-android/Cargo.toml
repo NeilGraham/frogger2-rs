@@ -4,6 +4,7 @@ description = "Android host for the Frogger 2 port: NativeActivity via android-a
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 # Built as `libfrogger_android.so` by `tools/android/build-apk.sh` (cargo-ndk). The rlib

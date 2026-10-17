@@ -249,6 +249,15 @@ Create one with
 `keytool -genkeypair -keystore release.keystore -alias frogger2-rs -keyalg RSA -keysize 4096 -validity 10000`.
 The release itself needs no secret (the workflow's `GITHUB_TOKEN` with `contents: write`).
 
+## Memory caps
+
+`.cargo/config.toml` makes `tools/memcap.sh` the cargo runner: every `cargo test`, `run` and
+`bench` binary runs in its own cgroup capped at 8 GB (no swap), so a runaway test cannot exhaust
+the machine. Over the cap only that binary is killed (exit 137 / SIGKILL). Linux only (macOS has
+no cgroups). For a legitimately big job use `MEMCAP=16G cargo test ...`; wrap other heavy
+commands (Python oracles, trace dumps, emulators) as `tools/memcap.sh <cmd>`. An exit-137 test
+usually means a missing step budget, not a reason to raise the cap.
+
 ## WSL2 notes
 
 - Prefer WSLg. Under WSL the game and viewer drop `WAYLAND_DISPLAY` themselves and use X11

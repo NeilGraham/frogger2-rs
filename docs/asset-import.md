@@ -39,7 +39,7 @@ The importer never writes next to the source and never modifies it. Output:
 
 Verified = an automated test imports it and checks the result. "Real data" = the
 `crates/f2-import/tests/formats.rs` parity test (`cargo test --release -p f2-import --test formats
--- --ignored`): the owner's Redump USA image is converted into each format in a temp dir, imported,
+-- --ignored`): the maintainer's Redump USA image is converted into each format in a temp dir, imported,
 and every file hash (data, videos, music) must equal the Redump import's; the per-track Redump
 hashes must verify too. It passes on Linux and on Windows 11 (2026-10-09). "Windows mount" =
 `crates/f2-import/tests/windows_mount.rs` (Windows only, `F2_TEST_ISO=…`): attaches an `.iso`
@@ -130,5 +130,5 @@ user's machine. Releases contain **no** game data, hashes only.
 
 ## 6. Reuse
 
-Port `cue.rs`, `image.rs`, `iso9660.rs`, `identify.rs`, `hashdb.rs`, `store.rs` from
-`../theme-park-world-recomp/crates/tpw-import` (see `research/sibling-tpw-reuse.md`).
+The `cue`, `image`, `iso9660`, `identify`, `hashdb` and `store` modules were adapted from the
+author's Theme Park World importer (`tpw-import`, MIT), with an attribution header in each file.

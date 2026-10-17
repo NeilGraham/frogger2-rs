@@ -98,9 +98,8 @@ This is the main reason the trace oracle (retail exe) remains authoritative.
 
 ## 7. Agents
 
-Work is executed through a task graph (adopting TPW's `work/tasks.json` + `docs/ORCHESTRATION.md`
-pattern): one task = one module or one format, with an executable "done when" (tests/trace
-pass). Agents must never copy game data or decompiled retail-binary pseudo-code into tracked files.
+Work is split into small tasks: one task = one module or one format, with an executable "done when"
+(tests/trace pass). Contributors and tools must never copy game data or decompiled retail-binary pseudo-code into tracked files.
 
 ## 8. Intentional deviations log
 

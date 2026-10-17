@@ -4,6 +4,7 @@ description = "Mod asset pipeline: per-entry overrides (PNG/WAV/FLAC/glTF/TSV/TO
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [[bin]]

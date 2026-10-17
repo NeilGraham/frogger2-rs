@@ -40,6 +40,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
 publish = false
+repository = "https://github.com/NeilGraham/frogger2-rs"
+homepage = "https://github.com/NeilGraham/frogger2-rs"
 
 [workspace.dependencies]
 sha1 = "0.10"

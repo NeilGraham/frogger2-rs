@@ -4,6 +4,7 @@ description = "Online play for the deterministic simulation: rollback/lockstep n
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 # Deliberately dependency-free: std::net only, hand-rolled wire format.

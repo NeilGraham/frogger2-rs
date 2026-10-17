@@ -565,7 +565,7 @@ pub fn pick_output_mode(modes: &[VideoMode], res: Option<[u32; 2]>, refresh_mhz:
     }
     // An explicit 4K choice with refresh on Auto takes 4K's 60 Hz mode: the PS5 offers 120 Hz
     // whenever its current output has *a* 120 Hz format, and on a display without 4K120 it then
-    // drops the signal to 1080p/1440p, so "4K" would not be 4K (owner-reported). A 4K120 display
+    // drops the signal to 1080p/1440p, so "4K" would not be 4K (user-reported). A 4K120 display
     // still gets 120 Hz by picking 119.88 Hz explicitly.
     if refresh_mhz.is_none() && res.is_some_and(|[_, h]| h >= 2160) {
         if let Some(m) = cand.iter().copied().filter(|m| m.refresh_mhz < HIGH_REFRESH_MHZ).max_by_key(|m| m.refresh_mhz) {
@@ -622,7 +622,7 @@ mod tests {
         VideoMode { width, height, refresh_mhz }
     }
 
-    /// The owner's monitor: 4K up to 60 Hz, 1440p and 1080p up to 120 Hz.
+    /// A typical monitor: 4K up to 60 Hz, 1440p and 1080p up to 120 Hz.
     fn owner_display() -> Vec<VideoMode> {
         vec![vm(3840, 2160, 59_940), vm(2560, 1440, 119_880), vm(2560, 1440, 59_940), vm(1920, 1080, 119_880), vm(1920, 1080, 59_940)]
     }

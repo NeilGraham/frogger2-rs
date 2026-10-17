@@ -91,7 +91,7 @@ byte-identical → one engine, region-specific language/title assets.
 **Per-track SHA-1s (all 12 tracks)** are in `crates/f2-import/src/lib.rs` (`KNOWN_TRACKS`) and
 checked by `f2-import --verify`. EU: matches the redump.org entry (serial 99220.DL, Sono press,
 write offset -12, PVD created 2000-09-09) — confirmed track-for-track 2026-10-09. USA: computed
-from the owner's dump; its audio hashes differ from EU (different pressing/offset), still to be
+from a Redump-named dump; its audio hashes differ from EU (different pressing/offset), still to be
 cross-checked against redump.org. Redump track lengths include the 149-sector (00:01:74) pregap
 that the importer strips (e.g. EU track 2: 12754 = 12605 + 149).
 
@@ -104,7 +104,7 @@ into a manifest (`research/manifests/{usa,eu}.json`) like the TPW project does.
 447 KB, `.rdata`, `.data` 52.7 MB (mostly BSS-style static buffers), `.rsrc`. Imports
 `DDRAW`, `DINPUT`, `DSOUND`, `WINMM`, `binkw32`, `ADVAPI32`, `COMCTL32`, `GDI32`, `KERNEL32`…
 → a `dinput.dll`/`ddraw.dll` proxy is a viable injection point for the oracle harness
-(see `sibling-tpw-reuse.md`).
+(see docs/ORACLE.md).
 
 ## 7. Video
 

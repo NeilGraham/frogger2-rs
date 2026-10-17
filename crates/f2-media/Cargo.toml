@@ -4,6 +4,7 @@ description = "Disc image access for Frogger 2: CUE/BIN (multi- and single-file)
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
+repository.workspace = true
 publish.workspace = true
 
 [dependencies]

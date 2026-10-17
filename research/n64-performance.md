@@ -703,7 +703,7 @@ Exact speed-ups left are small each: lazily shared bounding-box corner products 
 are axis-aligned combinations; ~10 % of `CheckBoundingBox`); a cheaper exact `rsin` for
 large angles (frontend swarms call the float path ~30×/tick); `Enemy` clones in enemy
 updates; text-overlay slot layout. Bigger wins need the work itself to go: e.g. running
-the simulation at 30 Hz with the renderer (behaviour change, owner decision) or moving the
+the simulation at 30 Hz with the renderer (behaviour change, maintainer decision) or moving the
 float transforms to the RSP like the renderer (2R).
 ## 3P: draw-side CPU time (2026-10-11)
 Branch `worktree-agent-aaa520b4d4f6d5752` (from `feature/n64` at `673125c`). Goal: CPU draw
@@ -913,7 +913,7 @@ the repo). "real time" = game frames simulated per wall-clock second / 60.
   first worlds at cap 6. At cap 4 the heavy levels (Space, Subterranean, Lab) still run at
   50–56 % of real time: their frames take 115–135 ms (draw 80–90 ms + sim with audio polling 18–25 ms), i.e.
   7–8 frames. Remaining cost is now the draw side (phase 3P).
-- Cap choice (owner decision, `F2N64_MAXSTEP`): 4 keeps the game steps close to 60 Hz
+- Cap choice (maintainer decision, `F2N64_MAXSTEP`): 4 keeps the game steps close to 60 Hz
   behaviour (host checks above: no tunnelling, positions within (k-1) frames) and is the
   default; 6 reaches real time in the first worlds and 75–96 % elsewhere, with
   correspondingly coarser steps (host checks at k = 5, 6, 8: still no panics, no
@@ -924,7 +924,7 @@ the repo). "real time" = game frames simulated per wall-clock second / 60.
   host check + test, N64 pacing (default variable, cap 4). Commits on branch
   `worktree-agent-adfb9e878e97eca51`.
 - Next: the render-side `timeInfo.frameCount` users in `f2-draw` (texture animation) when
-  `timing.active`; owner decision on the cap; real-hardware check.
+  `timing.active`; maintainer decision on the cap; real-hardware check.
 
 ## 3D: draw-side caches + FPU floor (2026-10-11)
 ares v148, Garden 1 (`level 0 0`), frog hopping (camera moving), 5 s `perf` windows:
@@ -1047,7 +1047,7 @@ effects fetch ~8 ms/s, per-round channel bookkeeping (frequency sync, volumes, R
 `-DNDEBUG` (asserts are compiled in everywhere: no NDEBUG in n64.mk) — the ROM ran but an RSP
 DMA landed on the stack and frames stalled (an assertion with a side effect somewhere);
 dropped. `-ftrivial-auto-var-init=uninitialized` for libdragon: no measurable change.
-MIDI instead of the recorded music was considered (owner question) and rejected: the PC
+MIDI instead of the recorded music was considered (maintainer question) and rejected: the PC
 soundtrack is mixed audio, a transcription would be a different arrangement through a
 generic soundfont, and the synth's voices would cost mixer time too.
 
@@ -1587,7 +1587,7 @@ own limit, and the game's is restored after it.
   mixer.
 - Muting silent voices: none of Lab's 10 voices is silent.
 
-### Quality trade-offs measured (not shipped; owner's call)
+### Quality trade-offs measured (not shipped; maintainer's call)
 - Mixer output at 22.05 kHz instead of 32 kHz (`-DF2N64_AUDIO_RATE=22050`): mixer CPU Lab
   77 → 74 ms/s, Garden 46 → 42 (−5–8 %); with the music re-encoded at 22 kHz the ULC unpacking
   would drop by another ~30 % of ~17 ms/s. It loses everything above 11 kHz in the music for

@@ -5,10 +5,9 @@ on assets imported from the user's own copy. Strategy: **port, then improve**, v
 deterministic trace parity against the retail exe.
 
 ## Read first
-- `PLAN.md` (strategy, phases, open owner decisions) — once per session.
+- `docs/PLAN.md` (strategy, status, legal posture) — once per session.
 - `docs/porting-guide.md` before translating any C; `docs/source-map.md` to pick/track work.
 - `research/asset-formats.md` before touching parsers.
-- Sibling project with reusable tooling: `../theme-park-world-recomp` (see `research/sibling-tpw-reuse.md`).
 
 ## Hard rules
 - **Never commit game data**: no files from `Redump/`, `MyAbandonware/`, extracted CAB contents,
@@ -23,8 +22,8 @@ deterministic trace parity against the retail exe.
 - `f2-game` stays platform-free and deterministic (fixed 60 Hz tick).
 
 ## Environment
-- WSL2 Ubuntu; Windows interop available (Windows-side toolchains as in the TPW project).
+- WSL2 Ubuntu; Windows interop available (Windows-side toolchains for the oracle and Windows builds).
 - `unshield` (use `-O`, lowercase `data1.cab`) and `ffmpeg` are installed; passwordless sudo.
 - Quick data extraction for research: `research/prototypes/README.md`.
 
-**Memory caps:** cargo test/run binaries are capped at 8 GB via `tools/memcap.sh` (the cargo runner). Wrap other heavy commands with `tools/memcap.sh <cmd>`. See the "Memory caps" section in docs/ORCHESTRATION.md.
+**Memory caps:** cargo test/run binaries are capped at 8 GB via `tools/memcap.sh` (the cargo runner). Wrap other heavy commands with `tools/memcap.sh <cmd>`. See "Memory caps" in docs/BUILDING.md.
