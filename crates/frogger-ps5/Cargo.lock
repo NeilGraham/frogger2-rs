@@ -9,17 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aes"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
-dependencies = [
- "cfg-if",
- "cipher",
- "cpufeatures",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -158,16 +147,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
-name = "cipher"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
-dependencies = [
- "crypto-common",
- "inout",
-]
-
-[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -180,13 +159,22 @@ dependencies = [
 
 [[package]]
 name = "console-host"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "dlmalloc",
  "f2-audio",
  "f2-engine",
  "f2-platform",
  "frogger",
+ "libm",
+]
+
+[[package]]
+name = "core_maths"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
+dependencies = [
  "libm",
 ]
 
@@ -249,7 +237,6 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
- "subtle",
 ]
 
 [[package]]
@@ -310,18 +297,18 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "f2-audio"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-formats",
 ]
 
 [[package]]
 name = "f2-bink"
-version = "0.1.0"
+version = "0.8.0"
 
 [[package]]
 name = "f2-draw"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-engine",
  "f2-formats",
@@ -333,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "f2-engine"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "ash",
  "bytemuck",
@@ -354,14 +341,14 @@ dependencies = [
 
 [[package]]
 name = "f2-formats"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "f2-game"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-formats",
  "f2-math",
@@ -373,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "f2-import"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-formats",
  "f2-media",
@@ -383,8 +370,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "f2-launcher"
+version = "0.8.0"
+dependencies = [
+ "flate2",
+ "serde_json",
+ "sha2",
+ "toml 0.8.23",
+ "zip",
+]
+
+[[package]]
 name = "f2-math"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "cc",
  "libm",
@@ -393,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "f2-media"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "flate2",
  "sha1",
@@ -402,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "f2-modkit"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-audio",
  "f2-formats",
@@ -416,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "f2-mods"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "semver",
  "serde",
@@ -425,24 +423,11 @@ dependencies = [
 
 [[package]]
 name = "f2-net"
-version = "0.1.0"
-
-[[package]]
-name = "f2-package"
-version = "0.1.0"
-dependencies = [
- "aes",
- "hmac",
- "num-bigint",
- "png 0.18.1",
- "serde_json",
- "sha2",
- "zip",
-]
+version = "0.8.0"
 
 [[package]]
 name = "f2-platform"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "toml 0.8.23",
@@ -484,13 +469,29 @@ dependencies = [
 
 [[package]]
 name = "foldhash"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "fontdue"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7894823fa221401399e2598f8b63f81ac77ff5c63248b7656779bff1632d7d3d"
+dependencies = [
+ "hashbrown 0.15.5",
+ "ttf-parser",
+]
+
+[[package]]
 name = "frogger"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-audio",
  "f2-bink",
@@ -500,13 +501,14 @@ dependencies = [
  "f2-formats",
  "f2-game",
  "f2-import",
+ "f2-launcher",
  "f2-math",
  "f2-media",
  "f2-modkit",
  "f2-mods",
  "f2-net",
- "f2-package",
  "f2-platform",
+ "fontdue",
  "png 0.18.1",
  "serde_json",
  "wgpu",
@@ -619,13 +621,24 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.15.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.1.5",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash",
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -634,16 +647,7 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "foldhash",
-]
-
-[[package]]
-name = "hmac"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
-dependencies = [
- "digest",
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -654,15 +658,6 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
-]
-
-[[package]]
-name = "inout"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
-dependencies = [
- "generic-array",
 ]
 
 [[package]]
@@ -841,25 +836,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
-]
-
-[[package]]
-name = "num-bigint"
-version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
-dependencies = [
- "num-integer",
- "num-traits",
-]
-
-[[package]]
-name = "num-integer"
-version = "0.1.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]
@@ -1286,12 +1262,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "subtle"
-version = "2.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1430,6 +1400,15 @@ name = "toml_writer"
 version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+
+[[package]]
+name = "ttf-parser"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+dependencies = [
+ "core_maths",
+]
 
 [[package]]
 name = "typenum"

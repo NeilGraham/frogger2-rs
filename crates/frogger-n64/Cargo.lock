@@ -82,7 +82,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "f2-draw"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-engine",
  "f2-formats",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "f2-engine"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "bytemuck",
  "f2-formats",
@@ -105,14 +105,14 @@ dependencies = [
 
 [[package]]
 name = "f2-formats"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "f2-game"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-formats",
  "f2-math",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "f2-math"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "cc",
  "libm",
@@ -133,14 +133,14 @@ dependencies = [
 
 [[package]]
 name = "f2-n64fmt"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "f2-formats",
 ]
 
 [[package]]
 name = "f2-n64z"
-version = "0.1.0"
+version = "0.8.0"
 
 [[package]]
 name = "f2-trace"

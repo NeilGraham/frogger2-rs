@@ -4,8 +4,8 @@
      library libfrogger_android.so comes from crates/frogger-android (cargo-ndk). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.neilgraham.frogger2rs"
-    android:versionCode="1"
-    android:versionName="0.1.0">
+    android:versionCode="8000"
+    android:versionName="0.8.0">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
 

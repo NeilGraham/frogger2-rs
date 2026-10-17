@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "f2-engine"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "bytemuck",
  "f2-formats",
@@ -62,14 +62,14 @@ dependencies = [
 
 [[package]]
 name = "f2-formats"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "f2-n64fmt"
-version = "0.1.0"
+version = "0.8.0"
 
 [[package]]
 name = "fdeflate"
