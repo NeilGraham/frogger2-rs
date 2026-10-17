@@ -281,7 +281,7 @@ mod tests {
         let rend = tmp.join("data/usa");
         std::fs::create_dir_all(rt.join("licenses")).unwrap();
         std::fs::write(rt.join("frogger.exe"), tiny_exe()).unwrap();
-        std::fs::write(rt.join("licenses/LICENSE-MIT"), "mit").unwrap();
+        std::fs::write(rt.join("licenses/LICENSE-GPL-3.0"), "gpl").unwrap();
         std::fs::write(rt.join("NOTICE"), "n").unwrap();
         std::fs::create_dir_all(rend.join("game/maps")).unwrap();
         std::fs::create_dir_all(rend.join("oracle")).unwrap();
@@ -300,7 +300,7 @@ mod tests {
         let dir = crate::export(&job).unwrap();
         assert_eq!(dir, out.join("Frogger 2 - Swampy's Revenge"));
         assert!(dir.join("Frogger 2 - Swampy's Revenge.exe").is_file());
-        assert!(dir.join("licenses/LICENSE-MIT").is_file());
+        assert!(dir.join("licenses/LICENSE-GPL-3.0").is_file());
         assert!(dir.join("NOTICE").is_file());
         assert!(dir.join("game-data/usa/game/maps/a.fla").is_file());
         assert!(dir.join("game-data/usa/manifest.json").is_file());

@@ -233,4 +233,4 @@ then the game.
    folder, as vkQuake does) to avoid recompiling on every start.
 4. `param.json` `attribute3` 120 Hz bit if 120 Hz output is wanted (see the WSI source).
 5. Licensing: the driver is GPL-3.0-or-later; the `frogger` executable is already
-   GPL-3.0-or-later, `f2-engine` stays MIT/Apache (it only declares the symbol).
+   GPL-3.0-or-later, `f2-engine` is GPL-3.0-or-later too.

@@ -497,7 +497,7 @@ mod tests {
         std::fs::create_dir_all(rt.join("licenses")).unwrap();
         std::fs::write(rt.join("frogger"), "bin").unwrap();
         std::fs::write(rt.join("f2-viewer"), "other").unwrap();
-        std::fs::write(rt.join("licenses/LICENSE-MIT"), "mit").unwrap();
+        std::fs::write(rt.join("licenses/LICENSE-GPL-3.0"), "gpl").unwrap();
         let rend = tmp.join("data/eu");
         std::fs::create_dir_all(rend.join("video")).unwrap();
         std::fs::write(rend.join("video/intro.bik"), "v").unwrap();
@@ -508,7 +508,7 @@ mod tests {
         assert_eq!(dir, out.join("Frogger 2 - Swampy's Revenge"));
         assert!(dir.join("frogger").is_file());
         assert!(!dir.join("f2-viewer").exists());
-        assert!(dir.join("licenses/LICENSE-MIT").is_file());
+        assert!(dir.join("licenses/LICENSE-GPL-3.0").is_file());
         assert!(dir.join("frogger-2-swampys-revenge.desktop").is_file());
         assert!(dir.join("frogger-2-swampys-revenge.png").is_file());
         assert!(dir.join("game-data/eu/video/intro.bik").is_file());

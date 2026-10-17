@@ -3,7 +3,7 @@ name = "f2-modkit"
 description = "Mod asset pipeline: per-entry overrides (PNG/WAV/FLAC/glTF/TSV/TOML) resolved over retail banks, plus the f2-modkit pack/new CLI."
 version.workspace = true
 edition.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 publish.workspace = true
 
 [[bin]]

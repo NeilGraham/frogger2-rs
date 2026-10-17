@@ -3,7 +3,7 @@ name = "f2-net"
 description = "Online play for the deterministic simulation: rollback/lockstep netcode, UDP + loopback transports, join codes."
 version.workspace = true
 edition.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 publish.workspace = true
 
 # Deliberately dependency-free: std::net only, hand-rolled wire format.

@@ -3,7 +3,7 @@ name = "f2-platform"
 description = "Window, input (PSX pad abstraction), config and paths."
 version.workspace = true
 edition.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 publish.workspace = true
 
 [features]

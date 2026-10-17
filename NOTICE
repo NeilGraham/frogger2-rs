@@ -16,16 +16,13 @@ macOS ~/Library/Application Support/frogger2-rs/data). Then run `frogger`.
 
 Licenses
 --------
-Crates are licensed individually; the full texts are in the licenses/ folder
-(LICENSE-GPL-3.0, LICENSE-MIT, LICENSE-APACHE, LICENSE-LGPL-2.1):
-
-  frogger, f2-game, f2-math, f2-etc ... GPL-3.0-or-later
-  f2-bink (Bink video decoder) ........ LGPL-2.1-or-later
-  f2-media, f2-formats, f2-import, f2-engine, f2-audio, f2-platform,
-  f2-mods, f2-export, f2-trace, f2-viewer ... MIT OR Apache-2.0
-
-The combined executables are distributed under GPL-3.0-or-later. Third-party
-Rust dependencies keep their own licenses (see `cargo tree` / Cargo.lock).
+The port is licensed GPL-3.0-or-later, except f2-bink (the Bink video decoder,
+a translation of FFmpeg's), which is LGPL-2.1-or-later. The full texts are in
+the licenses/ folder (LICENSE-GPL-3.0, LICENSE-LGPL-2.1). The combined
+executables are distributed under GPL-3.0-or-later. Third-party Rust
+dependencies keep their own licenses (see `cargo tree` / Cargo.lock), and
+crates/console-host/csrc/emutls.c is adapted from LLVM compiler-rt
+(Apache-2.0 WITH LLVM-exception, noted in the file).
 
 Frogger is a trademark of Konami. This is an unaffiliated, non-commercial
 fan preservation project. The original source code is preserved by Highway

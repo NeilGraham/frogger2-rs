@@ -285,8 +285,8 @@ See [docs/modding.md](docs/modding.md).
 
 ## 9. Decisions needed from the project owner
 
-1. **License** for our original code (suggest: **GPL-3.0-or-later** for the game crates à la
-   OpenMW/OpenRCT2, and **MIT/Apache-2.0** for reusable crates like `f2-media`, `f2-bink`), with
+1. **License** for our original code (decided: **GPL-3.0-or-later** for everything à la
+   OpenMW/OpenRCT2, except `f2-bink` under LGPL-2.1-or-later, see docs/DECISIONS.md), with
    the derivative-work caveat above documented in the README.
 2. **Project name & hosting** (GitHub org? Keep "Frogger" out of the repo name to reduce
    trademark friction, e.g. "Swampy's Revenge Engine"?).

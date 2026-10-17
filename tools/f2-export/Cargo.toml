@@ -3,7 +3,7 @@ name = "f2-export"
 description = "Exports imported game data to PNG/WAV/glTF/JSON."
 version.workspace = true
 edition.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 publish.workspace = true
 
 [dependencies]

@@ -3,7 +3,7 @@ name = "f2-n64pack"
 description = "Builds the Nintendo 64 asset pack (DFS tree + manifest + budget) from an imported rendition."
 version.workspace = true
 edition.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 publish.workspace = true
 
 [dependencies]

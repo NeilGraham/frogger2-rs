@@ -93,6 +93,12 @@ Everything else (controls, saves, multiplayer, troubleshooting) is in
 - [docs/TOOLS.md](docs/TOOLS.md): importer, viewer, script compiler, modkit, trace and parity tools
 - [PLAN.md](PLAN.md), [docs/](docs/), [research/](research/): goals, design notes and findings
 
+## License
+
+GPL-3.0-or-later, except `f2-bink` (the Bink video decoder), which is LGPL-2.1-or-later. See
+[NOTICE](NOTICE) and the `LICENSE-*` files. The license covers this project's own code only: it
+cannot cover the preserved original source, which carries none, and no game data is included.
+
 ## Credits
 
 Original game by Blitz Games (Interactive Studios). Source preservation by Highway Frogs

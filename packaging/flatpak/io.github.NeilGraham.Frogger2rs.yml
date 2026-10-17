@@ -61,7 +61,7 @@ modules:
       - install -Dm644 packaging/icon/frogger2-rs.svg /app/share/icons/hicolor/scalable/apps/io.github.NeilGraham.Frogger2rs.svg
       - install -Dm644 packaging/flatpak/io.github.NeilGraham.Frogger2rs.metainfo.xml -t /app/share/metainfo/
       - install -Dm644 NOTICE /app/share/licenses/io.github.NeilGraham.Frogger2rs/NOTICE
-      - install -Dm644 LICENSE-GPL-3.0 LICENSE-MIT LICENSE-APACHE LICENSE-LGPL-2.1 -t /app/share/licenses/io.github.NeilGraham.Frogger2rs/
+      - install -Dm644 LICENSE-GPL-3.0 LICENSE-LGPL-2.1 -t /app/share/licenses/io.github.NeilGraham.Frogger2rs/
     sources:
       - type: dir
         path: ../..

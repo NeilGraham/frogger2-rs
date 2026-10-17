@@ -26,7 +26,7 @@ stage_docs() {
   local d="$1"
   mkdir -p "$d/licenses"
   cp NOTICE README.md "$d/"
-  cp LICENSE-GPL-3.0 LICENSE-MIT LICENSE-APACHE LICENSE-LGPL-2.1 "$d/licenses/"
+  cp LICENSE-GPL-3.0 LICENSE-LGPL-2.1 "$d/licenses/"
   [[ -f docs/BUILDING.md ]] && cp docs/BUILDING.md "$d/"
   return 0
 }

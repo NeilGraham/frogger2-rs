@@ -8,7 +8,7 @@
  * how far it got. The same code builds for the host (-DVKTRI_HOST, against
  * the system loader) for a quick sanity run where a display is available.
  *
- * Built by tools/ps5/build-vktri.sh. SPDX-License-Identifier: MIT OR Apache-2.0
+ * Built by tools/ps5/build-vktri.sh. SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <stdint.h>
 #include <stdio.h>

@@ -3,7 +3,7 @@
  * KytyPS5 2026-10-10 has no HLE for libSceLibcInternal getenv (calls land in its
  * "unresolved import" stub, which returns 0) and its strdup returns NULL, so Mesa aborts in
  * xmlconfig ("out of memory"). These wrappers keep a title-local environment and duplicate
- * strings on the title heap. Not for the console. SPDX-License-Identifier: MIT OR Apache-2.0
+ * strings on the title heap. Not for the console. SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <stddef.h>
 #include <stdint.h>

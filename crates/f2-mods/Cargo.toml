@@ -3,7 +3,7 @@ name = "f2-mods"
 description = "Case-insensitive layered virtual filesystem for game data and mods."
 version.workspace = true
 edition.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 publish.workspace = true
 
 [dependencies]

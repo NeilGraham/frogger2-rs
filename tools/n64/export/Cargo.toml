@@ -3,7 +3,7 @@ name = "n64r-export"
 description = "Host tool: exports a level's landscape as an F2NM test asset for the N64 renderer and renders the PC reference image (f2-engine CPU renderer) from the same camera."
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 publish = false
 
 # Own workspace (excluded from the main one): f2-engine is used without its `gpu` feature

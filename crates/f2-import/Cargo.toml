@@ -3,7 +3,7 @@ name = "f2-import"
 description = "Imports a user-owned Frogger 2 disc image or install into the data directory used by the Rust port."
 version.workspace = true
 edition.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 publish.workspace = true
 
 [[bin]]
