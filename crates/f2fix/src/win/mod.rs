@@ -1,6 +1,6 @@
 //! Windows side of f2fix: DllMain, settings, the init thread.
 //!
-//! Loader-lock discipline (as in TPW's tpwfix): `DllMain(PROCESS_ATTACH)`
+//! Loader-lock discipline: `DllMain(PROCESS_ATTACH)`
 //! only reads the ini, opens the log and patches import slots
 //! (VirtualProtect + stores), then starts the init thread. It never loads a
 //! library or waits. The init thread (which the OS starts after the loader

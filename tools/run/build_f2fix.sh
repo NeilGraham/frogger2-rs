@@ -4,7 +4,6 @@
 #
 # Usage: tools/run/build_f2fix.sh [--debug]       (default: release)
 #
-# Adapted from theme-park-world-recomp tools/build.sh (MIT, same owner):
 # cargo.exe refuses a UNC (\\wsl$\...) working directory and MSVC link.exe is
 # slow/flaky on 9P paths, so the crate's sources are rsynced to a Windows-side
 # mirror and built there:

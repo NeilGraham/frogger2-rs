@@ -130,5 +130,4 @@ user's machine. Releases contain **no** game data, hashes only.
 
 ## 6. Reuse
 
-The `cue`, `image`, `iso9660`, `identify`, `hashdb` and `store` modules were adapted from the
-author's Theme Park World importer (`tpw-import`, MIT), with an attribution header in each file.
+The disc readers live in `f2-media` (`cue`, `sector`, `iso9660`, `mds`, `vfs`).

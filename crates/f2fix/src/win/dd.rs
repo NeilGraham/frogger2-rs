@@ -5,8 +5,7 @@
 //! (`surface[RENDER_SRF]`, in the desktop's pixel format). Every frame it
 //! presents with `primary->Blt(&windowRect, render, &clientRect, ...)`
 //! (`DDrawFlip`); FMVs (video.cpp, windowed) blit a temporary Bink surface
-//! to the primary the same way. As TPW's notes advise (shims may wrap
-//! ddraw), the hooks go on the vtable of **the game's own** objects: the
+//! to the primary the same way. The hooks go on the vtable of **the game's own** objects: the
 //! `IDirectDraw7` it gets back from `DirectDrawCreateEx` and the primary
 //! surface it gets back from `CreateSurface`.
 //!

@@ -96,7 +96,7 @@ cross-checked against redump.org. Redump track lengths include the 149-sector (0
 that the importer strips (e.g. EU track 2: 12754 = 12605 + 149).
 
 TODO (Phase 1): hash every extracted file
-into a manifest (`research/manifests/{usa,eu}.json`) like the TPW project does.
+into a manifest (`research/manifests/{usa,eu}.json`).
 
 ## 6. Executable facts
 

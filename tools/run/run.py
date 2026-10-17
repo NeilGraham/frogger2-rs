@@ -3,7 +3,7 @@
 
 Run with `python3 -I tools/run/run.py --id <id> [options]` from WSL.
 
-Flow (patterned on theme-park-world-recomp tools/run/run.py, MIT, same owner):
+Flow:
 
   1. stage the imported game data once on the Windows side:
      C:\\f2-runs\\_stage\\<region>-<fingerprint>\\  (game-data/<region>/game/* and video/ as Video\\),

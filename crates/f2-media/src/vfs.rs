@@ -1,4 +1,3 @@
-// Adapted from theme-park-world-recomp (tpw-import), MIT, same author.
 //! Uniform read-only file-system view over discs and installed directories.
 
 use std::fs::{self, File};

@@ -15,10 +15,11 @@ platform. Exporting needs no SDKs and no extra tools.
 
 | Platform | How | State |
 |---|---|---|
-| **Windows**, **macOS**, **Linux** | run the app, or export a standalone folder / `.app` / AppImage | works (macOS is built and tested in CI, not yet run on a Mac) |
-| **Android** | export an `.apk` with the game inside, sideload it | played start to finish on a handheld, with touch controls and gamepads |
-| **PS4** | export a fake package (`.pkg`) for a jailbroken console | tested on a jailbroken PS5 (firmware 11.40) and in the shadPS4 emulator |
-| **PS5** | export an app folder / `.ffpkg` for a jailbroken console | tested on a jailbroken PS5 (firmware 11.40) and in the KytyPS5 emulator |
+| **Windows**, **macOS** | run the app, or export a standalone folder / `.app` | tested, no issues found |
+| **Linux** | run the app, or export an AppImage | built and tested in CI, not yet played on a desktop |
+| **Android** | export an `.apk` with the game inside, sideload it | played start to finish on a handheld, no issues found |
+| **PS4** | export a fake package (`.pkg`) for a jailbroken console | tested on a jailbroken PS5 (firmware 11.40), no issues found |
+| **PS5** | export an app folder / `.ffpkg` for a jailbroken console | tested on a jailbroken PS5 (firmware 11.40), no issues found |
 | **N64** | export a `.z64` ROM | **experimental**: runs on a ModRetro M64 and in the ares emulator, but can black-screen when leaving a level for the menu; still being optimised |
 
 ```sh

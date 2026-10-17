@@ -8,10 +8,6 @@
 //! needs no registry install or CD, and dumps the DirectDraw framebuffer to
 //! PNG. The exe is never patched on disk.
 //!
-//! The design and several pieces are adapted from the sibling project
-//! theme-park-world-recomp (`crates/tpwfix`, MIT, same owner): the proxy,
-//! IAT patcher, log, audio-session mute and framebuffer conversion.
-//!
 //! Everything Windows-specific is behind `cfg(windows)`; on the Linux host
 //! this crate builds the portable helpers only, which are unit-tested there.
 

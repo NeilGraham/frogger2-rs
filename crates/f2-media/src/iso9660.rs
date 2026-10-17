@@ -1,10 +1,8 @@
-// Adapted from theme-park-world-recomp (tpw-import), MIT, same author.
 //! ISO9660 + Joliet directory reader over a [`SectorSource`].
 //!
-//! All TPW discs carry a Joliet supplementary volume descriptor, and they
-//! need it: the primary (ISO9660 level 1) tree has 8.3 upper-case names,
-//! while the game data uses long mixed-case names such as
-//! `Data/generic/defaulttexture/NotFound.tga` or `Data/Challenges.sam`.
+//! A Joliet supplementary volume descriptor, when the disc has one, gives the
+//! long mixed-case names; the primary (ISO9660 level 1) tree only has 8.3
+//! upper-case names.
 //! [`IsoFs::open`] therefore prefers Joliet and falls back to the primary
 //! tree only when no Joliet SVD exists.
 

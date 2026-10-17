@@ -1,5 +1,4 @@
-// Parser adapted from theme-park-world-recomp (crates/tpw-import/src/mds.rs), MIT, same author;
-// extended with audio tracks, pregaps, RAW+SUB and a writer.
+// Supports audio tracks, pregaps, RAW+SUB and a writer.
 //! Alcohol 120% MDS (media descriptor, version 1.x) + MDF image data.
 //!
 //! Layout (little endian): header 0x58 bytes (`MEDIA DESCRIPTOR`, version at 0x10,

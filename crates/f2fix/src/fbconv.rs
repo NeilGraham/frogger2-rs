@@ -1,5 +1,3 @@
-//! Adapted from theme-park-world-recomp `crates/tpwfix/src/fbconv.rs` (MIT, same owner).
-//!
 //! Portable framebuffer helpers for the in-process dump (`win::dd`):
 //! converting a locked DirectDraw surface (any RGB bit-mask format, 15/16,
 //! 24 or 32 bpp) to 8-bit RGB, and encoding that as a PNG (zlib "stored"

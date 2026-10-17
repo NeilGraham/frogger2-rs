@@ -1,5 +1,4 @@
 # tools/run/fgwatch.ps1: read-only desktop-disruption watcher for oracle runs.
-# Adapted from theme-park-world-recomp tools/run/fgwatch.ps1 (MIT, same owner).
 #
 #   powershell -File fgwatch.ps1 -Prefix C:\f2-runs\<id>\ -Seconds 60 [-IntervalMs 1000] [-StopFile F]
 #

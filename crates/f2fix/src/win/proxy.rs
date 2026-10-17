@@ -1,8 +1,7 @@
 //! `dinput.dll` proxy exports, forwarded at runtime to the real system DLL,
 //! plus the DirectInput 7 vtable hooks (`input.virtual`).
 //!
-//! Adapted from theme-park-world-recomp `crates/tpwfix/src/win/proxy.rs`
-//! (MIT, same owner). `frogger2.exe` imports only `DirectInputCreateEx`
+//! `frogger2.exe` imports only `DirectInputCreateEx`
 //! (controll.cpp `InitInputDevices`: DirectInput 7, keyboard
 //! `NONEXCLUSIVE|BACKGROUND`, joypads `EXCLUSIVE|FOREGROUND`).
 //!

@@ -19,7 +19,7 @@ all 26 levels and the 3 demos are identical to the retail oracle trace.
 | 5 Multiplayer and hardening | partial | local multiplayer and split-screen game logic (`multi.c`), packaging | multiplayer HUD |
 | 6 Enhancements and online | done (first cut) | display profiles (authentic / enhanced), gamepads and rebinding, rollback netplay (`f2-net`), settings screen | culling for wider-than-4:3 views, see below |
 | 7 Modding | done (first cut) | `f2-mods` layered VFS, `f2-etc` script tool, `f2-modkit`, level editor | glTF/PNG/WAV replacement polish |
-| Platforms | see [PLATFORMS.md](PLATFORMS.md) | Windows, Linux, macOS, Android, PS4, PS5, N64 (experimental) | N64 black screen after a level; macOS not run on a Mac |
+| Platforms | see [PLATFORMS.md](PLATFORMS.md) | Windows, Linux, macOS, Android, PS4, PS5, N64 (experimental) | N64 black screen after a level; Linux not yet played on a desktop |
 
 **Next:** drawing and animating what the original 4:3 view culled, on every platform except the
 N64 (see [enhancements.md](enhancements.md), "Hor+ past the 4:3 frustum"), the multiplayer HUD,

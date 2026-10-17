@@ -1,7 +1,6 @@
 //! Mute this process's audio session (`audio.mute=1`, the default).
 //!
-//! Adapted from theme-park-world-recomp `crates/tpwfix/src/win/audiomute.rs`
-//! (MIT, same owner). The game's sound code (DirectSound, Bink's DirectSound
+//! The game's sound code (DirectSound, Bink's DirectSound
 //! and waveOut streams) runs unchanged; only the Windows session volume of
 //! this one process is muted, like the per-app mute in the volume mixer.
 //! Nothing system-wide is touched. A dedicated MTA thread re-asserts the

@@ -1,8 +1,7 @@
 //! `f2fix.ini`: run settings of the oracle shim (portable, host-tested).
 //!
-//! Same `key=value` syntax as TPW's `tpwfix-run.cfg` (theme-park-world-recomp
-//! `crates/tpwfix/src/hlcfg.rs`, MIT, same owner): one key per line, `#` or
-//! `;` starts a comment, unknown keys are reported and ignored.
+//! Plain `key=value` syntax: one key per line, `#` or `;` starts a comment,
+//! unknown keys are reported and ignored.
 //!
 //! ```text
 //! window=offscreen        # off | offscreen (default) | hidden

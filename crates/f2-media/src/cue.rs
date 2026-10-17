@@ -1,4 +1,3 @@
-// Adapted from theme-park-world-recomp (tpw-import), MIT, same author.
 //! Minimal CUE sheet parser (FILE / TRACK / INDEX 01).
 
 use crate::sector::{RawFormat, TrackMode};

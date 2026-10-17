@@ -7,10 +7,6 @@ framebuffer dumps. A run plays the logo FMVs (Hasbro, Blitz, intro `01S`), reach
 desktop is not disturbed: the game never takes the foreground, its window is never on a
 monitor, the display mode doesn't change, and no audio is heard.
 
-The design and some code come from the author's Theme Park World recomp project
-(`crates/tpwfix`, `tools/run`, `docs/NOTES-headless.md`; MIT). The copied files carry an
-attribution header.
-
 ## Quick start
 
 ```bash
@@ -68,19 +64,19 @@ game's own COM objects.
 | CD check | Main.cpp `FindFrogger2CD`, video.cpp `StartVideoPlayback` | `GetLogicalDriveStringsA`, `GetDriveTypeA`, `GetVolumeInformationA`, `CreateFileA` and `FindFirstFileA` (exe), and `CreateFileA` (binkw32) | One virtual CD-ROM drive `Q:\` with the label `FROGGER2`. `Q:\…` paths are redirected to `cd.root` (the run root, which holds `Video\`). |
 | CD audio | pcaudio.c (`mciSendCommand` "cdaudio") | `mciSendCommandA` | Every command succeeds silently. `MCI_OPEN` returns a fake device id. |
 | Mixer | (retail only) | `mixerSetControlDetails` | Dropped. The game would otherwise change the owner's system mixer volumes. |
-| Audio | pcaudio.c, Bink | `DirectSoundCreate` (ordinal 1) + WASAPI | The process's audio session is muted, as in TPW `audio.mute`: `ISimpleAudioVolume::SetMute` on the default render device's session, re-asserted every 0.25–2 s. `DirectSoundCreate` waits until the mute is confirmed, and if it isn't confirmed within 5 s it fails (`DSERR_NODRIVER`), so sound can never be audible. Bink's DirectSound and waveOut output joins the same session. |
+| Audio | pcaudio.c, Bink | `DirectSoundCreate` (ordinal 1) + WASAPI | The process's audio session is muted: `ISimpleAudioVolume::SetMute` on the default render device's session, re-asserted every 0.25–2 s. `DirectSoundCreate` waits until the mute is confirmed, and if it isn't confirmed within 5 s it fails (`DSERR_NODRIVER`), so sound can never be audible. Bink's DirectSound and waveOut output joins the same session. |
 | Window | mdxWindows.cpp `WindowsInitialise`, mdxDDraw.cpp | `RegisterClassA`, `CreateWindowExA`, `ShowWindow`, `SetWindowPos` | `WS_EX_NOACTIVATE\|WS_EX_TOOLWINDOW` (no taskbar or Alt-Tab entry), placed at `SM_XVIRTUALSCREEN - 12000`. `ShowWindow` → `SW_SHOWNOACTIVATE` (`hidden`: never shown). `SetWindowPos` gets `NOACTIVATE\|NOZORDER` and stays off-screen. The window procedure is wrapped so that `WM_ACTIVATEAPP(FALSE)` and `WM_ACTIVATE(WA_INACTIVE)` are dropped: `WM_ACTIVATEAPP(FALSE)` would clear `winActive`, and drawloop.cpp `DrawLoop` stops drawing while it is 0. |
 | Modal UI | Main.cpp (insert-CD / bad-video boxes), mdxDDraw.cpp `DDrawInitObject` (video-device dialog) | `MessageBoxA`, `DialogBoxParamA` | Never shown. They are logged and answered with cancel/no. The device dialog only opens when `VideoDevice` matches no enumerated device. `auto` prevents that, so it has not appeared in any run. |
-| DirectInput | controll.cpp `InitInputDevices` | proxy `DirectInputCreateEx` → `IDirectInput7`/`IDirectInputDevice7` vtables | `EnumDevices(joystick)` returns none, so the owner's pads are never opened. The cooperative level is forced to `BACKGROUND\|NONEXCLUSIVE`. `GetDeviceState`/`GetDeviceData` report nothing pressed, so the owner's typing never leaks in. |
+| DirectInput | controll.cpp `InitInputDevices` | proxy `DirectInputCreateEx` → `IDirectInput7`/`IDirectInputDevice7` vtables | `EnumDevices(joystick)` returns none, so the user's pads are never opened. The cooperative level is forced to `BACKGROUND\|NONEXCLUSIVE`. `GetDeviceState`/`GetDeviceData` report nothing pressed, so the owner's typing never leaks in. |
 | DirectDraw | mdxDDraw.cpp `DDrawCreateSurfaces`/`DDrawFlip`, video.cpp | `DirectDrawCreateEx` → `IDirectDraw7` vtable (`CreateSurface`, `SetCooperativeLevel`, `SetDisplayMode`) → **the game's own primary surface** vtable (`Blt`, `Flip`) | Fullscreen/exclusive requests are forced to `DDSCL_NORMAL`, and `SetDisplayMode` is refused (neither is reached with `Fullscreen=0`). Each `primary->Blt(…, src, …)` counts as a present (game frames come from `RENDER_SRF`, windowed FMV frames from Bink's temporary surface). When a dump is due, the source is locked read-only, converted (565/555/24/32 → RGB, `fbconv.rs`) and written as `f2-shot-<frame>.png` (or `final`). |
 
-Following the TPW notes, the hooks go on the vtables of the objects the game itself got back,
+The hooks go on the vtables of the objects the game itself got back,
 not on objects obtained through `QueryInterface`. A compat shim may wrap ddraw, and the wrapper's
 vtable is the one the game calls.
 
 ### `f2fix.ini`
 
-The ini sits next to the exe. Its syntax follows TPW hlcfg; the parser is `src/cfg.rs`, which
+The ini sits next to the exe. Its syntax is plain `key=value`; the parser is `src/cfg.rs`, which
 is host-tested.
 
 ```text

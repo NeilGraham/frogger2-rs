@@ -1,4 +1,3 @@
-// Adapted from theme-park-world-recomp (tpw-import), MIT, same author.
 //! Raw CD sector layouts and 2048-byte user-data sources.
 //!
 //! Every reader in this crate ends up as a [`SectorSource`]: something that

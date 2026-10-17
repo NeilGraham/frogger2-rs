@@ -40,14 +40,14 @@ Build instructions: [BUILDING.md](BUILDING.md). Packaging: `tools/package/`, `pa
 
 | Platform | Status | Build | Window / GPU | Audio | Pads | Packaging |
 |---|---|---|---|---|---|---|
-| Windows x86_64 | **supported** (maintainer's main target) | native MSVC or WSL cross-build | winit / DX12, Vulkan | cpal WASAPI | gilrs (XInput, WGI) | zip (`package.sh windows`) |
-| Linux x86_64 | **supported**, CI-tested | native | winit Wayland (native) or X11 / Vulkan, GL | cpal ALSA (PipeWire/Pulse via ALSA plugins) | gilrs (evdev + udev) | tar.gz, AppImage, Flatpak manifest |
+| Windows x86_64 | **supported**, tested, no issues found (maintainer's main target) | native MSVC or WSL cross-build | winit / DX12, Vulkan | cpal WASAPI | gilrs (XInput, WGI) | zip (`package.sh windows`) |
+| Linux x86_64 | **supported**, CI-tested; not yet played on a Linux desktop (works under WSL2) | native | winit Wayland (native) or X11 / Vulkan, GL | cpal ALSA (PipeWire/Pulse via ALSA plugins) | gilrs (evdev + udev) | tar.gz, AppImage, Flatpak manifest |
 | Linux aarch64 | expected to work, untested | native | same | same | same | tar.gz/AppImage (`uname -m`) |
-| macOS arm64 / x86_64 | **compile-checked from Linux; CI builds + tests on macos-14**; not run on a Mac yet | native (Xcode CLT) | winit / Metal; Retina-aware | cpal CoreAudio | gilrs (IOKit) | `.app` (universal), ad-hoc signed |
+| macOS arm64 / x86_64 | **tested on a Mac, no issues found**; CI builds + tests on macos-14 | native (Xcode CLT) | winit / Metal; Retina-aware | cpal CoreAudio | gilrs (IOKit) | `.app` (universal), ad-hoc signed |
 | WSL2 (WSLg) | works (dev setup) | native Linux | X11 via XWayland (native Wayland crashes WSLg's Weston), llvmpipe/lavapipe | Pulse via ALSA plugin | usbipd only | — |
-| PS4 / PS5 (homebrew) | **builds; tested on a jailbroken PS5 (FW 11.40) and in the shadPS4 emulator** | `tools/ps4/build-pkg.sh` (OpenOrbis, `x86_64-unknown-freebsd` std) | VideoOut + CPU renderer (`f2-engine/soft.rs`) | sceAudioOut | scePad | PS4 fPKG (also installs on a jailbroken PS5) |
-| PS5 (native homebrew) | **builds; tested on a jailbroken PS5 (FW 11.40) and in the KytyPS5 emulator** (4K, 120 Hz) | `tools/ps5/build.sh` (ps5-payload-sdk stubs, PS5_Vulkan packaging, `x86_64-unknown-freebsd` std) | tiled VideoOut + CPU renderer; optional wgpu on PS5 RADV (`--gpu`, untested) | sceAudioOut | scePad | PS5 app folder / `.ffpkg` |
-| Android (arm64, x86_64) | **played start to finish** on an AYANEO Pocket EVO (Android 13); also runs in the Android 15 emulator | `tools/android/build-apk.sh` (cargo-ndk, no Gradle) | android-activity NativeActivity / Vulkan or GLES | cpal AAudio (Oboe) | touch overlay + Android gamepads (buttons, sticks, HAT d-pad) | APK, sideload ([ANDROID.md](ANDROID.md)) |
+| PS4 / PS5 (homebrew) | **builds; tested on a jailbroken PS5 (FW 11.40), no issues found; also runs in the shadPS4 emulator** | `tools/ps4/build-pkg.sh` (OpenOrbis, `x86_64-unknown-freebsd` std) | VideoOut + CPU renderer (`f2-engine/soft.rs`) | sceAudioOut | scePad | PS4 fPKG (also installs on a jailbroken PS5) |
+| PS5 (native homebrew) | **builds; tested on a jailbroken PS5 (FW 11.40), no issues found; also runs in the KytyPS5 emulator** (4K, 120 Hz) | `tools/ps5/build.sh` (ps5-payload-sdk stubs, PS5_Vulkan packaging, `x86_64-unknown-freebsd` std) | tiled VideoOut + CPU renderer; optional wgpu on PS5 RADV (`--gpu`, untested) | sceAudioOut | scePad | PS5 app folder / `.ffpkg` |
+| Android (arm64, x86_64) | **played start to finish, no issues found** on an AYANEO Pocket EVO (Android 13); also runs in the Android 15 emulator | `tools/android/build-apk.sh` (cargo-ndk, no Gradle) | android-activity NativeActivity / Vulkan or GLES | cpal AAudio (Oboe) | touch overlay + Android gamepads (buttons, sticks, HAT d-pad) | APK, sideload ([ANDROID.md](ANDROID.md)) |
 | N64 | **experimental**: runs on a ModRetro M64 and in ares; black screen when leaving a level for the menu | see [N64-PLAN.md](N64-PLAN.md) | | | | | |
 | Web, iOS, Switch, PS2/PS3 | not started | see §4 | | | | |
 

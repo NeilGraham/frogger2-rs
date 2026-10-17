@@ -1,5 +1,5 @@
 //! `f2fix.log` in the run directory: one line per event, flushed per line.
-//! (Pattern from TPW's tpwfix `win/log.rs`.) Safe under the loader lock:
+//! Safe under the loader lock:
 //! only CreateFileW/WriteFile underneath.
 
 use super::ffi;

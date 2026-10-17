@@ -1,6 +1,5 @@
 //! Import-table and vtable slot patching.
-//! Adapted from theme-park-world-recomp `crates/tpwfix/src/win/iat.rs`
-//! (MIT, same owner); typed hook functions instead of naked stubs.
+//! Typed hook functions instead of naked stubs.
 
 use super::ffi;
 use core::ffi::c_void;
