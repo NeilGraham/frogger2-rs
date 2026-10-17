@@ -37,11 +37,12 @@ keep them for your own devices. Details in [docs/EXPORT.md](docs/EXPORT.md).
 2. Start `launcher` (`launcher.exe` on Windows) and import your copy: your disc drive, a disc
    image (`.zip`, `.cue`, `.bin`, `.iso`, ...) or an install folder, or drop it onto the window.
    The launcher then makes `frogger2` (`frogger2.exe`) with the game's own icon, cut from your
-   copy, and can add a *Frogger 2: Swampy's Revenge* shortcut to your desktop.
+   copy, and can add a *Frogger 2: Swampy's Revenge* shortcut wherever you like.
 3. Press PLAY, or start `frogger2` (or the shortcut) any time. The game starts fullscreen at
    1024x768, the original's largest size, and the first start gets you the logos, intro, title
    and the 3D frontend, as in the original. The launcher also changes the main settings,
-   installs newer versions side by side and switches mods on and off.
+   exports for your other devices, installs newer versions side by side (a new version brings
+   its own launcher) and switches mods on and off.
 
 To build it yourself: `cargo build --release -p frogger -p f2-import` (see
 [docs/BUILDING.md](docs/BUILDING.md)); the command-line importer is

@@ -80,7 +80,7 @@ fn cached_or_download(dir: PathBuf, log: &dyn Fn(&str)) -> Result<String, String
     log(&format!("Downloading the PS4 package keys from LibOrbisPkg: {url}"));
     let part = dir.join(format!("{CACHE_NAME}.part"));
     let hint = format!("download {url} by hand (or a copy of LibOrbisPkg's Util/Keys.cs) and pass it with --ps4-keys FILE or F2_PS4_KEYS_FILE, or set F2_PS4_KEYS_URL to a mirror");
-    let status = std::process::Command::new("curl")
+    let status = quiet(std::process::Command::new("curl"))
         .args(["-fL", "--retry", "3", "-o"])
         .arg(&part)
         .arg(&url)
@@ -204,6 +204,18 @@ fn test_keyset() -> Keyset {
         keystone_mac_data: [9; 32],
         pkg_public_keys: (0..7).map(|i| filler(10 + i)).collect(),
     }
+}
+
+/// Keeps `curl` from opening a console window on Windows (the launcher and the game have none).
+#[cfg(not(test))]
+#[cfg_attr(not(windows), allow(unused_mut))]
+fn quiet(mut cmd: std::process::Command) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
 }
 
 #[cfg(test)]

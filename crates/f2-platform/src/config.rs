@@ -42,11 +42,13 @@ pub struct LauncherCfg {
     pub releases_url: Option<String>,
     /// Ask GitHub for newer releases when the launcher starts (one small request).
     pub check_updates: bool,
+    /// Where the launcher last put the game's shortcut.
+    pub shortcut: Option<PathBuf>,
 }
 
 impl Default for LauncherCfg {
     fn default() -> Self {
-        LauncherCfg { start: "game".into(), version: String::new(), releases_url: None, check_updates: true }
+        LauncherCfg { start: "game".into(), version: String::new(), releases_url: None, check_updates: true, shortcut: None }
     }
 }
 

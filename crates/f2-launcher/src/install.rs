@@ -52,7 +52,7 @@ pub fn installed_tags(root: &Path) -> Vec<String> {
 
 /// `curl` the text at `url` (the releases API wants a user agent).
 pub fn fetch_text(url: &str) -> Result<String, String> {
-    let out = std::process::Command::new("curl")
+    let out = quiet(std::process::Command::new("curl"))
         .args(["-fsSL", "--retry", "2", "-H", "User-Agent: frogger2-rs-launcher", "-H", "Accept: application/vnd.github+json", url])
         .output()
         .map_err(|e| format!("running curl: {e}"))?;
@@ -64,7 +64,7 @@ pub fn fetch_text(url: &str) -> Result<String, String> {
 
 /// `curl` `url` into `dest`.
 pub fn fetch_file(url: &str, dest: &Path) -> Result<(), String> {
-    let status = std::process::Command::new("curl")
+    let status = quiet(std::process::Command::new("curl"))
         .args(["-fL", "--retry", "3", "-H", "User-Agent: frogger2-rs-launcher", "-o"])
         .arg(dest)
         .arg(url)
@@ -216,6 +216,17 @@ pub fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Keeps `curl` from opening a console window on Windows (the launcher and the game have none).
+#[cfg_attr(not(windows), allow(unused_mut))]
+fn quiet(mut cmd: std::process::Command) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
 }
 
 #[cfg(test)]

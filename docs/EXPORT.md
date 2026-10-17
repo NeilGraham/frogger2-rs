@@ -12,6 +12,10 @@ WSL:
 | PS5 | app folder (+ `.ffpkg` where supported) | `runtime-ps5-<v>.zip` |
 | N64 | `.z64` ROM | `runtime-n64-<v>.zip` |
 
+The same exports are on the launcher's **Export** page and in the game's Settings > Export (both
+write to `exports/` beside `config.toml`); the launcher exports this desktop's own build from the
+game version it runs.
+
 ```sh
 frogger2 --export ps4,ps5,n64,android [--out DIR]            # runtimes from the matching GitHub release
 frogger2 --export n64 --runtime runtime-n64-0.1.0.zip         # a local runtime

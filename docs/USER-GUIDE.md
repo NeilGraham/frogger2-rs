@@ -31,19 +31,28 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
    start `frogger2` directly any time, which opens the game at once (and the launcher instead if
    you have no data yet). Once the game is imported the launcher shows its artwork too (the
    loading-screen picture, the logo, the icon), read from your copy and never shipped.
-3. **Add shortcut** (on the Play page, or Settings > Game > Shortcut) makes a shortcut named
-   *Frogger 2: Swampy's Revenge* that starts `frogger2`: on the desktop and in the Start menu on
-   Windows, in the applications menu (and on the desktop, if there is one) on Linux, on the
-   desktop on macOS. Windows and macOS file names cannot contain a `:`, so the file name uses the
-   look-alike `꞉` (U+A789); the shortcut's own description has the real name.
+3. **Add shortcut** (on the Play page, or Settings > Game > Shortcut) asks where to put a
+   shortcut named *Frogger 2: Swampy's Revenge* (the system's save dialog, starting on the
+   desktop) and makes it there: a `.lnk` on Windows, a `.desktop` launcher on Linux, a link to the
+   app on macOS. It starts `frogger2`. Windows and macOS file names cannot contain a `:`, so the
+   suggested file name uses the look-alike `꞉` (U+A789); the shortcut's own name is the real one.
 4. **Versions** lists the releases on GitHub. **Install** downloads one (checked against the
-   release's `SHA256SUMS.txt`) into `versions/<tag>/`, **Use** picks the version PLAY runs
+   release's `SHA256SUMS.txt`) into `versions/<tag>/`, **Use** picks the version that runs
    (your data, settings, saves and mods are shared by all versions), **Remove** deletes one.
+   Each version brings its own launcher: choosing one restarts the launcher as that version's,
+   and from then on `launcher`, `frogger2` and the shortcut in the install folder start that
+   version's launcher and game. (Launchers before 0.8.2 do not do this: after picking a newer
+   version in one of them, start the new version's `versions/<tag>/launcher` once.)
    The launcher asks GitHub for the list when it starts; turn that off in Settings (*Look for new
    versions*, `[launcher] check_updates`), point it at a mirror with `[launcher] releases_url` or
    `$F2_RELEASES_URL`, or set `$F2_NO_UPDATE_CHECK=1`.
 5. **Mods** lists the folders in `mods/` and switches them on and off (`[mods] enabled`).
-6. **Settings**: your game (*Import again*), the shortcut, the game data and settings folders;
+6. **Export** builds the game with your data for your other devices, the same as the game's own
+   Settings > Export and `frogger2 --export` ([EXPORT.md](EXPORT.md)): this computer's own
+   system, Android, PS4, PS5 and N64 (a Windows build only from Windows, and so on). Each row
+   shows its progress and result; **Open exports folder** shows them. The exports contain your
+   game: keep them for your own devices.
+7. **Settings**: your game (*Import again*), the shortcut, the game data and settings folders;
    the window mode and resolution, VSync, the profile (*Enhanced* / *Authentic*), music and
    effects volume, the text language, skipping the intro logos; and what starting `frogger2`
    opens (the game, the default, or the launcher: `[launcher] start`). Changes are saved at once
@@ -56,6 +65,9 @@ PC game: the 4:3 picture is scaled to your screen with black bars at the sides (
 your screen, or *Windowed* for a window; Alt+Enter / F11 also switch to a window.
 
 On Android the launcher is reached from the swipe-in menu, see [ANDROID.md](ANDROID.md).
+
+On Windows `launcher.exe` and `frogger2.exe` open no console window; started from a terminal
+they print into it.
 
 ## Quick start
 

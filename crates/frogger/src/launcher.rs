@@ -17,11 +17,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::data::Data;
+use crate::export::Target;
 use crate::uikit::UiKit;
 use f2_engine::{GpuContext, Renderer, WindowSurface};
 use f2_import::{Event, Manifest, Options, Sink};
 use f2_launcher::releases::{self, Release};
-use f2_launcher::ui::{self, Action, Caps, Launcher, ModRow, Progress, SettingGroup, SettingKind, SettingRow, SourceRow, VersionRow};
+use f2_launcher::ui::{self, Action, Caps, ExportRow, ExportState, Launcher, ModRow, Progress, SettingGroup, SettingKind, SettingRow, SourceRow, VersionRow};
 use f2_launcher::{install, mods};
 use f2_media::cdrom::DriveInfo;
 use f2_platform::window::{self, winit, Flow, WindowApp, WindowConfig};
@@ -36,6 +37,11 @@ enum Msg {
     Picked(Option<PathBuf>),
     Import(Event),
     Imported(Result<Box<Manifest>, String>),
+    /// The shortcut's save dialog closed (`None`: cancelled).
+    ShortcutPath(Option<PathBuf>),
+    /// A progress line of the export of `Target::ALL[i]`.
+    ExportLog(usize, String),
+    Exported(usize, Result<PathBuf, String>),
 }
 
 struct Gfx {
@@ -71,21 +77,30 @@ struct App {
     /// The game's icon for the window (made from the artwork).
     window_icon: Option<crate::icon::Rgba>,
     art_loaded: bool,
+    /// Per `Target::ALL`: where its export stands and its last line.
+    exports: Vec<(ExportState, Option<String>)>,
     cursor: (f32, f32),
     exit: bool,
 }
 
-/// The install folder: the portable folder, else the exe's folder (not its `engine/`).
-fn install_root() -> PathBuf {
-    if let Some(r) = f2_platform::paths::portable_root() {
-        return r;
+use crate::setup::install_root;
+
+/// Where exports are written (as the game's own Export page).
+fn exports_dir() -> PathBuf {
+    f2_platform::paths::config_dir().join("exports")
+}
+
+/// What an export of `t` makes.
+fn export_blurb(t: Target) -> &'static str {
+    match t {
+        Target::Windows => "A folder with frogger2.exe and your game, to copy to another PC",
+        Target::MacOs => "An app with your game inside",
+        Target::Linux => "An AppImage with your game inside",
+        Target::Android => "An .apk with your game inside, to sideload",
+        Target::Ps4 => "A fake package (.pkg) for a jailbroken PS4 or PS5",
+        Target::Ps5 => "An app folder and .ffpkg for a jailbroken PS5",
+        Target::N64 => "A .z64 ROM for flash carts and emulators (experimental)",
     }
-    let exe = std::env::current_exe().unwrap_or_default();
-    let dir = exe.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-    if dir.file_name().is_some_and(|n| n == "engine") {
-        return dir.parent().map(Path::to_path_buf).unwrap_or(dir);
-    }
-    dir
 }
 
 /// Resolutions offered (`None` = the screen's own size).
@@ -157,6 +172,7 @@ impl App {
             pick_folder: true,
             drop_files: true,
             open_folders: true,
+            export: true,
             updates_page: false,
             close_label: None,
         };
@@ -181,6 +197,7 @@ impl App {
             icon_pending: None,
             window_icon: None,
             art_loaded: false,
+            exports: vec![(ExportState::Ready, None); Target::ALL.len()],
             cursor: (0.0, 0.0),
             exit: false,
         };
@@ -190,13 +207,7 @@ impl App {
     }
 
     fn selected_dir(&self) -> PathBuf {
-        let tag = &self.cfg.launcher.version;
-        let d = install::version_dir(&self.root, tag);
-        if !tag.is_empty() && install::engine_exe(&d).is_some() {
-            d
-        } else {
-            self.root.clone()
-        }
+        crate::setup::version_dir(&self.root, &self.cfg.launcher.version)
     }
 
     fn locate(&self) -> Option<Data> {
@@ -233,7 +244,27 @@ impl App {
             .into_iter()
             .map(|m| ModRow { enabled: self.cfg.mods.enabled.contains(&m.id), id: m.id, name: m.name, version: m.version })
             .collect();
-        s.shortcut = (s.game.is_some() && crate::shortcut::supported()).then(crate::shortcut::exists);
+        let made = self.cfg.launcher.shortcut.as_ref().is_some_and(|p| std::fs::symlink_metadata(p).is_ok());
+        s.shortcut = (s.game.is_some() && crate::shortcut::supported()).then_some(made);
+        s.exports_dir = exports_dir().display().to_string();
+        s.exports = Target::ALL
+            .iter()
+            .zip(&self.exports)
+            .map(|(&t, (state, line))| {
+                let state = if Target::exportable().contains(&t) {
+                    state.clone()
+                } else {
+                    let from = match t {
+                        Target::Windows => "Windows",
+                        Target::MacOs => "macOS",
+                        _ => "Linux",
+                    };
+                    ExportState::Unavailable(format!("From {from} only"))
+                };
+                let detail = line.clone().unwrap_or_else(|| export_blurb(t).to_string());
+                ExportRow { name: t.name().to_string(), detail, state }
+            })
+            .collect();
         let selected = self.cfg.launcher.version.clone();
         let installed = install::installed_tags(&self.root);
         let (os, arch) = (releases::host_os(), releases::host_arch());
@@ -300,19 +331,11 @@ impl App {
         if let Some(t) = &self.ui.state.game {
             game.push(row("import", "Your game", t.clone(), SettingKind::Button("Import again".into())));
             if let Some(made) = self.ui.state.shortcut {
-                let where_ = if cfg!(windows) {
-                    "on the desktop and in the Start menu"
-                } else if cfg!(target_os = "macos") {
-                    "on the desktop"
-                } else {
-                    "in the applications menu"
+                let detail = match (&self.cfg.launcher.shortcut, made) {
+                    (Some(p), true) => p.display().to_string(),
+                    _ => format!("\"{}\", wherever you choose", crate::shortcut::NAME),
                 };
-                game.push(row(
-                    "shortcut",
-                    "Shortcut",
-                    format!("\"{}\" {where_}", crate::shortcut::NAME),
-                    SettingKind::Button(if made { "Make again" } else { "Create" }.into()),
-                ));
+                game.push(row("shortcut", "Shortcut", detail, SettingKind::Button(if made { "Add another" } else { "Add" }.into())));
             }
         } else {
             game.push(row("import", "Your game", "Not imported yet".into(), SettingKind::Button("Import".into())));
@@ -516,6 +539,28 @@ impl App {
                     }
                 }
                 Msg::Imported(r) => self.import_done(r),
+                Msg::ShortcutPath(p) => {
+                    self.dialog_open = false;
+                    if let Some(p) = p {
+                        self.make_shortcut(&p);
+                    }
+                }
+                Msg::ExportLog(i, l) => {
+                    if let Some(e) = self.exports.get_mut(i) {
+                        e.1 = Some(l);
+                    }
+                    self.refresh();
+                }
+                Msg::Exported(i, r) => {
+                    self.exports[i] = match r {
+                        Ok(p) => {
+                            self.say(&format!("Exported for {}: {}", Target::ALL[i].name(), p.display()), false);
+                            (ExportState::Done, Some(format!("Done: {}", p.display())))
+                        }
+                        Err(e) => (ExportState::Failed, Some(format!("Failed: {e}"))),
+                    };
+                    self.refresh();
+                }
             }
         }
     }
@@ -598,18 +643,84 @@ impl App {
         self.refresh();
     }
 
+    /// "Add shortcut": asks where (the system's save dialog), then makes it.
     fn create_shortcut(&mut self) {
-        let Some(d) = self.locate() else { return self.say("Import your game first.", true) };
+        if self.locate().is_none() {
+            return self.say("Import your game first.", true);
+        }
+        if self.dialog_open {
+            return;
+        }
+        self.dialog_open = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::ShortcutPath(crate::shortcut::ask_path()));
+        });
+    }
+
+    fn make_shortcut(&mut self, dest: &Path) {
+        let Some(d) = self.locate() else { return };
         let exe = match crate::setup::ensure_game_exe(&self.root, &d, &|l| eprintln!("launcher: {l}")) {
             Ok(e) => e,
             Err(e) => return self.say(&e, true),
         };
         let art = crate::icon::game_art(&d).map(|a| crate::icon::rounded(&crate::icon::square(&a, 256), 0.18));
-        match crate::shortcut::create(&exe, art.as_ref()) {
-            Ok(w) => self.say(&format!("Made the \"{}\" shortcut {w}.", crate::shortcut::NAME), false),
+        match crate::shortcut::create(&exe, dest, art.as_ref()) {
+            Ok(()) => {
+                self.cfg.launcher.shortcut = Some(dest.to_path_buf());
+                self.save_config();
+                self.say(&format!("Made the shortcut: {}", dest.display()), false);
+            }
             Err(e) => self.say(&e, true),
         }
         self.refresh();
+    }
+
+    /// Exports for `Target::ALL[i]` on a worker thread (one at a time).
+    fn export(&mut self, i: usize) {
+        let Some(&target) = Target::ALL.get(i) else { return };
+        if self.exports.iter().any(|e| e.0 == ExportState::Working) || !Target::exportable().contains(&target) {
+            return;
+        }
+        let Some(data) = self.locate() else { return self.say("Import your game first.", true) };
+        // This desktop's own build is made from the game the launcher runs.
+        let runtime = if Some(target) == Target::host() {
+            match install::engine_exe(&self.selected_dir()).map(|e| crate::export::host_runtime_for(&e)) {
+                Some(Ok(r)) => Some(r),
+                Some(Err(e)) => return self.say(&e, true),
+                None => None,
+            }
+        } else {
+            None
+        };
+        self.exports[i] = (ExportState::Working, Some(format!("Starting the {} export...", target.name())));
+        self.refresh();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let log = |l: &str| {
+                eprintln!("launcher: export: {l}");
+                let _ = tx.send(Msg::ExportLog(i, l.to_string()));
+            };
+            let r = crate::export::export(&data, target, runtime.as_deref(), &exports_dir(), &log);
+            let _ = tx.send(Msg::Exported(i, r));
+        });
+    }
+
+    /// Starts the launcher of the version just chosen (a new version brings its own launcher)
+    /// and closes this one; false when this one already is it.
+    fn restart_in_chosen_version(&mut self) -> bool {
+        let Some(dir) = crate::setup::other_version(&self.root, &self.cfg.launcher.version) else { return false };
+        let Some(l) = crate::setup::launcher_exe(&dir) else { return false };
+        match std::process::Command::new(&l).env("F2_HANDED_OVER", "1").current_dir(&dir).spawn() {
+            Ok(_) => {
+                self.exit = true;
+                true
+            }
+            Err(e) => {
+                self.say(&format!("Starting {} failed: {e}", l.display()), true);
+                false
+            }
+        }
     }
 
     fn open_folder(&mut self, dir: &Path) {
@@ -641,6 +752,8 @@ impl App {
                     self.start_import(ImportFrom::Drive(d));
                 }
             }
+            Action::Export(i) => self.export(i),
+            Action::OpenExportsFolder => self.open_folder(&exports_dir()),
             Action::PickImage => self.pick(false),
             Action::PickFolder => self.pick(true),
             Action::CreateShortcut => self.create_shortcut(),
@@ -651,6 +764,9 @@ impl App {
             Action::Use(tag) => {
                 self.cfg.launcher.version = tag.clone();
                 self.save_config();
+                if self.restart_in_chosen_version() {
+                    return;
+                }
                 self.refresh();
                 self.say(&format!("PLAY now runs {}.", if tag.is_empty() { "the version in this folder" } else { &tag }), false);
             }
@@ -884,6 +1000,13 @@ impl WindowApp for App {
 /// Runs the launcher window until it closes (or starts the game). Returns false when the
 /// window could not be opened.
 pub fn run() -> bool {
+    crate::setup::attach_parent_console();
+    // The version chosen in the launcher brings its own launcher: start that one instead.
+    let cfg = Config::load_desktop().unwrap_or_default();
+    let root = install_root();
+    if crate::setup::hand_over(crate::setup::other_version(&root, &cfg.launcher.version).and_then(|d| crate::setup::launcher_exe(&d)), &[]) {
+        return true;
+    }
     let app = App::new();
     let mut wc = WindowConfig::from_config(&app.cfg);
     wc.title = "Frogger 2: Swampy's Revenge (Rust) - Launcher".into();
@@ -923,6 +1046,7 @@ mod tests {
             pick_folder: true,
             drop_files: true,
             open_folders: true,
+            export: true,
             updates_page: false,
             close_label: None,
         };
@@ -980,6 +1104,12 @@ mod tests {
         app.ui.state.game = l.state.game.clone();
         app.ui.state.shortcut = Some(false);
         l.state.settings = app.settings();
+        app.exports[3] = (ExportState::Done, Some("Done: C:\\Games\\frogger2-rs\\exports\\frogger2-rs-android.apk".into()));
+        app.exports[4] = (ExportState::Working, Some("Signing the package...".into()));
+        app.exports[6] = (ExportState::Failed, Some("Failed: downloading the runtime failed (offline?)".into()));
+        app.refresh();
+        l.state.exports = app.ui.state.exports.clone();
+        l.state.exports_dir = app.ui.state.exports_dir.clone();
         if let Some(d) = std::env::var_os("F2_SHOT_DATA").and_then(|p| Data::locate(&Config::default(), Some(PathBuf::from(p))).ok()) {
             app.load_art(&d);
             for (key, pending, size) in [
@@ -1002,7 +1132,9 @@ mod tests {
             l.draw(&mut kit.painter(&mut r));
             r.render_to_image(clear).unwrap().write_png(dir.join(format!("launcher-{name}.png"))).unwrap();
         };
-        for (tab, name) in [(ui::Tab::Play, "play"), (ui::Tab::Versions, "versions"), (ui::Tab::Mods, "mods"), (ui::Tab::Settings, "settings")] {
+        for (tab, name) in
+            [(ui::Tab::Play, "play"), (ui::Tab::Versions, "versions"), (ui::Tab::Mods, "mods"), (ui::Tab::Export, "export"), (ui::Tab::Settings, "settings")]
+        {
             l.show_tab(tab);
             shot(&mut l, name);
         }

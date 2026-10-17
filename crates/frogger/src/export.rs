@@ -76,6 +76,12 @@ pub fn branding(data: &Data) -> Result<Branding, String> {
 /// enclosing `.app`, Linux the AppImage (`$APPIMAGE`) or the binary's folder.
 pub fn host_runtime() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("locating this app: {e}"))?;
+    host_runtime_for(&exe)
+}
+
+/// [`host_runtime`] for the game program at `exe` (the launcher exports with the game it runs).
+pub fn host_runtime_for(exe: &Path) -> Result<PathBuf, String> {
+    let exe = exe.to_path_buf();
     if cfg!(target_os = "linux") {
         if let Some(a) = std::env::var_os("APPIMAGE") {
             return Ok(PathBuf::from(a));
@@ -110,7 +116,13 @@ pub fn runtime(target: Target, explicit: Option<&Path>, log: &dyn Fn(&str)) -> R
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     log(&format!("Downloading the {} runtime: {url}", target.name()));
     let part = dir.join(format!("{name}.part"));
-    let status = std::process::Command::new("curl")
+    let mut curl = std::process::Command::new("curl");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x0800_0000);
+    }
+    let status = curl
         .args(["-fL", "--retry", "3", "-o"])
         .arg(&part)
         .arg(&url)

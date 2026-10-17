@@ -16,7 +16,7 @@ const BOLD: &[u8] = include_bytes!("../assets/Roboto-Bold.subset.ttf");
 
 /// Side of one shape cell in the shapes atlas.
 const CELL: u32 = 64;
-const ICONS: [Icon; 14] = Icon::ALL;
+const ICONS: [Icon; 15] = Icon::ALL;
 /// Cells: 0 = corner (quarter disc), 1 = inverse corner, then the icons.
 const CELLS: u32 = 2 + ICONS.len() as u32;
 
@@ -311,6 +311,15 @@ fn icon_inside(i: Icon, x: f32, y: f32) -> bool {
                 || seg(x, y, 0.86, 0.14, 0.86, 0.44) < 0.065
         }
         Icon::ChevronLeft => seg(x, y, 0.62, 0.18, 0.32, 0.5) < 0.08 || seg(x, y, 0.32, 0.5, 0.62, 0.82) < 0.08,
+        Icon::Export => {
+            // An arrow leaving a tray.
+            seg(x, y, 0.5, 0.14, 0.5, 0.6) < 0.065
+                || seg(x, y, 0.27, 0.37, 0.5, 0.14) < 0.065
+                || seg(x, y, 0.73, 0.37, 0.5, 0.14) < 0.065
+                || seg(x, y, 0.18, 0.62, 0.18, 0.86) < 0.065
+                || seg(x, y, 0.18, 0.86, 0.82, 0.86) < 0.065
+                || seg(x, y, 0.82, 0.86, 0.82, 0.62) < 0.065
+        }
         Icon::ChevronRight => seg(x, y, 0.38, 0.18, 0.68, 0.5) < 0.08 || seg(x, y, 0.68, 0.5, 0.38, 0.82) < 0.08,
     }
 }

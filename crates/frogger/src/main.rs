@@ -29,6 +29,10 @@
 //! display A/B (`docs/enhancements.md`): F5 profile, F3 perspective-correct, F4 render
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
+// Windows: a window program (no console window); started from a terminal it prints there
+// (`setup::attach_parent_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod appicon;
 
 #[cfg(test)]
@@ -302,11 +306,20 @@ fn open_launcher() -> bool {
 }
 
 fn main() {
+    frogger::setup::attach_parent_console();
     let args = parse_args();
     let mut cfg = Config::load_desktop().unwrap_or_else(|e| {
         eprintln!("frogger: config: {e} (using defaults)");
         Config::desktop()
     });
+    // The version chosen in the launcher (`[launcher] version`) runs instead of this one.
+    if !args.headless && !cfg.launcher.version.is_empty() {
+        let root = frogger::setup::install_root();
+        let target = frogger::setup::other_version(&root, &cfg.launcher.version).and_then(|d| frogger::setup::game_exe(&d));
+        if frogger::setup::hand_over(target, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+            std::process::exit(0);
+        }
+    }
     // Command-line display overrides.
     if let Some(p) = args.profile {
         cfg.profile = p;

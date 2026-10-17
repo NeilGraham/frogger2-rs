@@ -58,10 +58,11 @@ pub enum Icon {
     Link,
     ChevronLeft,
     ChevronRight,
+    Export,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 14] = [
+    pub const ALL: [Icon; 15] = [
         Icon::Play,
         Icon::Layers,
         Icon::Grid,
@@ -76,6 +77,7 @@ impl Icon {
         Icon::Link,
         Icon::ChevronLeft,
         Icon::ChevronRight,
+        Icon::Export,
     ];
 }
 
@@ -108,6 +110,7 @@ pub enum Tab {
     Play,
     Versions,
     Mods,
+    Export,
     Settings,
 }
 
@@ -139,6 +142,9 @@ pub enum Action {
     ToggleMod(String),
     OpenModsFolder,
     OpenUpdates,
+    /// Export for `state.exports[i]`.
+    Export(usize),
+    OpenExportsFolder,
     /// Make the "Frogger 2: Swampy's Revenge" shortcut to the game.
     CreateShortcut,
     /// A choice of the settings page: (setting id, option index).
@@ -164,6 +170,8 @@ pub struct Caps {
     pub drop_files: bool,
     /// Open folders in the system file manager.
     pub open_folders: bool,
+    /// Build the game for other platforms (desktop).
+    pub export: bool,
     /// The update chip opens the releases page in the browser (Android: no in-app updates).
     pub updates_page: bool,
     /// Label of a button leaving the launcher ("Back to the game"), if any.
@@ -267,6 +275,27 @@ pub struct SettingGroup {
     pub rows: Vec<SettingRow>,
 }
 
+/// Where an export stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ExportState {
+    #[default]
+    Ready,
+    /// This host cannot build it (the reason, e.g. "From macOS only").
+    Unavailable(String),
+    Working,
+    Done,
+    Failed,
+}
+
+/// One platform on the Export page.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExportRow {
+    pub name: String,
+    /// What it makes, or the latest progress / result line.
+    pub detail: String,
+    pub state: ExportState,
+}
+
 /// What the host tells the launcher to show.
 #[derive(Clone, Debug, Default)]
 pub struct State {
@@ -283,6 +312,10 @@ pub struct State {
     pub mods_dir: String,
     pub import: ImportView,
     pub settings: Vec<SettingGroup>,
+    /// The Export page's targets.
+    pub exports: Vec<ExportRow>,
+    /// Where exports are written.
+    pub exports_dir: String,
     /// Whether the game's shortcut exists (`None`: this host makes none).
     pub shortcut: Option<bool>,
     /// Size of the picture registered as [`HERO_KEY`] (the game's artwork), if any.
@@ -380,6 +413,9 @@ impl Launcher {
             t.push((Tab::Versions, "Versions", Icon::Layers));
         }
         t.push((Tab::Mods, "Mods", Icon::Grid));
+        if self.caps.export {
+            t.push((Tab::Export, "Export", Icon::Export));
+        }
         t.push((Tab::Settings, "Settings", Icon::Gear));
         t
     }
@@ -713,6 +749,7 @@ impl Launcher {
             Tab::Play => self.draw_play(p, area),
             Tab::Versions => self.draw_versions(p, area, sb),
             Tab::Mods => self.draw_mods(p, area, sb),
+            Tab::Export => self.draw_export(p, area, sb),
             Tab::Settings => self.draw_settings(p, area, sb),
         }
         self.clip = None;
@@ -1207,6 +1244,79 @@ impl Launcher {
         }
     }
 
+    fn draw_export(&mut self, p: &mut dyn Painter, a: [f32; 4], sb: f32) {
+        let tb = self.toolbar_y(a);
+        let bh = self.d(BTN);
+        let y0 = tb + bh + self.d(18.0);
+        let view = [a[0], y0, a[2], a[1] + a[3] - y0];
+        let mut y = self.begin_scroll(view);
+        let rows = self.state.exports.clone();
+        let have_game = self.state.game.is_some();
+        let busy = rows.iter().any(|r| r.state == ExportState::Working);
+        let rh = self.d(68.0);
+        for (i, e) in rows.iter().enumerate() {
+            let r = [a[0], y, a[2], rh];
+            if self.shown(r[1], r[3]) {
+                self.card(p, r, CARD);
+                let by = r[1] + (r[3] - bh) / 2.0;
+                let right = r[0] + r[2] - self.d(PAD);
+                let chip_y = r[1] + (r[3] - self.d(22.0)) / 2.0;
+                let bx = match &e.state {
+                    ExportState::Unavailable(why) => {
+                        let label = why.to_uppercase();
+                        let x = right - self.chip_w(p, &label);
+                        self.chip(p, x, chip_y, &label, CARD2, DIM);
+                        x
+                    }
+                    ExportState::Working => {
+                        let x = right - self.chip_w(p, "WORKING");
+                        self.chip(p, x, chip_y, "WORKING", alpha(ACCENT, 60), ACCENT);
+                        x
+                    }
+                    ExportState::Done => {
+                        let x = self.button_left_of(p, right, by, bh, "Show", Style::Secondary, Some(Icon::Folder), Action::OpenExportsFolder) - self.d(10.0);
+                        if busy {
+                            x
+                        } else {
+                            self.button_left_of(p, x, by, bh, "Again", Style::Ghost, Some(Icon::Refresh), Action::Export(i))
+                        }
+                    }
+                    ExportState::Ready | ExportState::Failed if have_game && !busy => {
+                        let label = if e.state == ExportState::Failed { "Try again" } else { "Export" };
+                        self.button_left_of(p, right, by, bh, label, Style::Primary, Some(Icon::Export), Action::Export(i))
+                    }
+                    ExportState::Ready | ExportState::Failed => right,
+                };
+                let avail = (bx - r[0] - self.d(PAD) - self.d(16.0)).max(self.d(60.0));
+                let name = self.fit(p, &e.name, avail, self.d(16.0), true);
+                self.text(p, r[0] + self.d(PAD), r[1] + self.d(13.0), &name, TEXT, self.d(16.0), true);
+                let color = if e.state == ExportState::Failed { DANGER } else { DIM };
+                let detail = self.fit(p, &e.detail, avail, self.d(12.5), false);
+                self.text(p, r[0] + self.d(PAD), r[1] + self.d(38.0), &detail, color, self.d(12.5), false);
+            }
+            y += rh + self.d(10.0);
+        }
+        y = self.para(
+            p,
+            a[0] + self.d(4.0),
+            y + self.d(4.0),
+            a[2] - self.d(8.0),
+            "Every export contains your copy of the game: keep it for your own devices and never share it. Consoles need a jailbroken system; the N64 ROM is experimental.",
+            DIM,
+            self.d(12.5),
+        );
+        self.end_scroll(p, sb, y);
+        let sub = if have_game { "Build the game with your data for your other devices." } else { "Import your game first: exports are built from it." };
+        self.page_title(p, a, "Export", sub);
+        let x = if self.caps.open_folders {
+            self.auto_button(p, a[0], tb, bh, "Open exports folder", Style::Secondary, Some(Icon::Folder), Action::OpenExportsFolder)
+        } else {
+            a[0] - self.d(14.0)
+        };
+        let dir = self.fit(p, &self.state.exports_dir.clone(), a[0] + a[2] - x - self.d(24.0), self.d(13.0), false);
+        self.text_c(p, x + self.d(14.0), tb, bh, &dir, DIM, self.d(13.0), false);
+    }
+
     fn draw_settings(&mut self, p: &mut dyn Painter, a: [f32; 4], sb: f32) {
         let y0 = a[1] + self.title_h() + self.d(8.0);
         let view = [a[0], y0, a[2], a[1] + a[3] - y0];
@@ -1346,7 +1456,17 @@ mod tests {
     }
 
     fn desktop_caps() -> Caps {
-        Caps { versions: true, import: true, drives: true, pick_folder: true, drop_files: true, open_folders: true, updates_page: false, close_label: None }
+        Caps {
+            versions: true,
+            import: true,
+            drives: true,
+            pick_folder: true,
+            drop_files: true,
+            open_folders: true,
+            export: true,
+            updates_page: false,
+            close_label: None,
+        }
     }
 
     fn settings() -> Vec<SettingGroup> {
@@ -1402,6 +1522,13 @@ mod tests {
             .collect();
         l.state.mods = vec![ModRow { id: "hello-mod".into(), name: "Hello, mod!".into(), version: "0.1.0".into(), enabled: true }];
         l.state.settings = settings();
+        l.state.exports_dir = "/home/x/frogger2-rs/exports".into();
+        l.state.exports = vec![
+            ExportRow { name: "Windows".into(), detail: "From Windows only".into(), state: ExportState::Unavailable("From Windows only".into()) },
+            ExportRow { name: "Linux (AppImage)".into(), detail: "An AppImage".into(), state: ExportState::Ready },
+            ExportRow { name: "Android (APK)".into(), detail: "Done: /x/a.apk".into(), state: ExportState::Done },
+            ExportRow { name: "PlayStation 4".into(), detail: "Failed: no keys".into(), state: ExportState::Failed },
+        ];
         l.state.import = ImportView {
             sources_title: "Disc drives".into(),
             sources: vec![
@@ -1601,6 +1728,25 @@ mod tests {
         // A new tab starts at the top.
         click_label(&mut l, "Mods");
         assert_eq!(l.scroll, 0.0);
+    }
+
+    #[test]
+    fn export_page() {
+        let mut l = desktop();
+        click_label(&mut l, "Export");
+        assert_eq!(l.tab, Tab::Export);
+        assert_eq!(click_label(&mut l, "Export"), Action::Export(1), "the first Export text is now the button (the tab is drawn later)");
+        assert_eq!(click_label(&mut l, "Try again"), Action::Export(3));
+        assert_eq!(click_label(&mut l, "Show"), Action::OpenExportsFolder);
+        assert_eq!(click_label(&mut l, "Open exports folder"), Action::OpenExportsFolder);
+        // One at a time, and nothing without a game.
+        l.state.exports[1].state = ExportState::Working;
+        let r = drawn(&mut l);
+        assert!(r.texts.iter().any(|t| t.2 == "WORKING") && !r.texts.iter().any(|t| t.2 == "Try again"));
+        l.state.exports[1].state = ExportState::Ready;
+        l.state.game = None;
+        assert!(!drawn(&mut l).texts.iter().any(|t| t.2 == "Try again"));
+        assert!(!Launcher::new(Caps::default(), 800.0, 600.0, 1.0).tabs().iter().any(|(t, _, _)| *t == Tab::Export));
     }
 
     #[test]

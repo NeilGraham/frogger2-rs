@@ -18,8 +18,8 @@ Import (first run, or no data found): the launcher opens on "Set up your game". 
   - "Choose disc image" (.cue/.bin, .ccd/.img, .mds/.mdf, .nrg, .toc, .iso, .zip) or
     "Choose folder" (a copied disc or an installed game), or
   - drop the image file onto the window.
-  Afterwards "Add shortcut" puts a "Frogger 2: Swampy's Revenge" shortcut on the desktop and
-  in the Start menu.
+  Afterwards "Add shortcut" asks where to put a "Frogger 2: Swampy's Revenge" shortcut
+  (the desktop is suggested). "Export" builds the game for your other devices.
   An image mounted with Explorer's "Mount" works too (pick its drive letter; the image file
   behind it is used). A plain .iso has no music: add it later with
       f2-import.exe your.iso --music C:\path\to\tracks   (02.wav ... 12.wav or .flac)
