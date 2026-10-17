@@ -33,7 +33,7 @@ takes precedence over the `cfg(all())` one (`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC
 
 From WSL you can cross-build with the Windows toolchain: `tools/package/build-windows.sh`. It mirrors
 sources to `C:\f2-build\<checkout>` (cmd.exe rejects UNC working directories and MSVC linking over
-9P is slow), builds `frogger`, `f2-import`, `f2-viewer` for `x86_64-pc-windows-msvc`, and copies the
+9P is slow), builds `frogger2`, `f2-import`, `f2-viewer` for `x86_64-pc-windows-msvc`, and copies the
 exes to `target/package/win-bin/`. Override with `F2_WIN_CARGO` / `F2_BUILD_ROOT`.
 `crates/f2fix` is a separate i686 workspace built by `tools/run/build_f2fix.sh`; it is not packaged.
 
@@ -290,4 +290,4 @@ usually means a missing step budget, not a reason to raise the cap.
   Insert adds an extra key, Square/Delete clears, Circle resets the action, "Reset all" restores
   the defaults; a conflict offers Swap / Unbind other / Cancel. Changes save to `config.toml`.
   (Shift+F10 -> Controls is the older raw page.) Pad hot-plug auto-assigns controllers; rumble follows `rumble_scale`.
-  `frogger --headless --level 0 0 --screenshot-rebind --screenshot out.png` renders the screen.
+  `frogger2 --headless --level 0 0 --screenshot-rebind --screenshot out.png` renders the screen.

@@ -25,7 +25,7 @@ runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: frogger
+command: frogger2
 finish-args:
   - --share=ipc
   # winit: native Wayland when available, X11 (XWayland) otherwise.
@@ -53,7 +53,7 @@ modules:
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
       - cargo --offline build --release -p frogger -p f2-import -p f2-viewer
-      - install -Dm755 target/release/frogger /app/bin/frogger
+      - install -Dm755 target/release/frogger2 /app/bin/frogger2
       - install -Dm755 target/release/f2-import /app/bin/f2-import
       - install -Dm755 target/release/f2-viewer /app/bin/f2-viewer
       - install -Dm644 packaging/frogger2-rs.desktop /app/share/applications/io.github.NeilGraham.Frogger2rs.desktop

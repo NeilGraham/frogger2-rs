@@ -1,5 +1,5 @@
 //! Export for Windows (docs/EXPORT.md "Windows"): a folder `<out>/<file stem>/` holding
-//! `<file stem>.exe` (the running app's `frogger.exe` with its icon and version strings
+//! `<file stem>.exe` (the running app's `frogger2.exe` with its icon and version strings
 //! rebranded), the licenses and the game data at `game-data/<rendition>/`, which the exe
 //! finds next to itself (`frogger::data::Data::locate`).
 //!
@@ -46,12 +46,12 @@ pub(crate) fn export(job: &Job) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// `frogger.exe` in the runtime (the folder holding it, or the exe itself).
+/// `frogger2.exe` in the runtime (the folder holding it, or the exe itself).
 fn runtime_exe(runtime: &Path) -> Result<PathBuf, String> {
     if runtime.is_file() {
         return Ok(runtime.to_path_buf());
     }
-    let exe = runtime.join("frogger.exe");
+    let exe = runtime.join("frogger2.exe");
     if exe.is_file() {
         Ok(exe)
     } else {
@@ -280,7 +280,7 @@ mod tests {
         let rt = tmp.join("rt");
         let rend = tmp.join("data/usa");
         std::fs::create_dir_all(rt.join("licenses")).unwrap();
-        std::fs::write(rt.join("frogger.exe"), tiny_exe()).unwrap();
+        std::fs::write(rt.join("frogger2.exe"), tiny_exe()).unwrap();
         std::fs::write(rt.join("licenses/LICENSE-GPL-3.0"), "gpl").unwrap();
         std::fs::write(rt.join("NOTICE"), "n").unwrap();
         std::fs::create_dir_all(rend.join("game/maps")).unwrap();

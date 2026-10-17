@@ -270,9 +270,9 @@ trace tooling in `tools/f2-trace` can diff them).
 ## 8. Integration in `frogger`
 
 ```text
-frogger --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS   # prints a join code
-frogger --join CODE                                                      # or host:port
-frogger --headless --frames F [--pad-seed S] (--host ... | --join CODE) # GPU-less scripted run
+frogger2 --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS   # prints a join code
+frogger2 --join CODE                                                      # or host:port
+frogger2 --headless --frames F [--pad-seed S] (--host ... | --join CODE) # GPU-less scripted run
 ```
 
 * `NetGame` implements `f2_net::Simulation` (orphan rule: the wrapper lives in `frogger`, `f2-game`
@@ -302,7 +302,7 @@ Tests (game data required, skipped otherwise):
   3600 ticks of scripted pads on a race level over the loopback network (100 ms one-way, 10 ms
   jitter, 5 % loss, 1 % duplicates, virtual clock): ~1000 rollbacks per peer (max depth 8),
   59 checksums compared per peer, all equal, identical final state (≈ 4 s, debug).
-* `cargo test -p frogger --test netplay_udp` — two real `frogger --headless` processes on
+* `cargo test -p frogger --test netplay_udp` — two real `frogger2 --headless` processes on
   127.0.0.1 (join code from the host's stdout), 600 ticks, identical `NETPLAY_FINAL` checksums.
 
 ## 9. Floating point across OS/CPU

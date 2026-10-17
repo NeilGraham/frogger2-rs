@@ -164,7 +164,7 @@ platform heap; drop `console-host`'s own heap or keep only one), the AGC stubs, 
 - **Identical frames through the raw-entry path**: `F2_VK_RAW=1` makes
   `GpuContext::new_headless` use `from_vulkan_entry(ash::Entry::load())`, i.e. exactly the
   PS5 code path with the system loader standing in for the static driver. Garden 1,
-  1280x720, 120 ticks (`frogger --headless --frames 120 --level 0 0 --size 1280x720
+  1280x720, 120 ticks (`frogger2 --headless --frames 120 --level 0 0 --size 1280x720
   --screenshot ...`, built with `--features f2-engine/ps5-vulkan`): both PNGs are
   byte-identical (sha256 `945b5371...85fc`), log line `f2-engine: Vulkan via raw
   vkGetInstanceProcAddr: llvmpipe (LLVM 20.1.2, 256 bits)`.
@@ -232,5 +232,5 @@ then the game.
    its disk cache (`MESA_SHADER_CACHE_DIR`/`MESA_DISK_CACHE_DATABASE` in a writable title
    folder, as vkQuake does) to avoid recompiling on every start.
 4. `param.json` `attribute3` 120 Hz bit if 120 Hz output is wanted (see the WSI source).
-5. Licensing: the driver is GPL-3.0-or-later; the `frogger` executable is already
+5. Licensing: the driver is GPL-3.0-or-later; the `frogger2` executable is already
    GPL-3.0-or-later, `f2-engine` is GPL-3.0-or-later too.

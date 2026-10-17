@@ -40,7 +40,7 @@ fn udp_two_processes_600_ticks() {
         eprintln!("skipping: no game data (F2_GAME_DIR)");
         return;
     };
-    let exe = env!("CARGO_BIN_EXE_frogger");
+    let exe = env!("CARGO_BIN_EXE_frogger2");
     let (w, l) = race_level();
     let (ws, ls) = (w.to_string(), l.to_string());
     let data = root.to_str().unwrap();

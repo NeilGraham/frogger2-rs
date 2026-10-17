@@ -31,7 +31,7 @@ enabled = ["hello-mod"]          # load order, later wins
 dir = "/path/to/mods"            # optional; default <config dir>/mods or $F2_MODS_DIR
 ```
 
-`frogger --mods a,b` replaces `enabled` for one run (`--mods ""` = no mods), `--mods-dir DIR`
+`frogger2 --mods a,b` replaces `enabled` for one run (`--mods ""` = no mods), `--mods-dir DIR`
 replaces `dir`. With no mods enabled every read is the plain retail file (authentic play is
 unchanged; `hello_mod_pipeline` in `crates/frogger` checks Garden 1 renders pixel-identically
 with a mod enabled that doesn't touch it).
@@ -85,7 +85,7 @@ world assignment. We will:
   through the mod VFS, so a level may reuse retail files by name.
 - Not yet: text level formats, Blender workflow; new levels are not listed
   in the frontend menus (raising `numLevels` would change the save-game layout) — start them
-  with `frogger --level W L` or reach them through `next` of another level.
+  with `frogger2 --level W L` or reach them through `next` of another level.
 
 ### `level.toml` reference
 
@@ -135,12 +135,12 @@ with its own ETC script; no game assets):
 
 ```
 f2-modkit pack examples/mods/hello-mod --rendition game-data/usa
-frogger --mods hello-mod --mods-dir examples/mods --level 0 1
+frogger2 --mods hello-mod --mods-dir examples/mods --level 0 1
 ```
 
 ### Level editor (P7, `crates/frogger/src/editor/`)
 
-`frogger --editor --level W L [--mods ID | --mod ID] [--mods-dir DIR] [--editor-cmd "CMD; CMD"]` (Ctrl+E toggles
+`frogger2 --editor --level W L [--mods ID | --mod ID] [--mods-dir DIR] [--editor-cmd "CMD; CMD"]` (Ctrl+E toggles
 it on the current level in dev builds). The simulation pauses; a free camera (WASD/QE, arrows,
 Shift) flies over the level. Modes (keys 1-5): **tiles** (graph colour-coded by state, links as
 half-way lines coloured per slot n/s/e/w; PgUp/PgDn state, L/U link/unlink towards the pointer,
@@ -154,7 +154,7 @@ command line (`help` lists commands; `set FIELD VALUE` edits any field of the se
 `set speed 2.5`, `set flags 0x10`, `set model bfly.obe`). P play-tests the level from the edited
 files in memory, R reloads it paused. `save [ID]` writes the changed files in the retail formats to
 `<mods dir>/<ID>/game/{collision,scenics,maps}/…` (mods dir = `--mods-dir`, else `[mods] dir`, else the platform default) (+ `mod.toml` when missing and the `.etc` source next to
-the `.fev`); `frogger --mods ID --level W L` plays it (`--mod ID` is an alias that can be repeated). Writers in `f2-formats`
+the `.fev`); `frogger2 --mods ID --level W L` plays it (`--mod ID` is an alias that can be repeated). Writers in `f2-formats`
 (`Collision::write`, `write_scenics`, `EntityFile::write` incl. the low bits the loader drops,
 `SamFile::write`, `Script::write`) reproduce every retail file byte-for-byte
 (`crates/f2-formats/tests/roundtrip.rs`).
@@ -293,7 +293,7 @@ SMOKEBURST GREENGLOOP BUBBLES SPARKBURST FIERYSMOKE POLYRING GLOW TWINKLE CROAK 
   Hello Garden only.
 
 ```
-frogger --mods hello-mod --mods-dir examples/mods --level 0 1
+frogger2 --mods hello-mod --mods-dir examples/mods --level 0 1
 ```
 
 ### Tests

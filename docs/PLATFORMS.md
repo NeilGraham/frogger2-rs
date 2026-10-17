@@ -269,7 +269,7 @@ Parity evidence (2026-10-10, USA data):
   `detfloat` and rounds once, which is closest to retail and host-independent. Over the 8193
   reachable fixed-point normals, glibc's `sinf`/`cosf` and the f64 path differ by 1 ulp for
   208 `normal.vy` values; 29 of the 23,012 map tiles of all levels have such a normal (ring
-  normal = tile normal). Screenshot check (`frogger --headless --pad-script`, croak rings on
+  normal = tile normal). Screenshot check (`frogger2 --headless --pad-script`, croak rings on
   0-0, 1-0, 2-1, 4-0, 4-1, 5-1, 6-2; 168 frames): pixel-identical PNGs before/after.
 
 Checks (also in CI, `.github/workflows/ci.yml` jobs `cross-check` and `nostd-mips`):

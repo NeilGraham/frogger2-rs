@@ -34,9 +34,9 @@ Hotkeys: F10 settings, Shift+F10 advanced screen (Level select), F11 / Alt+Enter
   better image quality and optional assists/fixes.
 
 Mods: "Frogger 2 (with example mod)" enables mods\hello-mod (changes a menu string and
-  adds a dusk copy of Garden 1: start it with  frogger.exe --mods-dir mods --mods hello-mod --level 0 1).
-  Level editor: frogger.exe --editor --level 0 0
-Online: frogger.exe --host --multi WORLD LEVEL PLAYERS   /   frogger.exe --join CODE
+  adds a dusk copy of Garden 1: start it with  frogger2.exe --mods-dir mods --mods hello-mod --level 0 1).
+  Level editor: frogger2.exe --editor --level 0 0
+Online: frogger2.exe --host --multi WORLD LEVEL PLAYERS   /   frogger2.exe --join CODE
 Viewer: f2-viewer.exe (models, levels, textures, sounds, videos).
 
 Settings file and saves: next to the exe (config.toml, saves\, data\, mods\) because portable.txt is here; delete portable.txt to use %APPDATA%\frogger2-rs instead.

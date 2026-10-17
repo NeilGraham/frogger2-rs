@@ -30,7 +30,7 @@ whatever `target/n64/filesystem` holds, so build it in a separate checkout/targe
 the game filesystem afterwards. Typical loop:
 ```sh
 cargo build --release --manifest-path tools/n64/export/Cargo.toml --target-dir target/n64/export
-F2_PRINT_CAMERA=1 target/release/frogger --headless --frames 90 --level 0 0 --size 320x240   # prints camera/far/clear
+F2_PRINT_CAMERA=1 target/release/frogger2 --headless --frames 90 --level 0 0 --size 320x240   # prints camera/far/clear
 target/n64/export/release/n64r-export --data game-data/usa --camera "-50,211.2,1181.2,-50,0,1025,0,0.1,0" \
     --far 700 --out target/n64/filesystem/scene --ref target/n64/scene_ref.png
 echo 0 > target/n64/filesystem/r3d_show.txt     # pin a scene (else they cycle every 6 s)
@@ -45,9 +45,9 @@ Use your own `N64TEST` directory and ROM name when other agents run ares at the 
 A play session recorded on the PC replays in ares tick for tick, checked against the PC's
 state checksums (`Game::checksum`, every 60 ticks): real play, not a scripted test.
 ```sh
-frogger --practice 0 0 --mods "" --record garden1.txt     # PC: play, close the window when done
-frogger --story 1 --mods "" --record story1.txt           # or story mode (its video first)
-frogger --headless --practice 0 0 --frames N --pad-script garden1.txt --record check.txt   # optional: PC re-check
+frogger2 --practice 0 0 --mods "" --record garden1.txt     # PC: play, close the window when done
+frogger2 --story 1 --mods "" --record story1.txt           # or story mode (its video first)
+frogger2 --headless --practice 0 0 --frames N --pad-script garden1.txt --record check.txt   # optional: PC re-check
 F2N64_BOOT=replay F2N64_KEEP_DFS=1 F2N64_REPLAY=garden1.txt tools/n64/build.sh
 tools/n64/run-ares.sh target/n64/frogger2.z64 -- -delay 600 -stopon "replay done|REPLAY DESYNC"
 tools/n64/replay-all.sh /mnt/c/Frogger2-rs/recordings     # or: build + run each recording, one summary line each
@@ -182,7 +182,7 @@ it through `crates/frogger-n64/src/data.rs` (`PackStore`: magic dispatch `F2Z1` 
 layout table in the module docs). The full ROM (61.34 MiB) stays under ares' 0x3FF0000-byte
 ISViewer limit, so `debugf` works on it too.
 
-### Desktop export (`frogger --export n64`) and its runtime
+### Desktop export (`frogger2 --export n64`) and its runtime
 The desktop app builds ROMs without any of these tools (docs/EXPORT.md "N64"): CI runs
 `tools/runtime/build-n64.sh OUT VERSION` = `build.sh --runtime` (the default release engine
 with an empty DFS from `target/n64/runtime-fs`; it replaces `target/n64/frogger2.z64` with that

@@ -157,7 +157,7 @@ mod tests {
   <key>CFBundleName</key><string>Frogger2rs</string>
   <key>CFBundleDisplayName</key><string>Frogger 2: Swampy's Revenge (Rust)</string>
   <key>CFBundleIdentifier</key><string>io.github.NeilGraham.Frogger2rs</string>
-  <key>CFBundleExecutable</key><string>frogger</string>
+  <key>CFBundleExecutable</key><string>frogger2</string>
   <key>CFBundleIconFile</key><string>frogger2-rs</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -199,12 +199,12 @@ mod tests {
         std::fs::create_dir_all(c.join("MacOS")).unwrap();
         std::fs::create_dir_all(c.join("Resources")).unwrap();
         std::fs::write(c.join("Info.plist"), PLIST).unwrap();
-        std::fs::write(c.join("MacOS/frogger"), "bin").unwrap();
+        std::fs::write(c.join("MacOS/frogger2"), "bin").unwrap();
         std::fs::write(c.join("Resources/frogger2-rs.icns"), "old").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(c.join("MacOS/frogger"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(c.join("MacOS/frogger2"), std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let rend = tmp.join("data/usa");
         std::fs::create_dir_all(rend.join("music")).unwrap();
@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(get("CFBundleName"), "Frogger 2: Swampy's Revenge");
         assert_eq!(get("CFBundleDisplayName"), "Frogger 2: Swampy's Revenge");
         assert_eq!(get("CFBundleIdentifier"), BUNDLE_ID);
-        assert_eq!(get("CFBundleExecutable"), "frogger");
+        assert_eq!(get("CFBundleExecutable"), "frogger2");
         assert_eq!(get("CFBundleIconFile"), ICON_NAME);
         assert_eq!(d.get("NSHighResolutionCapable").and_then(|v| v.as_boolean()), Some(true));
         assert_eq!(&std::fs::read(c.join("Resources/game-icon.icns")).unwrap()[0..4], b"icns");
@@ -237,7 +237,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(c.join("MacOS/frogger")).unwrap().permissions().mode() & 0o777, 0o755);
+            assert_eq!(std::fs::metadata(c.join("MacOS/frogger2")).unwrap().permissions().mode() & 0o777, 0o755);
         }
         std::fs::remove_dir_all(&tmp).unwrap();
     }

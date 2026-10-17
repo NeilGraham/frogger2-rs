@@ -75,7 +75,7 @@ On first start with no data the import screen offers:
 - **Already imported on a PC**: copy the rendition folder (e.g. `game-data/usa`, the one with
   `game/`, `music/`, `video/`) to `files/data/usa/` and start the app.
 
-**Exported APKs** (`frogger --export android` on a desktop, docs/EXPORT.md "Android") are
+**Exported APKs** (`frogger2 --export android` on a desktop, docs/EXPORT.md "Android") are
 this app with the player's game inside, package `io.github.neilgraham.frogger2rs.game`,
 label "Frogger 2" and the game-art icon. On the first start they unpack the bundled data
 into their own `files/data/<rendition>/` (`crates/frogger-android/src/bundle.rs`, progress

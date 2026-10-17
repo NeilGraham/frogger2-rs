@@ -131,7 +131,7 @@ jobs:
           F2_MACOS_UNIVERSAL: "1"
         run: |
           tools/package/package.sh macos
-          lipo -archs target/universal-apple-darwin/release/frogger
+          lipo -archs target/universal-apple-darwin/release/frogger2
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
@@ -356,7 +356,7 @@ jobs:
           | \`frogger2-rs-$V-android.apk\` | Android 8+ (arm64, x86_64): import on the device |
           | \`runtime-ps4-$V.zip\`, \`runtime-ps5-$V.zip\`, \`runtime-n64-$V.zip\` | not to be installed by hand: the desktop app's **Export to...** downloads them |
 
-          **Exported builds must not be shared.** "Export to..." (\`frogger --export\`) bundles
+          **Exported builds must not be shared.** "Export to..." (\`frogger2 --export\`) bundles
           *your* imported game data into the build it makes (APK, PS4/PS5 package, N64 ROM,
           desktop folder). Those builds are for your own devices only; do not upload or
           distribute them.

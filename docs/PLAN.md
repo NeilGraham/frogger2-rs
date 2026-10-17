@@ -13,7 +13,7 @@ all 26 levels and the 3 demos are identical to the retail oracle trace.
 |---|---|---|---|
 | 0 Foundations | done | research, workspace, oracle (`f2fix` proxy, trace schema v2), `f2-parity` trace diff, packaging scripts and CI ([BUILDING.md](BUILDING.md)) | none |
 | 1 Media and import | done | `f2-media`, `f2-formats`, `f2-import` (incl. FLAC music), exporters, `f2-viewer` | none |
-| 2 Engine core | done | `f2-math`, `f2-engine` (wgpu), `f2-audio`, `f2-platform`, `f2-bink`, the `frogger` binary | none |
+| 2 Engine core | done | `f2-math`, `f2-engine` (wgpu), `f2-audio`, `f2-platform`, `f2-bink`, the `frogger2` binary | none |
 | 3 Gameplay port | done, parity verified | all of `f2-game` except the items in PORT-GAPS | multiplayer HUD |
 | 4 Full single-player | done | frontend, menus, options, story, savegame, language, training, cheats, FMV, fades | none known |
 | 5 Multiplayer and hardening | partial | local multiplayer and split-screen game logic (`multi.c`), packaging | multiplayer HUD |
@@ -111,7 +111,7 @@ Everything is pure Rust or has a pure-Rust path, so building needs only `cargo`.
 See [architecture.md](architecture.md) for the crates, data flow and main loop. In short:
 `crates/` holds the libraries (`f2-media`, `f2-formats`, `f2-import`, `f2-bink`, `f2-math`,
 `f2-engine`, `f2-audio`, `f2-game`, `f2-platform`, `f2-mods`, `f2-net`, `f2-package`, and the
-platform hosts), `frogger` is the executable, and `tools/` holds the viewer, the script compiler,
+platform hosts), `frogger2` is the executable, and `tools/` holds the viewer, the script compiler,
 the trace and parity tools, the packers and the console build scripts.
 
 ## 4. Asset import flow (user-facing)

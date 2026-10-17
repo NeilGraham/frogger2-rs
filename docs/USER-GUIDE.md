@@ -22,7 +22,7 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
    cargo build --release -p frogger -p f2-import -p f2-viewer
    ```
 
-2. Import your copy. Easiest: just start `frogger` — with no data it opens an **import screen**
+2. Import your copy. Easiest: just start `frogger2` — with no data it opens an **import screen**
    that lists your CD/DVD drives ("Import from the Frogger 2 disc in D:"), lets you pick an image
    file or folder, or accepts a file dragged onto the window; when the import finishes the game
    starts. Or use the command-line importer (see [Importing your game](#importing-your-game)):
@@ -45,12 +45,12 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
 3. Run:
 
    ```sh
-   target/release/frogger                          # normal start: logos, title, frontend
-   target/release/frogger --data game-data/usa     # use a specific imported rendition
+   target/release/frogger2                          # normal start: logos, title, frontend
+   target/release/frogger2 --data game-data/usa     # use a specific imported rendition
    ```
 
    Useful options: `--fullscreen`, `--size 1920x1080`, `--mute`, `--profile authentic|enhanced`.
-   `frogger --help` prints the full list (including developer shortcuts such as
+   `frogger2 --help` prints the full list (including developer shortcuts such as
    `--level WORLD LEVEL`, `--multi WORLD LEVEL FROGS`, `--demo WORLD LEVEL`, `--video NAME`).
 
 ## Importing your game
@@ -293,9 +293,9 @@ Headless runs never write saves.
 
 - **Local**: the original 2 to 4 player modes, with split-screen, are ported (the `multi.c`
   logic). Each player uses their own keyboard block (table above) or gamepad. Developers can jump
-  straight in with `frogger --multi WORLD LEVEL FROGS`.
-- **Online**: `frogger --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS` hosts a
-  match and prints a join code; the other players run `frogger --join CODE`. Rollback netcode
+  straight in with `frogger2 --multi WORLD LEVEL FROGS`.
+- **Online**: `frogger2 --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS` hosts a
+  match and prints a join code; the other players run `frogger2 --join CODE`. Rollback netcode
   over UDP (`f2-net`); see [NETPLAY.md](NETPLAY.md) for ports, NAT and desync dumps. Online
   matches always run with authentic gameplay rules (the `[gameplay]` assists and fixes are
   ignored) so every peer simulates identically; display settings stay local.
@@ -303,10 +303,10 @@ Headless runs never write saves.
 ## Mods
 
 Mods are layered over the retail data (files, scripts, extra levels). Enable them in
-`config.toml` (`[mods] enabled = ["id", ...]`) or per run with `frogger --mods a,b`
+`config.toml` (`[mods] enabled = ["id", ...]`) or per run with `frogger2 --mods a,b`
 (`--mods ""` = none) and `--mods-dir DIR`. See [modding.md](modding.md) for the mod format and
 `f2-modkit` in [TOOLS.md](TOOLS.md) to create and check mods.
-`frogger --editor --level W L [--mod ID]` opens the level editor and saves the edited level as
+`frogger2 --editor --level W L [--mod ID]` opens the level editor and saves the edited level as
 a mod (modding.md, "Level editor"); `--mod ID` is an alias of `--mods` that can be repeated.
 
 ## Troubleshooting

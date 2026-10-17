@@ -143,7 +143,7 @@ pub struct Job<'a> {
     /// The target's runtime (docs/EXPORT.md "Runtimes"): an extracted directory or the
     /// release asset file itself (APK / zip). For the host desktop OS: the running app
     /// (Windows: the exe's folder, macOS: the `.app`, Linux: the AppImage file or the
-    /// folder holding the `frogger` binary).
+    /// folder holding the `frogger2` binary).
     pub runtime: &'a Path,
     /// Directory the result is written into (created if missing).
     pub out_dir: &'a Path,

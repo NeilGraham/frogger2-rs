@@ -23,7 +23,7 @@ platform. Exporting needs no SDKs and no extra tools.
 | **N64** | export a `.z64` ROM | **experimental**: runs on a ModRetro M64 and in the ares emulator, but can black-screen when leaving a level for the menu; still being optimised |
 
 ```sh
-frogger --export windows,android,ps4,ps5,n64 --out exports     # or: frogger --export all
+frogger2 --export windows,android,ps4,ps5,n64 --out exports     # or: frogger2 --export all
 ```
 
 The exported builds are named and iconed from your own disc, and they contain your game data:
@@ -33,7 +33,7 @@ keep them for your own devices. Details in [docs/EXPORT.md](docs/EXPORT.md).
 
 1. Build it ([docs/BUILDING.md](docs/BUILDING.md)):
    `cargo build --release -p frogger -p f2-import`
-2. Start `frogger`. With no game data it opens an import screen: pick your disc drive, an image
+2. Start `frogger2` (`frogger2.exe` on Windows). With no game data it opens an import screen: pick your disc drive, an image
    (`.zip`, `.cue`, `.bin`, `.iso`), or an install folder, or drag one onto the window. The
    command line works too: `f2-import "Frogger 2 - Swampy's Revenge (USA).zip"`.
 3. Play. The first start after importing gets you the logos, intro, title and the 3D frontend, as

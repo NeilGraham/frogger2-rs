@@ -64,7 +64,7 @@ needs [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) at PS5_Vulkan's pin
 PS5_Vulkan's `prepare-assets.sh` does (single level, BC7_UNORM, straight alpha).
 
 **Players don't need any of this.** The desktop app exports the app folder from the player's
-imported game on Windows, macOS or Linux (`frogger --export ps5`, docs/EXPORT.md "PS5"):
+imported game on Windows, macOS or Linux (`frogger2 --export ps5`, docs/EXPORT.md "PS5"):
 `crates/f2-package/src/ps5*` assembles `eboot.bin` + `libc.prx` from the data-free runtime
 `tools/runtime/build-ps5.sh` makes (this script with `--stage-only`: no bc7enc / ffmpeg), writes
 `param.json` with the disc's title, the PNG + BC7 DDS artwork and `data/`. The `.pkg`, `.ffpkg`
@@ -207,7 +207,7 @@ nc PS5_IP 3232 | tee klog.txt                                       # then start
 KytyPS5 (`kyty_emulator.exe`, build 2026-10-10 f63d3be) runs the app folder directly:
 
 ```text
-kyty_emulator.exe --game C:\f2-ps5test\frogger --printf-direction Console --no-splash ^
+kyty_emulator.exe --game C:\f2-ps5test\frogger2 --printf-direction Console --no-splash ^
     --keymap Cross=Return --keymap Up=Up --keymap Down=Down --keymap Left=Left --keymap Right=Right ^
     [--vblank-frequency 120]
 ```

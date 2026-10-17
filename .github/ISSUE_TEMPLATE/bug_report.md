@@ -15,4 +15,4 @@ or attach a recorded input and logs.
 
 **Level / screen, and steps to reproduce**:
 
-**Logs** (`frogger` prints to the terminal; Android: `adb logcat`):
+**Logs** (`frogger2` prints to the terminal; Android: `adb logcat`):

@@ -1,7 +1,7 @@
 # macOS packaging
 
 `tools/package/package.sh macos` (run on a Mac with the Xcode command line tools) builds
-`frogger`, `f2-import`, `f2-viewer`, wraps them in `Frogger2rs.app` and writes
+`frogger2`, `f2-import`, `f2-viewer`, wraps them in `Frogger2rs.app` and writes
 `target/package/frogger2-rs-<ver>-macos-<arch>.zip` (with `ditto`, the release
 asset) and `.tar.gz`. The release builds `F2_MACOS_UNIVERSAL=1` (`<arch>` = `universal`).
 
@@ -13,7 +13,7 @@ asset) and `.tar.gz`. The release builds `F2_MACOS_UNIVERSAL=1` (`<arch>` = `uni
 | `F2_SKIP_BUILD=1` | package already-built binaries (`$CARGO_TARGET_DIR` honoured) |
 | `F2_CODESIGN_ID` | signing identity; default `-` (ad-hoc) |
 
-Bundle layout: `Contents/MacOS/{frogger,f2-import,f2-viewer}` (the app launches `frogger`),
+Bundle layout: `Contents/MacOS/{frogger2,f2-import,f2-viewer}` (the app launches `frogger2`),
 `Contents/Info.plist` (`NSHighResolutionCapable`, minimum macOS 11), `Contents/Resources/`
 (icon, licenses). The icon comes from the pre-rendered `packaging/icon/png/*.png`; they are converted to
 `.icns` with `iconutil` (part of Xcode command line tools).

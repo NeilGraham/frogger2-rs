@@ -20,7 +20,7 @@ export CARGO_TARGET_DIR="$(wslpath -w "$MIRROR/target")"
 export WSLENV="${WSLENV:-}:CARGO_TARGET_DIR"
 "$CARGO_EXE" build --release --target x86_64-pc-windows-msvc \
   -p frogger -p f2-import -p f2-viewer
-for b in frogger f2-import f2-viewer; do
+for b in frogger2 f2-import f2-viewer; do
   cp "$MIRROR/target/x86_64-pc-windows-msvc/release/$b.exe" "$OUT/"
 done
 ls -l "$OUT"

@@ -7,7 +7,7 @@
 //!   icons replaced by the branded ones and the game data at `usr/share/game-data/<rendition>/`
 //!   (found from `$APPDIR`/the exe by `frogger::data::Data::locate`).
 //! - Running from a plain folder (tarball, developer build): `<out>/<file stem>/` with the
-//!   `frogger` binary, the licenses, a `.desktop` file, the icon and `game-data/<rendition>/`.
+//!   `frogger2` binary, the licenses, a `.desktop` file, the icon and `game-data/<rendition>/`.
 
 use crate::util;
 use crate::{Branding, Job};
@@ -49,12 +49,12 @@ pub(crate) fn desktop_entry(b: &Branding, id: &str) -> String {
          Type=Application\n\
          Name={title}\n\
          Comment={title}, on the Frogger 2: Swampy's Revenge (Rust) engine (your own copy of the game)\n\
-         Exec=frogger\n\
+         Exec=frogger2\n\
          Icon={id}\n\
          Categories=Game;ArcadeGame;\n\
          Terminal=false\n\
          StartupNotify=true\n\
-         StartupWMClass=frogger\n\
+         StartupWMClass=frogger2\n\
          X-AppImage-Version={version}\n",
         title = b.title.replace('\n', " "),
         version = b.version,
@@ -65,7 +65,7 @@ pub(crate) fn desktop_entry(b: &Branding, id: &str) -> String {
 // Folder
 
 fn folder(job: &Job) -> Result<PathBuf, String> {
-    let bin = job.runtime.join("frogger");
+    let bin = job.runtime.join("frogger2");
     if !bin.is_file() {
         return Err(format!("{} not found (the Linux export is made from the Linux build of this app)", bin.display()));
     }
@@ -75,7 +75,7 @@ fn folder(job: &Job) -> Result<PathBuf, String> {
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let id = app_id(&job.branding.title);
-    std::fs::copy(&bin, dir.join("frogger")).map_err(|e| format!("{}: {e}", bin.display()))?;
+    std::fs::copy(&bin, dir.join("frogger2")).map_err(|e| format!("{}: {e}", bin.display()))?;
     for d in DOCS {
         let p = job.runtime.join(d);
         if p.is_dir() {
@@ -380,7 +380,7 @@ mod tests {
         assert!(replaced("usr/share/icons/hicolor/scalable/apps/x.svg", i));
         assert!(replaced("usr/share/game-data/usa/game/x", i));
         assert!(!replaced("AppRun", i));
-        assert!(!replaced("usr/bin/frogger", i));
+        assert!(!replaced("usr/bin/frogger2", i));
         assert!(!replaced("usr/share/licenses/x/NOTICE", i));
     }
 
@@ -438,7 +438,7 @@ mod tests {
             w.push_file(std::io::Cursor::new(b"<svg/>".to_vec()), "frogger2-rs.svg", h(0o644)).unwrap();
             w.push_symlink("frogger2-rs.svg", ".DirIcon", h(0o777)).unwrap();
             w.push_dir_all("usr/bin", h(0o755)).unwrap();
-            w.push_file(std::io::Cursor::new(vec![7u8; 300_000]), "usr/bin/frogger", h(0o755)).unwrap();
+            w.push_file(std::io::Cursor::new(vec![7u8; 300_000]), "usr/bin/frogger2", h(0o755)).unwrap();
             w.push_dir_all("usr/share/icons/hicolor/scalable/apps", h(0o755)).unwrap();
             w.push_file(std::io::Cursor::new(b"<svg/>".to_vec()), "usr/share/icons/hicolor/scalable/apps/frogger2-rs.svg", h(0o644)).unwrap();
             let mut f = std::fs::File::create(&src).unwrap();
@@ -474,7 +474,7 @@ mod tests {
                 "AppRun",
                 "frogger-2-swampys-revenge.desktop",
                 "frogger-2-swampys-revenge.png",
-                "usr/bin/frogger",
+                "usr/bin/frogger2",
                 "usr/share/applications/frogger-2-swampys-revenge.desktop",
                 "usr/share/game-data/usa/game/maps/a.fla",
                 "usr/share/game-data/usa/manifest.json",
@@ -482,7 +482,7 @@ mod tests {
                 "usr/share/icons/hicolor/512x512/apps/frogger-2-swampys-revenge.png",
             ]
         );
-        assert_eq!(got["usr/bin/frogger"], (0o755, vec![7u8; 300_000]));
+        assert_eq!(got["usr/bin/frogger2"], (0o755, vec![7u8; 300_000]));
         assert_eq!(got["usr/share/game-data/usa/game/maps/a.fla"].1, vec![1u8; 200_000]);
         assert!(String::from_utf8_lossy(&got["frogger-2-swampys-revenge.desktop"].1).contains("Name=Frogger 2: Swampy's Revenge"));
         assert_eq!(&got[".DirIcon"].1[1..4], b"PNG");
@@ -495,7 +495,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let rt = tmp.join("rt");
         std::fs::create_dir_all(rt.join("licenses")).unwrap();
-        std::fs::write(rt.join("frogger"), "bin").unwrap();
+        std::fs::write(rt.join("frogger2"), "bin").unwrap();
         std::fs::write(rt.join("f2-viewer"), "other").unwrap();
         std::fs::write(rt.join("licenses/LICENSE-GPL-3.0"), "gpl").unwrap();
         let rend = tmp.join("data/eu");
@@ -506,7 +506,7 @@ mod tests {
         let job = Job { target: crate::Target::Linux, rendition: &rend, runtime: &rt, out_dir: &out, branding: &b, keys_dir: None, log: &|_| {} };
         let dir = crate::export(&job).unwrap();
         assert_eq!(dir, out.join("Frogger 2 - Swampy's Revenge"));
-        assert!(dir.join("frogger").is_file());
+        assert!(dir.join("frogger2").is_file());
         assert!(!dir.join("f2-viewer").exists());
         assert!(dir.join("licenses/LICENSE-GPL-3.0").is_file());
         assert!(dir.join("frogger-2-swampys-revenge.desktop").is_file());

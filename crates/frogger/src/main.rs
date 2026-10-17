@@ -1,4 +1,4 @@
-//! `frogger`: the Frogger 2 port executable.
+//! `frogger2`: the Frogger 2 port executable.
 //!
 //! ```text
 //! frogger [--data DIR] [--mute] [--level W L | --frontend | --multi W L N] [--size WxH] [--fullscreen] [display options]

@@ -17,7 +17,7 @@ OUT="$REPO/target/package"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
 VER="${F2_PKG_VERSION:-$VERSION-$SHA}"
-BINS=(frogger f2-import f2-viewer)
+BINS=(frogger2 f2-import f2-viewer)
 TGT="${CARGO_TARGET_DIR:-target}"
 mkdir -p "$OUT"
 
@@ -72,14 +72,14 @@ pkg_linux() {
   cp packaging/frogger2-rs.desktop packaging/icon/frogger2-rs.svg "$ad/"
   ln -sf frogger2-rs.svg "$ad/.DirIcon"
   cp NOTICE LICENSE-* "$ad/usr/share/licenses/frogger2-rs/"
-  # AppRun: `frogger` by default; `<AppImage> f2-import ...` / `<AppImage> f2-viewer` run the tools.
+  # AppRun: `frogger2` by default; `<AppImage> f2-import ...` / `<AppImage> f2-viewer` run the tools.
   cat > "$ad/AppRun" <<'APPRUN'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
 case "$1" in
   f2-import|f2-viewer) tool="$1"; shift; exec "$HERE/usr/bin/$tool" "$@" ;;
 esac
-exec "$HERE/usr/bin/frogger" "$@"
+exec "$HERE/usr/bin/frogger2" "$@"
 APPRUN
   chmod +x "$ad/AppRun"
   local rt=()
@@ -152,7 +152,7 @@ pkg_macos() {
   <key>CFBundleName</key><string>Frogger2rs</string>
   <key>CFBundleDisplayName</key><string>Frogger 2: Swampy's Revenge (Rust)</string>
   <key>CFBundleIdentifier</key><string>io.github.NeilGraham.Frogger2rs</string>
-  <key>CFBundleExecutable</key><string>frogger</string>
+  <key>CFBundleExecutable</key><string>frogger2</string>
   <key>CFBundleIconFile</key><string>frogger2-rs</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
@@ -187,12 +187,12 @@ PLIST
   if command -v codesign >/dev/null; then
     local id="${F2_CODESIGN_ID:--}" opts=()
     [[ "$id" != "-" ]] && opts=(--options runtime --timestamp)
-    # The helper tools first; the main executable (`frogger`) is signed with the bundle:
+    # The helper tools first; the main executable (`frogger2`) is signed with the bundle:
     # codesign treats a bundle's main executable as the bundle, so signing it first would seal
     # the bundle while the tools are still unsigned (x86_64 builds from an arm64 host are not
     # linker-signed).
     for b in "${BINS[@]}"; do
-      [[ "$b" == frogger ]] || codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$app/MacOS/$b"
+      [[ "$b" == frogger2 ]] || codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$app/MacOS/$b"
     done
     codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$bundle"
     codesign --verify --strict "$bundle"

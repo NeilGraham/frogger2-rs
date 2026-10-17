@@ -13,9 +13,9 @@ WSL:
 | N64 | `.z64` ROM | `runtime-n64-<v>.zip` |
 
 ```sh
-frogger --export ps4,ps5,n64,android [--out DIR]            # runtimes from the matching GitHub release
-frogger --export n64 --runtime runtime-n64-0.1.0.zip         # a local runtime
-frogger --export all                                         # every target this OS can export
+frogger2 --export ps4,ps5,n64,android [--out DIR]            # runtimes from the matching GitHub release
+frogger2 --export n64 --runtime runtime-n64-0.1.0.zip         # a local runtime
+frogger2 --export all                                         # every target this OS can export
 ```
 
 The builds contain the player's game data: they are for the player's own devices and must not
@@ -176,16 +176,16 @@ install only when they pointed the config at it explicitly.
 
 ## Windows
 
-`frogger.exe --export windows [--out DIR]` (`crates/f2-package/src/windows.rs`) writes:
+`frogger2.exe --export windows [--out DIR]` (`crates/f2-package/src/windows.rs`) writes:
 
 ```
 <out>/Frogger 2 - Swampy's Revenge/
-  Frogger 2 - Swampy's Revenge.exe     frogger.exe, rebranded (below)
+  Frogger 2 - Swampy's Revenge.exe     frogger2.exe, rebranded (below)
   NOTICE, README.md, licenses/         copied from the app's folder when present
   game-data/<rendition>/               game/, music/, video/, manifest.json
 ```
 
-- The exe is the running `frogger.exe` with its resources rewritten by `editpe` (the code is
+- The exe is the running `frogger2.exe` with its resources rewritten by `editpe` (the code is
   untouched): every `RT_ICON`/`RT_GROUP_ICON` is removed and one icon group is added from the
   branding icon at 16, 20, 24, 32, 40, 48, 64, 96, 128 px (32-bit DIBs) and 256 px (PNG); the
   version info's `ProductName` and `FileDescription` become the title (Explorer's "File
@@ -193,7 +193,7 @@ install only when they pointed the config at it explicitly.
 - The exe is not signed (neither is the release build): SmartScreen may warn the first time.
 - Folder only; zip it to move it.
 
-**Tested** (WSL, cross-built with `tools/package/build-windows.sh`): the Windows `frogger.exe`
+**Tested** (WSL, cross-built with `tools/package/build-windows.sh`): the Windows `frogger2.exe`
 exported itself (`--data <usa> --export windows --out C:\f2-export-test\out`, 466 MB, ~8 s).
 The shell's view of the exported exe, read with a small native check (`ExtractAssociatedIconW`,
 `PrivateExtractIconsW` at 256/48/16 px, `GetFileVersionInfoW`; PowerShell's
@@ -204,7 +204,7 @@ Swampy's Revenge". Run with `--headless --frames 60 --frontend --screenshot` and
 
 ## macOS
 
-`frogger --export macos` (`crates/f2-package/src/macos.rs`) copies the running `.app`
+`frogger2 --export macos` (`crates/f2-package/src/macos.rs`) copies the running `.app`
 (permissions and symlinks kept) to `<out>/Frogger 2 - Swampy's Revenge.app` and edits it:
 
 - `Contents/Info.plist`: `CFBundleName` and `CFBundleDisplayName` = the title,
@@ -241,7 +241,7 @@ table decoded back to PNGs of the right sizes, data layout, executable permissio
 
 ## Linux
 
-`frogger --export linux` (`crates/f2-package/src/linux.rs`) has two forms, by what the
+`frogger2 --export linux` (`crates/f2-package/src/linux.rs`) has two forms, by what the
 running app is:
 
 **From the AppImage** (`$APPIMAGE`): `<out>/Frogger 2 - Swampy's Revenge.AppImage`, made
@@ -269,7 +269,7 @@ usr/share/game-data/<rendition>/           game/, music/, video/, manifest.json
 `$APPDIR` (set by the runtime when mounted and with `APPIMAGE_EXTRACT_AND_RUN=1`).
 
 **From a folder** (release tarball, `target/release`): `<out>/Frogger 2 - Swampy's Revenge/`
-with `frogger`, `NOTICE`/`README.md`/`licenses/` when present, the `.desktop` file and PNG
+with `frogger2`, `NOTICE`/`README.md`/`licenses/` when present, the `.desktop` file and PNG
 icon above, and `game-data/<rendition>/` (found next to the binary).
 
 **Tested** (WSL2, x86_64): `tools/package/package.sh linux` with appimagetool (continuous,
@@ -279,7 +279,7 @@ the layout above); the export run with `--headless --frames 60 --frontend --scre
 no `--data` (empty `F2_CONFIG_DIR`, no `F2_DATA_ROOT`) loaded
 `/tmp/.mount_*/usr/share/game-data/usa` via FUSE and, identically, from
 `APPIMAGE_EXTRACT_AND_RUN=1`; `--appimage-updateinformation` is empty. The folder export from
-`target/release/frogger` ran the same way from `<folder>/game-data/usa`. Unit tests build a
+`target/release/frogger2` ran the same way from `<folder>/game-data/usa`. Unit tests build a
 fake AppImage (fake ELF runtime + squashfs AppDir), export it and read it back.
 
 ## PS4
@@ -396,7 +396,7 @@ three from a source checkout.
 
 ## N64
 
-`frogger --export n64` writes `<title>.z64` ("Frogger 2 - Swampy's Revenge.z64"), a ROM for
+`frogger2 --export n64` writes `<title>.z64` ("Frogger 2 - Swampy's Revenge.z64"), a ROM for
 a 64 MiB cartridge with the Expansion Pak required (ares, flash carts; Expansion Pak +
 SRAM 256 Kbit save in the header). Code: `crates/f2-package/src/n64.rs` (+ `n64/rom.rs`,
 `n64/runtime.rs`), the pack and DFS writer in `tools/f2-n64pack` (library, pure Rust).
@@ -455,14 +455,14 @@ whose parts re-assemble into it byte for byte (which also pins the exact IPL3 si
 `F2_GAME_DIR=…/game-data/usa/game tools/n64/export-check.sh` builds the runtime, then compares
 (a) `build.sh`'s default ROM with the runtime + the Rust DFS of the same `target/n64/filesystem`
 and (b) `build.sh --portable` (the portable pack, then the libdragon tools `mkdfs`, `n64tool`,
-`ed64romconfig`) with `frogger --export n64`. Both must be identical for one checkout (the
+`ed64romconfig`) with `frogger2 --export n64`. Both must be identical for one checkout (the
 ELF differs between checkouts: Rust symbol hashes include the source path).
 
 ### Test status (2026-10-14, USA data, libdragon 3A)
 
 - `export-check.sh`: (a) default ROM 64,765,952 bytes **identical** to runtime + Rust DFS
   (62,151,546-byte DFS, identical to `mkdfs`) + Rust ROM assembly; (b) `build.sh --portable`
-  vs `frogger --export n64`: 62,226,432 bytes **identical**.
+  vs `frogger2 --export n64`: 62,226,432 bytes **identical**.
 - Portable pack: models 2,963,715 B and textures 2,846,178 B (aPLib), levels 386,176 B, sound
   effects 12,307,394 B: the same sizes as the default pack (byte-identical encoders); music
   VADPCM 24 kHz stereo 41,053,840 B (the default: ULC 128 kbps 24.3 MB), no FMV (default
