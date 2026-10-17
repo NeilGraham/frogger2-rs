@@ -9,7 +9,7 @@
 //! `ps4/pkg.rs`, `ps4/pfs.rs`, `ps4/crypto.rs`.
 
 pub(crate) mod art;
-mod crypto;
+pub(crate) mod crypto;
 mod keys;
 mod pfs;
 mod pkg;

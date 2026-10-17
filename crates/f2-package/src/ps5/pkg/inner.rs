@@ -85,6 +85,7 @@ pub(crate) struct Node {
     pub mode: u16,
     pub afid: u32,
     pub size: i64,
+    pub executable: bool,
 }
 
 /// The built image (written to `spool`) and what the NAPS table and the package need.
@@ -103,6 +104,8 @@ pub(crate) struct InnerImage {
     pub placements: Vec<Placement>,
     pub nodes: Vec<Node>,
     pub deduplicated_blocks: usize,
+    /// The metadata region before compression.
+    pub meta_plain: Vec<u8>,
 }
 
 struct Dir {
@@ -891,7 +894,7 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
             parent_inode: parent,
             dirent_offset: if is_root { -1 } else { dir.dirent_offset },
         });
-        out_nodes.push(Node { full_path: dir.full_path.clone(), is_directory: true, parent_inode: parent, mode: 0, afid: 0, size: 0 });
+        out_nodes.push(Node { full_path: dir.full_path.clone(), is_directory: true, parent_inode: parent, mode: 0, afid: 0, size: 0, executable: false });
     }
     for &f in &file_order {
         let n = &nodes[f];
@@ -909,7 +912,7 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
             parent_inode: dir_list[n.parent].inode as i32,
             dirent_offset: n.dirent_offset,
         });
-        out_nodes.push(Node { full_path: n.full_path.clone(), is_directory: false, parent_inode: dir_list[n.parent].inode as i32, mode, afid: n.afid, size: n.length });
+        out_nodes.push(Node { full_path: n.full_path.clone(), is_directory: false, parent_inode: dir_list[n.parent].inode as i32, mode, afid: n.afid, size: n.length, executable: n.is_executable });
     }
     meta_nodes.sort_by_key(|n| n.inode);
     let mut all_payloads = payloads;
@@ -963,5 +966,6 @@ pub(crate) fn build(files: Vec<InputFile>, dirs: &[String], spool: &Path, log: &
         placements,
         nodes: out_nodes,
         deduplicated_blocks: dedup_count,
+        meta_plain,
     })
 }

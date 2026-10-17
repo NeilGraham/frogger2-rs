@@ -70,6 +70,11 @@ fn find_section<'a>(elf: &'a [u8], name: &str) -> &'a [u8] {
     &[]
 }
 
+/// Whether an ELF carries its own `.sceversion` section.
+pub(crate) fn has_sce_version(elf: &[u8]) -> bool {
+    !find_section(elf, ".sceversion").is_empty()
+}
+
 /// `MakeFself(elf, new FselfOptions())`.
 pub(crate) fn make_fself(elf: &[u8]) -> Result<Vec<u8>, String> {
     if !is_elf(elf) {

@@ -199,7 +199,7 @@ pub(crate) fn build<W: Write + Seek>(out: &mut W, offset: u64, mut files: Vec<Ou
     }
     let mut digests = vec![[0u8; 32]; nblocks];
     let io = |e: std::io::Error| e.to_string();
-    let mut write = |out: &mut W, idx: usize, bytes: &[u8], digests: &mut Vec<[u8; 32]>| -> Result<[u8; 32], String> {
+    let write = |out: &mut W, idx: usize, bytes: &[u8], digests: &mut Vec<[u8; 32]>| -> Result<[u8; 32], String> {
         let h = sha3(bytes);
         digests[idx] = h;
         out.seek(SeekFrom::Start(offset + (idx * BLOCK) as u64)).map_err(io)?;
@@ -220,7 +220,7 @@ pub(crate) fn build<W: Write + Seek>(out: &mut W, offset: u64, mut files: Vec<Ou
         }
     }
     // Super-root, flat path table, uroot.
-    let mut block = |bytes: Vec<u8>| -> Vec<u8> {
+    let block = |bytes: Vec<u8>| -> Vec<u8> {
         let mut b = bytes;
         b.resize(BLOCK, 0);
         b

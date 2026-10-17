@@ -255,6 +255,42 @@ pub(crate) fn rsa_encrypt_key(modulus: &[u8; 256], value: &[u8; 32]) -> [u8; 256
     modpow(&padded, &[0x01, 0x00, 0x01], modulus)
 }
 
+/// LibProsperoPkg's deterministic `RsaPkcs1EncryptKey` (PS5 packages): the same Mersenne
+/// Twister padding as [`rsa_encrypt_key`] for any modulus size (PS5: RSA-3072) and data length.
+pub(crate) fn rsa_pkcs1_deterministic(modulus: &[u8], data: &[u8]) -> Vec<u8> {
+    let n = modulus.len();
+    assert!(data.len() + 11 <= n, "RSA input too large");
+    let mut buf = modulus.to_vec();
+    buf.extend(data);
+    let h = sha256(&sha256(&buf));
+    let seed: Vec<u32> = h.chunks(4).map(|c| u32::from_be_bytes(c.try_into().unwrap())).collect();
+    let mut mt = Mt::new(&seed);
+    let pad = n - data.len() - 3;
+    let mut padded = vec![0u8; n];
+    padded[1] = 2;
+    let mut k = 2;
+    while k < 2 + pad {
+        let mut src = Vec::with_capacity(48);
+        for _ in 0..12 {
+            src.extend(mt.next().to_be_bytes());
+        }
+        for r in sha256(&src) {
+            if r != 0 {
+                padded[k] = r;
+                k += 1;
+                if k == 2 + pad {
+                    break;
+                }
+            }
+        }
+    }
+    padded[3 + pad..].copy_from_slice(data);
+    let r = BigUint::from_bytes_be(&padded).modpow(&BigUint::from(65537u32), &BigUint::from_bytes_be(modulus)).to_bytes_be();
+    let mut out = vec![0u8; n];
+    out[n - r.len()..].copy_from_slice(&r);
+    out
+}
+
 /// RSA-2048 PKCS#1 v1.5 signature of a SHA-256 hash with the debug RIF key (license.dat).
 pub(crate) fn rsa_sign_sha256_debug_rif(hash: &[u8; 32]) -> [u8; 256] {
     const DIGEST_INFO: [u8; 19] = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
