@@ -10,15 +10,16 @@
 #   early on a log line, e.g. -- -delay 600 -stopon "mem-tour done".
 #
 # Outputs in C:\f2-n64test\ (not in the repo): <name>.png (+ _1.png ...), run.txt (stdout = debugf).
-# Env: ARES_DIR (default C:\Users\<you>\Emulation\emulators\ares-v148, as a /mnt path),
+# Env: ARES_DIR (default <your Windows home>\Emulation\emulators\ares-v148, as a /mnt path),
 #      N64TEST (default /mnt/c/f2-n64test).
 set -euo pipefail
+WINHOME="$(wslpath "$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d "\\r")" 2>/dev/null || true)"   # your Windows home (WSL)
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 rom="${1:-$root/target/n64/frogger2.z64}"
 [ $# -gt 0 ] && shift
 [ "${1:-}" = "--" ] && shift
-ares_dir="${ARES_DIR:-/mnt/c/Users/<you>/Emulation/emulators/ares-v148}"
+ares_dir="${ARES_DIR:-$WINHOME/Emulation/emulators/ares-v148}"
 test_dir="${N64TEST:-/mnt/c/f2-n64test}"
 mkdir -p "$test_dir"
 

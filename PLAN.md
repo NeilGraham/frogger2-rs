@@ -293,7 +293,7 @@ See [docs/modding.md](docs/modding.md).
 3. **Platforms for 1.0** — suggest Windows + Linux + macOS; Steam Deck as a stretch; web later.
 4. **Oracle environment** — OK to run the retail `Frogger2.exe` (extracted from your discs) on the
    Windows side of this WSL machine via the TPW-style headless/muted harness? (Same setup as TPW:
-   Windows Rust toolchain at `/mnt/c/Users/…/.cargo/bin/cargo.exe`, VS on Windows.) Does DirectX 7
+   Windows Rust toolchain at `<Windows home>/.cargo/bin/cargo.exe`, VS on Windows.) Does DirectX 7
    D3D HAL init work there in windowed mode, or do we need a ddraw wrapper (dgVoodoo2/DDrawCompat)?
    We'll test in the Phase 0 spike, but a VM may be needed if the desktop GPU path misbehaves.
 5. **Shared crates with TPW** — copy now and diverge, or extract a shared `recomp-kit` workspace

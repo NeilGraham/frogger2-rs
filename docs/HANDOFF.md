@@ -33,7 +33,7 @@ agent was told to commit WIP and keep a "Status / next steps" section in its doc
   knutwurst/ps5-ultrapack, verified FW 11.60 + kstuff-lite 1.13); (4) PS4: make the CPU renderer
   the default (Piglet opt-in), revert to conservative param.sfo ATTRIBUTE / default authinfo
   (enhanced variant separate), emulated TLS too, klog-first logging.
-- Deliverable: `C:\Users\<you>\Desktop\Frogger2-HW-Test\` test ladder (PS5 C hello →
+- Deliverable: `<Windows Desktop>\Frogger2-HW-Test\` test ladder (PS5 C hello →
   PS5 Rust smoke → PS5 game .pkg/folder/.ffpkg/.ffpfsc; PS4 smoke → PS4 game conservative → PS4
   game enhanced), README with klog capture steps. Reference project: Nazky/UnleashedRecomp-Prospero
   (clone at `~/opt/ref/UnleashedRecomp-Prospero`).
@@ -41,7 +41,7 @@ agent was told to commit WIP and keep a "Status / next steps" section in its doc
 ## N64 facts so far
 - Toolchain: libdragon preview `39d0d60` at `~/opt/libdragon`, installed `N64_INST=~/opt/n64root/opt/libdragon`;
   Rust targets n32 and objects are relabelled to o64 (`tools/n64/n32-to-o64.py`); emulator ares v148
-  (`C:\Users\<you>\Emulation\emulators\ares-v148`), harness `tools/n64/run-ares.sh`, scratch `C:\f2-n64test\`.
+  (`<your Windows home>\Emulation\emulators\ares-v148`), harness `tools/n64/run-ares.sh`, scratch `C:\f2-n64test\`.
 - Playable in ares (frontend → Garden 1, sfx, music) at 3.5–4 fps; sim 35–45 % real time.
 - Faithful CPU render path ≈ 6100 cycles/tri (≈256 tris/frame at 60); game needs 450–1500 → RSP renderer (2R).
 - RAM: peak 4.2 MiB of 6.1 MiB free heap. Level loads 5–7 s.

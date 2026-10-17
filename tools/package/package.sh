@@ -10,6 +10,7 @@
 # F2_PKG_VERSION=0.1.0 names the archives with that version instead of <version>-<commit>
 # (the release workflow, .github/workflows/release.yml, passes the tag's version).
 set -euo pipefail
+WINHOME="$(wslpath "$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d "\\r")" 2>/dev/null || true)"   # your Windows home (WSL)
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 OUT="$REPO/target/package"
@@ -204,6 +205,6 @@ case "${1:-}" in
   linux) pkg_linux ;;
   windows) pkg_windows ;;
   macos) pkg_macos ;;
-  all) pkg_linux; [[ -x "${F2_WIN_CARGO:-/mnt/c/Users/<you>/.cargo/bin/cargo.exe}" ]] && pkg_windows || true ;;
+  all) pkg_linux; [[ -x "${F2_WIN_CARGO:-$WINHOME/.cargo/bin/cargo.exe}" ]] && pkg_windows || true ;;
   *) echo "usage: $0 linux|windows|macos|all" >&2; exit 2 ;;
 esac

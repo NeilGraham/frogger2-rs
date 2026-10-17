@@ -15,9 +15,10 @@
 # (gitignored) and checked: PE32, i386, DLL, DirectInput exports present.
 #
 # Environment overrides:
-#   F2_WIN_CARGO    cargo.exe (default /mnt/c/Users/<you>/.cargo/bin/cargo.exe)
+#   F2_WIN_CARGO    cargo.exe (default <your Windows home>/.cargo/bin/cargo.exe)
 #   F2_BUILD_ROOT   WSL path of the Windows build root (default /mnt/c/f2-build)
 set -euo pipefail
+WINHOME="$(wslpath "$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d "\\r")" 2>/dev/null || true)"   # your Windows home (WSL)
 
 PROFILE=release
 case "${1:-}" in
@@ -27,7 +28,7 @@ case "${1:-}" in
 esac
 
 TARGET=i686-pc-windows-msvc
-CARGO_EXE="${F2_WIN_CARGO:-/mnt/c/Users/<you>/.cargo/bin/cargo.exe}"
+CARGO_EXE="${F2_WIN_CARGO:-$WINHOME/.cargo/bin/cargo.exe}"
 BUILD_ROOT="${F2_BUILD_ROOT:-/mnt/c/f2-build}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NAME="$(basename "$REPO")"

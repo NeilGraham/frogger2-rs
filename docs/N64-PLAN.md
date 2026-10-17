@@ -29,7 +29,7 @@ unchanged (parity-verified `f2-game`), so the N64 build plays exactly like the P
   `~/opt/n64root/opt/libdragon`, `N64_INST`), GCC 16 `mips64-elf`; tools `mkdfs`, `mkasset`
   (built-in compression levels 1 = LZ4, 2 = aPLib, 3 = Shrinkler), `audioconv64` (VADPCM,
   Opus), `videoconv64`, `n64tool`. Test emulator: **ares v148**
-  (`C:\Users\<you>\Emulation\emulators\ares-v148\ares.exe`), the emulator libdragon
+  (`<your Windows home>\Emulation\emulators\ares-v148\ares.exe`), the emulator libdragon
   documents as accurate.
 - **Language split**: a small **C host on libdragon** (boot, display, RDP, audio, joypad,
   DFS, FMV) linking a **Rust `no_std` + `alloc` static library** (MIPS III, big-endian,
