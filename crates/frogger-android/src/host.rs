@@ -83,6 +83,7 @@ pub fn main(android: AndroidApp) {
         game_title: None,
         hero_pending: None,
         logo_pending: None,
+        icon_pending: None,
         dp: android.config().density().map_or(2.0, |d| d as f32 / 160.0),
         kb: KeyboardState::default(),
         gamepad: Gamepad::default(),
@@ -207,7 +208,8 @@ struct Host {
     data_root: PathBuf,
     /// The activity's `AAssetManager*` (valid for the process).
     assets_ptr: usize,
-    import: Option<import::Screen>,
+    /// Importing (or unpacking) the game: shown on the launcher's import page.
+    import: Option<import::Importer>,
     gfx: Option<Gfx>,
     app: Option<App>,
     touch: Option<TouchPad>,
@@ -221,8 +223,9 @@ struct Host {
     /// The game's artwork (width, height, RGBA) for the launcher's hero picture, until the
     /// painter has it.
     hero_pending: Option<(u32, u32, Vec<u8>)>,
-    /// The game's logo likewise.
+    /// The game's logo and icon likewise.
     logo_pending: Option<(u32, u32, Vec<u8>)>,
+    icon_pending: Option<(u32, u32, Vec<u8>)>,
     /// Pixels per dp.
     dp: f32,
     /// Hardware / Bluetooth keyboard (and Back = Escape).
@@ -269,11 +272,9 @@ impl Host {
         } else if let Some(d) = self.data.take() {
             self.start_game(d);
         } else if self.import.is_none() {
-            let g = self.gfx.as_ref().unwrap();
-            let fmt = g.surface.as_ref().unwrap().config.format;
             if let Some(b) = &self.bundle {
                 let job = unpack_job(b.clone(), self.data_root.clone(), self.assets_ptr);
-                self.import = Some(import::Screen::unpacking(&g.ctx.device, &g.ctx.queue, fmt, self.files.clone(), job));
+                self.import = Some(import::Importer::unpacking(self.files.clone(), job));
                 self.last = Instant::now();
                 return;
             }
@@ -282,15 +283,27 @@ impl Host {
         self.last = Instant::now();
     }
 
-    /// Shows the import screen (disc image picker); when it finishes the game starts again.
+    /// Shows the launcher's import page; when the import finishes the game starts (again).
+    /// A running game stops first: the import rewrites the files it reads.
     fn begin_import(&mut self) {
-        let Some(g) = self.gfx.as_ref() else { return };
-        let Some(s) = g.surface.as_ref() else { return };
-        let fmt = s.config.format;
-        let ptrs = self.jni_ptrs;
-        let picker: Box<dyn Fn()> = Box::new(move || pick_disc_image(ptrs));
-        self.import = Some(import::Screen::new(&g.ctx.device, &g.ctx.queue, fmt, self.files.clone(), f2_platform::paths::default_data_root(), Some(picker)));
+        if self.app.is_some() {
+            self.save_config();
+            self.app = None;
+        }
+        self.import = Some(import::Importer::new(self.files.clone(), f2_platform::paths::default_data_root(), true));
+        if let Some(l) = &mut self.launcher {
+            l.show_import(true);
+        }
         self.last = Instant::now();
+    }
+
+    /// Starts the game from the data found now (after an import, or when one was cancelled).
+    fn restart_game(&mut self) {
+        let arg = self.bundle.as_ref().map(|b| self.data_root.join(&b.rendition));
+        match load_data(&self.cfg, arg) {
+            Some(d) => self.start_game(d),
+            None => self.error = Some("the imported game was not found".into()),
+        }
     }
 
     /// Opens the launcher over the (paused) game.
@@ -308,25 +321,74 @@ impl Host {
         self.last = Instant::now();
     }
 
+    /// What the launcher shows, from the config, the import and the game (while it is visible).
+    fn refresh_launcher(&mut self) {
+        if !(self.launcher_open || self.app.is_none()) {
+            return;
+        }
+        let Some(l) = &mut self.launcher else { return };
+        let config_path = f2_platform::paths::config_file();
+        let mods_dir = self.cfg.mods_dir();
+        let game = match (&self.app, &self.game_title) {
+            (Some(_), t) => Some(t.as_deref().unwrap_or("Frogger 2: Swampy's Revenge")),
+            (None, t) => t.as_deref(),
+        };
+        launcher::refresh(
+            l,
+            &launcher::Inputs {
+                game,
+                data_root: &self.data_root,
+                config_path: &config_path,
+                mods_dir: &mods_dir,
+                enabled_mods: &self.cfg.mods.enabled,
+                start_in_launcher: self.prefs.start_in_launcher,
+                bundled: self.bundle.is_some(),
+            },
+        );
+        l.state.import = self.import.as_ref().map(|i| i.view()).unwrap_or_default();
+    }
+
     /// Acts on a button of the launcher screen.
     fn launcher_action(&mut self, a: LAction) {
         if launcher::closes(&a) {
+            if self.app.is_none() {
+                // Importing again: back to the game as it was.
+                if self.game_title.is_some() {
+                    self.import = None;
+                    if let Some(l) = &mut self.launcher {
+                        l.show_import(false);
+                    }
+                    self.launcher_open = false;
+                    self.restart_game();
+                }
+                return;
+            }
             self.close_launcher();
             return;
         }
         match a {
-            LAction::Import if self.bundle.is_none() => {
-                // Back to the import flow; the game starts again from its result.
-                self.close_launcher();
-                self.save_config();
-                self.app = None;
-                self.begin_import();
+            LAction::Import | LAction::SettingButton("import") if self.bundle.is_none() => {
+                if self.import.is_none() {
+                    self.begin_import();
+                }
             }
-            LAction::SetStartInLauncher(b) => {
-                self.prefs.start_in_launcher = b;
+            LAction::CancelImport => {
+                self.import = None;
+                if self.app.is_none() {
+                    self.restart_game();
+                }
+            }
+            LAction::RetryImport => {
+                if let Some(i) = &mut self.import {
+                    i.retry();
+                }
+            }
+            LAction::PickImage => pick_disc_image(self.jni_ptrs),
+            LAction::SetChoice("start", i) => {
+                self.prefs.start_in_launcher = i == 1;
                 self.prefs.save(&self.files);
             }
-            LAction::OpenUpdates => open_url(self.jni_ptrs, f2_launcher::releases::RELEASES_PAGE_URL),
+            LAction::OpenUpdates | LAction::SettingButton("updates") => open_url(self.jni_ptrs, f2_launcher::releases::RELEASES_PAGE_URL),
             LAction::ToggleMod(id) => {
                 launcher::toggle_mod(&mut self.cfg.mods.enabled, &id);
                 if let Some(app) = &mut self.app {
@@ -417,6 +479,10 @@ impl Host {
         // The icon from the player's own artwork (recents icon; home-screen shortcut offered once).
         let art = frogger::icon::game_art(&data);
         self.game_art_png = art.as_ref().map(|art| frogger::icon::encode_png(&frogger::icon::adaptive(&frogger::icon::square(art, 480), 432)));
+        self.icon_pending = art.as_ref().map(|a| {
+            let i = frogger::icon::rounded(&frogger::icon::square(a, 128), 0.2);
+            (i.width, i.height, i.pixels)
+        });
         self.hero_pending = art.map(|a| (a.width, a.height, a.pixels));
         self.logo_pending = frogger::icon::game_logo(&data).map(|l| (l.width, l.height, l.pixels));
         let mut app = App::new(data, &g.ctx.device, &g.ctx.queue, s.config.format, audio, mapper);
@@ -576,18 +642,12 @@ impl Host {
     }
 
     fn touch_point(&mut self, id: u64, phase: Phase, x: f32, y: f32) {
-        if let Some(s) = &mut self.import {
-            if phase == Phase::Started {
-                s.tap(x, y);
-            }
-            return;
-        }
-        if self.launcher_open {
+        if self.launcher_open || self.app.is_none() {
             let dp = self.dp;
-            match self.launcher_touch.touch(id, phase, x, y, 46.0 * dp, 10.0 * dp) {
-                Gesture::Scroll(rows) => {
+            match self.launcher_touch.touch(id, phase, x, y, 10.0 * dp) {
+                Gesture::Scroll(px) => {
                     if let Some(l) = &mut self.launcher {
-                        l.scroll_by(rows);
+                        l.scroll_by(px);
                     }
                 }
                 Gesture::Tap(tx, ty) => {
@@ -644,6 +704,7 @@ impl Host {
             eprintln!("frogger: {e}");
             return true;
         }
+        self.refresh_launcher();
         let Some(g) = &mut self.gfx else { return false };
         let (Some(s), Some(win)) = (&mut g.surface, &g.window) else { return false };
         // Follow the window size (rotation, split screen, cutout changes).
@@ -662,21 +723,32 @@ impl Host {
         }
         let (w, h) = (s.config.width, s.config.height);
 
-        // Import screen until data exists.
-        if let Some(screen) = &mut self.import {
-            let done = screen.update();
+        // No game running (none imported yet, or importing again): only the launcher, on its
+        // import page while an import runs.
+        if self.app.is_none() {
+            if self.import.as_mut().is_some_and(|i| i.update()) {
+                self.import = None;
+                if let Some(l) = &mut self.launcher {
+                    l.show_import(false);
+                }
+                if !self.prefs.start_in_launcher {
+                    self.launcher_open = false;
+                }
+                self.restart_game();
+                return false;
+            }
+            let Some(g) = &mut self.gfx else { return false };
+            let Some(s) = &mut g.surface else { return false };
             let Some(tex) = acquire(&g.ctx, s) else { return false };
             let view = tex.texture.create_view(&Default::default());
-            screen.render(&view, w, h);
-            g.ctx.queue.present(tex);
-            if done {
-                self.import = None;
-                let arg = self.bundle.as_ref().map(|b| self.data_root.join(&b.rendition));
-                match data::Data::locate(&self.cfg, arg) {
-                    Ok(d) => self.start_game(d),
-                    Err(e) => self.error = Some(e),
-                }
+            g.ui.begin_frame(w, h);
+            if let Some(l) = &mut self.launcher {
+                upload_pictures(l, &mut g.kit, &mut g.ui, [&mut self.hero_pending, &mut self.logo_pending, &mut self.icon_pending]);
+                l.draw(&mut g.kit.painter(&mut g.ui));
             }
+            let bg = f2_launcher::ui::BG;
+            g.ui.render(&view, w, h, [bg[0] as f64 / 255.0, bg[1] as f64 / 255.0, bg[2] as f64 / 255.0, 1.0]);
+            g.ctx.queue.present(tex);
             return false;
         }
         let (Some(app), Some(touch), Some(menu)) = (&mut self.app, &mut self.touch, &self.menu) else { return false };
@@ -746,27 +818,7 @@ impl Host {
         g.ui.begin_frame(w, h);
         if self.launcher_open {
             if let Some(l) = &mut self.launcher {
-                let config_path = f2_platform::paths::config_file();
-                let mods_dir = self.cfg.mods_dir();
-                launcher::refresh(
-                    l,
-                    &launcher::Inputs {
-                        game: Some(self.game_title.as_deref().unwrap_or("Frogger 2: Swampy's Revenge")),
-                        data_root: &self.data_root,
-                        config_path: &config_path,
-                        mods_dir: &mods_dir,
-                        enabled_mods: &self.cfg.mods.enabled,
-                        start_in_launcher: self.prefs.start_in_launcher,
-                    },
-                );
-                if let Some((w, h, px)) = self.hero_pending.take() {
-                    g.kit.set_image(&mut g.ui, f2_launcher::ui::HERO_KEY, w, h, px);
-                    l.state.hero = Some((w, h));
-                }
-                if let Some((w, h, px)) = self.logo_pending.take() {
-                    g.kit.set_image(&mut g.ui, f2_launcher::ui::LOGO_KEY, w, h, px);
-                    l.state.logo = Some((w, h));
-                }
+                upload_pictures(l, &mut g.kit, &mut g.ui, [&mut self.hero_pending, &mut self.logo_pending, &mut self.icon_pending]);
                 l.draw(&mut g.kit.painter(&mut g.ui));
             }
         } else {
@@ -789,6 +841,17 @@ impl Host {
             }
         }
         false
+    }
+}
+
+/// Gives the launcher's painter the game's pictures that are waiting (hero, logo, icon).
+fn upload_pictures(l: &mut Launcher, kit: &mut UiKit, r: &mut Renderer, [hero, logo, icon]: [&mut Option<(u32, u32, Vec<u8>)>; 3]) {
+    use f2_launcher::ui::{HERO_KEY, ICON_KEY, LOGO_KEY};
+    for (key, pending, size) in [(HERO_KEY, hero, &mut l.state.hero), (LOGO_KEY, logo, &mut l.state.logo), (ICON_KEY, icon, &mut l.state.icon)] {
+        if let Some((w, h, px)) = pending.take() {
+            kit.set_image(r, key, w, h, px);
+            *size = Some((w, h));
+        }
     }
 }
 
@@ -827,7 +890,7 @@ fn read_bundle(assets: &AssetManager) -> Option<bundle::Index> {
 }
 
 /// The worker that unpacks the bundled game, reading the APK's assets.
-fn unpack_job(b: bundle::Index, data_root: PathBuf, assets_ptr: usize) -> Box<dyn FnOnce(&dyn Fn(String, f32)) -> Result<(), String> + Send> {
+fn unpack_job(b: bundle::Index, data_root: PathBuf, assets_ptr: usize) -> import::ImportJob {
     Box::new(move |report| {
         // SAFETY: the activity's AAssetManager lives as long as the process; AAssetManager
         // is thread-safe.

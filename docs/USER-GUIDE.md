@@ -21,24 +21,39 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
    imported game (`data/`), `config.toml`, `saves/` and `mods/`, because the zip contains a
    `portable.txt` (delete it to use the per-user folders instead). Moving or deleting the folder
    moves or deletes it all.
-2. Start **`launcher`** (`launcher.exe`). Its **PLAY** tab imports your own copy of the game
-   (disc, image or install folder; nothing from the game is downloaded or shipped) and then makes
-   **`frogger2`** (`frogger2.exe`) in the folder. On Windows that exe carries the game's own icon
-   and name, cut from your imported artwork on your machine, so only `launcher.exe` is there at
-   first. **PLAY** starts the game; you can also start `frogger2` directly any time, which opens
-   the game at once (and the launcher instead if you have no data yet).
-   Once the game is imported the launcher also shows its own artwork, read from your copy on your
-   machine and never shipped: the loading-screen picture as the background of the Play page, the
-   game's logo, and the window icon.
-3. **VERSIONS** lists the releases on GitHub. **INSTALL** downloads one (checked against the
-   release's `SHA256SUMS.txt`) into `versions/<tag>/`, **USE** picks the version PLAY runs
-   (your data, settings, saves and mods are shared by all versions), **REMOVE** deletes one.
-   The launcher asks GitHub for the list when it starts; turn that off with
-   `[launcher] check_updates = false` in `config.toml`, point it at a mirror with
-   `[launcher] releases_url` or `$F2_RELEASES_URL`, or set `$F2_NO_UPDATE_CHECK=1`.
-4. **MODS** lists the folders in `mods/` and switches them on and off (`[mods] enabled`).
-5. **SETTINGS**: *On start, open the* Game (default) or Launcher (`[launcher] start`).
+2. Start **`launcher`** (`launcher.exe`). With no game yet it opens on **Set up your game**:
+   your CD/DVD drives (a Frogger 2 disc is marked and offered first, **Import**), **Choose disc
+   image** and **Choose folder** (the system's file dialog), or drop an image or folder onto the
+   window. The import runs in the launcher with a progress bar; nothing from the game is
+   downloaded or shipped. Then the launcher makes **`frogger2`** (`frogger2.exe`) in the folder.
+   On Windows that exe carries the game's own icon and name, cut from your imported artwork on
+   your machine, so only `launcher.exe` is there at first. **PLAY** starts the game; you can also
+   start `frogger2` directly any time, which opens the game at once (and the launcher instead if
+   you have no data yet). Once the game is imported the launcher shows its artwork too (the
+   loading-screen picture, the logo, the icon), read from your copy and never shipped.
+3. **Add shortcut** (on the Play page, or Settings > Game > Shortcut) makes a shortcut named
+   *Frogger 2: Swampy's Revenge* that starts `frogger2`: on the desktop and in the Start menu on
+   Windows, in the applications menu (and on the desktop, if there is one) on Linux, on the
+   desktop on macOS. Windows and macOS file names cannot contain a `:`, so the file name uses the
+   look-alike `꞉` (U+A789); the shortcut's own description has the real name.
+4. **Versions** lists the releases on GitHub. **Install** downloads one (checked against the
+   release's `SHA256SUMS.txt`) into `versions/<tag>/`, **Use** picks the version PLAY runs
+   (your data, settings, saves and mods are shared by all versions), **Remove** deletes one.
+   The launcher asks GitHub for the list when it starts; turn that off in Settings (*Look for new
+   versions*, `[launcher] check_updates`), point it at a mirror with `[launcher] releases_url` or
+   `$F2_RELEASES_URL`, or set `$F2_NO_UPDATE_CHECK=1`.
+5. **Mods** lists the folders in `mods/` and switches them on and off (`[mods] enabled`).
+6. **Settings**: your game (*Import again*), the shortcut, the game data and settings folders;
+   the window mode and resolution, VSync, the profile (*Enhanced* / *Authentic*), music and
+   effects volume, the text language, skipping the intro logos; and what starting `frogger2`
+   opens (the game, the default, or the launcher: `[launcher] start`). Changes are saved at once
+   and apply when the game next starts; everything else is in the game's own Settings screen.
    `frogger2 --game` always opens the game.
+
+A new desktop install starts **fullscreen at 1024x768**, the largest resolution of the original
+PC game: the 4:3 picture is scaled to your screen with black bars at the sides (window mode
+*Borderless*, `resolution = [1024, 768]`). Pick *Auto* as the resolution for the full width of
+your screen, or *Windowed* for a window; Alt+Enter / F11 also switch to a window.
 
 On Android the launcher is reached from the swipe-in menu, see [ANDROID.md](ANDROID.md).
 
@@ -50,10 +65,10 @@ On Android the launcher is reached from the swipe-in menu, see [ANDROID.md](ANDR
    cargo build --release -p frogger -p f2-import -p f2-viewer
    ```
 
-2. Import your copy. Easiest: just start `frogger2` — with no data it opens an **import screen**
-   that lists your CD/DVD drives ("Import from the Frogger 2 disc in D:"), lets you pick an image
-   file or folder, or accepts a file dragged onto the window; when the import finishes the game
-   starts. Or use the command-line importer (see [Importing your game](#importing-your-game)):
+2. Import your copy. Easiest: start `launcher` (or `frogger2`, which opens the launcher while
+   there is no data): its import page lists your CD/DVD drives, lets you pick an image file or
+   folder, or takes a file dropped onto the window; then press PLAY. Or use the command-line
+   importer (see [Importing your game](#importing-your-game)):
 
    ```sh
    target/release/f2-import "/path/to/Frogger 2 - Swampy's Revenge (USA).zip"
@@ -87,7 +102,7 @@ Any of these works (full matrix and technical notes: [asset-import.md](asset-imp
 
 | You have | Do | Music |
 |---|---|---|
-| The CD in a drive (Windows or Linux) | import screen, or `f2-import D:` / `f2-import /dev/sr0` | ripped from the disc; the drive's read offset is detected and the rip checked against the known Redump hashes ("verified (offset +N)") |
+| The CD in a drive (Windows or Linux) | the launcher's import page, or `f2-import D:` / `f2-import /dev/sr0` | ripped from the disc; the drive's read offset is detected and the rip checked against the known Redump hashes ("verified (offset +N)") |
 | A disc image: `.cue`/`.bin` (one or many `.bin`), CloneCD `.ccd`/`.img`, Alcohol `.mds`/`.mdf`, Nero `.nrg`, cdrdao `.toc`/`.bin`, or a `.zip` holding one | pick the file (the `.cue`/`.ccd`/`.mds`/`.nrg`/`.toc`, or the `.zip`) | from the image |
 | An image mounted in Windows Explorer ("Mount") | pick its drive letter | the importer finds the image file behind the drive; a mounted `.iso` has no music (see below) |
 | A plain `.iso`, a copied disc folder, or an installed game folder | pick it | none — add `--music <folder>` |
@@ -244,12 +259,12 @@ language = "us"             # us, uk, fr, de, it
 # data_root = "/path"       # imported data root (default: platform data dir)
 # rendition = "usa"         # which imported rendition (default: first installed)
 
-[video]
-width = 640                 # windowed size (remembered)
-height = 480
-window_mode = "windowed"    # "windowed" | "borderless" | "fullscreen" (exclusive)
+[video]                     # desktop defaults shown (fullscreen at the original 1024x768)
+width = 1024                # windowed size (remembered)
+height = 768
+window_mode = "borderless"  # "windowed" | "borderless" | "fullscreen" (exclusive)
 fullscreen_type = "borderless"  # what Alt+Enter / F11 toggle to: "borderless" | "exclusive"
-# resolution = [1920, 1080] # absent = auto; see the Display page
+resolution = [1024, 768]    # absent = auto (the screen or window size); see the Display page
 # refresh_mhz = 144000      # exclusive fullscreen refresh rate (absent = highest)
 # window_pos = [100, 100]   # windowed position (remembered)
 vsync = true

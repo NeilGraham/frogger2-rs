@@ -4,13 +4,14 @@
 
 use crate::touch::Phase;
 use f2_launcher::mods;
-use f2_launcher::ui::{Action, Caps, Launcher, ModRow, State};
+use f2_launcher::ui::{Action, Caps, Launcher, ModRow, SettingGroup, SettingKind, SettingRow, State};
 use std::path::Path;
 
 /// What this host offers: no in-app updates (an APK is installed by the system), no folder
-/// opening; importing only when the APK does not carry the game itself.
+/// opening, no disc drives; importing (a disc image from the file picker) only when the APK
+/// does not carry the game itself.
 pub fn caps(bundled: bool) -> Caps {
-    Caps { versions: false, import: !bundled, open_folders: false, updates_page: true, close_label: Some("Back to the game") }
+    Caps { import: !bundled, updates_page: true, close_label: Some("Back to the game"), ..Caps::default() }
 }
 
 /// What the launcher shows besides its own message.
@@ -21,6 +22,8 @@ pub struct Inputs<'a> {
     pub mods_dir: &'a Path,
     pub enabled_mods: &'a [String],
     pub start_in_launcher: bool,
+    /// The game came with the APK (no importing).
+    pub bundled: bool,
 }
 
 /// Refreshes `l.state` from `i`, keeping the message and any running job.
@@ -28,12 +31,38 @@ pub fn refresh(l: &mut Launcher, i: &Inputs) {
     let s: &mut State = &mut l.state;
     s.game = i.game.map(str::to_string);
     s.data_dir = i.data_root.display().to_string();
-    s.config_path = i.config_path.display().to_string();
     s.app_version = env!("CARGO_PKG_VERSION").to_string();
-    s.start_in_launcher = i.start_in_launcher;
     s.mods_dir = i.mods_dir.display().to_string();
+    s.settings = settings(i);
     s.mods =
         mods::list(i.mods_dir).into_iter().map(|m| ModRow { enabled: i.enabled_mods.contains(&m.id), id: m.id, name: m.name, version: m.version }).collect();
+}
+
+/// The settings page.
+fn settings(i: &Inputs) -> Vec<SettingGroup> {
+    let row = |id: &'static str, label: &str, detail: String, kind: SettingKind| SettingRow { id, label: label.into(), detail, kind };
+    let mut game = Vec::new();
+    if let Some(t) = i.game {
+        let kind = if i.bundled { SettingKind::Info } else { SettingKind::Button("Import again".into()) };
+        game.push(row("import", "Your game", t.to_string(), kind));
+    }
+    game.push(row("data", "Game data", i.data_root.display().to_string(), SettingKind::Info));
+    game.push(row("config", "Settings file", i.config_path.display().to_string(), SettingKind::Info));
+    vec![
+        SettingGroup { title: "Game".into(), rows: game },
+        SettingGroup {
+            title: "This app".into(),
+            rows: vec![
+                row(
+                    "start",
+                    "Starting the app opens",
+                    "The side menu (swipe from the left) always has the launcher.".into(),
+                    SettingKind::Choice { options: vec!["The game".into(), "This launcher".into()], selected: i.start_in_launcher as usize },
+                ),
+                row("updates", "New versions", "Opens the releases page in the browser.".into(), SettingKind::Button("Check".into())),
+            ],
+        },
+    ]
 }
 
 /// `id` toggled in the enabled list (appended = loads last, as `[mods] enabled` says).
@@ -50,14 +79,14 @@ pub fn toggle_mod(enabled: &mut Vec<String>, id: &str) {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Gesture {
     None,
-    /// Scroll the list by this many rows (positive = down).
-    Scroll(i32),
+    /// Scroll the page by this many pixels (positive = down).
+    Scroll(f32),
     /// A tap at this point.
     Tap(f32, f32),
 }
 
 /// Tells taps from drags: a finger that stays within the slop is a tap on release; a finger
-/// that moves further scrolls the list (a row per `row_px`) and never presses a button.
+/// that moves further scrolls the page with it and never presses a button.
 #[derive(Default)]
 pub struct Tracker {
     /// (id, start x, start y, last y, moved)
@@ -65,7 +94,7 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    pub fn touch(&mut self, id: u64, phase: Phase, x: f32, y: f32, row_px: f32, slop: f32) -> Gesture {
+    pub fn touch(&mut self, id: u64, phase: Phase, x: f32, y: f32, slop: f32) -> Gesture {
         match phase {
             Phase::Started => {
                 if self.finger.is_none() {
@@ -85,12 +114,13 @@ impl Tracker {
                     return Gesture::None;
                 }
                 // Dragging up scrolls down.
-                let rows = ((*last - y) / row_px).trunc() as i32;
-                if rows != 0 {
-                    *last -= rows as f32 * row_px;
-                    return Gesture::Scroll(rows);
+                let d = *last - y;
+                *last = y;
+                if d != 0.0 {
+                    Gesture::Scroll(d)
+                } else {
+                    Gesture::None
                 }
-                Gesture::None
             }
             Phase::Ended => match self.finger {
                 Some((fid, sx, sy, _, moved)) if fid == id => {
@@ -123,20 +153,20 @@ mod tests {
     #[test]
     fn tap_vs_drag() {
         let mut t = Tracker::default();
-        assert_eq!(t.touch(1, Phase::Started, 100.0, 300.0, 90.0, 20.0), Gesture::None);
-        assert_eq!(t.touch(1, Phase::Moved, 104.0, 306.0, 90.0, 20.0), Gesture::None, "within the slop");
-        assert_eq!(t.touch(1, Phase::Ended, 104.0, 306.0, 90.0, 20.0), Gesture::Tap(100.0, 300.0));
-        // Dragging up scrolls down a row per 90 px and is not a tap.
-        t.touch(2, Phase::Started, 100.0, 600.0, 90.0, 20.0);
-        assert_eq!(t.touch(2, Phase::Moved, 100.0, 500.0, 90.0, 20.0), Gesture::Scroll(1));
-        assert_eq!(t.touch(2, Phase::Moved, 100.0, 420.0, 90.0, 20.0), Gesture::Scroll(1), "the rest of the distance");
-        assert_eq!(t.touch(2, Phase::Moved, 100.0, 510.0, 90.0, 20.0), Gesture::Scroll(-1));
-        assert_eq!(t.touch(2, Phase::Ended, 100.0, 510.0, 90.0, 20.0), Gesture::None);
+        assert_eq!(t.touch(1, Phase::Started, 100.0, 300.0, 20.0), Gesture::None);
+        assert_eq!(t.touch(1, Phase::Moved, 104.0, 306.0, 20.0), Gesture::None, "within the slop");
+        assert_eq!(t.touch(1, Phase::Ended, 104.0, 306.0, 20.0), Gesture::Tap(100.0, 300.0));
+        // Dragging up scrolls down with the finger and is not a tap.
+        t.touch(2, Phase::Started, 100.0, 600.0, 20.0);
+        assert_eq!(t.touch(2, Phase::Moved, 100.0, 500.0, 20.0), Gesture::Scroll(100.0));
+        assert_eq!(t.touch(2, Phase::Moved, 100.0, 420.0, 20.0), Gesture::Scroll(80.0));
+        assert_eq!(t.touch(2, Phase::Moved, 100.0, 510.0, 20.0), Gesture::Scroll(-90.0));
+        assert_eq!(t.touch(2, Phase::Ended, 100.0, 510.0, 20.0), Gesture::None);
         // A second finger is ignored while one is down.
-        t.touch(3, Phase::Started, 10.0, 10.0, 90.0, 20.0);
-        assert_eq!(t.touch(4, Phase::Started, 50.0, 50.0, 90.0, 20.0), Gesture::None);
-        assert_eq!(t.touch(4, Phase::Ended, 50.0, 50.0, 90.0, 20.0), Gesture::None);
-        assert_eq!(t.touch(3, Phase::Ended, 10.0, 10.0, 90.0, 20.0), Gesture::Tap(10.0, 10.0));
+        t.touch(3, Phase::Started, 10.0, 10.0, 20.0);
+        assert_eq!(t.touch(4, Phase::Started, 50.0, 50.0, 20.0), Gesture::None);
+        assert_eq!(t.touch(4, Phase::Ended, 50.0, 50.0, 20.0), Gesture::None);
+        assert_eq!(t.touch(3, Phase::Ended, 10.0, 10.0, 20.0), Gesture::Tap(10.0, 10.0));
     }
 
     #[test]
@@ -164,10 +194,12 @@ mod tests {
             mods_dir: &t,
             enabled_mods: &enabled,
             start_in_launcher: true,
+            bundled: false,
         };
         refresh(&mut l, &i);
         assert_eq!(l.state.game.as_deref(), Some("G"));
-        assert!(l.state.start_in_launcher);
+        let start = l.state.settings.iter().flat_map(|g| &g.rows).find(|r| r.id == "start").unwrap();
+        assert_eq!(start.kind, SettingKind::Choice { options: vec!["The game".into(), "This launcher".into()], selected: 1 });
         assert_eq!(l.state.mods.len(), 1);
         assert!(l.state.mods[0].enabled && l.state.mods[0].name == "One");
         assert_eq!(l.state.message.as_ref().map(|m| m.0.as_str()), Some("hello"));
@@ -177,7 +209,7 @@ mod tests {
     #[test]
     fn caps_hide_import_for_bundled_apks() {
         assert!(caps(false).import && !caps(true).import);
-        assert!(!caps(false).versions && caps(false).updates_page);
+        assert!(!caps(false).versions && caps(false).updates_page && !caps(false).drives && !caps(false).pick_folder);
         assert!(closes(&Action::Play) && closes(&Action::Close) && !closes(&Action::Import));
     }
 }

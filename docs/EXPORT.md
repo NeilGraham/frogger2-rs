@@ -132,7 +132,7 @@ host opens `game-data/bundle.json` through the `AAssetManager`. If
 `files/data/<rendition>/.bundle-id` holds the same id and every listed file has its size,
 the game starts on that folder. Otherwise a progress screen ("Preparing the game (first
 start only)") copies the assets into `files/data/<rendition>/` once (~450 MB, resumable:
-`.bundle-partial`), writes `.bundle-id`, and starts the game; no import screen. The game
+`.bundle-partial`), writes `.bundle-id`, and starts the game; no import page. The game
 reads through the filesystem (mod VFS, music and FMV opened by path, fonts generated into
 the rendition), which is why the data is unpacked rather than read in place from the APK.
 A re-export with different data (new id) installed as an update unpacks again.

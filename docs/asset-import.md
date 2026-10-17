@@ -6,7 +6,7 @@ from. Facts about the media: [`../research/retail-media.md`](../research/retail-
 ## 1. User flow
 
 ```
-frogger                                   # first run with no data → import screen (drives, image file, folder)
+launcher                                  # import page: drives, image file, folder (frogger2 opens it without data)
 f2-import <source>                        # any source of §2 (image, drive letter, /dev/sr0, folder)
 f2-import --list-drives                   # optical drives, labels, Frogger 2 disc?, TOC
 f2-import <iso or folder> --music DIR     # data-only source + music tracks 02–12 as WAV/FLAC
@@ -15,13 +15,15 @@ f2-import --verify-installed              # re-hash installed data against manif
 f2-import --convert FMT IMAGE OUTDIR      # developer tool: re-encode an image (cue|ccd|mds|mds-sub|nrg|nrg1|toc|iso)
 ```
 
-**First-run screen** (`crates/frogger/src/firstrun.rs`): when `Data::locate` finds nothing, the
-windowed game shows an import screen drawn with a built-in 5×7 font (no game data exists yet). It
-lists optical drives (a Frogger 2 disc is highlighted: "Import from the Frogger 2 disc in D:"),
-"Import from an image file…" and "…a folder…" (native dialog: PowerShell `OpenFileDialog` on
-Windows, `zenity`/`kdialog` on Linux), a typed path, and drag & drop of a file onto the window.
-The import runs on a worker thread with a progress bar and log; on success the game restarts
-itself with the same arguments (winit allows one event loop per process) and boots normally.
+**Import page of the launcher** (`crates/frogger/src/launcher.rs`, drawn by the shared
+`f2-launcher` UI): with no game data the launcher opens on it, and `frogger2` opens the launcher
+(the one beside it, else the same screen in its own process). It lists optical drives (a Frogger 2
+disc is marked and offered first), "Choose disc image" and "Choose folder" (the system's dialog:
+PowerShell `OpenFileDialog` on Windows, `osascript` on macOS, `zenity`/`kdialog` on Linux), and
+takes a disc image or folder dropped onto the window. The import runs on a worker thread with a
+progress bar and the latest log lines; afterwards the launcher makes `frogger2(.exe)` and shows
+the game. Settings > Game > "Import again" opens the page later. Android shows the same page
+(`crates/frogger-android/src/import.rs` finds the images copied into the app's folder).
 
 The importer never writes next to the source and never modifies it. Output:
 

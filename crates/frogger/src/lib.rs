@@ -13,6 +13,8 @@ pub mod export;
 pub use f2_draw::fx;
 pub mod gameplay;
 pub mod icon;
+#[cfg(feature = "desktop")]
+pub mod launcher;
 pub mod mods;
 pub mod netplay;
 pub use f2_draw::overlay;
@@ -23,6 +25,8 @@ pub mod record;
 pub mod render;
 #[cfg(feature = "desktop")]
 pub mod setup;
+#[cfg(feature = "desktop")]
+pub mod shortcut;
 pub mod tinyfont;
 #[cfg(feature = "gpu")]
 pub mod uikit;

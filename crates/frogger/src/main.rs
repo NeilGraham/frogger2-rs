@@ -30,7 +30,6 @@
 //! scale, F6 MSAA, F7 texture filter, F8 widescreen, F9 fog, F12 draw distance.
 
 mod appicon;
-mod firstrun;
 
 #[cfg(test)]
 use frogger::render;
@@ -65,8 +64,6 @@ struct Args {
     headless: bool,
     /// `--game`: run the game itself (the launcher passes this; never hand over to it).
     game: bool,
-    /// `--import-screen`: only the import window (the launcher's "Import game").
-    import_screen: bool,
     frames: u32,
     screenshot: Option<PathBuf>,
     size: Option<(u32, u32)>,
@@ -116,7 +113,7 @@ fn usage() -> ! {
          \x20      [--screenshot-page display|audio|controls|gameplay[:ROW]] [--screenshot-keymap normal|capture|conflict] [--show-fps]\n\
          editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
          export: --export windows|macos|linux|android|ps4|ps5|n64|all[,...] [--out DIR] [--runtime PATH] [--ps4-keys Keys.cs]  (docs/EXPORT.md)\n\
-         launcher: [--game] (never hand over to the launcher) [--import-screen] (only the import window)\n\
+         launcher: [--game] (never hand over to the launcher)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 settings, Shift+F10 advanced (level select), F11 / Alt+Enter fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -167,7 +164,6 @@ fn parse_args() -> Args {
         export: Vec::new(),
         runtime: None,
         game: false,
-        import_screen: false,
         ps4_keys: None,
         out: None,
     };
@@ -212,7 +208,6 @@ fn parse_args() -> Args {
                 }
             }
             "--game" => a.game = true,
-            "--import-screen" => a.import_screen = true,
             "--runtime" => a.runtime = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--ps4-keys" => a.ps4_keys = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--out" => a.out = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
@@ -308,9 +303,9 @@ fn open_launcher() -> bool {
 
 fn main() {
     let args = parse_args();
-    let mut cfg = Config::load_default().unwrap_or_else(|e| {
+    let mut cfg = Config::load_desktop().unwrap_or_else(|e| {
         eprintln!("frogger: config: {e} (using defaults)");
-        Config::default()
+        Config::desktop()
     });
     // Command-line display overrides.
     if let Some(p) = args.profile {
@@ -322,21 +317,14 @@ fn main() {
     if let Some(s) = args.render_scale {
         cfg.display.render_scale = Some(s);
     }
-    if args.import_screen {
-        firstrun::run(&cfg, "requested by the launcher");
-        std::process::exit(0);
-    }
     let mut data = match data::Data::locate(&cfg, args.data.clone()) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("frogger: {e}");
-            // A release ships the launcher: it imports the game and starts it.
-            if !args.headless && args.data.is_none() && !args.game && open_launcher() {
+            // No game yet: the launcher imports it (the one beside this program, else the same
+            // screen in this process) and starts it.
+            if !args.headless && args.data.is_none() && (open_launcher() || frogger::launcher::run()) {
                 std::process::exit(0);
-            }
-            // First run: offer the import screen (windowed runs); a successful import restarts the game.
-            if !args.headless && args.data.is_none() && firstrun::run(&cfg, &e) {
-                firstrun::relaunch();
             }
             std::process::exit(1);
         }

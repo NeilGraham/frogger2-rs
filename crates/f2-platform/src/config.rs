@@ -447,6 +447,19 @@ impl Default for Video {
     }
 }
 
+impl Video {
+    /// The original game's largest resolution (its setup offered 640x480 up to 1024x768, 4:3).
+    pub const ORIGINAL_MAX: [u32; 2] = [1024, 768];
+
+    /// What a desktop install starts with: fullscreen (a borderless window over the whole
+    /// screen) showing the game at [`Video::ORIGINAL_MAX`], scaled up with black bars at the
+    /// sides. Other hosts keep [`Video::default`] (their own screen size).
+    pub fn desktop() -> Video {
+        let [width, height] = Self::ORIGINAL_MAX;
+        Video { width, height, fullscreen: true, window_mode: WindowMode::Borderless, resolution: Some(Self::ORIGINAL_MAX), ..Video::default() }
+    }
+}
+
 impl Default for Audio {
     fn default() -> Self {
         Audio { master: 100, music: 100, sfx: 100, muted: false, mute_unfocused: false }
@@ -511,6 +524,21 @@ impl Config {
     /// Loads the user's `config.toml` (defaults if absent).
     pub fn load_default() -> Result<Config, String> {
         Config::load(&crate::paths::config_file())
+    }
+
+    /// The defaults of a desktop install ([`Video::desktop`]).
+    pub fn desktop() -> Config {
+        Config { video: Video::desktop(), ..Config::default() }
+    }
+
+    /// [`Config::load_default`] for the desktop app and launcher: a missing file gives
+    /// [`Config::desktop`].
+    pub fn load_desktop() -> Result<Config, String> {
+        let path = crate::paths::config_file();
+        if !path.exists() {
+            return Ok(Config::desktop());
+        }
+        Config::load(&path)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -602,6 +630,19 @@ mod tests {
         assert_eq!(Config::default().profile, Profile::Enhanced);
         let back = Config::from_toml(&c.to_toml()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn desktop_defaults_are_fullscreen_at_the_original_resolution() {
+        let c = Config::desktop();
+        assert_eq!((c.video.window_mode, c.video.resolution, c.video.fullscreen), (WindowMode::Borderless, Some([1024, 768]), true));
+        // Leaving fullscreen gives a window of that size.
+        let mut v = c.video.clone();
+        v.toggle_fullscreen();
+        assert_eq!(v.window_mode, WindowMode::Windowed);
+        assert_eq!(Config::from_toml(&c.to_toml()).unwrap(), c);
+        // Other hosts keep their screen size.
+        assert_eq!(Config::default().video.resolution, None);
     }
 
     #[test]

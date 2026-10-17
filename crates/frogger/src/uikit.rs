@@ -16,7 +16,7 @@ const BOLD: &[u8] = include_bytes!("../assets/Roboto-Bold.subset.ttf");
 
 /// Side of one shape cell in the shapes atlas.
 const CELL: u32 = 64;
-const ICONS: [Icon; 9] = [Icon::Play, Icon::Layers, Icon::Grid, Icon::Gear, Icon::Check, Icon::Download, Icon::Refresh, Icon::Folder, Icon::Back];
+const ICONS: [Icon; 14] = Icon::ALL;
 /// Cells: 0 = corner (quarter disc), 1 = inverse corner, then the icons.
 const CELLS: u32 = 2 + ICONS.len() as u32;
 
@@ -289,6 +289,29 @@ fn icon_inside(i: Icon, x: f32, y: f32) -> bool {
         }
         Icon::Folder => rr(x, y, 0.10, 0.30, 0.90, 0.82, 0.07) || rr(x, y, 0.10, 0.18, 0.46, 0.38, 0.05),
         Icon::Back => seg(x, y, 0.64, 0.2, 0.34, 0.5) < 0.07 || seg(x, y, 0.34, 0.5, 0.64, 0.8) < 0.07 || seg(x, y, 0.34, 0.5, 0.84, 0.5) < 0.07,
+        Icon::Disc => {
+            let r = ((x - 0.5).powi(2) + (y - 0.5).powi(2)).sqrt();
+            (r < 0.42 && r > 0.15) || r < 0.06
+        }
+        Icon::File => {
+            // A page with its top right corner folded over.
+            let corner = x > 0.54 && y < 0.38 && (x - 0.54) > (y - 0.1);
+            let page = rr(x, y, 0.2, 0.1, 0.8, 0.9, 0.07) && !corner;
+            // A thin gap outlines the flap.
+            let gap = x > 0.49 && y < 0.41 && (x < 0.55 || y > 0.35);
+            page && !gap
+        }
+        Icon::Link => {
+            // An arrow leaving a box: a shortcut.
+            let boxed = rr(x, y, 0.12, 0.2, 0.8, 0.88, 0.08) && !rr(x, y, 0.22, 0.3, 0.7, 0.78, 0.02);
+            let gap = x > 0.42 && y < 0.58;
+            (boxed && !gap)
+                || seg(x, y, 0.42, 0.58, 0.84, 0.16) < 0.065
+                || seg(x, y, 0.56, 0.14, 0.86, 0.14) < 0.065
+                || seg(x, y, 0.86, 0.14, 0.86, 0.44) < 0.065
+        }
+        Icon::ChevronLeft => seg(x, y, 0.62, 0.18, 0.32, 0.5) < 0.08 || seg(x, y, 0.32, 0.5, 0.62, 0.82) < 0.08,
+        Icon::ChevronRight => seg(x, y, 0.38, 0.18, 0.68, 0.5) < 0.08 || seg(x, y, 0.68, 0.5, 0.38, 0.82) < 0.08,
     }
 }
 

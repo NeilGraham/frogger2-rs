@@ -15,7 +15,7 @@ story levels, touch controls, gamepad, background/resume.
 | Overlay menu | `crates/frogger-android/src/menu.rs`: swipe in from the left edge; touch controls on/off, the launcher button and the start-in switch (`android.toml`) |
 | Launcher | `crates/frogger-android/src/launcher.rs`: the shared UI model of `crates/f2-launcher` drawn with the host's UI renderer; tap/drag handling |
 | Touch controls | `crates/frogger-android/src/touch.rs`: d-pad, PlayStation face buttons, L1/L2/R1/R2, Select/Start; procedurally drawn atlas |
-| Import screen | `crates/frogger-android/src/import.rs`: finds a disc image in the app folder, runs `f2_import` on a thread with progress |
+| Import | `crates/frogger-android/src/import.rs`: finds a disc image in the app folder, runs `f2_import` on a thread with progress; shown on the launcher's import page |
 | Bundled game (exported APKs) | `crates/frogger-android/src/bundle.rs`: `assets/game-data/bundle.json` index, one-time unpack into `files/data/<rendition>/` |
 | Logging | `crates/frogger-android/src/logcat.rs`: stdout/stderr → logcat tag `frogger` |
 | Java activity | `packaging/android/java/.../MainActivity.java`: `NativeActivity` subclass for immersive full screen, keep-screen-on, the system file picker and a system-gesture exclusion on the left edge (the menu swipe) |
@@ -66,7 +66,8 @@ adb install -r target/android/frogger2-rs.apk
 
 No game data ships in the APK. Everything lives in the app's external files folder,
 `/sdcard/Android/data/io.github.neilgraham.frogger2rs/files/` (`data/`, `config.toml`, `saves/`, `mods/`).
-On first start with no data the import screen offers:
+On first start with no data the app opens the launcher on its import page (**Set up your
+game**, the same page as on the desktop), which offers:
 
 - **Choose disc image**: the system file picker. Pick the Redump `.zip`, an `.iso`, or for
   BIN/CUE select both the `.cue` and the `.bin`. The activity copies them into `files/import/`
@@ -80,7 +81,7 @@ On first start with no data the import screen offers:
 this app with the player's game inside, package `io.github.neilgraham.frogger2rs.game`,
 label "Frogger 2" and the game-art icon. On the first start they unpack the bundled data
 into their own `files/data/<rendition>/` (`crates/frogger-android/src/bundle.rs`, progress
-screen) and go straight to the game; no import screen, no shortcut offer.
+on the launcher's page) and go straight to the game; no import page, no shortcut offer.
 
 The modern (hi-res) fonts are generated from the system typeface on the desktop; on Android
 they are only built if the typeface file is put in `files/data/<rendition>/fonts/`. Data
@@ -114,13 +115,16 @@ The same launcher as the desktop one (`crates/f2-launcher`), drawn full screen i
   and tap **Launcher** to open it (the game stays paused behind it); **Back to the game** or the
   Back key returns.
 - **Start in: Game / Launcher** (menu, and Settings in the launcher) is `start_in_launcher = false|true`
-  in `files/android.toml`; the default is the game. With no game data the import screen still comes first.
-- Tabs: **Play** (status, Play, **Import game** / **Re-import game**, hidden in exported APKs that
-  carry the game), **Mods** (the folders in `files/mods/`; toggling one edits `[mods] enabled` in
-  `config.toml` and applies the next time the game starts), **Settings** (start-in, **Check for
-  updates online**). An APK is installed by Android, so updates open the GitHub releases page in the
-  browser (`MainActivity.openUrl`); there is no Versions tab on Android.
-- Touch: tap a button; drag a list up or down to scroll it.
+  in `files/android.toml`; the default is the game. With no game data the import page comes first.
+- Tabs: **Play** (the game's artwork and logo, Play), **Mods** (the folders in `files/mods/`;
+  toggling one edits `[mods] enabled` in `config.toml` and applies the next time the game
+  starts), **Settings** (your game with **Import again**, hidden in exported APKs that carry the
+  game; the data and settings locations; what the app opens on start; **New versions: Check**).
+  An APK is installed by Android, so updates open the GitHub releases page in the browser
+  (`MainActivity.openUrl`); there is no Versions tab on Android.
+- **Import again** stops the game (the import rewrites its files) and shows the import page;
+  **Cancel** or **Back to the game** returns to the game as it was.
+- Touch: tap a button; drag a page up or down to scroll it.
 
 ## Resolution
 

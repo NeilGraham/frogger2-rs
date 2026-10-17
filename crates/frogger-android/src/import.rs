@@ -1,10 +1,12 @@
-//! The import screen shown when no game data is installed: looks for a Frogger 2 disc
-//! image (or a copied disc / installed game folder) in the app's files directory, imports
-//! it with `f2_import` on a worker thread with live progress, then hands over to the game.
-//! Drawn with the built-in 5×7 font (no game data exists yet).
+//! Importing the game on Android: looks for a Frogger 2 disc image (or a copied disc /
+//! installed game folder) in the app's files directory, where the system file picker
+//! (`MainActivity.pickDiscImage`) or `adb push` puts it, imports it with `f2_import` on a
+//! worker thread with live progress, then hands over to the game. The first start of an
+//! exported APK unpacks the bundled game the same way. What it shows is the launcher's import
+//! page ([`Importer::view`]), drawn by the host with the rest of the launcher.
 
-use f2_engine::{Blend, FontId, Quad2D, Renderer};
 use f2_import::{Event, Options, Sink};
+use f2_launcher::ui::{ImportView, Progress};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
@@ -12,8 +14,8 @@ use std::time::{Duration, Instant};
 
 const IMAGE_EXTS: [&str; 9] = ["cue", "iso", "bin", "img", "ccd", "mds", "nrg", "toc", "zip"];
 
-/// Work the screen runs on its worker thread, reporting `(stage, fraction)`.
-type ImportJob = Box<dyn FnOnce(&dyn Fn(String, f32)) -> Result<(), String> + Send>;
+/// Work the importer runs on its worker thread, reporting `(stage, fraction)`.
+pub type ImportJob = Box<dyn FnOnce(&dyn Fn(String, f32)) -> Result<(), String> + Send>;
 
 enum Msg {
     Log(String),
@@ -22,7 +24,7 @@ enum Msg {
 }
 
 enum State {
-    /// Waiting for a source to appear (rescanned every couple of seconds).
+    /// Waiting for a source to appear (rescanned twice a second).
     Waiting {
         last_scan: Instant,
     },
@@ -34,48 +36,29 @@ enum State {
     Finished,
 }
 
-pub struct Screen {
-    r: Renderer,
-    font: FontId,
+pub struct Importer {
     /// The app's external files directory (where the user copies the disc image).
     files: PathBuf,
     data_root: PathBuf,
     state: State,
     log: Vec<String>,
     progress: Option<(String, f32)>,
-    /// The whole screen was tapped (retry after a failure).
-    tapped: bool,
-    /// "Choose a disc image" button (x, y, w, h) as last drawn; `None` without a picker.
-    button: Option<[f32; 4]>,
-    /// Opens the system file picker (`MainActivity.pickDiscImage`).
-    picker: Option<Box<dyn Fn()>>,
+    /// The system file picker can be opened.
+    picker: bool,
     /// `import/.status` written by the activity while it copies picked files.
     copy_status: String,
     /// Unpacking the game bundled in an exported APK instead of importing a disc.
     unpacking: bool,
 }
 
-impl Screen {
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-        files: PathBuf,
-        data_root: PathBuf,
-        picker: Option<Box<dyn Fn()>>,
-    ) -> Screen {
-        let mut r = Renderer::new(device, queue, format);
-        let font = r.add_font(frogger::tinyfont::builtin_font());
-        let mut s = Screen {
-            r,
-            font,
+impl Importer {
+    pub fn new(files: PathBuf, data_root: PathBuf, picker: bool) -> Importer {
+        let mut s = Importer {
             files,
             data_root,
             state: State::Waiting { last_scan: Instant::now() },
             log: Vec::new(),
             progress: None,
-            tapped: false,
-            button: None,
             picker,
             copy_status: String::new(),
             unpacking: false,
@@ -86,9 +69,7 @@ impl Screen {
 
     /// The first start of an exported APK: `job` unpacks the game bundled in the APK
     /// (reporting `(stage, fraction)`) on a worker thread; no import choices are shown.
-    pub fn unpacking(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, files: PathBuf, job: ImportJob) -> Screen {
-        let mut r = Renderer::new(device, queue, format);
-        let font = r.add_font(frogger::tinyfont::builtin_font());
+    pub fn unpacking(files: PathBuf, job: ImportJob) -> Importer {
         let (tx, rx) = channel();
         let progress_tx = std::sync::Mutex::new(tx.clone());
         let spawned = std::thread::Builder::new().name("unpack".into()).spawn(move || {
@@ -101,27 +82,17 @@ impl Screen {
             Ok(_) => State::Importing { source: PathBuf::from("the game data"), rx },
             Err(e) => State::Failed(e.to_string()),
         };
-        Screen {
-            r,
-            font,
-            files: files.clone(),
-            data_root: files,
-            state,
-            log: Vec::new(),
-            progress: None,
-            tapped: false,
-            button: None,
-            picker: None,
-            copy_status: String::new(),
-            unpacking: true,
-        }
+        Importer { files: files.clone(), data_root: files, state, log: Vec::new(), progress: None, picker: false, copy_status: String::new(), unpacking: true }
     }
 
-    /// A tap at (x, y) in pixels.
-    pub fn tap(&mut self, x: f32, y: f32) {
-        match (self.button, &self.picker, &self.state) {
-            (Some([bx, by, bw, bh]), Some(pick), State::Waiting { .. }) if x >= bx && x <= bx + bw && y >= by && y <= by + bh => pick(),
-            _ => self.tapped = true,
+    /// Back to waiting for a source after a failure (a failed unpack is retried by starting
+    /// the app again).
+    pub fn retry(&mut self) {
+        if matches!(self.state, State::Failed(_)) && !self.unpacking {
+            self.log.clear();
+            self.progress = None;
+            self.state = State::Waiting { last_scan: Instant::now() };
+            self.scan();
         }
     }
 
@@ -132,7 +103,7 @@ impl Screen {
                 self.copy_status = std::fs::read_to_string(self.files.join("import/.status")).unwrap_or_default();
                 self.scan()
             }
-            State::Waiting { .. } => {}
+            State::Waiting { .. } | State::Failed(_) => {}
             State::Importing { rx, .. } => {
                 while let Ok(m) = rx.try_recv() {
                     match m {
@@ -157,18 +128,38 @@ impl Screen {
                     }
                 }
             }
-            // A failed unpack cannot be retried from here (the app restarts it).
-            State::Failed(_) if !self.unpacking && std::mem::take(&mut self.tapped) => {
-                self.log.clear();
-                self.progress = None;
-                self.state = State::Waiting { last_scan: Instant::now() };
-                self.scan();
-            }
-            State::Failed(_) => {}
             State::Finished => return true,
         }
-        self.tapped = false;
         false
+    }
+
+    /// The launcher's import page for the current state.
+    pub fn view(&self) -> ImportView {
+        let mut v = ImportView { unpacking: self.unpacking, ..ImportView::default() };
+        match &self.state {
+            State::Waiting { .. } => {
+                v.note = copy_status(&self.copy_status);
+                if self.picker {
+                    v.help.push("For a .cue with its .bin, pick both files.".into());
+                }
+                v.help.push(format!(
+                    "Or copy the image or the disc's files into {} (for example with adb push): the import starts by itself. A game imported on a PC can be copied into its data folder instead.",
+                    self.files.display()
+                ));
+            }
+            State::Importing { source, .. } => {
+                let title = if self.unpacking {
+                    "Unpacking the game".to_string()
+                } else {
+                    format!("Importing {}", source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+                };
+                let (stage, fraction) = self.progress.clone().unwrap_or_else(|| ("Starting".into(), 0.0));
+                v.running = Some(Progress { title, stage, fraction, log: self.log.iter().rev().take(8).rev().cloned().collect() });
+            }
+            State::Failed(e) => v.error = Some(e.clone()),
+            State::Finished => v.running = Some(Progress { title: "Starting the game".into(), stage: "Done".into(), fraction: 1.0, log: Vec::new() }),
+        }
+        v
     }
 
     /// Starts importing the first source found.
@@ -198,85 +189,6 @@ impl Screen {
             Ok(_) => State::Importing { source, rx },
             Err(e) => State::Failed(e.to_string()),
         };
-    }
-
-    pub fn render(&mut self, view: &wgpu::TextureView, w: u32, h: u32) {
-        let (wf, hf) = (w as f32, h as f32);
-        let r = &mut self.r;
-        let f = self.font;
-        r.begin_frame(w, h);
-        let u = (hf / 360.0).clamp(1.0, 6.0);
-        let s = (1.5 * u).round().max(2.0);
-        let line = 8.0 * s + 5.0 * u;
-        let rect = |r: &mut Renderer, x: f32, y: f32, ww: f32, hh: f32, c: [u8; 4]| {
-            r.draw_quad(Quad2D::rect(x, y, ww, hh, [0.0, 0.0, 1.0, 1.0], None, c, Blend::Semi))
-        };
-        const TITLE: [u8; 4] = [120, 230, 90, 255];
-        const TEXT: [u8; 4] = [230, 230, 230, 255];
-        const DIM: [u8; 4] = [160, 170, 160, 255];
-        rect(r, 0.0, 0.0, wf, line * 3.0, [20, 60, 20, 255]);
-        r.draw_text(f, 0.0, line * 0.5, "FROGGER 2: SWAMPY'S REVENGE (RUST)", TITLE, s * 1.0, Some(wf / 2.0));
-        let subtitle = if self.unpacking { "Preparing the game (first start only)" } else { "Import your Frogger 2 game" };
-        r.draw_text(f, 0.0, line * 1.9, subtitle, TEXT, s * 0.9, Some(wf / 2.0));
-        let x0 = line;
-        let cols = ((wf - 2.0 * x0) / (6.0 * s * 0.7)).max(16.0) as usize;
-        let mut y = line * 3.8;
-        let para = |r: &mut Renderer, text: &str, color: [u8; 4], y: &mut f32| {
-            for l in wrap(text, cols) {
-                r.draw_text(f, x0, *y, &l, color, s * 0.7, None);
-                *y += line * 0.75;
-            }
-            *y += line * 0.35;
-        };
-        self.button = None;
-        match &self.state {
-            State::Waiting { .. } => {
-                para(r, "No game data was found. Import Frogger 2 from your own disc image (.iso, .cue + .bin, .zip, ...).", TEXT, &mut y);
-                if self.picker.is_some() {
-                    let (bw, bh) = ((wf * 0.5).max(line * 12.0).min(wf - 2.0 * x0), line * 1.6);
-                    let bx = (wf - bw) / 2.0;
-                    rect(r, bx, y, bw, bh, [50, 130, 40, 255]);
-                    r.draw_text(f, 0.0, y + (bh - 8.0 * s) / 2.0, "Choose disc image", TEXT, s, Some(wf / 2.0));
-                    self.button = Some([bx, y, bw, bh]);
-                    y += bh + line * 0.6;
-                    if let Some(st) = copy_status(&self.copy_status) {
-                        para(r, &st, TITLE, &mut y);
-                    }
-                    para(r, "(for a .cue + .bin image select both files). Or copy the image or the disc's files into:", DIM, &mut y);
-                } else {
-                    para(r, "Copy the image or the disc's files into:", DIM, &mut y);
-                }
-                para(r, &self.files.display().to_string(), TITLE, &mut y);
-                para(r, "e.g. adb push Frogger2.iso /sdcard/Android/data/io.github.neilgraham.frogger2rs/files/ - the import starts by itself. Data already imported on a PC can be copied to files/data/ instead.", DIM, &mut y);
-            }
-            State::Importing { source, .. } => {
-                if self.unpacking {
-                    para(r, "Unpacking the game data from the app. This happens once and takes a minute.", TEXT, &mut y);
-                } else {
-                    para(r, &format!("Importing {}", source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), TEXT, &mut y);
-                }
-                if let Some((stage, frac)) = &self.progress {
-                    let bw = wf - 2.0 * x0;
-                    rect(r, x0, y, bw, line * 0.6, [60, 60, 60, 255]);
-                    rect(r, x0, y, bw * frac.clamp(0.0, 1.0), line * 0.6, [90, 200, 70, 255]);
-                    y += line;
-                    para(r, &format!("{stage} {:.0}%", frac * 100.0), DIM, &mut y);
-                }
-                let room = ((hf - y) / (line * 0.75)).max(0.0) as usize;
-                for l in self.log.iter().rev().take(room).rev() {
-                    let l: String = l.chars().take(cols).collect();
-                    r.draw_text(f, x0, y, &l, DIM, s * 0.7, None);
-                    y += line * 0.75;
-                }
-            }
-            State::Failed(e) => {
-                para(r, if self.unpacking { "Unpacking the game data failed:" } else { "The import failed:" }, [255, 120, 120, 255], &mut y);
-                para(r, e, TEXT, &mut y);
-                para(r, if self.unpacking { "Free some storage space and start the app again." } else { "Tap the screen to try again." }, DIM, &mut y);
-            }
-            State::Finished => para(r, "Import complete. Starting the game...", TEXT, &mut y),
-        }
-        self.r.render(view, w, h, [0.02, 0.05, 0.02, 1.0]);
     }
 }
 
@@ -342,29 +254,6 @@ fn ext(p: &Path) -> Option<String> {
     p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase())
 }
 
-fn wrap(t: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut cur = String::new();
-    // Words longer than a line (paths) are cut into line-sized pieces.
-    let pieces = t.split_whitespace().flat_map(|w| {
-        let c: Vec<char> = w.chars().collect();
-        c.chunks(width.max(1)).map(|p| p.iter().collect::<String>()).collect::<Vec<_>>()
-    });
-    for word in pieces {
-        if !cur.is_empty() && cur.chars().count() + 1 + word.chars().count() > width {
-            lines.push(std::mem::take(&mut cur));
-        }
-        if !cur.is_empty() {
-            cur.push(' ');
-        }
-        cur.push_str(&word);
-    }
-    if !cur.is_empty() {
-        lines.push(cur);
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,9 +266,19 @@ mod tests {
     }
 
     #[test]
-    fn wraps_long_words() {
-        assert_eq!(wrap("a bb ccc", 4), vec!["a bb", "ccc"]);
-        assert_eq!(wrap("/storage/emulated", 8), vec!["/storage", "/emulate", "d"]);
+    fn view_follows_the_state() {
+        let d = std::env::temp_dir().join(format!("f2-android-view-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut i = Importer::new(d.clone(), d.join("data"), true);
+        let v = i.view();
+        assert!(v.running.is_none() && v.error.is_none() && !v.unpacking);
+        assert!(v.help.iter().any(|h| h.contains(&d.display().to_string())), "says where to copy files");
+        i.state = State::Failed("bad".into());
+        assert_eq!(i.view().error.as_deref(), Some("bad"));
+        i.retry();
+        assert!(i.view().error.is_none());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
