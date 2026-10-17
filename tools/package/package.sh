@@ -134,7 +134,7 @@ pkg_macos() {
       done
     fi
     mkdir -p "$bindir"
-    for b in "${BINS[@]}"; do
+    for b in "${BINS[@]}" "$LAUNCHER"; do
       lipo -create -output "$bindir/$b" "$TGT/aarch64-apple-darwin/release/$b" "$TGT/x86_64-apple-darwin/release/$b"
     done
   elif [[ -n "${F2_MACOS_TARGET:-}" ]]; then
