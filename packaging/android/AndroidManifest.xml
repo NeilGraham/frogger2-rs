@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Swampy's Revenge Recomp (Frogger 2 engine recomp) for Android. Built by tools/android/build-apk.sh (no Gradle): aapt2 links
+<!-- Frogger 2: Swampy's Revenge (Rust) (Rust port of the Frogger 2 engine) for Android. Built by tools/android/build-apk.sh (no Gradle): aapt2 links
      this manifest, the Java activity (java/) is compiled with javac + d8, and the native
      library libfrogger_android.so comes from crates/frogger-android (cargo-ndk). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="io.github.neilgraham.swampysrevengerecomp"
+    package="io.github.neilgraham.frogger2rs"
     android:versionCode="1"
     android:versionName="0.1.0">
 
@@ -18,7 +18,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:label="Swampy's Revenge Recomp"
+        android:label="Frogger 2: Swampy's Revenge (Rust)"
         android:icon="@mipmap/ic_launcher"
         android:banner="@mipmap/ic_launcher"
         android:appCategory="game"

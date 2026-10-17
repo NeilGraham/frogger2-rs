@@ -1,13 +1,13 @@
 # Export to other platforms
 
-Every desktop build of **Swampy's Revenge Recomp** can turn the player's imported game into
+Every desktop build of **Frogger 2: Swampy's Revenge (Rust)** can turn the player's imported game into
 ready-to-run builds for other platforms, on any desktop OS, with no SDK, compiler, Docker or
 WSL:
 
 | Target | Output | Runtime used |
 |---|---|---|
 | This desktop OS (Windows / macOS / Linux) | a folder / `.app` / `.AppImage` with the game data inside | the running app itself |
-| Android | `.apk` with the game data inside (installs and runs directly) | release asset `swampys-revenge-recomp-<v>-android.apk` (the shell app) |
+| Android | `.apk` with the game data inside (installs and runs directly) | release asset `frogger2-rs-<v>-android.apk` (the shell app) |
 | PS4 | fake PKG (`.pkg`) | `runtime-ps4-<v>.zip` |
 | PS5 | app folder (+ `.ffpkg` where supported) | `runtime-ps5-<v>.zip` |
 | N64 | `.z64` ROM | `runtime-n64-<v>.zip` |
@@ -54,7 +54,7 @@ Imports made before `disc_app_name` existed must be re-imported (the export says
   builds and runs on Windows, macOS and Linux.
 - `crates/frogger/src/export.rs`: branding, runtime lookup (`--runtime`, the running app for
   its own OS, else `<config>/runtimes/<asset>` downloaded with `curl` from
-  `https://github.com/NeilGraham/swampys-revenge-recomp/releases/download/v<version>/`, override
+  `https://github.com/NeilGraham/frogger2-rs/releases/download/v<version>/`, override
   with `F2_RUNTIME_BASE_URL`), the `--export` command.
 
 ## Runtimes
@@ -67,8 +67,8 @@ details are documented in each section below by the packer that consumes it.
 Cutting a release, the CI jobs, pinned toolchains and secrets: `docs/BUILDING.md` "Releases / CI".
 
 The desktop packages are the release builds themselves (`tools/package/package.sh`):
-`swampys-revenge-recomp-<v>-windows-<arch>.zip` (x86_64, aarch64),
-`swampys-revenge-recomp-<v>-macos-universal.zip`, `SwampysRevengeRecomp-<v>-<arch>.AppImage`
+`frogger2-rs-<v>-windows-<arch>.zip` (x86_64, aarch64),
+`frogger2-rs-<v>-macos-universal.zip`, `Frogger2rs-<v>-<arch>.AppImage`
 (x86_64, aarch64). Exporting for the host OS copies the running app, so an export has the
 architecture(s) of the build that made it; the console and Android runtimes are the same for
 every desktop architecture.
@@ -89,12 +89,12 @@ every desktop architecture.
 ## Android
 
 **Runtime** = the shell APK: the normal Android app built by `tools/android/build-apk.sh`
-(`target/android/swampys-revenge-recomp.apk`; release asset
-`swampys-revenge-recomp-<v>-android.apk`), package `io.github.neilgraham.swampysrevengerecomp`,
+(`target/android/frogger2-rs.apk`; release asset
+`frogger2-rs-<v>-android.apk`), package `io.github.neilgraham.frogger2rs`,
 no game data. `--runtime` takes the APK, or a folder holding exactly one `.apk`.
 
 **Output**: `<out>/<short title>.apk` (`Frogger 2.apk`), package
-`io.github.neilgraham.swampysrevengerecomp.game` (installs next to the shell app; its own
+`io.github.neilgraham.frogger2rs.game` (installs next to the shell app; its own
 `Android/data/<package>/files/` for data, settings and saves).
 
 What `crates/f2-package/src/android.rs` does (pure Rust, no SDK tools):
@@ -103,7 +103,7 @@ What `crates/f2-package/src/android.rs` does (pure Rust, no SDK tools):
 2. Rewrites `AndroidManifest.xml` (`android/axml.rs`: the binary XML's string pool is decoded,
    new strings appended, re-encoded with new offsets and chunk sizes; attributes re-pointed):
    `package` = the new id, the activity name fully qualified
-   (`io.github.neilgraham.swampysrevengerecomp.MainActivity`, the dex is unchanged),
+   (`io.github.neilgraham.frogger2rs.MainActivity`, the dex is unchanged),
    `application android:label` = **short title**, `versionName` = `branding.version`,
    `versionCode` = major·10⁶ + minor·10³ + patch. `resources.arsc` is unchanged (its
    resource package keeps the shell's name, like `aapt2 --rename-manifest-package`;
@@ -143,11 +143,11 @@ A re-export with different data (new id) installed as an update unpacks again.
 export ANDROID_HOME=~/android/sdk
 tools/android/build-apk.sh --abis x86_64           # the shell
 cargo run --release -p frogger -- --data game-data/usa --export android \
-    --runtime target/android/swampys-revenge-recomp.apk --out /tmp/f2-export
+    --runtime target/android/frogger2-rs.apk --out /tmp/f2-export
 $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose "/tmp/f2-export/Frogger 2.apk"
 $ANDROID_HOME/build-tools/35.0.0/aapt2 dump badging "/tmp/f2-export/Frogger 2.apk"
 adb install -r "/tmp/f2-export/Frogger 2.apk"
-adb shell am start -n io.github.neilgraham.swampysrevengerecomp.game/io.github.neilgraham.swampysrevengerecomp.MainActivity
+adb shell am start -n io.github.neilgraham.frogger2rs.game/io.github.neilgraham.frogger2rs.MainActivity
 ```
 
 Unit tests (`cargo test -p f2-package`): string pool round trips (UTF-8/UTF-16, styles),
@@ -198,7 +198,7 @@ exported itself (`--data <usa> --export windows --out C:\f2-export-test\out`, 46
 The shell's view of the exported exe, read with a small native check (`ExtractAssociatedIconW`,
 `PrivateExtractIconsW` at 256/48/16 px, `GetFileVersionInfoW`; PowerShell's
 `[System.Drawing.Icon]::ExtractAssociatedIcon` does the same): the rounded game art at every
-size (the source exe shows the recomp's own icon), `ProductName`/`FileDescription` "Frogger 2:
+size (the source exe shows the port's own icon), `ProductName`/`FileDescription` "Frogger 2:
 Swampy's Revenge". Run with `--headless --frames 60 --frontend --screenshot` and no `--data`
 (empty `F2_CONFIG_DIR`) it loaded `<folder>\game-data\usa` and rendered the front end.
 
@@ -208,13 +208,13 @@ Swampy's Revenge". Run with `--headless --frames 60 --frontend --screenshot` and
 (permissions and symlinks kept) to `<out>/Frogger 2 - Swampy's Revenge.app` and edits it:
 
 - `Contents/Info.plist`: `CFBundleName` and `CFBundleDisplayName` = the title,
-  `CFBundleIdentifier` = `io.github.NeilGraham.SwampysRevengeRecomp.game` (its own identity:
-  separate from the recomp app in Launchpad, privacy prompts and controller permissions),
+  `CFBundleIdentifier` = `io.github.NeilGraham.Frogger2rs.game` (its own identity:
+  separate from the port app in Launchpad, privacy prompts and controller permissions),
   `CFBundleIconFile` = `game-icon` (`CFBundleIconName` removed so the asset catalog, if any,
   does not win). Other keys (executable, minimum OS, high-DPI, controllers) are kept.
 - `Contents/Resources/game-icon.icns`, written in Rust from the branding icon: PNG entries
   `ic11` 32, `ic12` 64, `ic07` 128, `ic13`/`ic08` 256, `ic14`/`ic09` 512, `ic10` 1024 (macOS
-  10.7+). The recomp's own `.icns` is removed.
+  10.7+). The port's own `.icns` is removed.
 - `Contents/Resources/game-data/<rendition>/`.
 
 **Signing.** Editing the bundle invalidates its code-signature seal (`_CodeSignature/`).
@@ -249,7 +249,7 @@ without `appimagetool` or squashfs-tools:
 
 1. The runtime: the bytes of the source AppImage before its squashfs (the ELF's size from its
    header, as `--appimage-offset` computes it), with the `.upd_info` (update information,
-   which would "update" the export to the plain recomp), `.sha256_sig` and `.sig_key`
+   which would "update" the export to the plain port), `.sha256_sig` and `.sig_key`
    sections zeroed.
 2. A new squashfs (written with `backhand`, gzip level 6, 128 KiB blocks; the type 2 runtime
    reads zlib, zstd and xz) containing the source AppImage's AppDir (read with `backhand`;
@@ -273,7 +273,7 @@ with `frogger`, `NOTICE`/`README.md`/`licenses/` when present, the `.desktop` fi
 icon above, and `game-data/<rendition>/` (found next to the binary).
 
 **Tested** (WSL2, x86_64): `tools/package/package.sh linux` with appimagetool (continuous,
-zstd) built the recomp AppImage; that AppImage exported itself in ~7 s
+zstd) built the port AppImage; that AppImage exported itself in ~7 s
 (`--data game-data/usa --export linux`, 437 MB); `unsquashfs -s/-ll` reads the result (gzip,
 the layout above); the export run with `--headless --frames 60 --frontend --screenshot` and
 no `--data` (empty `F2_CONFIG_DIR`, no `F2_DATA_ROOT`) loaded

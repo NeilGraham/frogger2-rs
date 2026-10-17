@@ -107,7 +107,7 @@ fn seq(parts: &[&[u8]]) -> Vec<u8> {
     tlv(0x30, &parts.concat())
 }
 
-/// A self-signed X.509 v3 certificate for the key: CN "Swampy's Revenge Recomp export",
+/// A self-signed X.509 v3 certificate for the key: CN "Frogger 2: Swampy's Revenge (Rust) export",
 /// valid 2026..2125, serial from the public key. Deterministic in the key (ECDSA signing is
 /// RFC 6979), so a lost certificate file can be recreated identically.
 fn certificate(signing: &SigningKey) -> Vec<u8> {
@@ -115,7 +115,7 @@ fn certificate(signing: &SigningKey) -> Vec<u8> {
     let mut serial = Sha256::digest(&spki)[..16].to_vec();
     serial[0] = (serial[0] & 0x7f) | 0x40;
     let alg = seq(&[&tlv(0x06, &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02])]); // ecdsa-with-SHA256
-    let cn = "Swampy's Revenge Recomp export";
+    let cn = "Frogger 2: Swampy's Revenge (Rust) export";
     let name = seq(&[&tlv(0x31, &seq(&[&tlv(0x06, &[0x55, 0x04, 0x03]), &tlv(0x0c, cn.as_bytes())]))]);
     let validity = seq(&[&tlv(0x17, b"260101000000Z"), &tlv(0x18, b"21251231235959Z")]);
     let tbs = seq(&[&tlv(0xa0, &tlv(0x02, &[2])), &tlv(0x02, &serial), &alg, &name, &validity, &name, &spki]);

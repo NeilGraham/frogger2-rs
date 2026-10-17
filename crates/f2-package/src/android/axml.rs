@@ -328,7 +328,7 @@ pub(crate) mod tests {
     fn pools_round_trip_and_grow() {
         let long = "x".repeat(300);
         for utf8 in [false, true] {
-            let b = pool_bytes(&["label", "package", "Swampy's Revenge Recomp", &long, "é"], utf8);
+            let b = pool_bytes(&["label", "package", "Frogger 2: Swampy's Revenge (Rust)", &long, "é"], utf8);
             assert_eq!(b.len() % 4, 0);
             let (mut p, size) = StringPool::parse(&b).unwrap();
             assert_eq!(size, b.len());

@@ -397,7 +397,7 @@ fn repo_root() -> Result<PathBuf, String> {
         if p.join("tools/run/run.py").is_file() && p.join("Cargo.toml").is_file() {
             return Ok(p.to_path_buf());
         }
-        p = p.parent().ok_or("not inside the frogger-2-recomp checkout (tools/run/run.py not found)")?;
+        p = p.parent().ok_or("not inside the frogger2-rs checkout (tools/run/run.py not found)")?;
     }
 }
 

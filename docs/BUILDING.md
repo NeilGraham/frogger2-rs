@@ -57,7 +57,7 @@ cargo check --workspace --all-targets --no-default-features --target aarch64-app
 
 ## Android
 
-`tools/android/build-apk.sh [--debug] [--abis arm64-v8a,x86_64]` builds `target/android/swampys-revenge-recomp.apk`
+`tools/android/build-apk.sh [--debug] [--abis arm64-v8a,x86_64]` builds `target/android/frogger2-rs.apk`
 (needs the Android SDK/NDK, `cargo-ndk`, a JDK). Setup, data import and emulator testing:
 [ANDROID.md](ANDROID.md).
 
@@ -185,10 +185,10 @@ Each archive carries `NOTICE`, the four license texts (`licenses/`) and no game 
   or in `F2_APPIMAGETOOL`. It downloads the AppImage runtime while building; offline, pass a
   downloaded [type2 runtime](https://github.com/AppImage/type2-runtime/releases) as
   `F2_APPIMAGE_RUNTIME=/path/runtime-x86_64`. Without FUSE (containers, WSL) set
-  `APPIMAGE_EXTRACT_AND_RUN=1`. `SwampysRevengeRecomp-*.AppImage f2-import <disc>` runs the importer.
-- **Flatpak**: `packaging/flatpak/io.github.NeilGraham.SwampysRevengeRecomp.yml` (+ AppStream metainfo); generate
+  `APPIMAGE_EXTRACT_AND_RUN=1`. `Frogger2rs-*.AppImage f2-import <disc>` runs the importer.
+- **Flatpak**: `packaging/flatpak/io.github.NeilGraham.Frogger2rs.yml` (+ AppStream metainfo); generate
   `cargo-sources.json` with flatpak-cargo-generator first (steps in the manifest header).
-- **Desktop entry / icon**: `packaging/swampys-revenge-recomp.desktop`, `packaging/icon/` (SVG master, PNG sizes, `.ico`; regenerate with `tools/icon/build-icons.sh`, needs `cargo install resvg`)
+- **Desktop entry / icon**: `packaging/frogger2-rs.desktop`, `packaging/icon/` (flat placeholder: SVG, PNG sizes, `.ico`; Android launcher PNGs in `packaging/android/res`)
   (placeholder art, not from the game).
 
 `F2_PKG_VERSION=0.1.0` names the archives with that version instead of `<version>-<commit>`;
@@ -218,10 +218,10 @@ the same builds at the Cargo version, uploaded as workflow artifacts (`release-*
 
 | Job | Runner | Asset |
 |---|---|---|
-| `windows` (x86_64, aarch64) | windows-latest (MSVC; ARM64 cross-built, not run in CI) | `swampys-revenge-recomp-<v>-windows-<arch>.zip` (exe icon via `crates/frogger/build.rs`) |
-| `macos` | macos-14 (x86_64 cross-built, `lipo`'d) | `swampys-revenge-recomp-<v>-macos-universal.zip` (ad-hoc signed universal `.app`) |
-| `linux` (x86_64, aarch64) | ubuntu-22.04 / ubuntu-22.04-arm (glibc 2.35 baseline) | `SwampysRevengeRecomp-<v>-<arch>.AppImage`, `swampys-revenge-recomp-<v>-linux-<arch>.tar.gz` |
-| `android` | ubuntu-24.04 | `swampys-revenge-recomp-<v>-android.apk` (shell app, `tools/android/build-apk.sh`) |
+| `windows` (x86_64, aarch64) | windows-latest (MSVC; ARM64 cross-built, not run in CI) | `frogger2-rs-<v>-windows-<arch>.zip` (exe icon via `crates/frogger/build.rs`) |
+| `macos` | macos-14 (x86_64 cross-built, `lipo`'d) | `frogger2-rs-<v>-macos-universal.zip` (ad-hoc signed universal `.app`) |
+| `linux` (x86_64, aarch64) | ubuntu-22.04 / ubuntu-22.04-arm (glibc 2.35 baseline) | `Frogger2rs-<v>-<arch>.AppImage`, `frogger2-rs-<v>-linux-<arch>.tar.gz` |
+| `android` | ubuntu-24.04 | `frogger2-rs-<v>-android.apk` (shell app, `tools/android/build-apk.sh`) |
 | `runtime` (ps4, ps5, n64) | ubuntu-24.04 | `runtime-<target>-<v>.zip` from `tools/runtime/build-<target>.sh OUT_DIR VERSION` |
 | `release` | ubuntu-latest | checks every asset is there and has no game data, publishes |
 
@@ -246,7 +246,7 @@ Without them the APK is signed with a debug key made for that run, so an install
 be updated in place by the next release (Android refuses a different signature): set them before
 the first public release and keep the keystore safe; it can never change afterwards.
 Create one with
-`keytool -genkeypair -keystore release.keystore -alias swampys-revenge-recomp -keyalg RSA -keysize 4096 -validity 10000`.
+`keytool -genkeypair -keystore release.keystore -alias frogger2-rs -keyalg RSA -keysize 4096 -validity 10000`.
 The release itself needs no secret (the workflow's `GITHUB_TOKEN` with `contents: write`).
 
 ## WSL2 notes

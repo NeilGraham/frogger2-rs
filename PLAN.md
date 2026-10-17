@@ -1,6 +1,6 @@
 # Frogger 2: Swampy's Revenge — Rust Port Plan
 
-> **Codename:** `frogger2-rs` (working title; final name TBD — see [Decisions needed](#decisions-needed-from-the-project-owner))
+> **Codename:** `frogger2-rs` (public name: Frogger 2: Swampy's Revenge (Rust); see docs/DECISIONS.md)
 > **Status:** see [Status](#status) below (updated 2026-10-09)
 
 ## Status

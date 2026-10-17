@@ -1,4 +1,4 @@
-# Release builds of Swampy's Revenge Recomp (docs/BUILDING.md "Releases / CI").
+# Release builds of Frogger 2: Swampy's Revenge (Rust) (docs/BUILDING.md "Releases / CI").
 #
 # A pushed tag v<version> builds every release asset and publishes the GitHub release for it;
 # the tag must match [workspace.package] version in Cargo.toml, because the desktop app
@@ -7,10 +7,10 @@
 # uploaded as workflow artifacts, no release.
 #
 # Assets (names are a contract with crates/f2-package and crates/frogger/src/export.rs):
-#   swampys-revenge-recomp-<v>-windows-<arch>.zip      Windows (MSVC), arch x86_64 / aarch64
-#   swampys-revenge-recomp-<v>-macos-universal.zip     macOS .app, Apple silicon + Intel
-#   SwampysRevengeRecomp-<v>-<arch>.AppImage           Linux x86_64 / aarch64 (+ -linux-<arch>.tar.gz)
-#   swampys-revenge-recomp-<v>-android.apk             Android shell app
+#   frogger2-rs-<v>-windows-<arch>.zip      Windows (MSVC), arch x86_64 / aarch64
+#   frogger2-rs-<v>-macos-universal.zip     macOS .app, Apple silicon + Intel
+#   Frogger2rs-<v>-<arch>.AppImage           Linux x86_64 / aarch64 (+ -linux-<arch>.tar.gz)
+#   frogger2-rs-<v>-android.apk             Android shell app
 #   runtime-ps4-<v>.zip, runtime-ps5-<v>.zip, runtime-n64-<v>.zip   console runtimes
 #
 # Nothing here ever has game data: CI has none, and the release job checks the archives.
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows-${{ matrix.arch }}
-          path: target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-windows-${{ matrix.arch }}.zip
+          path: target/package/frogger2-rs-${{ needs.version.outputs.version }}-windows-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   # One universal .app (arm64 + x86_64 lipo'd; x86_64 is a cross build on the Apple silicon
@@ -135,7 +135,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
-          path: target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-macos-universal.zip
+          path: target/package/frogger2-rs-${{ needs.version.outputs.version }}-macos-universal.zip
           if-no-files-found: error
 
   # Ubuntu 22.04 (glibc 2.35): the binaries and the AppImage run on older distributions too.
@@ -182,13 +182,13 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: tools/package/package.sh linux
       # Smoke test of the packaged binary on its own architecture (no window, no game data).
-      - run: ./target/package/stage/linux/swampys-revenge-recomp-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}/f2-import --help
+      - run: ./target/package/stage/linux/frogger2-rs-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}/f2-import --help
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.arch }}
           path: |
-            target/package/SwampysRevengeRecomp-${{ needs.version.outputs.version }}-${{ matrix.arch }}.AppImage
-            target/package/swampys-revenge-recomp-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+            target/package/Frogger2rs-${{ needs.version.outputs.version }}-${{ matrix.arch }}.AppImage
+            target/package/frogger2-rs-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
   # The Android shell app (no game data; the export bundles the player's data into a copy).
@@ -237,12 +237,12 @@ jobs:
         run: |
           tools/android/build-apk.sh
           mkdir -p dist
-          cp target/android/swampys-revenge-recomp.apk "dist/swampys-revenge-recomp-$VERSION-android.apk"
+          cp target/android/frogger2-rs.apk "dist/frogger2-rs-$VERSION-android.apk"
           rm -f "$RUNNER_TEMP/release.keystore"
       - uses: actions/upload-artifact@v4
         with:
           name: release-android
-          path: dist/swampys-revenge-recomp-${{ needs.version.outputs.version }}-android.apk
+          path: dist/frogger2-rs-${{ needs.version.outputs.version }}-android.apk
           if-no-files-found: error
 
   # Console runtimes for the desktop app's "Export to..." (docs/EXPORT.md "Runtimes"):
@@ -312,14 +312,14 @@ jobs:
         run: |
           cd dist
           expected=(
-            "swampys-revenge-recomp-$V-windows-x86_64.zip"
-            "swampys-revenge-recomp-$V-windows-aarch64.zip"
-            "swampys-revenge-recomp-$V-macos-universal.zip"
-            "SwampysRevengeRecomp-$V-x86_64.AppImage"
-            "SwampysRevengeRecomp-$V-aarch64.AppImage"
-            "swampys-revenge-recomp-$V-linux-x86_64.tar.gz"
-            "swampys-revenge-recomp-$V-linux-aarch64.tar.gz"
-            "swampys-revenge-recomp-$V-android.apk"
+            "frogger2-rs-$V-windows-x86_64.zip"
+            "frogger2-rs-$V-windows-aarch64.zip"
+            "frogger2-rs-$V-macos-universal.zip"
+            "Frogger2rs-$V-x86_64.AppImage"
+            "Frogger2rs-$V-aarch64.AppImage"
+            "frogger2-rs-$V-linux-x86_64.tar.gz"
+            "frogger2-rs-$V-linux-aarch64.tar.gz"
+            "frogger2-rs-$V-android.apk"
             "runtime-ps4-$V.zip" "runtime-ps5-$V.zip" "runtime-n64-$V.zip"
           )
           for f in "${expected[@]}"; do [ -f "$f" ] || { echo "::error::missing asset $f"; exit 1; }; done
@@ -340,7 +340,7 @@ jobs:
           V: ${{ needs.version.outputs.version }}
         run: |
           cat > notes.md <<EOF
-          Swampy's Revenge Recomp $V: a recompiled engine for *Frogger 2: Swampy's Revenge* (PC, 2000).
+          Frogger 2: Swampy's Revenge (Rust) $V: a Rust port of *Frogger 2: Swampy's Revenge* (PC, 2000).
 
           **No game data is included.** Every download here is built from source by CI and
           contains no files from the game. You need your own copy of the game (the original
@@ -349,11 +349,11 @@ jobs:
 
           | Download | For |
           |---|---|
-          | \`swampys-revenge-recomp-$V-windows-x86_64.zip\` | Windows 10/11 (x86_64: Intel / AMD) |
-          | \`swampys-revenge-recomp-$V-windows-aarch64.zip\` | Windows 11 on ARM (Snapdragon and other ARM64 PCs) |
-          | \`swampys-revenge-recomp-$V-macos-universal.zip\` | macOS 11+ (Apple silicon and Intel; ad-hoc signed: right-click > Open the first time) |
-          | \`SwampysRevengeRecomp-$V-x86_64.AppImage\` / \`-aarch64.AppImage\` | Linux (x86_64 / ARM64; also as \`-linux-<arch>.tar.gz\`) |
-          | \`swampys-revenge-recomp-$V-android.apk\` | Android 8+ (arm64, x86_64): import on the device |
+          | \`frogger2-rs-$V-windows-x86_64.zip\` | Windows 10/11 (x86_64: Intel / AMD) |
+          | \`frogger2-rs-$V-windows-aarch64.zip\` | Windows 11 on ARM (Snapdragon and other ARM64 PCs) |
+          | \`frogger2-rs-$V-macos-universal.zip\` | macOS 11+ (Apple silicon and Intel; ad-hoc signed: right-click > Open the first time) |
+          | \`Frogger2rs-$V-x86_64.AppImage\` / \`-aarch64.AppImage\` | Linux (x86_64 / ARM64; also as \`-linux-<arch>.tar.gz\`) |
+          | \`frogger2-rs-$V-android.apk\` | Android 8+ (arm64, x86_64): import on the device |
           | \`runtime-ps4-$V.zip\`, \`runtime-ps5-$V.zip\`, \`runtime-n64-$V.zip\` | not to be installed by hand: the desktop app's **Export to...** downloads them |
 
           **Exported builds must not be shared.** "Export to..." (\`frogger --export\`) bundles
@@ -376,6 +376,6 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/* --verify-tag --title "Swampy's Revenge Recomp $V" \
+            gh release create "$TAG" dist/* --verify-tag --title "Frogger 2: Swampy's Revenge (Rust) $V" \
               --notes-file notes.md "${pre[@]}"
           fi

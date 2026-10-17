@@ -1,8 +1,8 @@
 # macOS packaging
 
 `tools/package/package.sh macos` (run on a Mac with the Xcode command line tools) builds
-`frogger`, `f2-import`, `f2-viewer`, wraps them in `SwampysRevengeRecomp.app` and writes
-`target/package/swampys-revenge-recomp-<ver>-macos-<arch>.zip` (with `ditto`, the release
+`frogger`, `f2-import`, `f2-viewer`, wraps them in `Frogger2rs.app` and writes
+`target/package/frogger2-rs-<ver>-macos-<arch>.zip` (with `ditto`, the release
 asset) and `.tar.gz`. The release builds `F2_MACOS_UNIVERSAL=1` (`<arch>` = `universal`).
 
 | Variable | Effect |
@@ -22,14 +22,14 @@ Bundle layout: `Contents/MacOS/{frogger,f2-import,f2-viewer}` (the app launches 
 
 - Imported game data: `~/Library/Application Support/frogger2-rs/data` (or `$F2_DATA_ROOT`).
 - `config.toml`, `saves/`, `mods/`: `~/Library/Application Support/frogger2-rs/`.
-- Import from Terminal: `SwampysRevengeRecomp.app/Contents/MacOS/f2-import /path/to/disc.cue`.
+- Import from Terminal: `Frogger2rs.app/Contents/MacOS/f2-import /path/to/disc.cue`.
 
 ## Signing and Gatekeeper
 
 - Apple Silicon refuses to run unsigned arm64 code, so the script always signs; the default is an
   **ad-hoc** signature (`codesign -s -`). Ad-hoc apps run on the machine that built them; a
   downloaded copy is quarantined: right-click > Open once, or
-  `xattr -dr com.apple.quarantine SwampysRevengeRecomp.app`.
+  `xattr -dr com.apple.quarantine Frogger2rs.app`.
 - With a Developer ID (`F2_CODESIGN_ID="Developer ID Application: Name (TEAMID)"`) the script
   signs with the hardened runtime (`--options runtime --timestamp`), which notarisation requires.
   No entitlements are needed: the game uses no JIT, and Metal, CoreAudio, game controllers and
@@ -38,11 +38,11 @@ Bundle layout: `Contents/MacOS/{frogger,f2-import,f2-viewer}` (the app launches 
 ## Notarisation (not automated; needs a paid Apple Developer account)
 
 ```sh
-ditto -c -k --keepParent target/package/stage/macos/<name>/SwampysRevengeRecomp.app SwampysRevengeRecomp.zip
-xcrun notarytool submit SwampysRevengeRecomp.zip --apple-id you@example.com --team-id TEAMID \
+ditto -c -k --keepParent target/package/stage/macos/<name>/Frogger2rs.app Frogger2rs.zip
+xcrun notarytool submit Frogger2rs.zip --apple-id you@example.com --team-id TEAMID \
   --password <app-specific password> --wait        # or --keychain-profile <profile>
-xcrun stapler staple target/package/stage/macos/<name>/SwampysRevengeRecomp.app
-spctl --assess --type execute -vv target/package/stage/macos/<name>/SwampysRevengeRecomp.app
+xcrun stapler staple target/package/stage/macos/<name>/Frogger2rs.app
+spctl --assess --type execute -vv target/package/stage/macos/<name>/Frogger2rs.app
 ```
 
 Then re-create the zip (or a `.dmg` with `hdiutil create -srcfolder ... -format UDZO`).

@@ -215,7 +215,7 @@ impl Screen {
         const TEXT: [u8; 4] = [230, 230, 230, 255];
         const DIM: [u8; 4] = [160, 170, 160, 255];
         rect(r, 0.0, 0.0, wf, line * 3.0, [20, 60, 20, 255]);
-        r.draw_text(f, 0.0, line * 0.5, "SWAMPY'S REVENGE RECOMP", TITLE, s * 1.4, Some(wf / 2.0));
+        r.draw_text(f, 0.0, line * 0.5, "FROGGER 2: SWAMPY'S REVENGE (RUST)", TITLE, s * 1.0, Some(wf / 2.0));
         let subtitle = if self.unpacking { "Preparing the game (first start only)" } else { "Import your Frogger 2 game" };
         r.draw_text(f, 0.0, line * 1.9, subtitle, TEXT, s * 0.9, Some(wf / 2.0));
         let x0 = line;
@@ -247,7 +247,7 @@ impl Screen {
                     para(r, "Copy the image or the disc's files into:", DIM, &mut y);
                 }
                 para(r, &self.files.display().to_string(), TITLE, &mut y);
-                para(r, "e.g. adb push Frogger2.iso /sdcard/Android/data/io.github.neilgraham.swampysrevengerecomp/files/ - the import starts by itself. Data already imported on a PC can be copied to files/data/ instead.", DIM, &mut y);
+                para(r, "e.g. adb push Frogger2.iso /sdcard/Android/data/io.github.neilgraham.frogger2rs/files/ - the import starts by itself. Data already imported on a PC can be copied to files/data/ instead.", DIM, &mut y);
             }
             State::Importing { source, .. } => {
                 if self.unpacking {

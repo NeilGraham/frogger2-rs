@@ -48,7 +48,7 @@ pub(crate) fn desktop_entry(b: &Branding, id: &str) -> String {
         "[Desktop Entry]\n\
          Type=Application\n\
          Name={title}\n\
-         Comment={title}, on the Swampy's Revenge Recomp engine (your own copy of the game)\n\
+         Comment={title}, on the Frogger 2: Swampy's Revenge (Rust) engine (your own copy of the game)\n\
          Exec=frogger\n\
          Icon={id}\n\
          Categories=Game;ArcadeGame;\n\
@@ -196,7 +196,7 @@ impl ElfHeader {
 }
 
 /// The AppImage runtime with its update information (which would update the export to the
-/// plain recomp release) and its signature (of the old payload) blanked.
+/// plain release) and its signature (of the old payload) blanked.
 fn clean_runtime(mut stub: Vec<u8>) -> Vec<u8> {
     if let Some(h) = ElfHeader::parse(&stub) {
         for (name, off, size) in h.sections(&stub) {
@@ -373,9 +373,9 @@ mod tests {
 
     #[test]
     fn replaced_paths() {
-        let i = Some("swampys-revenge-recomp");
-        assert!(replaced("swampys-revenge-recomp.desktop", i));
-        assert!(replaced("swampys-revenge-recomp.svg", i));
+        let i = Some("frogger2-rs");
+        assert!(replaced("frogger2-rs.desktop", i));
+        assert!(replaced("frogger2-rs.svg", i));
         assert!(replaced(".DirIcon", i));
         assert!(replaced("usr/share/icons/hicolor/scalable/apps/x.svg", i));
         assert!(replaced("usr/share/game-data/usa/game/x", i));
@@ -427,20 +427,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let stub = fake_runtime();
-        let src = tmp.join("SwampysRevengeRecomp-0.1.0-x86_64.AppImage");
+        let src = tmp.join("Frogger2rs-0.1.0-x86_64.AppImage");
         {
             let mut w = FilesystemWriter::default();
             w.set_kind(Kind::new_v4(&CODEC));
             w.set_compressor(FilesystemCompressor::new(Compressor::Gzip, None).unwrap());
             let h = |m| NodeHeader::new(m, 0, 0, 0);
             w.push_file(std::io::Cursor::new(b"#!/bin/sh\n".to_vec()), "AppRun", h(0o755)).unwrap();
-            w.push_file(std::io::Cursor::new(b"[Desktop Entry]\nIcon=swampys-revenge-recomp\n".to_vec()), "swampys-revenge-recomp.desktop", h(0o644)).unwrap();
-            w.push_file(std::io::Cursor::new(b"<svg/>".to_vec()), "swampys-revenge-recomp.svg", h(0o644)).unwrap();
-            w.push_symlink("swampys-revenge-recomp.svg", ".DirIcon", h(0o777)).unwrap();
+            w.push_file(std::io::Cursor::new(b"[Desktop Entry]\nIcon=frogger2-rs\n".to_vec()), "frogger2-rs.desktop", h(0o644)).unwrap();
+            w.push_file(std::io::Cursor::new(b"<svg/>".to_vec()), "frogger2-rs.svg", h(0o644)).unwrap();
+            w.push_symlink("frogger2-rs.svg", ".DirIcon", h(0o777)).unwrap();
             w.push_dir_all("usr/bin", h(0o755)).unwrap();
             w.push_file(std::io::Cursor::new(vec![7u8; 300_000]), "usr/bin/frogger", h(0o755)).unwrap();
             w.push_dir_all("usr/share/icons/hicolor/scalable/apps", h(0o755)).unwrap();
-            w.push_file(std::io::Cursor::new(b"<svg/>".to_vec()), "usr/share/icons/hicolor/scalable/apps/swampys-revenge-recomp.svg", h(0o644)).unwrap();
+            w.push_file(std::io::Cursor::new(b"<svg/>".to_vec()), "usr/share/icons/hicolor/scalable/apps/frogger2-rs.svg", h(0o644)).unwrap();
             let mut f = std::fs::File::create(&src).unwrap();
             f.write_all(&stub).unwrap();
             w.write_with_offset(&mut f, stub.len() as u64).unwrap();

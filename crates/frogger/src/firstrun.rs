@@ -268,7 +268,7 @@ impl Screen {
             }
         };
         rect(r, 0.0, 0.0, wf, line * 3.2, BAND);
-        r.draw_text(f, 0.0, line * 0.6, "SWAMPY'S REVENGE RECOMP", TITLE, s * 1.6, Some(wf / 2.0));
+        r.draw_text(f, 0.0, line * 0.6, "FROGGER 2: SWAMPY'S REVENGE (RUST)", TITLE, s * 1.1, Some(wf / 2.0));
         r.draw_text(f, 0.0, line * 2.1, "Import your Frogger 2 game", TEXT, s, Some(wf / 2.0));
         let x0 = line * 1.5;
         let mut y = line * 4.0;
@@ -551,7 +551,7 @@ impl Screen {
 /// Runs the import screen. Returns true when data was imported (the caller restarts).
 pub fn run(cfg: &Config, reason: &str) -> bool {
     let mut wc = WindowConfig::from_config(cfg);
-    wc.title = "Swampy's Revenge Recomp - Import".into();
+    wc.title = "Frogger 2: Swampy's Revenge (Rust) - Import".into();
     wc.mode = f2_platform::WindowMode::Windowed;
     wc.resolution = None;
     let mut s = Screen::new(cfg.data_root(), reason);

@@ -1,5 +1,5 @@
-//! App icons. The shipped icon is our own artwork (`packaging/icon`, generated from
-//! `tools/icon/make_svgs.py`). Once the player has imported their game, hosts switch to a
+//! App icons. The shipped icon is a flat placeholder (`packaging/icon`). Once the player has
+//! imported their game, hosts switch to a
 //! square crop of the game's own loading-screen artwork, made on the player's machine from
 //! their data; it is never shipped or written anywhere but the player's own settings folder.
 
@@ -16,7 +16,7 @@ pub struct Rgba {
 /// The game's loading-screen artwork (frog, logo, Swampy's jaws): 640×480.
 pub const GAME_ART: &str = "textures/loading.fla";
 
-/// Our icon at 256×256 (packaging/icon/png/256.png).
+/// Our placeholder icon at 256×256 (packaging/icon/png/256.png).
 const APP_ICON_PNG: &[u8] = include_bytes!("../../../packaging/icon/png/256.png");
 
 /// Our own icon (the default until game data exists).

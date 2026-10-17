@@ -125,7 +125,7 @@ impl Target {
     /// `None` for the host desktop OS, whose runtime is the running app.
     pub fn runtime_asset(self, version: &str) -> Option<String> {
         Some(match self {
-            Target::Android => format!("swampys-revenge-recomp-{version}-android.apk"),
+            Target::Android => format!("frogger2-rs-{version}-android.apk"),
             Target::Ps4 => format!("runtime-ps4-{version}.zip"),
             Target::Ps5 => format!("runtime-ps5-{version}.zip"),
             Target::N64 => format!("runtime-n64-{version}.zip"),

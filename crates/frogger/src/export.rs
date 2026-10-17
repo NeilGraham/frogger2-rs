@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// Where release runtimes are downloaded from (`F2_RUNTIME_BASE_URL` overrides; `{v}` is
 /// the version).
-pub const RUNTIME_BASE_URL: &str = "https://github.com/NeilGraham/swampys-revenge-recomp/releases/download/v{v}/";
+pub const RUNTIME_BASE_URL: &str = "https://github.com/NeilGraham/frogger2-rs/releases/download/v{v}/";
 
 /// This app's version (the runtimes must match it).
 pub fn version() -> &'static str {

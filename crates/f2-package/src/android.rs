@@ -1,5 +1,5 @@
 //! Export for Android (docs/EXPORT.md "Android"): the shell APK (the data-free app built by
-//! `tools/android/build-apk.sh`, release asset `swampys-revenge-recomp-<v>-android.apk`) +
+//! `tools/android/build-apk.sh`, release asset `frogger2-rs-<v>-android.apk`) +
 //! the player's game -> a ready-to-run, signed APK.
 //!
 //! What changes relative to the shell:
@@ -30,9 +30,9 @@ use std::path::{Path, PathBuf};
 
 /// The shell app's package (the Java activity's package too).
 #[cfg(test)]
-const SHELL_PACKAGE: &str = "io.github.neilgraham.swampysrevengerecomp";
+const SHELL_PACKAGE: &str = "io.github.neilgraham.frogger2rs";
 /// Package id of exported APKs.
-pub const PACKAGE: &str = "io.github.neilgraham.swampysrevengerecomp.game";
+pub const PACKAGE: &str = "io.github.neilgraham.frogger2rs.game";
 /// Asset folder of the bundled game (inside the APK: `assets/` + this).
 pub const BUNDLE_DIR: &str = "game-data";
 /// The bundle index (`BUNDLE_DIR/bundle.json`): `{"format": 1, "id": "<sha256>",
@@ -378,7 +378,7 @@ mod tests {
         use axml::tests::{build_xml, Val};
         build_xml(&[
             ("manifest", vec![(true, "versionCode", Val::Int(1)), (true, "versionName", Val::Str("0.0.1")), (false, "package", Val::Str(SHELL_PACKAGE))]),
-            ("application", vec![(true, "label", Val::Str("Swampy's Revenge Recomp")), (true, "icon", Val::Int(0x7f01_0000))]),
+            ("application", vec![(true, "label", Val::Str("Frogger 2: Swampy's Revenge (Rust)")), (true, "icon", Val::Int(0x7f01_0000))]),
             ("activity", vec![(true, "name", Val::Str(".MainActivity")), (true, "exported", Val::Int(1))]),
         ])
     }

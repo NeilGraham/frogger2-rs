@@ -1,8 +1,8 @@
-# Swampy's Revenge Recomp
+# Frogger 2: Swampy's Revenge (Rust)
 
-<img src="packaging/icon/png/128.png" width="96" align="right" alt="App icon: a cartoon frog in a crocodile's jaws (original artwork)">
+<img src="packaging/icon/png/128.png" width="96" align="right" alt="Placeholder app icon">
 
-**Swampy's Revenge Recomp** (`swampys-revenge-recomp`) is a Rust recompilation of the engine of
+**Frogger 2: Swampy's Revenge (Rust)** (`frogger2-rs`) is a Rust port of
 **Frogger 2: Swampy's Revenge** (PC, Blitz Games / Hasbro Interactive, 2000) that runs on modern
 systems using **your own copy** of the game.
 
@@ -18,7 +18,7 @@ systems using **your own copy** of the game.
   [Highway Frogs](https://highwayfrogs.net/) (`HighwayFrogs/frogger2-vss`). That source carries no
   license; see [research/community-and-legal.md](research/community-and-legal.md).
 - Frogger is a trademark of Konami. This is an unaffiliated, non-commercial fan preservation project.
-- The app icon is original artwork (`packaging/icon`, from `tools/icon/make_svgs.py`). After you
+- The app icon is a flat placeholder (`packaging/icon`) until the project has a real logo. After you
   import your game, the app switches to an icon cut from **your copy's** artwork, made on your
   machine (window/taskbar and Windows shortcuts; on Android the recents icon and an optional
   home-screen shortcut).

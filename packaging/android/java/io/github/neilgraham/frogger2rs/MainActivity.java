@@ -1,4 +1,4 @@
-package io.github.neilgraham.swampysrevengerecomp;
+package io.github.neilgraham.frogger2rs;
 
 import android.app.ActivityManager;
 import android.app.NativeActivity;

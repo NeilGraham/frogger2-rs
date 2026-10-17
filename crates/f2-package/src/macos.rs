@@ -12,9 +12,9 @@ use crate::util;
 use crate::{Image, Job};
 use std::path::{Path, PathBuf};
 
-/// Bundle identifier of exported builds (the recomp app itself is
-/// `io.github.NeilGraham.SwampysRevengeRecomp`).
-pub(crate) const BUNDLE_ID: &str = "io.github.NeilGraham.SwampysRevengeRecomp.game";
+/// Bundle identifier of exported builds (the port app itself is
+/// `io.github.NeilGraham.Frogger2rs`).
+pub(crate) const BUNDLE_ID: &str = "io.github.NeilGraham.Frogger2rs.game";
 
 /// Icon file in `Contents/Resources/` (`CFBundleIconFile`).
 const ICON_NAME: &str = "game-icon";
@@ -154,11 +154,11 @@ mod tests {
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>SwampysRevengeRecomp</string>
-  <key>CFBundleDisplayName</key><string>Swampy's Revenge Recomp</string>
-  <key>CFBundleIdentifier</key><string>io.github.NeilGraham.SwampysRevengeRecomp</string>
+  <key>CFBundleName</key><string>Frogger2rs</string>
+  <key>CFBundleDisplayName</key><string>Frogger 2: Swampy's Revenge (Rust)</string>
+  <key>CFBundleIdentifier</key><string>io.github.NeilGraham.Frogger2rs</string>
   <key>CFBundleExecutable</key><string>frogger</string>
-  <key>CFBundleIconFile</key><string>swampys-revenge-recomp</string>
+  <key>CFBundleIconFile</key><string>frogger2-rs</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>"#;
@@ -194,13 +194,13 @@ mod tests {
     fn exports_a_bundle() {
         let tmp = std::env::temp_dir().join(format!("f2pkg-mac-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        let rt = tmp.join("SwampysRevengeRecomp.app");
+        let rt = tmp.join("Frogger2rs.app");
         let c = rt.join("Contents");
         std::fs::create_dir_all(c.join("MacOS")).unwrap();
         std::fs::create_dir_all(c.join("Resources")).unwrap();
         std::fs::write(c.join("Info.plist"), PLIST).unwrap();
         std::fs::write(c.join("MacOS/frogger"), "bin").unwrap();
-        std::fs::write(c.join("Resources/swampys-revenge-recomp.icns"), "old").unwrap();
+        std::fs::write(c.join("Resources/frogger2-rs.icns"), "old").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -232,7 +232,7 @@ mod tests {
         assert_eq!(get("CFBundleIconFile"), ICON_NAME);
         assert_eq!(d.get("NSHighResolutionCapable").and_then(|v| v.as_boolean()), Some(true));
         assert_eq!(&std::fs::read(c.join("Resources/game-icon.icns")).unwrap()[0..4], b"icns");
-        assert!(!c.join("Resources/swampys-revenge-recomp.icns").exists());
+        assert!(!c.join("Resources/frogger2-rs.icns").exists());
         assert!(c.join("Resources/game-data/usa/music/track02.flac").is_file());
         #[cfg(unix)]
         {

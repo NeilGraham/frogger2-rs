@@ -1,7 +1,7 @@
-Swampy's Revenge Recomp - a recompiled engine for Frogger 2: Swampy's Revenge (local build)
+Frogger 2: Swampy's Revenge (Rust) - a Rust port of the original game (local build)
 ==========================================================================================
 
-Play:  double-click "Swampy's Revenge Recomp" (here or on the Desktop).
+Play:  double-click "Frogger 2 - Swampy's Revenge (Rust)" (here or on the Desktop).
        The icon switches to your game's own artwork after the first start with imported data.
        It boots like the original: logos, intro, title, then the 3D frontend.
        Game data is YOUR imported copy in game-data\usa (never redistribute it).

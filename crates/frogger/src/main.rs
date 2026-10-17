@@ -1056,7 +1056,7 @@ fn run_window(data: data::Data, mut cfg: Config, args: &Args, steps: Vec<Step>, 
         cfg.video.window_mode = cfg.video.fullscreen_type.mode();
     }
     let mut wc = WindowConfig::from_config(&cfg);
-    wc.title = "Swampy's Revenge Recomp".into();
+    wc.title = "Frogger 2: Swampy's Revenge (Rust)".into();
     let editor_setup = (editor_target(args, &cfg), args.editor_cmds.clone());
     let host = Host {
         data: Some(data),

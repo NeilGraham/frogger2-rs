@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Frogger 2: Swampy's Revenge (Rust)
+GenericName=Arcade game
+Comment=Rust port of Frogger 2: Swampy's Revenge (2000); requires your own copy of the game
+Exec=frogger
+Icon=frogger2-rs
+Categories=Game;ArcadeGame;
+Keywords=frog;arcade;rust;swampy;
+Terminal=false
+StartupNotify=true
+StartupWMClass=frogger
