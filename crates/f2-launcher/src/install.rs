@@ -30,10 +30,11 @@ pub fn version_dir(root: &Path, tag: &str) -> PathBuf {
     versions_dir(root).join(tag)
 }
 
-/// The engine executable of an install folder (`engine/frogger2`, else `frogger2` beside it).
+/// The engine executable of an install folder (`engine/frogger2`, else `frogger2` beside it,
+/// else the one inside the macOS app bundle beside the launcher).
 pub fn engine_exe(dir: &Path) -> Option<PathBuf> {
     let name = exe_name("frogger2");
-    [dir.join("engine").join(&name), dir.join(&name)].into_iter().find(|p| p.is_file())
+    [dir.join("engine").join(&name), dir.join(&name), dir.join("Frogger2rs.app/Contents/MacOS").join(&name)].into_iter().find(|p| p.is_file())
 }
 
 /// Installed version tags, newest first.
@@ -273,6 +274,53 @@ mod tests {
         assert_eq!(installed_tags(&t), ["v0.10.0", "v0.1.0"]);
         assert!(remove(&t, "../x").is_err());
         assert!(valid_tag("v0.1.0-rc.1") && !valid_tag("") && !valid_tag(".hidden") && !valid_tag("a/b"));
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// Installs a "release" served from `file://` URLs (curl reads them), tar.gz on Unix.
+    #[cfg(unix)]
+    #[test]
+    fn installs_a_release_and_checks_the_checksum() {
+        use crate::releases::{platform_asset_name, Asset};
+        let t = tmp("release");
+        let top = t.join("src/frogger2-rs-9.9.9-linux-x86_64");
+        std::fs::create_dir_all(top.join("engine")).unwrap();
+        std::fs::write(top.join("engine/frogger2"), b"elf").unwrap();
+        std::fs::write(top.join("portable.txt"), b"p").unwrap();
+        let name = platform_asset_name("9.9.9", "linux", "x86_64");
+        let archive = t.join(&name);
+        let ok = std::process::Command::new("tar").arg("-czf").arg(&archive).arg("-C").arg(t.join("src")).arg("frogger2-rs-9.9.9-linux-x86_64").status();
+        if !ok.is_ok_and(|s| s.success()) {
+            return; // no tar here
+        }
+        let sums = |hash: &str| {
+            let p = t.join("SHA256SUMS.txt");
+            std::fs::write(&p, format!("{hash}  {name}\n")).unwrap();
+            p
+        };
+        let release = |sums: &Path| Release {
+            tag: "v9.9.9".into(),
+            name: String::new(),
+            date: String::new(),
+            prerelease: false,
+            assets: vec![
+                Asset { name: name.clone(), url: format!("file://{}", archive.display()), size: 1 },
+                Asset { name: releases::SUMS_NAME.into(), url: format!("file://{}", sums.display()), size: 1 },
+            ],
+        };
+        let root = t.join("root");
+        // wrong checksum: refused, nothing installed
+        let bad = release(&sums(&"0".repeat(64)));
+        assert!(install(&root, &bad, "linux", "x86_64", &|_, _| {}).unwrap_err().contains("expected"));
+        assert!(installed_tags(&root).is_empty());
+        // right checksum
+        let good = release(&sums(&sha256_file(&archive).unwrap()));
+        let dir = install(&root, &good, "linux", "x86_64", &|_, _| {}).unwrap();
+        assert_eq!(dir, version_dir(&root, "v9.9.9"));
+        assert_eq!(std::fs::read(dir.join("engine/frogger2")).unwrap(), b"elf");
+        assert_eq!(installed_tags(&root), ["v9.9.9"]);
+        // no build for another platform
+        assert!(install(&root, &good, "windows", "x86_64", &|_, _| {}).is_err());
         let _ = std::fs::remove_dir_all(&t);
     }
 }

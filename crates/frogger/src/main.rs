@@ -63,6 +63,10 @@ struct Args {
     /// `--show-fps` (headless screenshots).
     show_fps: bool,
     headless: bool,
+    /// `--game`: run the game itself (the launcher passes this; never hand over to it).
+    game: bool,
+    /// `--import-screen`: only the import window (the launcher's "Import game").
+    import_screen: bool,
     frames: u32,
     screenshot: Option<PathBuf>,
     size: Option<(u32, u32)>,
@@ -112,6 +116,7 @@ fn usage() -> ! {
          \x20      [--screenshot-page display|audio|controls|gameplay[:ROW]] [--screenshot-keymap normal|capture|conflict] [--show-fps]\n\
          editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
          export: --export windows|macos|linux|android|ps4|ps5|n64|all[,...] [--out DIR] [--runtime PATH] [--ps4-keys Keys.cs]  (docs/EXPORT.md)\n\
+         launcher: [--game] (never hand over to the launcher) [--import-screen] (only the import window)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 settings, Shift+F10 advanced (level select), F11 / Alt+Enter fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -161,6 +166,8 @@ fn parse_args() -> Args {
         editor_cmds: Vec::new(),
         export: Vec::new(),
         runtime: None,
+        game: false,
+        import_screen: false,
         ps4_keys: None,
         out: None,
     };
@@ -204,6 +211,8 @@ fn parse_args() -> Args {
                     }
                 }
             }
+            "--game" => a.game = true,
+            "--import-screen" => a.import_screen = true,
             "--runtime" => a.runtime = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--ps4-keys" => a.ps4_keys = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--out" => a.out = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
@@ -276,6 +285,27 @@ fn parse_args() -> Args {
     a
 }
 
+/// Starts the `launcher` that sits beside this program (its folder, the `engine/` parent, or
+/// the portable install folder); false when there is none.
+fn open_launcher() -> bool {
+    let name = f2_launcher::install::exe_name("launcher");
+    let exe = std::env::current_exe().ok();
+    let dir = exe.as_deref().and_then(|e| e.parent());
+    let mut dirs: Vec<PathBuf> = dir.map(|d| vec![d.to_path_buf()]).unwrap_or_default();
+    if let Some(p) = dir.filter(|d| d.file_name().is_some_and(|n| n == "engine")).and_then(|d| d.parent()) {
+        dirs.push(p.to_path_buf());
+    }
+    dirs.extend(f2_platform::paths::portable_root());
+    let Some(l) = dirs.iter().map(|d| d.join(&name)).find(|p| p.is_file()) else { return false };
+    match std::process::Command::new(&l).current_dir(l.parent().unwrap_or(std::path::Path::new("."))).spawn() {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("frogger: starting {}: {e}", l.display());
+            false
+        }
+    }
+}
+
 fn main() {
     let args = parse_args();
     let mut cfg = Config::load_default().unwrap_or_else(|e| {
@@ -292,10 +322,18 @@ fn main() {
     if let Some(s) = args.render_scale {
         cfg.display.render_scale = Some(s);
     }
+    if args.import_screen {
+        firstrun::run(&cfg, "requested by the launcher");
+        std::process::exit(0);
+    }
     let mut data = match data::Data::locate(&cfg, args.data.clone()) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("frogger: {e}");
+            // A release ships the launcher: it imports the game and starts it.
+            if !args.headless && args.data.is_none() && !args.game && open_launcher() {
+                std::process::exit(0);
+            }
             // First run: offer the import screen (windowed runs); a successful import restarts the game.
             if !args.headless && args.data.is_none() && firstrun::run(&cfg, &e) {
                 firstrun::relaunch();
@@ -304,6 +342,18 @@ fn main() {
         }
     };
     eprintln!("frogger: data {}", data.rendition.display());
+    // `[launcher] start = "launcher"`: a plain start opens the launcher instead.
+    let plain = !args.headless
+        && !args.game
+        && args.export.is_empty()
+        && args.level.is_none()
+        && args.demo.is_none()
+        && args.multi.is_none()
+        && !args.host
+        && args.join.is_none();
+    if plain && cfg.launcher.start_in_launcher() && open_launcher() {
+        std::process::exit(0);
+    }
     if !args.export.is_empty() {
         std::process::exit(run_exports(&data, &args));
     }

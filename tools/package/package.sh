@@ -17,7 +17,9 @@ OUT="$REPO/target/package"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
 VER="${F2_PKG_VERSION:-$VERSION-$SHA}"
+# The engine programs (in engine/ of the portable archives) and the launcher beside them.
 BINS=(frogger2 f2-import f2-viewer)
+LAUNCHER=launcher
 TGT="${CARGO_TARGET_DIR:-target}"
 mkdir -p "$OUT"
 
@@ -44,9 +46,10 @@ pkg_linux() {
   [[ -n "${F2_SKIP_BUILD:-}" ]] || cargo build --release -p frogger -p f2-import -p f2-viewer
   local arch; arch="$(uname -m)"
   local name="frogger2-rs-$VER-linux-$arch" st="$OUT/stage/linux"
-  rm -rf "$st"; mkdir -p "$st/$name"
-  for b in "${BINS[@]}"; do install -m755 "$TGT/release/$b" "$st/$name/"; done
-  strip "$st/$name"/* 2>/dev/null || true
+  rm -rf "$st"; mkdir -p "$st/$name/engine"
+  for b in "${BINS[@]}"; do install -m755 "$TGT/release/$b" "$st/$name/engine/"; done
+  install -m755 "$TGT/release/$LAUNCHER" "$st/$name/"
+  strip "$st/$name"/engine/* "$st/$name/$LAUNCHER" 2>/dev/null || true
   install -m644 packaging/frogger2-rs.desktop packaging/icon/frogger2-rs.svg "$st/$name/"
   stage_docs "$st/$name"
   tar -C "$st" -czf "$OUT/$name.tar.gz" "$name"
@@ -66,18 +69,19 @@ pkg_linux() {
   rm -rf "$ad"
   mkdir -p "$ad/usr/bin" "$ad/usr/share/licenses/frogger2-rs" "$ad/usr/share/applications" \
     "$ad/usr/share/icons/hicolor/scalable/apps"
-  for b in "${BINS[@]}"; do install -m755 "$st/$name/$b" "$ad/usr/bin/"; done
+  for b in "${BINS[@]}"; do install -m755 "$st/$name/engine/$b" "$ad/usr/bin/"; done
+  install -m755 "$st/$name/$LAUNCHER" "$ad/usr/bin/"
   install -m644 packaging/frogger2-rs.desktop "$ad/usr/share/applications/"
   install -m644 packaging/icon/frogger2-rs.svg "$ad/usr/share/icons/hicolor/scalable/apps/"
   cp packaging/frogger2-rs.desktop packaging/icon/frogger2-rs.svg "$ad/"
   ln -sf frogger2-rs.svg "$ad/.DirIcon"
   cp NOTICE LICENSE-* "$ad/usr/share/licenses/frogger2-rs/"
-  # AppRun: `frogger2` by default; `<AppImage> f2-import ...` / `<AppImage> f2-viewer` run the tools.
+  # AppRun: `frogger2` by default; `<AppImage> launcher` / `f2-import ...` / `f2-viewer` run the other programs.
   cat > "$ad/AppRun" <<'APPRUN'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
 case "$1" in
-  f2-import|f2-viewer) tool="$1"; shift; exec "$HERE/usr/bin/$tool" "$@" ;;
+  f2-import|f2-viewer|launcher) tool="$1"; shift; exec "$HERE/usr/bin/$tool" "$@" ;;
 esac
 exec "$HERE/usr/bin/frogger2" "$@"
 APPRUN
@@ -92,8 +96,9 @@ pkg_windows() {
   local bindir="${F2_WIN_BIN_DIR:-$OUT/win-bin}"
   [[ -n "${F2_SKIP_BUILD:-}" || -n "${F2_WIN_BIN_DIR:-}" ]] || tools/package/build-windows.sh
   local name="frogger2-rs-$VER-windows-${F2_WIN_ARCH:-x86_64}" st="$OUT/stage/windows"
-  rm -rf "$st"; mkdir -p "$st/$name"
-  for b in "${BINS[@]}"; do cp "$bindir/$b.exe" "$st/$name/"; done
+  rm -rf "$st"; mkdir -p "$st/$name/engine"
+  for b in "${BINS[@]}"; do cp "$bindir/$b.exe" "$st/$name/engine/"; done
+  cp "$bindir/$LAUNCHER.exe" "$st/$name/"
   stage_docs "$st/$name"
   zip_dir "$st" "$name"
 }
@@ -144,7 +149,7 @@ pkg_macos() {
   rm -rf "$st"; mkdir -p "$st/$name"
   local bundle="$st/$name/Frogger2rs.app" app="$st/$name/Frogger2rs.app/Contents"
   mkdir -p "$app/MacOS" "$app/Resources"
-  for b in "${BINS[@]}"; do install -m755 "$bindir/$b" "$app/MacOS/"; done
+  for b in "${BINS[@]}" "$LAUNCHER"; do install -m755 "$bindir/$b" "$app/MacOS/"; done
   cat > "$app/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -191,7 +196,7 @@ PLIST
     # codesign treats a bundle's main executable as the bundle, so signing it first would seal
     # the bundle while the tools are still unsigned (x86_64 builds from an arm64 host are not
     # linker-signed).
-    for b in "${BINS[@]}"; do
+    for b in "${BINS[@]}" "$LAUNCHER"; do
       [[ "$b" == frogger2 ]] || codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$app/MacOS/$b"
     done
     codesign --force ${opts[@]+"${opts[@]}"} -s "$id" "$bundle"

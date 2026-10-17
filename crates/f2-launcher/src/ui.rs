@@ -395,7 +395,13 @@ impl Launcher {
             p.rect([a[0], ry, list_w, row_h - 4.0 * d], BTN_OFF);
             let label = if m.enabled { "ON" } else { "OFF" };
             let bw = 70.0 * d;
-            self.button(p, [a[0] + list_w - bw - 8.0 * d, ry + 3.0 * d, bw, row_h - 10.0 * d], label, if m.enabled { BTN_ON } else { BTN }, Action::ToggleMod(m.id.clone()));
+            self.button(
+                p,
+                [a[0] + list_w - bw - 8.0 * d, ry + 3.0 * d, bw, row_h - 10.0 * d],
+                label,
+                if m.enabled { BTN_ON } else { BTN },
+                Action::ToggleMod(m.id.clone()),
+            );
             let text = if m.version.is_empty() { m.name.clone() } else { format!("{} {}", m.name, m.version) };
             let avail = ((list_w - bw - 30.0 * d) / (GLYPH_W * s)).floor().max(4.0) as usize;
             p.text(a[0] + 10.0 * d, ry + (row_h - 4.0 * d - GLYPH_H * s) / 2.0, &fit(&text, avail), TEXT, s);
@@ -468,7 +474,13 @@ mod tests {
         l.state.app_version = "0.1.0".into();
         l.state.data_dir = "/home/x/frogger2-rs/data".into();
         l.state.versions = (0..12)
-            .map(|i| VersionRow { tag: format!("v0.{i}.0"), label: format!("v0.{i}.0  2026-10-{:02}", i + 1), installed: i % 3 == 0, selected: i == 0, available: i != 5 })
+            .map(|i| VersionRow {
+                tag: format!("v0.{i}.0"),
+                label: format!("v0.{i}.0  2026-10-{:02}", i + 1),
+                installed: i % 3 == 0,
+                selected: i == 0,
+                available: i != 5,
+            })
             .collect();
         l.state.mods = vec![ModRow { id: "hello-mod".into(), name: "Hello, mod!".into(), version: "0.1.0".into(), enabled: true }];
         l
@@ -555,7 +567,12 @@ mod tests {
 
     #[test]
     fn android_style_caps_hide_versions_and_offer_close() {
-        let mut l = Launcher::new(Caps { versions: false, import: true, open_folders: false, updates_page: true, close_label: Some("BACK TO THE GAME") }, 1920.0, 1080.0, 2.0);
+        let mut l = Launcher::new(
+            Caps { versions: false, import: true, open_folders: false, updates_page: true, close_label: Some("BACK TO THE GAME") },
+            1920.0,
+            1080.0,
+            2.0,
+        );
         assert!(!l.tabs().iter().any(|(t, _)| *t == Tab::Versions));
         assert_eq!(click_label(&mut l, "BACK TO THE GAME"), Action::Close);
         click_label(&mut l, "SETTINGS");

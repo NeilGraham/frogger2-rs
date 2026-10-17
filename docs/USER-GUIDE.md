@@ -14,6 +14,31 @@ Status: in development; see the Status section of [PLAN.md](PLAN.md). Some menus
 screens and FMV flow are still being finished, so expect rough edges. Online play (`--host` /
 `--join`) and mods (`--mods`) are available (see Multiplayer and Mods).
 
+## Installing a release and the launcher
+
+1. Download the zip for your system from the GitHub releases page and unzip it anywhere, for
+   example into `frogger2-rs/`. That one folder holds everything the game uses: the programs, the
+   imported game (`data/`), `config.toml`, `saves/` and `mods/`, because the zip contains a
+   `portable.txt` (delete it to use the per-user folders instead). Moving or deleting the folder
+   moves or deletes it all.
+2. Start **`launcher`** (`launcher.exe`). Its **PLAY** tab imports your own copy of the game
+   (disc, image or install folder; nothing from the game is downloaded or shipped) and then makes
+   **`frogger2`** (`frogger2.exe`) in the folder. On Windows that exe carries the game's own icon
+   and name, cut from your imported artwork on your machine, so only `launcher.exe` is there at
+   first. **PLAY** starts the game; you can also start `frogger2` directly any time, which opens
+   the game at once (and the launcher instead if you have no data yet).
+3. **VERSIONS** lists the releases on GitHub. **INSTALL** downloads one (checked against the
+   release's `SHA256SUMS.txt`) into `versions/<tag>/`, **USE** picks the version PLAY runs
+   (your data, settings, saves and mods are shared by all versions), **REMOVE** deletes one.
+   The launcher asks GitHub for the list when it starts; turn that off with
+   `[launcher] check_updates = false` in `config.toml`, point it at a mirror with
+   `[launcher] releases_url` or `$F2_RELEASES_URL`, or set `$F2_NO_UPDATE_CHECK=1`.
+4. **MODS** lists the folders in `mods/` and switches them on and off (`[mods] enabled`).
+5. **SETTINGS**: *On start, open the* Game (default) or Launcher (`[launcher] start`).
+   `frogger2 --game` always opens the game.
+
+On Android the launcher is reached from the swipe-in menu, see [ANDROID.md](ANDROID.md).
+
 ## Quick start
 
 1. Build (see [BUILDING.md](BUILDING.md)):
@@ -204,7 +229,8 @@ The simulation always runs at a fixed 60 Hz in both profiles.
 
 ## Configuration
 
-`config.toml` lives in the config directory: `$F2_CONFIG_DIR`, else `~/.config/frogger2-rs/`
+`config.toml` lives in the config directory: `$F2_CONFIG_DIR`, else the install folder of a
+portable install (the release zips), else `~/.config/frogger2-rs/`
 (`$XDG_CONFIG_HOME` honoured) on Linux, `%APPDATA%\frogger2-rs\` on Windows,
 `~/Library/Application Support/frogger2-rs/` on macOS. A missing file or key means the default.
 Command-line options override the file for that run.
@@ -267,6 +293,12 @@ fix_tube_softlock = true
 [mods]
 enabled = []                # mod ids in load order (later wins)
 # dir = "/path"             # mods directory (default: platform data dir)
+
+[launcher]                  # the launcher (see "Installing a release and the launcher")
+start = "game"              # what frogger2 opens on start: "game" | "launcher"
+version = ""                # installed release the launcher runs ("" = the folder's own build)
+check_updates = true        # ask GitHub for newer releases when the launcher starts
+# releases_url = "https://api.github.com/repos/NeilGraham/frogger2-rs/releases"  # or a mirror
 
 [[input.bindings]]          # normally written by the Settings screen
 player = 1

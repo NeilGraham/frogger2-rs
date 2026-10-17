@@ -24,7 +24,6 @@ fn data_base() -> Option<PathBuf> {
     }
 }
 
-
 /// Marker file of a portable install: `portable.txt` in the folder that holds the app. The
 /// release zips ship it, so everything the app reads and writes (imported game data, settings,
 /// saves, mods, downloaded runtimes) stays inside that folder.

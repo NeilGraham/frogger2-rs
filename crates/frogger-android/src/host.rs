@@ -6,16 +6,16 @@
 //! every motion event into touch positions, so gamepad sticks and d-pads that report HAT
 //! axes never reached the game.
 
+use crate::launcher::{self, Gesture, RendererPainter, Tracker};
 use crate::menu::{self, Menu};
 use crate::pad::{self, Axes, Gamepad};
 use crate::touch::{Phase, TouchPad};
-use crate::launcher::{self, Gesture, RendererPainter, Tracker};
 use crate::{bundle, import};
-use f2_launcher::ui::{Action as LAction, Launcher};
 use android_activity::input::{Axis, InputEvent, KeyAction, MotionAction, MotionEvent};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use f2_audio::AudioEngine;
 use f2_engine::{FontId, GpuContext, Renderer, WindowSurface};
+use f2_launcher::ui::{Action as LAction, Launcher};
 use f2_platform::config::VideoMode;
 use f2_platform::{Config, Controller, ControllerFamily, KeyboardState, PadButton, Profile, RawPad, WindowMode};
 use frogger::app::{App, Step, WinInfo};

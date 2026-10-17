@@ -18,6 +18,7 @@ all 26 levels and the 3 demos are identical to the retail oracle trace.
 | 4 Full single-player | done | frontend, menus, options, story, savegame, language, training, cheats, FMV, fades | none known |
 | 5 Multiplayer and hardening | partial | local multiplayer and split-screen game logic (`multi.c`), packaging | multiplayer HUD |
 | 6 Enhancements and online | done (first cut) | display profiles (authentic / enhanced), gamepads and rebinding, rollback netplay (`f2-net`), settings screen | culling for wider-than-4:3 views, see below |
+| Launcher | done (first cut) | `launcher` (desktop) and the Android launcher screen: import, side-by-side versions from GitHub releases, mods, start-up choice; portable installs | self-update of the launcher, mod downloads |
 | 7 Modding | done (first cut) | `f2-mods` layered VFS, `f2-etc` script tool, `f2-modkit`, level editor | glTF/PNG/WAV replacement polish |
 | Platforms | see [PLATFORMS.md](PLATFORMS.md) | Windows, Linux, macOS, Android, PS4, PS5, N64 (experimental) | N64 black screen after a level; Linux not yet played on a desktop |
 
@@ -110,7 +111,7 @@ Everything is pure Rust or has a pure-Rust path, so building needs only `cargo`.
 
 See [architecture.md](architecture.md) for the crates, data flow and main loop. In short:
 `crates/` holds the libraries (`f2-media`, `f2-formats`, `f2-import`, `f2-bink`, `f2-math`,
-`f2-engine`, `f2-audio`, `f2-game`, `f2-platform`, `f2-mods`, `f2-net`, `f2-package`, and the
+`f2-engine`, `f2-audio`, `f2-game`, `f2-platform`, `f2-mods`, `f2-net`, `f2-package`, `f2-launcher`, and the
 platform hosts), `frogger2` is the executable, and `tools/` holds the viewer, the script compiler,
 the trace and parity tools, the packers and the console build scripts.
 

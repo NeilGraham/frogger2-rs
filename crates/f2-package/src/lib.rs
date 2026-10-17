@@ -55,6 +55,12 @@ impl Branding {
     }
 }
 
+/// A Windows executable with its icons replaced by `icon` and its version strings naming
+/// `title`; the code is untouched (what the Windows export does, `docs/EXPORT.md`).
+pub fn rebrand_windows_exe(exe: &[u8], title: &str, version: &str, icon: &Image) -> Result<Vec<u8>, String> {
+    windows::rebrand_exe(exe, title, version, icon)
+}
+
 /// A platform to export for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {

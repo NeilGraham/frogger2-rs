@@ -182,7 +182,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: tools/package/package.sh linux
       # Smoke test of the packaged binary on its own architecture (no window, no game data).
-      - run: ./target/package/stage/linux/frogger2-rs-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}/f2-import --help
+      - run: ./target/package/stage/linux/frogger2-rs-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}/engine/f2-import --help
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.arch }}
@@ -344,8 +344,9 @@ jobs:
 
           **No game data is included.** Every download here is built from source by CI and
           contains no files from the game. You need your own copy of the game (the original
-          disc or an image of it): the app imports it on first start (\`f2-import\` on the
-          command line).
+          disc or an image of it). Unzip a desktop download anywhere (everything stays in that
+          folder), start \`launcher\` and import it; the launcher then makes \`frogger2\`, which
+          carries the game's own icon, and later installs newer releases side by side.
 
           | Download | For |
           |---|---|

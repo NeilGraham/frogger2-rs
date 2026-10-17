@@ -25,6 +25,35 @@ pub struct Config {
     pub mods: Mods,
     /// Gameplay / QoL options (`[gameplay]`, P6-1); they apply in the enhanced profile only.
     pub gameplay: Gameplay,
+    /// `[launcher]`: what the app opens on start, and which installed version runs.
+    pub launcher: LauncherCfg,
+}
+
+/// `[launcher]` (docs/USER-GUIDE.md "Launcher").
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LauncherCfg {
+    /// `game` (default) or `launcher`: what `frogger2` opens on start.
+    pub start: String,
+    /// Release tag of the version the launcher runs (`v0.1.0`); empty = the build in the
+    /// install folder itself.
+    pub version: String,
+    /// The releases API to list versions from; `None` = the project's GitHub repository.
+    pub releases_url: Option<String>,
+    /// Ask GitHub for newer releases when the launcher starts (one small request).
+    pub check_updates: bool,
+}
+
+impl Default for LauncherCfg {
+    fn default() -> Self {
+        LauncherCfg { start: "game".into(), version: String::new(), releases_url: None, check_updates: true }
+    }
+}
+
+impl LauncherCfg {
+    pub fn start_in_launcher(&self) -> bool {
+        self.start.eq_ignore_ascii_case("launcher")
+    }
 }
 
 /// `[mods]`.
@@ -454,6 +483,7 @@ impl Default for Config {
             input: Input::default(),
             mods: Mods::default(),
             gameplay: Gameplay::default(),
+            launcher: LauncherCfg::default(),
         }
     }
 }

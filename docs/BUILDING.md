@@ -178,8 +178,28 @@ tools/package/package.sh windows   # target/package/*.zip
 tools/package/package.sh macos     # on macOS: .app in a tar.gz
 ```
 
-Each archive carries `NOTICE`, the four license texts (`licenses/`) and no game data.
+Each archive carries `NOTICE`, the two license texts (`licenses/`) and no game data.
 `$CARGO_TARGET_DIR` is honoured with `F2_SKIP_BUILD=1`.
+
+The Windows zip and the Linux tar.gz are **portable installs**:
+
+```
+frogger2-rs-<v>-<os>-<arch>/
+  launcher(.exe)           the launcher (crates/frogger/src/bin/launcher.rs, f2-launcher)
+  engine/                  frogger2(.exe), f2-import, f2-viewer
+  portable.txt             marker: data, config.toml, saves/, mods/ live in this folder
+  NOTICE  README.md  licenses/ ...
+  (frogger2(.exe)          made by the launcher after the import, see below)
+  (data/ versions/ mods/ saves/ config.toml: created at run time)
+```
+
+`portable_root()` (f2-platform / f2-import) finds the folder with `portable.txt` from the running
+exe: its own folder, the `engine/` parent, `versions/<tag>[/engine]`, or beside a macOS `.app`.
+The launcher writes `frogger2` into the install folder once the game is imported
+(`frogger::setup::ensure_game_exe`): on Windows a copy of `engine/frogger2.exe` whose icon and
+version strings are the game's own (the Windows export's `editpe` rebranding, with the artwork cut
+from the player's imported data), on Linux/macOS a link to the engine. The macOS zip holds the
+`.app` (with `launcher` inside `Contents/MacOS`) next to `portable.txt`.
 
 - **AppImage**: needs [appimagetool](https://github.com/AppImage/appimagetool/releases) on `PATH`
   or in `F2_APPIMAGETOOL`. It downloads the AppImage runtime while building; offline, pass a

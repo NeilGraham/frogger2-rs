@@ -15,6 +15,11 @@ name = "frogger2"
 path = "src/main.rs"
 required-features = ["desktop"]
 
+[[bin]]
+name = "launcher"
+path = "src/bin/launcher.rs"
+required-features = ["desktop"]
+
 [[example]]
 name = "vk_present"
 required-features = ["ps5-vulkan"]
@@ -23,7 +28,7 @@ required-features = ["ps5-vulkan"]
 default = ["desktop", "audio-device"]
 # Window, GPU and gamepads (winit, wgpu, gilrs): the desktop executable. Without it the
 # library builds for hosts that bring their own platform layer and use the CPU renderer.
-desktop = ["gpu", "f2-platform/window", "f2-platform/gamepad", "fontgen", "export"]
+desktop = ["gpu", "f2-platform/window", "f2-platform/gamepad", "fontgen", "export", "dep:f2-launcher"]
 # "Export to…" other platforms (export.rs, docs/EXPORT.md): desktop builds only.
 export = ["dep:f2-package"]
 # Builds the modern fonts on first run when the typeface is found (desktop; Android finds
@@ -62,6 +67,8 @@ f2-media = { path = "../f2-media" }
 png = "=0.18.1"
 # "Export to…" packaging (export.rs, docs/EXPORT.md).
 f2-package = { path = "../f2-package", optional = true }
+# The launcher (src/bin/launcher.rs) and the game executable made beside it (setup.rs).
+f2-launcher = { path = "../f2-launcher", optional = true }
 serde_json.workspace = true
 wgpu = { version = "=30.0.1", optional = true }
 

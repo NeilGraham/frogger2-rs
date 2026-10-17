@@ -21,5 +21,7 @@ pub mod padscript;
 pub mod present;
 pub mod record;
 pub mod render;
+#[cfg(feature = "desktop")]
+pub mod setup;
 pub mod tinyfont;
 pub mod video;

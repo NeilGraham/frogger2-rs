@@ -231,7 +231,6 @@ fn env_path(k: &str) -> Option<PathBuf> {
     std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-
 /// Marker file of a portable install: `portable.txt` in the folder that holds the app. The
 /// release zips ship it, so everything the app reads and writes (imported game data, settings,
 /// saves, mods, downloaded runtimes) stays inside that folder.

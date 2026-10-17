@@ -49,10 +49,8 @@ pub fn refresh(l: &mut Launcher, i: &Inputs) {
     s.app_version = env!("CARGO_PKG_VERSION").to_string();
     s.start_in_launcher = i.start_in_launcher;
     s.mods_dir = i.mods_dir.display().to_string();
-    s.mods = mods::list(i.mods_dir)
-        .into_iter()
-        .map(|m| ModRow { enabled: i.enabled_mods.contains(&m.id), id: m.id, name: m.name, version: m.version })
-        .collect();
+    s.mods =
+        mods::list(i.mods_dir).into_iter().map(|m| ModRow { enabled: i.enabled_mods.contains(&m.id), id: m.id, name: m.name, version: m.version }).collect();
 }
 
 /// `id` toggled in the enabled list (appended = loads last, as `[mods] enabled` says).
@@ -176,7 +174,14 @@ mod tests {
         let mut l = Launcher::new(caps(false), 1920.0, 1080.0, 2.0);
         l.state.message = Some(("hello".into(), false));
         let enabled = vec!["m1".to_string()];
-        let i = Inputs { game: Some("G"), data_root: Path::new("/d"), config_path: Path::new("/c.toml"), mods_dir: &t, enabled_mods: &enabled, start_in_launcher: true };
+        let i = Inputs {
+            game: Some("G"),
+            data_root: Path::new("/d"),
+            config_path: Path::new("/c.toml"),
+            mods_dir: &t,
+            enabled_mods: &enabled,
+            start_in_launcher: true,
+        };
         refresh(&mut l, &i);
         assert_eq!(l.state.game.as_deref(), Some("G"));
         assert!(l.state.start_in_launcher);
