@@ -16,10 +16,10 @@ platform. Exporting needs no SDKs and no extra tools.
 | Platform | How | State |
 |---|---|---|
 | **Windows**, **macOS**, **Linux** | run the app, or export a standalone folder / `.app` / AppImage | works (macOS is built and tested in CI, not yet run on a Mac) |
-| **Android** | export an `.apk` with the game inside, sideload it | plays on a handheld and the emulator, with touch controls and gamepads |
-| **PS4** | export a fake package (`.pkg`) for a jailbroken console | runs in the shadPS4 emulator, not yet tested on hardware |
-| **PS5** | export an app folder / `.ffpkg` for a jailbroken console | runs in the KytyPS5 emulator, not yet tested on hardware |
-| **N64** | export a `.z64` ROM | boots and plays in the ares emulator, still being optimised |
+| **Android** | export an `.apk` with the game inside, sideload it | played start to finish on a handheld, with touch controls and gamepads |
+| **PS4** | export a fake package (`.pkg`) for a jailbroken console | tested on a jailbroken PS5 (firmware 11.40) and in the shadPS4 emulator |
+| **PS5** | export an app folder / `.ffpkg` for a jailbroken console | tested on a jailbroken PS5 (firmware 11.40) and in the KytyPS5 emulator |
+| **N64** | export a `.z64` ROM | **experimental**: runs on a ModRetro M64 and in the ares emulator, but can black-screen when leaving a level for the menu; still being optimised |
 
 ```sh
 frogger --export windows,android,ps4,ps5,n64 --out exports     # or: frogger --export all
@@ -70,7 +70,8 @@ Everything else (controls, saves, multiplayer, troubleshooting) is in
   partial workarounds in [docs/enhancements.md](docs/enhancements.md).
 - The multiplayer HUD and a few small items are still open:
   [docs/PORT-GAPS.md](docs/PORT-GAPS.md).
-- The consoles have only been run in emulators so far, and the N64 build is still being tuned.
+- **N64 is experimental.** On a ModRetro M64 the screen can go black when going from a level back
+  to the menu, and performance is still being tuned.
 
 ## About the project
 
