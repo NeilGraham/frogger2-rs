@@ -9,6 +9,9 @@
 //! installed by copying it to the console (e.g. `/data/homebrew/` for ShadowMountPlus).
 
 mod dds;
+pub(crate) mod fself;
+pub(crate) mod kraken;
+pub(crate) mod pkg;
 
 use crate::ps4::{art, runtime::Runtime};
 use crate::{util, Job};
