@@ -12,7 +12,8 @@ story levels, touch controls, gamepad, background/resume.
 |---|---|
 | Native host (`android_main`) | `crates/frogger-android/src/host.rs`: `android-activity` main loop (not winit, see below), wgpu surface lifecycle, input, render-resolution pass, frame loop |
 | Gamepad / keyboard mapping | `crates/frogger-android/src/pad.rs`: `KEYCODE_*` and joystick axes (sticks, HAT d-pad, triggers) → player 1's `RawPad`, keyboard → DirectInput codes |
-| Overlay menu | `crates/frogger-android/src/menu.rs`: swipe in from the left edge; touch controls on/off (`android.toml`) |
+| Overlay menu | `crates/frogger-android/src/menu.rs`: swipe in from the left edge; touch controls on/off, the launcher button and the start-in switch (`android.toml`) |
+| Launcher | `crates/frogger-android/src/launcher.rs`: the shared UI model of `crates/f2-launcher` drawn with the host's UI renderer; tap/drag handling |
 | Touch controls | `crates/frogger-android/src/touch.rs`: d-pad, PlayStation face buttons, L1/L2/R1/R2, Select/Start; procedurally drawn atlas |
 | Import screen | `crates/frogger-android/src/import.rs`: finds a disc image in the app folder, runs `f2_import` on a thread with progress |
 | Bundled game (exported APKs) | `crates/frogger-android/src/bundle.rs`: `assets/game-data/bundle.json` index, one-time unpack into `files/data/<rendition>/` |
@@ -99,10 +100,27 @@ imported on a PC that already ran the game has them.
 - **Back** = Escape (closes menus; on the start screen it quits, like Esc on the desktop); with
   the overlay menu open it closes the menu.
 - **Overlay menu**: swipe in from the middle of the left edge. The game pauses while it is
-  open; it has one switch for now, **Touch controls on/off** (saved in `files/android.toml`).
+  open; it has **Touch controls on/off**, **Add home-screen icon**, **Launcher** and **Start in: Game / Launcher**
+  (saved in `files/android.toml`).
   Tap outside the panel, "Close" or Back to return.
 - Player 1 is `Joypad(0)` with the keyboard still active; local multiplayer needs more pads,
   which are not mapped yet.
+
+## Launcher
+
+The same launcher as the desktop one (`crates/f2-launcher`), drawn full screen in landscape.
+
+- With game data, the app starts straight in the game. Swipe in the overlay menu from the left
+  and tap **Launcher** to open it (the game stays paused behind it); **Back to the game** or the
+  Back key returns.
+- **Start in: Game / Launcher** (menu, and Settings in the launcher) is `start_in_launcher = false|true`
+  in `files/android.toml`; the default is the game. With no game data the import screen still comes first.
+- Tabs: **Play** (status, Play, **Import game** / **Re-import game**, hidden in exported APKs that
+  carry the game), **Mods** (the folders in `files/mods/`; toggling one edits `[mods] enabled` in
+  `config.toml` and applies the next time the game starts), **Settings** (start-in, **Check for
+  updates online**). An APK is installed by Android, so updates open the GitHub releases page in the
+  browser (`MainActivity.openUrl`); there is no Versions tab on Android.
+- Touch: tap a button; drag a list up or down to scroll it.
 
 ## Resolution
 

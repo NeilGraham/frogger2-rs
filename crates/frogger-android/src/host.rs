@@ -9,7 +9,9 @@
 use crate::menu::{self, Menu};
 use crate::pad::{self, Axes, Gamepad};
 use crate::touch::{Phase, TouchPad};
+use crate::launcher::{self, Gesture, RendererPainter, Tracker};
 use crate::{bundle, import};
+use f2_launcher::ui::{Action as LAction, Launcher};
 use android_activity::input::{Axis, InputEvent, KeyAction, MotionAction, MotionEvent};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use f2_audio::AudioEngine;
@@ -74,6 +76,10 @@ pub fn main(android: AndroidApp) {
         app: None,
         touch: None,
         menu: None,
+        launcher: None,
+        launcher_open: false,
+        launcher_touch: Tracker::default(),
+        game_title: None,
         dp: android.config().density().map_or(2.0, |d| d as f32 / 160.0),
         kb: KeyboardState::default(),
         gamepad: Gamepad::default(),
@@ -141,6 +147,8 @@ struct Prefs {
     touch_controls: bool,
     /// The home-screen shortcut with the player's game artwork was offered once already.
     game_art_shortcut_offered: bool,
+    /// Open the launcher instead of the game when the app starts (default: the game).
+    start_in_launcher: bool,
 }
 
 impl Prefs {
@@ -154,13 +162,14 @@ impl Prefs {
         Prefs {
             touch_controls: get("touch_controls").is_none_or(|v| v != "false"),
             game_art_shortcut_offered: get("game_art_shortcut_offered").is_some_and(|v| v == "true"),
+            start_in_launcher: get("start_in_launcher").is_some_and(|v| v == "true"),
         }
     }
 
     fn save(&self, files: &std::path::Path) {
         let text = format!(
-            "# Android settings (also in the swipe-from-the-left menu).\ntouch_controls = {}\ngame_art_shortcut_offered = {}\n",
-            self.touch_controls, self.game_art_shortcut_offered
+            "# Android settings (also in the swipe-from-the-left menu).\ntouch_controls = {}\ngame_art_shortcut_offered = {}\nstart_in_launcher = {}\n",
+            self.touch_controls, self.game_art_shortcut_offered, self.start_in_launcher
         );
         if let Err(e) = std::fs::write(Self::path(files), text) {
             eprintln!("frogger: saving android.toml: {e}");
@@ -198,6 +207,12 @@ struct Host {
     app: Option<App>,
     touch: Option<TouchPad>,
     menu: Option<Menu>,
+    /// The launcher screen (made with the first window) and whether it is showing.
+    launcher: Option<Launcher>,
+    launcher_open: bool,
+    launcher_touch: Tracker,
+    /// Title of the imported game, for the launcher.
+    game_title: Option<String>,
     /// Pixels per dp.
     dp: f32,
     /// Hardware / Bluetooth keyboard (and Back = Escape).
@@ -234,6 +249,10 @@ impl Host {
             Some(m) => m.resize(w as f32, h as f32, self.dp),
             None => self.menu = Some(Menu::new(w as f32, h as f32, self.dp)),
         }
+        match &mut self.launcher {
+            Some(l) => l.resize(w as f32, h as f32, self.dp),
+            None => self.launcher = Some(Launcher::new(launcher::caps(self.bundle.is_some()), w as f32, h as f32, self.dp)),
+        }
         if let Some(app) = &mut self.app {
             // Back from the background.
             app.apply_master_volume();
@@ -248,12 +267,71 @@ impl Host {
                 self.last = Instant::now();
                 return;
             }
-            let ptrs = self.jni_ptrs;
-            let picker: Box<dyn Fn()> = Box::new(move || pick_disc_image(ptrs));
-            self.import =
-                Some(import::Screen::new(&g.ctx.device, &g.ctx.queue, fmt, self.files.clone(), f2_platform::paths::default_data_root(), Some(picker)));
+            self.begin_import();
         }
         self.last = Instant::now();
+    }
+
+    /// Shows the import screen (disc image picker); when it finishes the game starts again.
+    fn begin_import(&mut self) {
+        let Some(g) = self.gfx.as_ref() else { return };
+        let Some(s) = g.surface.as_ref() else { return };
+        let fmt = s.config.format;
+        let ptrs = self.jni_ptrs;
+        let picker: Box<dyn Fn()> = Box::new(move || pick_disc_image(ptrs));
+        self.import = Some(import::Screen::new(&g.ctx.device, &g.ctx.queue, fmt, self.files.clone(), f2_platform::paths::default_data_root(), Some(picker)));
+        self.last = Instant::now();
+    }
+
+    /// Opens the launcher over the (paused) game.
+    fn open_launcher(&mut self) {
+        if let Some(t) = &mut self.touch {
+            t.release_all();
+        }
+        self.launcher_touch.clear();
+        self.launcher_open = true;
+    }
+
+    fn close_launcher(&mut self) {
+        self.launcher_open = false;
+        self.launcher_touch.clear();
+        self.last = Instant::now();
+    }
+
+    /// Acts on a button of the launcher screen.
+    fn launcher_action(&mut self, a: LAction) {
+        if launcher::closes(&a) {
+            self.close_launcher();
+            return;
+        }
+        match a {
+            LAction::Import if self.bundle.is_none() => {
+                // Back to the import flow; the game starts again from its result.
+                self.close_launcher();
+                self.save_config();
+                self.app = None;
+                self.begin_import();
+            }
+            LAction::SetStartInLauncher(b) => {
+                self.prefs.start_in_launcher = b;
+                self.prefs.save(&self.files);
+            }
+            LAction::OpenUpdates => open_url(self.jni_ptrs, f2_launcher::releases::RELEASES_PAGE_URL),
+            LAction::ToggleMod(id) => {
+                launcher::toggle_mod(&mut self.cfg.mods.enabled, &id);
+                if let Some(app) = &mut self.app {
+                    app.cfg.mods = self.cfg.mods.clone();
+                }
+                self.save_config();
+                if let Err(e) = self.cfg.save_default() {
+                    eprintln!("frogger: saving config: {e}");
+                }
+                if let Some(l) = &mut self.launcher {
+                    l.state.message = Some(("Restart the game to apply mods".into(), false));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn window_destroyed(&mut self) {
@@ -339,8 +417,12 @@ impl Host {
         app.set_gameplay(cfg.gameplay.clone(), Some(self.save_path.clone()));
         app.speedrun = gameplay::Speedrun::new(Some(f2_platform::paths::save_dir().join("splits.csv")));
         app.push_steps([Step::Boot]);
+        self.game_title = f2_import::installed(&self.data_root).into_iter().next().map(|m| m.title);
         self.app = Some(app);
         self.last = Instant::now();
+        if self.prefs.start_in_launcher {
+            self.open_launcher();
+        }
         // An exported APK's launcher icon already is the game artwork: no shortcut offer.
         let offer = !self.prefs.game_art_shortcut_offered && self.bundle.is_none();
         if self.use_game_art_icon(offer) && offer {
@@ -397,6 +479,12 @@ impl Host {
                     _ => return InputStatus::Handled,
                 };
                 if code == pad::key::BACK {
+                    if self.launcher_open {
+                        if down {
+                            self.close_launcher();
+                        }
+                        return InputStatus::Handled;
+                    }
                     if let Some(m) = self.menu.as_mut().filter(|m| m.open) {
                         if down {
                             m.close();
@@ -482,6 +570,22 @@ impl Host {
             }
             return;
         }
+        if self.launcher_open {
+            let dp = self.dp;
+            match self.launcher_touch.touch(id, phase, x, y, 46.0 * dp, 10.0 * dp) {
+                Gesture::Scroll(rows) => {
+                    if let Some(l) = &mut self.launcher {
+                        l.scroll_by(rows);
+                    }
+                }
+                Gesture::Tap(tx, ty) => {
+                    let a = self.launcher.as_mut().map_or(LAction::None, |l| l.press(tx, ty));
+                    self.launcher_action(a);
+                }
+                Gesture::None => {}
+            }
+            return;
+        }
         let (taken, action) = match &mut self.menu {
             Some(m) => m.touch(id, phase, x, y),
             None => (false, menu::Action::None),
@@ -499,6 +603,11 @@ impl Host {
             }
             menu::Action::GameArtIcon => {
                 self.use_game_art_icon(true);
+            }
+            menu::Action::OpenLauncher => self.open_launcher(),
+            menu::Action::ToggleStartIn => {
+                self.prefs.start_in_launcher = !self.prefs.start_in_launcher;
+                self.prefs.save(&self.files);
             }
             menu::Action::Closed => self.last = Instant::now(),
             menu::Action::None => {}
@@ -535,6 +644,9 @@ impl Host {
             if let Some(m) = &mut self.menu {
                 m.resize(ww as f32, wh as f32, self.dp);
             }
+            if let Some(l) = &mut self.launcher {
+                l.resize(ww as f32, wh as f32, self.dp);
+            }
         }
         let (w, h) = (s.config.width, s.config.height);
 
@@ -566,7 +678,7 @@ impl Host {
         if self.prefs.touch_controls {
             pad = pad::merge(pad, touch.pad());
         }
-        if !menu.open {
+        if !menu.open && !self.launcher_open {
             // Newly pressed buttons as raw events (FMV skipping, the controls settings
             // page), like the desktop's gamepad events.
             let prev = std::mem::replace(&mut self.prev_pad, pad);
@@ -620,10 +732,29 @@ impl Host {
         }
         // Touch controls and the menu over the final image (in the black bars too).
         g.ui.begin_frame(w, h);
-        if self.prefs.touch_controls && !menu.open {
-            touch.draw(&mut g.ui);
+        if self.launcher_open {
+            if let Some(l) = &mut self.launcher {
+                let config_path = f2_platform::paths::config_file();
+                let mods_dir = self.cfg.mods_dir();
+                launcher::refresh(
+                    l,
+                    &launcher::Inputs {
+                        game: Some(self.game_title.as_deref().unwrap_or("Frogger 2: Swampy's Revenge")),
+                        data_root: &self.data_root,
+                        config_path: &config_path,
+                        mods_dir: &mods_dir,
+                        enabled_mods: &self.cfg.mods.enabled,
+                        start_in_launcher: self.prefs.start_in_launcher,
+                    },
+                );
+                l.draw(&mut RendererPainter { r: &mut g.ui, font: g.ui_font });
+            }
+        } else {
+            if self.prefs.touch_controls && !menu.open {
+                touch.draw(&mut g.ui);
+            }
+            menu.draw(&mut g.ui, g.ui_font, self.prefs.touch_controls, self.prefs.start_in_launcher);
         }
-        menu.draw(&mut g.ui, g.ui_font, self.prefs.touch_controls);
         g.ui.render(&view, w, h, [0.0; 4]);
         g.ctx.queue.present(tex);
         if save {
@@ -715,6 +846,25 @@ fn pick_disc_image((vm, activity): (usize, usize)) {
     })();
     if let Err(e) = res {
         eprintln!("frogger: file picker: {e}");
+    }
+}
+
+/// Opens `url` in the browser (`MainActivity.openUrl`).
+fn open_url((vm, activity): (usize, usize), url: &str) {
+    let res = (|| -> jni::errors::Result<()> {
+        let vm = unsafe { jni::JavaVM::from_raw(vm as *mut jni::sys::JavaVM)? };
+        let mut env = vm.attach_current_thread()?;
+        let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+        let s = env.new_string(url)?;
+        let r = env.call_method(&activity, "openUrl", "(Ljava/lang/String;)V", &[(&s).into()]);
+        if env.exception_check()? {
+            env.exception_describe()?;
+            env.exception_clear()?;
+        }
+        r.map(|_| ())
+    })();
+    if let Err(e) = res {
+        eprintln!("frogger: opening {url}: {e}");
     }
 }
 

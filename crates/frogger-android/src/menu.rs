@@ -1,5 +1,5 @@
 //! The Android overlay menu: swipe in from the left edge to open a small panel (the on-screen touch
-//! controls switch and the home-screen icon). Tapping outside the panel, "Close" or Back closes
+//! controls switch, the home-screen icon, the launcher and where the app starts). Tapping outside the panel, "Close" or Back closes
 //! it; the game is paused while it is open. Layout and gestures are pure (unit-tested on the
 //! host); [`Menu::draw`] queues quads and text into the host's UI renderer.
 
@@ -15,6 +15,10 @@ pub enum Action {
     ToggleTouch,
     /// Offer the home-screen shortcut with the player's game artwork again.
     GameArtIcon,
+    /// Open the launcher screen (the menu closes).
+    OpenLauncher,
+    /// Flip whether the app starts in the launcher or in the game.
+    ToggleStartIn,
     Closed,
 }
 
@@ -22,10 +26,12 @@ pub enum Action {
 enum Row {
     Touch,
     ArtIcon,
+    Launcher,
+    StartIn,
     Close,
 }
 
-const ROWS: [Row; 3] = [Row::Touch, Row::ArtIcon, Row::Close];
+const ROWS: [Row; 5] = [Row::Touch, Row::ArtIcon, Row::Launcher, Row::StartIn, Row::Close];
 
 pub struct Menu {
     pub open: bool,
@@ -87,6 +93,11 @@ impl Menu {
             return match self.row_at(x, y) {
                 Some(Row::Touch) => (true, Action::ToggleTouch),
                 Some(Row::ArtIcon) => (true, Action::GameArtIcon),
+                Some(Row::Launcher) => {
+                    self.close();
+                    (true, Action::OpenLauncher)
+                }
+                Some(Row::StartIn) => (true, Action::ToggleStartIn),
                 Some(Row::Close) => {
                     self.close();
                     (true, Action::Closed)
@@ -127,7 +138,7 @@ impl Menu {
     }
 
     /// Queues the panel (when open) into `r` (already begun at the screen size).
-    pub fn draw(&self, r: &mut Renderer, font: FontId, touch_on: bool) {
+    pub fn draw(&self, r: &mut Renderer, font: FontId, touch_on: bool, start_in_launcher: bool) {
         if !self.open {
             return;
         }
@@ -148,6 +159,8 @@ impl Menu {
             let label = match row {
                 Row::Touch => format!("Touch controls: {}", if touch_on { "ON" } else { "OFF" }),
                 Row::ArtIcon => "Add home-screen icon".to_string(),
+                Row::Launcher => "Launcher".to_string(),
+                Row::StartIn => format!("Start in: {}", if start_in_launcher { "Launcher" } else { "Game" }),
                 Row::Close => "Close".to_string(),
             };
             r.draw_text(font, rr[0] + 16.0 * d, text_y(rr[1], rr[3]), &label, [235, 235, 235, 255], s, None);
@@ -199,7 +212,14 @@ mod tests {
         assert!(m.open);
         assert_eq!(m.touch(5, Phase::Ended, t[0] + 20.0, t[1] + 10.0), (true, Action::None));
         assert_eq!(m.touch(8, Phase::Started, m.row_rect(1)[0] + 20.0, m.row_rect(1)[1] + 10.0), (true, Action::GameArtIcon));
-        let c = m.row_rect(2);
+        let l = m.row_rect(2);
+        assert_eq!(m.touch(9, Phase::Started, l[0] + 20.0, l[1] + 10.0), (true, Action::OpenLauncher));
+        assert!(!m.open, "opening the launcher closes the menu");
+        m.open = true;
+        let s = m.row_rect(3);
+        assert_eq!(m.touch(10, Phase::Started, s[0] + 20.0, s[1] + 10.0), (true, Action::ToggleStartIn));
+        assert!(m.open, "the start-in switch keeps the menu open");
+        let c = m.row_rect(4);
         assert_eq!(m.touch(6, Phase::Started, c[0] + 20.0, c[1] + 10.0), (true, Action::Closed));
         assert!(!m.open);
         m.open = true;

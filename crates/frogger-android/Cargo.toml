@@ -21,6 +21,8 @@ f2-engine = { path = "../f2-engine", default-features = false, features = ["std"
 f2-platform = { path = "../f2-platform", default-features = false }
 f2-audio = { path = "../f2-audio", default-features = false }
 f2-import = { path = "../f2-import" }
+# The launcher screen (the same UI model as the desktop launcher).
+f2-launcher = { path = "../f2-launcher" }
 wgpu = "=30.0.1"
 # The bundle index of exported APKs (bundle.rs).
 serde_json.workspace = true

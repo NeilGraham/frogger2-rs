@@ -121,6 +121,18 @@ public class MainActivity extends NativeActivity {
         });
     }
 
+    /** Called from native code (any thread): opens an http(s) link in the browser. */
+    public void openUrl(final String url) {
+        if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
+        runOnUiThread(() -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+            } catch (Exception e) {
+                Log.e(TAG, "cannot open " + url + ": " + e);
+            }
+        });
+    }
+
     /** Called from native code (any thread): opens the system file picker. */
     public void pickDiscImage() {
         runOnUiThread(() -> {
