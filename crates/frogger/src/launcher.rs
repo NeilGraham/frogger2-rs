@@ -98,7 +98,7 @@ fn export_blurb(t: Target) -> &'static str {
         Target::Linux => "An AppImage with your game inside",
         Target::Android => "An .apk with your game inside, to sideload",
         Target::Ps4 => "A fake package (.pkg) for a jailbroken PS4 or PS5",
-        Target::Ps5 => "An app folder and .ffpkg for a jailbroken PS5",
+        Target::Ps5 => "An app folder (FW 13.60 and lower) and fake package .pkg (11.60 and lower) for a jailbroken PS5",
         Target::N64 => "A .z64 ROM for flash carts and emulators (experimental)",
     }
 }

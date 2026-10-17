@@ -28,6 +28,13 @@ crates/console-host/csrc/emutls.c is adapted from LLVM compiler-rt
 subset of the Roboto fonts (Apache-2.0, Copyright 2011 The Roboto Project
 Authors; crates/frogger/assets/LICENSE-Roboto.txt).
 
+The PS5 package writer (crates/f2-package/src/ps5/: fself.rs, kraken/, pkg/)
+is a port of LibProsperoPkg 1.2.0 (drakmor / SvenGDK,
+https://github.com/drakmor/LibProsperoPkg, GPL-3.0), the library behind
+ffpfsc-pkg-tool; its key material is not included and is downloaded from that
+repository at export time. The PS4 package writer follows OpenOrbis'
+LibOrbisPkg (LGPL-2.1; crates/f2-package/src/ps4.rs).
+
 Frogger is a trademark of Konami. This is an unaffiliated, non-commercial
 fan preservation project. The original source code is preserved by Highway
 Frogs and carries no license; see research/community-and-legal.md.

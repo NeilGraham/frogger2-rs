@@ -9,7 +9,7 @@ WSL:
 | This desktop OS (Windows / macOS / Linux) | a folder / `.app` / `.AppImage` with the game data inside | the running app itself |
 | Android | `.apk` with the game data inside (installs and runs directly) | release asset `frogger2-rs-<v>-android.apk` (the shell app) |
 | PS4 | fake PKG (`.pkg`) | `runtime-ps4-<v>.zip` |
-| PS5 | app folder (+ `.ffpkg` where supported) | `runtime-ps5-<v>.zip` |
+| PS5 | app folder (firmware 13.60 and lower) and fake package `.pkg` (11.60 and lower) | `runtime-ps5-<v>.zip` |
 | N64 | `.z64` ROM | `runtime-n64-<v>.zip` |
 
 The same exports are on the launcher's **Export** page and in the game's Settings > Export (both
@@ -361,10 +361,17 @@ still match). Dependencies are pure Rust (`sha2`,
 
 ## PS5
 
-Output: `<out>/<title stem> (PS5)/`, the native PS5 **app folder** (`eboot.bin`,
-`sce_module/libc.prx`, `sce_sys/`, `data/`): copy it to the console and launch it with
-ShadowMountPlus (e.g. FTP to `/data/homebrew/`), as `tools/ps5/build.sh` documents for its
-`target/ps5/PPSA99920/` folder. Re-exporting replaces a previous export folder.
+Output, both from the same files:
+
+- `<out>/<title stem> (PS5)/`, the native PS5 **app folder** (`eboot.bin`,
+  `sce_module/libc.prx`, `sce_sys/`, `data/`; jailbroken firmware 13.60 and lower): copy it to
+  the console and launch it with ShadowMountPlus (e.g. FTP to `/data/homebrew/`), as
+  `tools/ps5/build.sh` documents for its `target/ps5/PPSA99920/` folder. Re-exporting replaces a
+  previous export folder.
+- `<out>/<title stem> (PS5).pkg`, the same app as a PS5 **fake package** (jailbroken firmware
+  11.60 and lower with kstuff fPKG support): install it with an fPKG installer. It is what
+  `tools/ps5/build.sh --pkg` makes with `ffpfsc-pkg-tool` (LibProsperoPkg), written in pure Rust
+  (`ps5/pkg/`, below).
 
 **Runtime** `runtime-ps5-<v>.zip` (`tools/runtime/build-ps5.sh OUT_DIR VERSION`:
 `tools/ps5/build.sh --stage-only`, the CPU game build PPSA99920):
@@ -373,7 +380,11 @@ ShadowMountPlus (e.g. FTP to `/data/homebrew/`), as `tools/ps5/build.sh` documen
 |---|---|
 | `eboot.bin` | the game (PS5 executable in a fake-signed SELF) |
 | `sce_module/libc.prx` | the clean-room libc companion module |
-| `runtime.json` | `target` `ps5`, `version`, `format` 1, `title_id` `PPSA99920`, `content_id` `UP9000-PPSA99920_00-FROGGER2RUSTPORT`, `content_version`, `param_json` (build.sh's `sce_sys/param.json`, title left empty), `data_dir` `data`, `files` |
+| `pkg/eboot.elf`, `pkg/libc.elf` | the same two programs as raw ELFs, for the package (its builder fake-signs them itself, as LibProsperoPkg does); not copied to the folder |
+| `runtime.json` | `target` `ps5`, `version`, `format` 2, `title_id` `PPSA99920`, `content_id` `UP9000-PPSA99920_00-FROGGER2RUSTPORT`, `content_version`, `param_json` (build.sh's `sce_sys/param.json`, title left empty), `data_dir` `data`, `files`, `pkg_elfs` (app path → raw ELF in the zip) |
+
+Format 2 (raw ELFs) came with the package export; this app refuses older (format 1) PS5 runtimes
+with a message naming the runtime version to use.
 
 **Packing** (`ps5.rs`): the runtime files; `sce_sys/param.json` = `param_json` with
 `localizedParameters.<default language>.titleName` = the branding title (byte-identical to
@@ -390,13 +401,46 @@ f63d3be) runs the exported folder (`kyty_emulator.exe --game <folder>`): data fr
 the PS5 host has no autostart / shot hooks, so no in-game screenshot). Not verified on
 hardware.
 
-**Not exported (yet):** the PS5 fake package (`.pkg`, `build.sh --pkg`, LibProsperoPkg / GPL-3,
-the form that ran on the maintainer's console) and the `.ffpkg` (UFS2 image, `build.sh --ffpkg`
-via UFS2Tool) / `.ffpfsc` (PFS image, MkPFS) images for ShadowMountPlus. Each needs its own
-file-system / package writer (UFS2 superblock, cylinder groups and inode tables; the PS5 PKG's
-PFS, PlayGo and keystone), with no way to check the result here short of a console, so the
-folder (which ShadowMountPlus also mounts) is the export; `tools/ps5/build.sh` still makes all
-three from a source checkout.
+**Package** (`ps5/pkg/`, a port of LibProsperoPkg 1.2.0 by drakmor / SvenGDK, GPL-3.0, as
+`ffpfsc-pkg-tool build STAGE OUT --content-id .. --title-id .. --title .. --version ..
+--deterministic` drives it): the stage is the exported folder with the runtime's raw ELFs as
+`eboot.bin` / `sce_module/libc.prx`. Layers, each checked byte for byte against the tool:
+
+| Module | What |
+|---|---|
+| `ps5/fself.rs` | fake-signs the raw ELFs (`MakeFself`, default options) |
+| `ps5/kraken/` | the builder's Kraken encoder, level 7 (suffix-trie matcher, optimal parse, Huffman arrays) |
+| `ps5/pkg/inner.rs` | the inner PFS (`pfs_image.dat`, superblock v2): files in AFID order with sparse AFID slots, executables and the keystone stored raw 64 KiB aligned, the rest in 256 KiB Kraken blocks (identical blocks stored once), inodes / directories / flat path tables in a compressed metadata region |
+| `ps5/pkg/naps.rs` | `naps_pkg_layout.dat`, the logical → physical block map |
+| `ps5/pkg/outer.rs` | the outer PFS (PLAINTEXT_NOAUTH: signed, not encrypted) holding both |
+| `ps5/pkg/cnt.rs` | the CNT: entry keys, image key, digests, entry table, publisher `param.json`, artwork, PlayGo files (one chunk) |
+| `ps5/pkg/si.rs` | the FIH header and the SI ZIP (`naps_meta_18.dat` block map and integrity tables, `naps_meta_30x.dat`, `playgo-chunk.dat`, the package's CRC32C table) |
+
+Generated inner files: `sce_sys/keystone` (version 3, passcode of zeros),
+`sce_sys/pfs-version.dat` (the content version), `sce_sys/about/right.sprx`. Build time 0 and a
+seed derived from the content ID, so the same folder always gives the same package.
+
+**Key material** is not in this repository: the first package export downloads five files of
+LibProsperoPkg at commit `be79990` from GitHub (`Util/Keys.cs`, `PKG/ProsperoNapsMeta.cs`,
+`Keys/Data/passcode.bin`, `Keys/Data/mount_image.bin`, `PlayGo/Data/right.sprx`), checks their
+SHA-256 and keeps them in the keys folder (`<config dir>/keys`). `F2_PS5_KEYS_DIR` names a
+folder with those files (by base name) instead; `F2_PS5_KEYS_URL` a mirror of the repository's
+`src/LibProsperoPkg/` (the hashes still have to match).
+
+Not ported (the export never needs them; the builder refuses with an error rather than write
+something different): GP5 projects, licenses (`applicationDrmType` other than `free`),
+additional content, encrypted (native) images, the physical layout pass and block-dedup repair
+(only taken when they save at least 1 MiB), shuffle patterns.
+
+**Verified (2026-10-17):** the full game's package (405 data files, 436 MB) and a small
+synthetic stage (`ps5/pkg` test `synthetic_matches_reference`, its reference SHA-256 checked
+in) are byte-identical to `ffpfsc-pkg-tool --deterministic`'s; `ffpfsc-pkg-tool validate`:
+33 passed, 0 warned, 0 failed on the game's package. Not installed on hardware from this
+writer (the tool's packages of the same app are what ran on the maintainer's console).
+
+**Not exported:** the `.ffpkg` (UFS2 image, `build.sh --ffpkg` via UFS2Tool) / `.ffpfsc` (PFS
+image, MkPFS) images for ShadowMountPlus, which mounts the folder as well; `tools/ps5/build.sh`
+still makes them from a source checkout.
 
 ## N64
 

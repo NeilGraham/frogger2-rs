@@ -97,7 +97,7 @@ impl Target {
             Target::Linux => "Linux (AppImage)",
             Target::Android => "Android (APK)",
             Target::Ps4 => "PlayStation 4 (fPKG)",
-            Target::Ps5 => "PlayStation 5 (app folder)",
+            Target::Ps5 => "PlayStation 5 (app folder + .pkg)",
             Target::N64 => "Nintendo 64 (ROM)",
         }
     }
