@@ -55,7 +55,7 @@ Imports made before `disc_app_name` existed must be re-imported (the export says
 - `crates/frogger/src/export.rs`: branding, runtime lookup (`--runtime`, the running app for
   its own OS, else `<config>/runtimes/<asset>` downloaded with `curl` from
   `https://github.com/NeilGraham/frogger2-rs/releases/download/v<version>/`, override
-  with `F2_RUNTIME_BASE_URL`), the `--export` command.
+  with `F2_RUNTIME_BASE_URL`, or pass `--runtime`), the `--export` command.
 
 ## Runtimes
 
@@ -328,8 +328,9 @@ Any other file in the runtime is packed too (a runtime `sce_sys/icon0.png` / `pi
 The format is reimplemented from LibOrbisPkg (OpenOrbis, LGPL-2.1, C#; algorithms only, no code
 copied). The package keys are not in this repository: the first export downloads LibOrbisPkg's
 `Util/Keys.cs` (pinned to a commit and checked against its SHA-256, `ps4/keys.rs`) into
-`<config>/keys/LibOrbisPkg-Keys.cs`; `F2_PS4_KEYS_FILE=<path to Keys.cs>` uses a local copy instead
-(offline exports). Dependencies are pure Rust (`sha2`,
+`<config>/keys/LibOrbisPkg-Keys.cs`; `--ps4-keys <Keys.cs>` (or `F2_PS4_KEYS_FILE`) uses a local copy instead
+(offline exports, no hash check) and `F2_PS4_KEYS_URL` downloads from a mirror (the SHA-256 must
+still match). Dependencies are pure Rust (`sha2`,
 `hmac`, `aes`, `num-bigint`, `zip`). A 470 MB package is written in about 2 s plus the copy.
 
 **Verified (2026-10-14):**

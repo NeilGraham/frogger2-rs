@@ -1,8 +1,9 @@
 //! Key material of the PS4 fake-package (fPKG) format. It is not stored in this repository:
 //! it is read from OpenOrbis' LibOrbisPkg `Util/Keys.cs` (LGPL-2.1), which every homebrew
 //! package tool uses. The first PS4 export downloads that one file (pinned to a commit and
-//! checked against its SHA-256) into the keys folder; `F2_PS4_KEYS_FILE` names a local copy
-//! instead (no download, no hash check).
+//! checked against its SHA-256) into the keys folder. `F2_PS4_KEYS_FILE` (or `frogger
+//! --ps4-keys`) names a local copy instead (no download, no hash check); `F2_PS4_KEYS_URL`
+//! downloads from a mirror (the SHA-256 still has to match).
 
 #[cfg(not(test))]
 use std::path::{Path, PathBuf};
@@ -75,24 +76,25 @@ fn cached_or_download(dir: PathBuf, log: &dyn Fn(&str)) -> Result<String, String
         }
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    log(&format!("Downloading the PS4 package keys from LibOrbisPkg: {KEYS_URL}"));
+    let url = std::env::var("F2_PS4_KEYS_URL").unwrap_or_else(|_| KEYS_URL.to_string());
+    log(&format!("Downloading the PS4 package keys from LibOrbisPkg: {url}"));
     let part = dir.join(format!("{CACHE_NAME}.part"));
-    let hint = "download it by hand and set F2_PS4_KEYS_FILE to the file";
+    let hint = format!("download {url} by hand (or a copy of LibOrbisPkg's Util/Keys.cs) and pass it with --ps4-keys FILE or F2_PS4_KEYS_FILE, or set F2_PS4_KEYS_URL to a mirror");
     let status = std::process::Command::new("curl")
         .args(["-fL", "--retry", "3", "-o"])
         .arg(&part)
-        .arg(KEYS_URL)
+        .arg(&url)
         .status()
         .map_err(|e| format!("running curl: {e} ({hint})"))?;
     if !status.success() {
         let _ = std::fs::remove_file(&part);
-        return Err(format!("downloading {KEYS_URL} failed ({status}); {hint}"));
+        return Err(format!("downloading {url} failed ({status}); {hint}"));
     }
     let bytes = std::fs::read(&part).map_err(|e| format!("{}: {e}", part.display()))?;
     let got = sha256_hex(&bytes);
     if got != KEYS_SHA256 {
         let _ = std::fs::remove_file(&part);
-        return Err(format!("the downloaded keys file has SHA-256 {got}, expected {KEYS_SHA256}"));
+        return Err(format!("the downloaded keys file has SHA-256 {got}, expected {KEYS_SHA256}; {hint}"));
     }
     std::fs::rename(&part, &path).map_err(|e| format!("{}: {e}", path.display()))?;
     String::from_utf8(bytes).map_err(|e| e.to_string())

@@ -115,10 +115,10 @@ pub fn runtime(target: Target, explicit: Option<&Path>, log: &dyn Fn(&str)) -> R
         .arg(&part)
         .arg(&url)
         .status()
-        .map_err(|e| format!("running curl: {e} (download {url} by hand and pass --runtime)"))?;
+        .map_err(|e| format!("running curl: {e} (download {url} by hand and pass --runtime, or set F2_RUNTIME_BASE_URL to a mirror)"))?;
     if !status.success() {
         let _ = std::fs::remove_file(&part);
-        return Err(format!("downloading {url} failed ({status}); pass --runtime with a local copy"));
+        return Err(format!("downloading {url} failed ({status}); pass --runtime with a local copy, or set F2_RUNTIME_BASE_URL to a mirror"));
     }
     std::fs::rename(&part, &path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)

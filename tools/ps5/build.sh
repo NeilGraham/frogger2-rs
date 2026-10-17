@@ -115,7 +115,10 @@ if [ ! -f "$ZLIB/lib/libz.a" ]; then
     zv=1.3.2
     zsrc="$TOOLS/zlib-src"
     rm -rf "$zsrc" && mkdir -p "$zsrc"
-    wget -q -O "$zsrc/zlib.tar.gz" "https://zlib.net/fossils/zlib-$zv.tar.gz"
+    # F2_ZLIB_TARBALL: a local zlib-$zv.tar.gz; F2_ZLIB_URL: a mirror. Either must match the SHA-256 below.
+    if [ -n "${F2_ZLIB_TARBALL:-}" ]; then cp "$F2_ZLIB_TARBALL" "$zsrc/zlib.tar.gz"
+    else wget -q -O "$zsrc/zlib.tar.gz" "${F2_ZLIB_URL:-https://zlib.net/fossils/zlib-$zv.tar.gz}" || { echo "downloading zlib $zv failed: set F2_ZLIB_TARBALL=<local zlib-$zv.tar.gz> or F2_ZLIB_URL=<mirror>" >&2; exit 1; }
+    fi
     echo "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16  $zsrc/zlib.tar.gz" | sha256sum -c --quiet
     tar -xzf "$zsrc/zlib.tar.gz" -C "$zsrc"
     (cd "$zsrc/zlib-$zv" && CC="$CLANG" ./configure --static --prefix="$ZLIB" >/dev/null && make -s -j8 >/dev/null && make -s install >/dev/null)

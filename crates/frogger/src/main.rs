@@ -92,6 +92,8 @@ struct Args {
     export: Vec<frogger::export::Target>,
     /// `--runtime PATH`: the runtime for a single `--export` target instead of the release one.
     runtime: Option<PathBuf>,
+    /// `--ps4-keys FILE`: a local LibOrbisPkg `Keys.cs` for the PS4 export (no download).
+    ps4_keys: Option<PathBuf>,
     /// `--out DIR` for `--export` (default: `exports` in the current folder).
     out: Option<PathBuf>,
 }
@@ -109,7 +111,7 @@ fn usage() -> ! {
          \x20      [--screenshot-settings controls|gameplay|levels] (headless: Shift+F10 page in the screenshot)\n\
          \x20      [--screenshot-page display|audio|controls|gameplay[:ROW]] [--screenshot-keymap normal|capture|conflict] [--show-fps]\n\
          editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
-         export: --export windows|macos|linux|android|ps4|ps5|n64|all[,...] [--out DIR] [--runtime PATH]  (docs/EXPORT.md)\n\
+         export: --export windows|macos|linux|android|ps4|ps5|n64|all[,...] [--out DIR] [--runtime PATH] [--ps4-keys Keys.cs]  (docs/EXPORT.md)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 settings, Shift+F10 advanced (level select), F11 / Alt+Enter fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -159,6 +161,7 @@ fn parse_args() -> Args {
         editor_cmds: Vec::new(),
         export: Vec::new(),
         runtime: None,
+        ps4_keys: None,
         out: None,
     };
     let mut it = std::env::args().skip(1);
@@ -202,6 +205,7 @@ fn parse_args() -> Args {
                 }
             }
             "--runtime" => a.runtime = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--ps4-keys" => a.ps4_keys = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--out" => a.out = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--video" => a.video = Some(it.next().unwrap_or_else(|| usage())),
             "--boot" => a.boot = true,
@@ -366,6 +370,9 @@ fn run_exports(data: &data::Data, args: &Args) -> i32 {
     if args.runtime.is_some() && args.export.len() > 1 {
         eprintln!("frogger: --runtime applies to one --export target at a time");
         return 2;
+    }
+    if let Some(k) = &args.ps4_keys {
+        std::env::set_var("F2_PS4_KEYS_FILE", k);
     }
     let log = |l: &str| eprintln!("frogger: {l}");
     let mut failed = 0;
