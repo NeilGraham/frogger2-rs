@@ -82,6 +82,7 @@ pub fn main(android: AndroidApp) {
         launcher_touch: Tracker::default(),
         game_title: None,
         hero_pending: None,
+        logo_pending: None,
         dp: android.config().density().map_or(2.0, |d| d as f32 / 160.0),
         kb: KeyboardState::default(),
         gamepad: Gamepad::default(),
@@ -220,6 +221,8 @@ struct Host {
     /// The game's artwork (width, height, RGBA) for the launcher's hero picture, until the
     /// painter has it.
     hero_pending: Option<(u32, u32, Vec<u8>)>,
+    /// The game's logo likewise.
+    logo_pending: Option<(u32, u32, Vec<u8>)>,
     /// Pixels per dp.
     dp: f32,
     /// Hardware / Bluetooth keyboard (and Back = Escape).
@@ -415,6 +418,7 @@ impl Host {
         let art = frogger::icon::game_art(&data);
         self.game_art_png = art.as_ref().map(|art| frogger::icon::encode_png(&frogger::icon::adaptive(&frogger::icon::square(art, 480), 432)));
         self.hero_pending = art.map(|a| (a.width, a.height, a.pixels));
+        self.logo_pending = frogger::icon::game_logo(&data).map(|l| (l.width, l.height, l.pixels));
         let mut app = App::new(data, &g.ctx.device, &g.ctx.queue, s.config.format, audio, mapper);
         app.set_config(cfg.clone());
         app.apply_master_volume();
@@ -758,6 +762,10 @@ impl Host {
                 if let Some((w, h, px)) = self.hero_pending.take() {
                     g.kit.set_image(&mut g.ui, f2_launcher::ui::HERO_KEY, w, h, px);
                     l.state.hero = Some((w, h));
+                }
+                if let Some((w, h, px)) = self.logo_pending.take() {
+                    g.kit.set_image(&mut g.ui, f2_launcher::ui::LOGO_KEY, w, h, px);
+                    l.state.logo = Some((w, h));
                 }
                 l.draw(&mut g.kit.painter(&mut g.ui));
             }

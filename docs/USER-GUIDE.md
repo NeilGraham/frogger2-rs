@@ -27,6 +27,9 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
    and name, cut from your imported artwork on your machine, so only `launcher.exe` is there at
    first. **PLAY** starts the game; you can also start `frogger2` directly any time, which opens
    the game at once (and the launcher instead if you have no data yet).
+   Once the game is imported the launcher also shows its own artwork, read from your copy on your
+   machine and never shipped: the loading-screen picture as the background of the Play page, the
+   game's logo, and the window icon.
 3. **VERSIONS** lists the releases on GitHub. **INSTALL** downloads one (checked against the
    release's `SHA256SUMS.txt`) into `versions/<tag>/`, **USE** picks the version PLAY runs
    (your data, settings, saves and mods are shared by all versions), **REMOVE** deletes one.

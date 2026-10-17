@@ -50,6 +50,9 @@ struct App {
     importing: Option<std::process::Child>,
     /// The game's artwork (width, height, RGBA) waiting to be given to the painter.
     hero_pending: Option<(u32, u32, Vec<u8>)>,
+    logo_pending: Option<(u32, u32, Vec<u8>)>,
+    /// The game's icon for the window (made from the artwork).
+    icon_pending: Option<frogger::icon::Rgba>,
     hero_loaded: bool,
     cursor: (f32, f32),
     exit: bool,
@@ -89,6 +92,8 @@ impl App {
             installing: false,
             importing: None,
             hero_pending: None,
+            logo_pending: None,
+            icon_pending: None,
             hero_loaded: false,
             cursor: (0.0, 0.0),
             exit: false,
@@ -119,8 +124,12 @@ impl App {
         let app_version = env!("CARGO_PKG_VERSION").to_string();
         let data = self.locate();
         if data.is_some() && !self.hero_loaded {
-            if let Some(art) = data.as_ref().and_then(frogger::icon::game_art) {
-                self.hero_pending = Some((art.width, art.height, art.pixels));
+            if let Some(d) = &data {
+                if let Some(art) = frogger::icon::game_art(d) {
+                    self.icon_pending = Some(frogger::icon::rounded(&frogger::icon::square(&art, 64), 0.18));
+                    self.hero_pending = Some((art.width, art.height, art.pixels));
+                }
+                self.logo_pending = frogger::icon::game_logo(d).map(|l| (l.width, l.height, l.pixels));
             }
             self.hero_loaded = true;
         } else if data.is_none() {
@@ -423,6 +432,15 @@ impl WindowApp for App {
             g.kit.set_image(&mut g.r, ui::HERO_KEY, iw, ih, px);
             self.ui.state.hero = Some((iw, ih));
         }
+        if let Some((iw, ih, px)) = self.logo_pending.take() {
+            g.kit.set_image(&mut g.r, ui::LOGO_KEY, iw, ih, px);
+            self.ui.state.logo = Some((iw, ih));
+        }
+        if let Some(i) = self.icon_pending.take() {
+            if let Ok(icon) = winit::window::Icon::from_rgba(i.pixels, i.width, i.height) {
+                frame.window.set_window_icon(Some(icon));
+            }
+        }
         g.r.begin_frame(w, h);
         self.ui.draw(&mut g.kit.painter(&mut g.r));
         let tex = match g.surface.surface.get_current_texture() {
@@ -531,6 +549,17 @@ mod tests {
         }
         kit.set_image(&mut r, ui::HERO_KEY, iw, ih, px);
         l.state.hero = Some((iw, ih));
+        // With F2_SHOT_DATA=<game dir> (your own imported copy) the real artwork and logo are used.
+        if let Some(d) = std::env::var_os("F2_SHOT_DATA").and_then(|p| Data::locate(&Config::default(), Some(PathBuf::from(p))).ok()) {
+            if let Some(a) = frogger::icon::game_art(&d) {
+                kit.set_image(&mut r, ui::HERO_KEY, a.width, a.height, a.pixels);
+                l.state.hero = Some((a.width, a.height));
+            }
+            if let Some(g) = frogger::icon::game_logo(&d) {
+                kit.set_image(&mut r, ui::LOGO_KEY, g.width, g.height, g.pixels);
+                l.state.logo = Some((g.width, g.height));
+            }
+        }
         let bg = ui::BG;
         let clear = [bg[0] as f64 / 255.0, bg[1] as f64 / 255.0, bg[2] as f64 / 255.0, 1.0];
         let mut shot = |l: &mut Launcher, name: &str| {

@@ -24,6 +24,37 @@ pub fn app_icon() -> Rgba {
     decode_png(APP_ICON_PNG).expect("embedded app icon")
 }
 
+/// The bank holding the game's logo texture (`froglogo`, the "Frogger 2" lettering with
+/// one-bit transparency).
+pub const LOGO_BANK: &str = "textures/titles.fla";
+
+/// The game's logo from the player's data, cropped to its visible part.
+pub fn game_logo(data: &Data) -> Option<Rgba> {
+    let raw = data.read(LOGO_BANK).ok()?;
+    let raw = f2_formats::fla::maybe_decompress(raw).ok()?;
+    let bank = f2_formats::texture::TexBank::parse(&raw).ok()?;
+    let t = bank.textures.iter().find(|t| t.name.starts_with("froglogo"))?;
+    let px = t.to_rgba8();
+    let (w, h) = (t.width as usize, t.height as usize);
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for y in 0..h {
+        for x in 0..w {
+            if px[(y * w + x) * 4 + 3] > 0 {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    if x1 < x0 {
+        return None;
+    }
+    let (cw, ch) = (x1 - x0 + 1, y1 - y0 + 1);
+    let mut out = Vec::with_capacity(cw * ch * 4);
+    for y in y0..=y1 {
+        out.extend_from_slice(&px[(y * w + x0) * 4..(y * w + x1 + 1) * 4]);
+    }
+    Some(Rgba { width: cw as u32, height: ch as u32, pixels: out })
+}
+
 /// The game's artwork from the player's data, if present.
 pub fn game_art(data: &Data) -> Option<Rgba> {
     let raw = data.read(GAME_ART).ok()?;

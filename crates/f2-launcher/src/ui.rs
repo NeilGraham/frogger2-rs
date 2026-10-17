@@ -52,6 +52,8 @@ pub trait Painter {
 
 /// The picture the hero card shows (the host registers it with its painter under this key).
 pub const HERO_KEY: &str = "hero";
+/// The game's logo (transparent), registered the same way.
+pub const LOGO_KEY: &str = "logo";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -135,6 +137,8 @@ pub struct State {
     pub mods_dir: String,
     /// Size of the picture registered as [`HERO_KEY`] (the game's artwork), if any.
     pub hero: Option<(u32, u32)>,
+    /// Size of the picture registered as [`LOGO_KEY`], if any.
+    pub logo: Option<(u32, u32)>,
     /// A running job: what it is doing and how far (0..=1).
     pub busy: Option<(String, f32)>,
     /// The last result line and whether it is an error.
@@ -335,10 +339,19 @@ impl Launcher {
         let (h, d) = (self.h, self.dp);
         p.rect([0.0, 0.0, sb, h], SIDEBAR);
         let x = self.d(22.0);
-        p.text(x, self.d(24.0), "FROGGER 2", ACCENT, self.d(22.0), true);
-        let sub = self.fit(p, "Swampy's Revenge (Rust)", sb - 2.0 * x, self.d(12.5), false);
-        p.text(x, self.d(52.0), &sub, DIM, self.d(12.5), false);
-        let mut y = self.d(96.0);
+        let mut y = if let Some((lw, lh)) = self.state.logo {
+            let w = (sb - 2.0 * x).min(self.d(190.0));
+            let h = w * lh as f32 / lw as f32;
+            p.image(LOGO_KEY, [x, self.d(20.0), w, h], [0.0, 0.0, 1.0, 1.0]);
+            let sub = self.fit(p, "Swampy's Revenge (Rust)", sb - 2.0 * x, self.d(12.5), false);
+            p.text(x, self.d(20.0) + h + self.d(6.0), &sub, DIM, self.d(12.5), false);
+            self.d(20.0) + h + self.d(48.0)
+        } else {
+            p.text(x, self.d(24.0), "FROGGER 2", ACCENT, self.d(22.0), true);
+            let sub = self.fit(p, "Swampy's Revenge (Rust)", sb - 2.0 * x, self.d(12.5), false);
+            p.text(x, self.d(52.0), &sub, DIM, self.d(12.5), false);
+            self.d(96.0)
+        };
         for (t, label, icon) in tabs {
             let r = [self.d(12.0), y, sb - self.d(24.0), self.d(46.0)];
             let active = *t == self.tab;
@@ -390,14 +403,15 @@ impl Launcher {
         let have_game = self.state.game.is_some();
         match (self.state.hero, have_game) {
             (Some((iw, ih)), true) => {
-                // Cover crop, keeping the lower-middle (the game's logo and frog).
+                // Cover crop.
                 let (ra, ia) = (r[2] / r[3], iw as f32 / ih as f32);
                 let uv = if ia > ra {
                     let k = ra / ia;
                     [(1.0 - k) / 2.0, 0.0, (1.0 + k) / 2.0, 1.0]
                 } else {
                     let k = ia / ra;
-                    [0.0, (1.0 - k) * 0.55, 1.0, (1.0 - k) * 0.55 + k]
+                    // The top part: the frog and the crocodile, not the picture's own logo.
+                    [0.0, 0.0, 1.0, k]
                 };
                 p.image(HERO_KEY, r, uv);
                 // Darken the lower part so the text reads on any picture.
@@ -411,11 +425,23 @@ impl Launcher {
         let bh = self.d(52.0);
         let by = r[1] + r[3] - pad - bh + self.d(8.0);
         if have_game {
-            p.text(r[0] + pad, by - self.d(112.0), "FROGGER 2", ACCENT, self.d(13.0), true);
-            let title = self.state.game.clone().unwrap_or_default();
-            let title = self.fit(p, &title, r[2] - 2.0 * pad, self.d(32.0), true);
-            p.text(r[0] + pad, by - self.d(92.0), &title, TEXT, self.d(32.0), true);
-            p.text(r[0] + pad, by - self.d(48.0), &format!("Rust port  \u{b7}  v{}", self.state.app_version), [200, 206, 214, 255], self.d(14.0), false);
+            let full = self.state.game.clone().unwrap_or_default();
+            if let Some((lw, lh)) = self.state.logo {
+                // The game's own logo, then the subtitle in its yellow.
+                let room = by - self.d(84.0) - (r[1] + self.d(18.0));
+                let lhgt = (r[3] * 0.34).clamp(self.d(70.0), self.d(130.0)).min(room).max(self.d(36.0));
+                let lwid = lhgt * lw as f32 / lh as f32;
+                let ly = by - self.d(84.0) - lhgt;
+                p.image(LOGO_KEY, [r[0] + pad, ly, lwid, lhgt], [0.0, 0.0, 1.0, 1.0]);
+                let sub = full.split_once(':').map_or(full.clone(), |(_, s)| s.trim().to_string());
+                let sub = self.fit(p, &sub, r[2] - 2.0 * pad, self.d(24.0), true);
+                p.text(r[0] + pad, by - self.d(76.0), &sub, [236, 208, 40, 255], self.d(24.0), true);
+            } else {
+                p.text(r[0] + pad, by - self.d(112.0), "FROGGER 2", ACCENT, self.d(13.0), true);
+                let title = self.fit(p, &full, r[2] - 2.0 * pad, self.d(32.0), true);
+                p.text(r[0] + pad, by - self.d(92.0), &title, TEXT, self.d(32.0), true);
+            }
+            p.text(r[0] + pad, by - self.d(40.0), &format!("Rust port  \u{b7}  v{}", self.state.app_version), [200, 206, 214, 255], self.d(14.0), false);
             let mut x = r[0] + pad;
             x = self.auto_button(p, x, by, bh, "PLAY", Style::Primary, Some(Icon::Play), Action::Play) + self.d(12.0);
             if self.caps.import {
@@ -765,6 +791,8 @@ mod tests {
             let mut l = desktop();
             l.resize(w, h, dp);
             l.state.busy = Some(("Downloading".into(), 0.5));
+            l.state.logo = Some((256, 131));
+            l.state.hero = Some((640, 480));
             l.state.update_available = Some("v0.2.0".into());
             for (t, _, _) in l.tabs() {
                 l.tab = t;
