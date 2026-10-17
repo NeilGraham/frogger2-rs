@@ -325,8 +325,11 @@ Any other file in the runtime is packed too (a runtime `sce_sys/icon0.png` / `pi
    (debug RIF signed with the debug key) / `license.info`, PlayGo chunk files, param.sfo,
    `psreserved.dat`, the PNGs; header digest and signature. All-zero passcode.
 
-The format is reimplemented from LibOrbisPkg (OpenOrbis, LGPL-2.1, C#; algorithms and the
-public key material in `ps4/keys.rs`; no code copied). Dependencies are pure Rust (`sha2`,
+The format is reimplemented from LibOrbisPkg (OpenOrbis, LGPL-2.1, C#; algorithms only, no code
+copied). The package keys are not in this repository: the first export downloads LibOrbisPkg's
+`Util/Keys.cs` (pinned to a commit and checked against its SHA-256, `ps4/keys.rs`) into
+`<config>/keys/LibOrbisPkg-Keys.cs`; `F2_PS4_KEYS_FILE=<path to Keys.cs>` uses a local copy instead
+(offline exports). Dependencies are pure Rust (`sha2`,
 `hmac`, `aes`, `num-bigint`, `zip`). A 470 MB package is written in about 2 s plus the copy.
 
 **Verified (2026-10-14):**

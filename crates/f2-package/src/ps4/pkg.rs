@@ -212,7 +212,7 @@ fn entry_keys(content_id: &str, passcode: &str) -> Vec<u8> {
         }
         out.extend(d);
         let v: [u8; 32] = if i == 0 { passcode.as_bytes().try_into().unwrap() } else { k };
-        enc.extend(crypto::rsa_encrypt_key(&keys::PKG_PUBLIC_KEYS[i as usize], &v));
+        enc.extend(crypto::rsa_encrypt_key(&keys::get().pkg_public_keys[i as usize], &v));
     }
     out.extend(enc);
     out
@@ -241,7 +241,7 @@ fn license_dat(content_id: &str) -> Vec<u8> {
     let iv = &h[..16];
     let mut secret = vec![0u8; 144];
     secret[..16].copy_from_slice(&h[16..]);
-    crypto::aes_cbc_encrypt(&mut secret, &keys::RIF_DEBUG_KEY, iv);
+    crypto::aes_cbc_encrypt(&mut secret, &keys::get().rif_debug_key, iv);
     b.extend(iv);
     b.extend(secret);
     assert_eq!(b.len(), 0x300);
@@ -336,7 +336,7 @@ pub(crate) fn write(path: &Path, input: PkgInput, log: &dyn Fn(&str)) -> Result<
         |id: u32, name: Option<&str>, data: Vec<u8>| Entry { id, name: name.map(String::from), data, name_off: 0, flags1: 0, flags2: 0, offset: 0, size: 0 };
     let mut entries = vec![
         e(ID_ENTRY_KEYS, None, entry_keys(&content_id, &passcode)),
-        e(ID_IMAGE_KEY, None, crypto::rsa_encrypt_key(&keys::FAKE_MODULUS, &ekpfs).to_vec()),
+        e(ID_IMAGE_KEY, None, crypto::rsa_encrypt_key(&keys::get().fake_modulus, &ekpfs).to_vec()),
         e(ID_GENERAL_DIGESTS, None, vec![0; 0x180]),
         e(ID_METAS, None, vec![]),
         e(ID_DIGESTS, None, vec![]),
@@ -541,7 +541,7 @@ pub(crate) fn write(path: &Path, input: PkgInput, log: &dyn Fn(&str)) -> Result<
     let hd = sha256(&head[..0xFE0]);
     head[0xFE0..0x1000].copy_from_slice(&hd);
     let hs = sha256(&head[..0x1000]);
-    head[0x1000..0x1100].copy_from_slice(&crypto::rsa_encrypt_key(&keys::PKG_PUBLIC_KEYS[3], &hs));
+    head[0x1000..0x1100].copy_from_slice(&crypto::rsa_encrypt_key(&keys::get().pkg_public_keys[3], &hs));
     {
         use std::io::{Seek, SeekFrom, Write};
         f.seek(SeekFrom::Start(0)).map_err(|e| err(&e))?;

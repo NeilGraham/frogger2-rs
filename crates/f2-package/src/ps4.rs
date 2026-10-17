@@ -29,6 +29,7 @@ const PASSCODE: &str = "00000000000000000000000000000000";
 
 pub(crate) fn export(job: &Job) -> Result<PathBuf, String> {
     let log = job.log;
+    keys::ensure(job.keys_dir, log)?;
     let rt = Runtime::load(job.runtime, "ps4", log)?;
     let content_id = rt.str("content_id")?.to_string();
     let title_id = rt.str("title_id")?.to_string();

@@ -47,8 +47,8 @@ pub(crate) fn padded(bytes: &[u8], len: usize) -> Vec<u8> {
 pub(crate) fn keystone(passcode: &str) -> Vec<u8> {
     let mut out = b"keystone\x02\x00\x01\x00".to_vec();
     out.resize(32, 0);
-    out.extend(hmac_sha256(&keys::KEYSTONE_HMAC_KEY, passcode.as_bytes()));
-    let fin = hmac_sha256(&keys::KEYSTONE_MAC_DATA, &out);
+    out.extend(hmac_sha256(&keys::get().keystone_hmac_key, passcode.as_bytes()));
+    let fin = hmac_sha256(&keys::get().keystone_mac_data, &out);
     out.extend(fin);
     out
 }
@@ -265,7 +265,7 @@ pub(crate) fn rsa_sign_sha256_debug_rif(hash: &[u8; 32]) -> [u8; 256] {
     em[t - 1] = 0;
     em[t..t + DIGEST_INFO.len()].copy_from_slice(&DIGEST_INFO);
     em[256 - 32..].copy_from_slice(hash);
-    modpow(&em, &keys::DEBUG_RIF_PRIVATE_EXPONENT, &keys::DEBUG_RIF_MODULUS)
+    modpow(&em, &keys::get().debug_rif_private_exponent, &keys::get().debug_rif_modulus)
 }
 
 #[cfg(test)]
@@ -284,7 +284,7 @@ mod tests {
     fn license_signature_verifies() {
         let h = sha256(b"x");
         let s = rsa_sign_sha256_debug_rif(&h);
-        let back = modpow(&s, &[1, 0, 1], &keys::DEBUG_RIF_MODULUS);
+        let back = modpow(&s, &[1, 0, 1], &keys::get().debug_rif_modulus);
         assert_eq!(&back[..2], &[0, 1]);
         assert_eq!(&back[224..], &h);
     }
