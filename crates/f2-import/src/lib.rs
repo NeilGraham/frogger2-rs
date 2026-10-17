@@ -238,23 +238,31 @@ fn env_path(k: &str) -> Option<PathBuf> {
 pub const PORTABLE_MARKER: &str = "portable.txt";
 
 /// The portable install folder for an exe at `exe`, if there is one: the folder with
-/// [`PORTABLE_MARKER`] among, outermost first, `<root>/versions/<tag>/` (a version the launcher
-/// installed), the folder holding a macOS `.app`, and the exe's own folder. `forced`
-/// (`$F2_PORTABLE_ROOT`) wins without a marker.
+/// [`PORTABLE_MARKER`] among, outermost first: `<root>/versions/<tag>[/engine]/` (a version the
+/// launcher installed), the folder holding a macOS `.app`, `<root>/engine/` and the exe's own
+/// folder. `forced` (`$F2_PORTABLE_ROOT`) wins without a marker.
 pub fn portable_root_for(exe: Option<&Path>, forced: Option<PathBuf>) -> Option<PathBuf> {
     if forced.is_some() {
         return forced;
     }
     let dir = exe?.parent()?;
-    let mut roots = Vec::new();
-    if let Some(versions) = dir.parent().filter(|v| v.file_name().is_some_and(|n| n == "versions")) {
+    // Innermost first: the exe's folder, its parent when that is `engine/`, then the folder
+    // holding `versions/<tag>`, and the folder holding a macOS `.app`.
+    let mut roots = vec![dir.to_path_buf()];
+    let mut base = dir;
+    if base.file_name().is_some_and(|n| n == "engine") {
+        if let Some(p) = base.parent() {
+            roots.push(p.to_path_buf());
+            base = p;
+        }
+    }
+    if let Some(versions) = base.parent().filter(|v| v.file_name().is_some_and(|n| n == "versions")) {
         roots.extend(versions.parent().map(Path::to_path_buf));
     }
     if dir.ends_with("Contents/MacOS") {
         roots.extend(dir.parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf));
     }
-    roots.push(dir.to_path_buf());
-    roots.into_iter().find(|r| r.join(PORTABLE_MARKER).is_file())
+    roots.into_iter().rev().find(|r| r.join(PORTABLE_MARKER).is_file())
 }
 
 /// [`portable_root_for`] the running exe (computed once).

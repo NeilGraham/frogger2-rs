@@ -986,6 +986,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "f2-launcher"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde_json",
+ "sha2",
+ "toml 0.8.23",
+ "zip",
+]
+
+[[package]]
 name = "f2-math"
 version = "0.1.0"
 dependencies = [
