@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "console-host"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "dlmalloc",
  "f2-audio",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "f2-audio"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "cpal",
  "f2-formats",
@@ -904,14 +904,14 @@ dependencies = [
 
 [[package]]
 name = "f2-bink"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "png 0.17.16",
 ]
 
 [[package]]
 name = "f2-draw"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-engine",
  "f2-formats",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "f2-engine"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ash",
  "bytemuck",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "f2-export"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-formats",
  "f2-mods",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "f2-fontgen"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ab_glyph",
  "f2-engine",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "f2-formats"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "f2-game"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-formats",
  "f2-math",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "f2-import"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-formats",
  "f2-media",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "f2-launcher"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "flate2",
  "serde_json",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "f2-math"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "cc",
  "libm",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "f2-media"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "flate2",
  "sha1",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "f2-modkit"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-audio",
  "f2-export",
@@ -1041,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "f2-mods"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "semver",
  "serde",
@@ -1051,14 +1051,14 @@ dependencies = [
 
 [[package]]
 name = "f2-n64fmt"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-formats",
 ]
 
 [[package]]
 name = "f2-n64pack"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-engine",
  "f2-fontgen",
@@ -1082,15 +1082,15 @@ dependencies = [
 
 [[package]]
 name = "f2-n64z"
-version = "0.8.0"
+version = "0.8.1"
 
 [[package]]
 name = "f2-net"
-version = "0.8.0"
+version = "0.8.1"
 
 [[package]]
 name = "f2-package"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aes",
  "backhand",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "f2-platform"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-import",
  "gilrs",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "f2-viewer"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-audio",
  "f2-bink",
@@ -1258,7 +1258,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "frogger"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-audio",
  "f2-bink",
@@ -1286,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "frogger-android"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "android-activity",
  "f2-audio",

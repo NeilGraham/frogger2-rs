@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "console-host"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "dlmalloc",
  "f2-audio",
@@ -297,18 +297,18 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "f2-audio"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-formats",
 ]
 
 [[package]]
 name = "f2-bink"
-version = "0.8.0"
+version = "0.8.1"
 
 [[package]]
 name = "f2-draw"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-engine",
  "f2-formats",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "f2-engine"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ash",
  "bytemuck",
@@ -341,14 +341,14 @@ dependencies = [
 
 [[package]]
 name = "f2-formats"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "f2-game"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-formats",
  "f2-math",
@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "f2-import"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-formats",
  "f2-media",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "f2-launcher"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "flate2",
  "serde_json",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "f2-math"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "cc",
  "libm",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "f2-media"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "flate2",
  "sha1",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "f2-modkit"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-audio",
  "f2-formats",
@@ -414,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "f2-mods"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "semver",
  "serde",
@@ -423,11 +423,11 @@ dependencies = [
 
 [[package]]
 name = "f2-net"
-version = "0.8.0"
+version = "0.8.1"
 
 [[package]]
 name = "f2-platform"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "toml 0.8.23",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "frogger"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "f2-audio",
  "f2-bink",
