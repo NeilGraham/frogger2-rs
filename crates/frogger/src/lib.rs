@@ -24,4 +24,6 @@ pub mod render;
 #[cfg(feature = "desktop")]
 pub mod setup;
 pub mod tinyfont;
+#[cfg(feature = "gpu")]
+pub mod uikit;
 pub mod video;

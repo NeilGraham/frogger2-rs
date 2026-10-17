@@ -1,33 +1,16 @@
 //! The launcher screen on Android: the shared UI model (`f2_launcher::ui`) drawn with the
-//! host's UI renderer, plus the touch handling it needs (tap vs. drag-to-scroll) and the
+//! host's UI renderer (`frogger::uikit`), plus the touch handling it needs (tap vs. drag-to-scroll) and the
 //! state it shows. The parts that need no GPU are unit-tested on the host.
 
 use crate::touch::Phase;
-use f2_engine::{Blend, FontId, Quad2D, Renderer};
 use f2_launcher::mods;
-use f2_launcher::ui::{Action, Caps, Launcher, ModRow, Painter, State};
+use f2_launcher::ui::{Action, Caps, Launcher, ModRow, State};
 use std::path::Path;
 
 /// What this host offers: no in-app updates (an APK is installed by the system), no folder
 /// opening; importing only when the APK does not carry the game itself.
 pub fn caps(bundled: bool) -> Caps {
-    Caps { versions: false, import: !bundled, open_folders: false, updates_page: true, close_label: Some("BACK TO THE GAME") }
-}
-
-/// A [`Painter`] over the host's UI renderer (pixel coordinates, the built-in font).
-pub struct RendererPainter<'a> {
-    pub r: &'a mut Renderer,
-    pub font: FontId,
-}
-
-impl Painter for RendererPainter<'_> {
-    fn rect(&mut self, [x, y, w, h]: [f32; 4], c: [u8; 4]) {
-        self.r.draw_quad(Quad2D::rect(x, y, w, h, [0.0, 0.0, 1.0, 1.0], None, c, Blend::Semi));
-    }
-
-    fn text(&mut self, x: f32, y: f32, s: &str, c: [u8; 4], scale: f32) {
-        self.r.draw_text(self.font, x, y, s, c, scale, None);
-    }
+    Caps { versions: false, import: !bundled, open_folders: false, updates_page: true, close_label: Some("Back to the game") }
 }
 
 /// What the launcher shows besides its own message.

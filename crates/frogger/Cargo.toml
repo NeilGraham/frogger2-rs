@@ -36,7 +36,7 @@ export = ["dep:f2-package"]
 fontgen = ["dep:f2-fontgen"]
 # The wgpu renderer in the library (`App::new`) without window or gamepads: console hosts
 # that bring their own GPU context (e.g. the PS5 Vulkan path, f2-engine `ps5-static-driver`).
-gpu = ["dep:wgpu", "f2-engine/gpu"]
+gpu = ["dep:wgpu", "f2-engine/gpu", "dep:fontdue", "dep:f2-launcher"]
 # Real audio output (cpal: ALSA/PulseAudio/PipeWire, WASAPI, CoreAudio). Off = always muted;
 # lets `cargo check --target *-apple-darwin --no-default-features` run without the macOS SDK
 # (coreaudio-sys needs it for bindgen). See docs/PLATFORMS.md.
@@ -71,6 +71,8 @@ f2-package = { path = "../f2-package", optional = true }
 f2-launcher = { path = "../f2-launcher", optional = true }
 serde_json.workspace = true
 wgpu = { version = "=30.0.1", optional = true }
+# Smooth text for the launcher screens (uikit.rs; bundled Roboto subset, Apache-2.0).
+fontdue = { version = "0.9", default-features = false, features = ["hashbrown"], optional = true }
 
 # The exe's icon resource (build.rs), built natively on Windows (tools/package/build-windows.sh).
 [target.'cfg(windows)'.build-dependencies]

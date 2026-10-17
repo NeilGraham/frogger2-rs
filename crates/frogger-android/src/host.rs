@@ -6,7 +6,7 @@
 //! every motion event into touch positions, so gamepad sticks and d-pads that report HAT
 //! axes never reached the game.
 
-use crate::launcher::{self, Gesture, RendererPainter, Tracker};
+use crate::launcher::{self, Gesture, Tracker};
 use crate::menu::{self, Menu};
 use crate::pad::{self, Axes, Gamepad};
 use crate::touch::{Phase, TouchPad};
@@ -19,6 +19,7 @@ use f2_launcher::ui::{Action as LAction, Launcher};
 use f2_platform::config::VideoMode;
 use f2_platform::{Config, Controller, ControllerFamily, KeyboardState, PadButton, Profile, RawPad, WindowMode};
 use frogger::app::{App, Step, WinInfo};
+use frogger::uikit::UiKit;
 use frogger::{data, gameplay, present};
 use ndk::asset::AssetManager;
 use ndk::native_window::NativeWindow;
@@ -80,6 +81,7 @@ pub fn main(android: AndroidApp) {
         launcher_open: false,
         launcher_touch: Tracker::default(),
         game_title: None,
+        hero_pending: None,
         dp: android.config().density().map_or(2.0, |d| d as f32 / 160.0),
         kb: KeyboardState::default(),
         gamepad: Gamepad::default(),
@@ -185,6 +187,8 @@ struct Gfx {
     /// Touch controls and the overlay menu, drawn over the presented frame.
     ui: Renderer,
     ui_font: FontId,
+    /// Fonts and pictures of the launcher screen.
+    kit: UiKit,
     /// Render-resolution pass (fixed resolutions, brightness), created on demand.
     present: Option<present::Present>,
 }
@@ -213,6 +217,9 @@ struct Host {
     launcher_touch: Tracker,
     /// Title of the imported game, for the launcher.
     game_title: Option<String>,
+    /// The game's artwork (width, height, RGBA) for the launcher's hero picture, until the
+    /// painter has it.
+    hero_pending: Option<(u32, u32, Vec<u8>)>,
     /// Pixels per dp.
     dp: f32,
     /// Hardware / Bluetooth keyboard (and Back = Escape).
@@ -379,7 +386,7 @@ impl Host {
                 let mut ui = Renderer::new(&ctx.device, &ctx.queue, s.config.format);
                 ui.overlay = true;
                 let ui_font = ui.add_font(frogger::tinyfont::builtin_font());
-                self.gfx = Some(Gfx { ctx, surface: Some(s), window: Some(window), ui, ui_font, present: None });
+                self.gfx = Some(Gfx { ctx, surface: Some(s), window: Some(window), ui, ui_font, kit: UiKit::new(), present: None });
             }
         }
         Ok(())
@@ -405,8 +412,9 @@ impl Host {
         let mut mapper = cfg.input_mapper();
         mapper.controllers[0] = Controller::Joypad(0);
         // The icon from the player's own artwork (recents icon; home-screen shortcut offered once).
-        self.game_art_png =
-            frogger::icon::game_art(&data).map(|art| frogger::icon::encode_png(&frogger::icon::adaptive(&frogger::icon::square(&art, 480), 432)));
+        let art = frogger::icon::game_art(&data);
+        self.game_art_png = art.as_ref().map(|art| frogger::icon::encode_png(&frogger::icon::adaptive(&frogger::icon::square(art, 480), 432)));
+        self.hero_pending = art.map(|a| (a.width, a.height, a.pixels));
         let mut app = App::new(data, &g.ctx.device, &g.ctx.queue, s.config.format, audio, mapper);
         app.set_config(cfg.clone());
         app.apply_master_volume();
@@ -747,7 +755,11 @@ impl Host {
                         start_in_launcher: self.prefs.start_in_launcher,
                     },
                 );
-                l.draw(&mut RendererPainter { r: &mut g.ui, font: g.ui_font });
+                if let Some((w, h, px)) = self.hero_pending.take() {
+                    g.kit.set_image(&mut g.ui, f2_launcher::ui::HERO_KEY, w, h, px);
+                    l.state.hero = Some((w, h));
+                }
+                l.draw(&mut g.kit.painter(&mut g.ui));
             }
         } else {
             if self.prefs.touch_controls && !menu.open {

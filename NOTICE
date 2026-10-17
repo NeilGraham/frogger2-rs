@@ -24,7 +24,9 @@ the licenses/ folder (LICENSE-GPL-3.0, LICENSE-LGPL-2.1). The combined
 executables are distributed under GPL-3.0-or-later. Third-party Rust
 dependencies keep their own licenses (see `cargo tree` / Cargo.lock), and
 crates/console-host/csrc/emutls.c is adapted from LLVM compiler-rt
-(Apache-2.0 WITH LLVM-exception, noted in the file).
+(Apache-2.0 WITH LLVM-exception, noted in the file). The launcher's text uses a
+subset of the Roboto fonts (Apache-2.0, Copyright 2011 The Roboto Project
+Authors; crates/frogger/assets/LICENSE-Roboto.txt).
 
 Frogger is a trademark of Konami. This is an unaffiliated, non-commercial
 fan preservation project. The original source code is preserved by Highway
