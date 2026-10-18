@@ -487,6 +487,8 @@ impl App {
         if d.graphics == f2_platform::Graphics::Original {
             self.r.lighting = None;
         }
+        // Path-Traced: ray-traced lighting where the GPU has ray queries (else Enhanced).
+        o.ray_tracing = d.graphics == f2_platform::Graphics::PathTraced;
         // Retail draws translucent triangles in submission order (`sortMode` is never set);
         // the enhanced profile sorts them back to front.
         o.xlu_sort = match self.profile {

@@ -140,7 +140,8 @@ pub(crate) struct WaterSim {
 
 impl WaterSim {
     pub fn new(device: &wgpu::Device) -> WaterSim {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water simulation"), source: wgpu::ShaderSource::Wgsl(SIM.into()) });
+        let shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("water simulation"), source: wgpu::ShaderSource::Wgsl(SIM.into()) });
         let cells = (N * N) as u64;
         let buf = |label| {
             device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: cells * 8, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
@@ -221,7 +222,11 @@ impl WaterSim {
             })
         };
         let groups = [group(&bufs[0], &bufs[1]), group(&bufs[1], &bufs[0])];
-        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("water simulation"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("water simulation"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("water simulation"),
             layout: Some(&pl),

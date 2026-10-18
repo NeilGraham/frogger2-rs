@@ -85,7 +85,9 @@ pub fn is_water(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     let wat_n = n.strip_prefix("wat").is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
     wat_n
-        || ["ai_water", "ai_ripple", "00wate", "00nwat", "aniswamp", "aqua0", "aquatop", "ripple", "sludge", "swampi", "swampyi"].iter().any(|k| n.starts_with(k))
+        || ["ai_water", "ai_ripple", "00wate", "00nwat", "aniswamp", "aqua0", "aquatop", "ripple", "sludge", "swampi", "swampyi"]
+            .iter()
+            .any(|k| n.starts_with(k))
 }
 
 #[cfg(test)]

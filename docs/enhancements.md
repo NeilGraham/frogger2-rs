@@ -110,7 +110,13 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
     actors and landings disturb; platforms dip under the frog (render only); Fresnel sky
     reflection and sun glints; procedural caustics under the water (replacing the river beds'
     moving-texture stand-in).
-  - [ ] Milestone 4: path tracing (Path-Traced preset).
+  - [x] Milestone 4: Path-Traced ([PATH-TRACING.md](PATH-TRACING.md)): ray queries over a
+    TLAS of the frame's GPU meshes: soft sun shadows, point light shadows, ambient occlusion
+    with a one-bounce colour estimate, and photon-traced caustics through the simulated water.
+    Needs DXC on Windows (`tools/run/fetch-dxc.sh`).
+  - [ ] Next: full multi-bounce path tracing with textured hits (bindless textures, merged
+    vertex data), skinned meshes in the BLAS (compute skinning), cut-out alpha in rays,
+    temporal accumulation without an upscaler.
 - [x] High refresh (interpolated rendering; follow camera derives from the interpolated frog
   position, free camera moves per frame; `video.frame_cap`)
 - [x] MSAA (`display.msaa`, 4×), supersampling (`display.render_scale`), anisotropic/trilinear

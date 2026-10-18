@@ -103,6 +103,9 @@ pkg_windows() {
   rm -rf "$st"; mkdir -p "$st/$name/engine"
   for b in "${BINS[@]}"; do cp "$bindir/$b.exe" "$st/$name/engine/"; done
   cp "$bindir/$LAUNCHER.exe" "$st/$name/"
+  # Microsoft's DXC (redistributable) for the Path-Traced graphics, when staged beside the build
+  # (tools/run/fetch-dxc.sh "$bindir"; docs/PATH-TRACING.md).
+  for d in dxcompiler.dll dxil.dll; do [[ -f "$bindir/$d" ]] && cp "$bindir/$d" "$st/$name/engine/"; done
   # DLSS / FSR runtimes go here (the player's, never shipped; docs/UPSCALING.md).
   mkdir -p "$st/$name/upscalers"
   printf '%s\r\n' "Put the DLSS / Streamline and AMD FSR DLLs here to use NVIDIA DLSS and AMD FSR:" \

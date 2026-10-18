@@ -39,14 +39,16 @@ pub mod lighting;
 pub mod load;
 pub mod math;
 pub mod renderer;
+#[cfg(feature = "gpu")]
+mod rt;
 pub mod scene;
 pub mod soft;
 pub mod textures;
 pub mod upscale;
-#[cfg(feature = "gpu")]
-pub mod water;
 #[cfg(feature = "ps5-vulkan")]
 pub mod vkraw;
+#[cfg(feature = "gpu")]
+pub mod water;
 
 pub use anim::{actor_bounds, xform_actor, Actor};
 pub use font::{Font, HiRes};

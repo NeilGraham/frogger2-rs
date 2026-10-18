@@ -51,7 +51,7 @@ struct Group {
 const SPOT_CELL: f32 = 220.0;
 
 /// Mesh key: model id and pre-order object index (or [`MESH_SKIN`]).
-type Key = (u32, u16);
+pub(crate) type Key = (u32, u16);
 
 /// Per-draw record in the storage buffer (32 bytes).
 #[repr(C)]
@@ -366,6 +366,7 @@ struct Cam {
     depth: vec4<f32>,    // near (upscaler depth), alpha reference, -, -
 };
 struct Rec { mat: u32, flags: u32, mframe: u32, pad1: u32, gouraud: vec4<f32> };
+// LIGHTS-BEGIN
 struct Lights {
     sky: vec4<f32>,       // w: lighting on
     ground: vec4<f32>,    // w: number of point lights
@@ -379,6 +380,7 @@ struct Lights {
     water: vec4<f32>,     // simulation window corner x, z; cell size; cells per side
     water2: vec4<f32>,    // clock (s); water on; surface map reference height, depth range
 };
+// LIGHTS-END
 struct Point { pos: vec4<f32>, color: vec4<f32> };
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(1) @binding(0) var t: texture_2d<f32>;
@@ -435,6 +437,7 @@ fn modge(p: vec3<f32>, t: f32) -> vec3<f32> {
     return vec3<f32>(mx, mz, my);
 }
 
+// WATER-BEGIN
 // The simulation cell of world x / z (may be outside the window).
 fn cell(xz: vec2<f32>) -> vec2<f32> {
     return (xz - lt.water.xy) / lt.water.z - 0.5;
@@ -475,6 +478,14 @@ fn ripples(xz: vec2<f32>, t: f32) -> f32 {
 fn water_h(xz: vec2<f32>) -> f32 {
     return wave_h(xz) + ripples(xz, lt.water2.x);
 }
+// The water's normal at world x / z.
+fn water_n(xz: vec2<f32>) -> vec3<f32> {
+    let e = lt.water.z;
+    let hx = water_h(xz + vec2<f32>(e, 0.0)) - water_h(xz - vec2<f32>(e, 0.0));
+    let hz = water_h(xz + vec2<f32>(0.0, e)) - water_h(xz - vec2<f32>(0.0, e));
+    return normalize(vec3<f32>(-hx, 2.0 * e, -hz));
+}
+// WATER-END
 // Caustic network at world x / z: bright lines where three warped travelling waves cancel
 // (cells about 25 units across, two layers drifting apart).
 fn caustic_layer(p: vec2<f32>, t: f32) -> f32 {
@@ -587,10 +598,7 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
 
 fn water_color(i: VOut, additive: bool) -> vec4<f32> {
     if (i.vz - 10.0 >= cam.fog.w) { discard; }
-    let e = lt.water.z;
-    let hx = water_h(i.world.xz + vec2<f32>(e, 0.0)) - water_h(i.world.xz - vec2<f32>(e, 0.0));
-    let hz = water_h(i.world.xz + vec2<f32>(0.0, e)) - water_h(i.world.xz - vec2<f32>(0.0, e));
-    let n = normalize(vec3<f32>(-hx, 2.0 * e, -hz));
+    let n = water_n(i.world.xz);
     // The waves bend the texture (a cheap refraction).
     var base = textureSample(t, s, i.uv + n.xz * 0.04) * i.color;
     let v = normalize(lt.eye.xyz - i.world);
@@ -650,17 +658,31 @@ fn shadow(p: vec3<f32>) -> f32 {
     return sum / 9.0;
 }
 
+// RT-BEGIN
+// The ray-traced terms; the Path-Traced shader (`crate::rt`) replaces these.
+// Sun visibility at p (1 = lit).
+fn rt_sun(p: vec3<f32>, n: vec3<f32>, seed: vec2<f32>) -> f32 { return 1.0; }
+// Point light k's visibility from p.
+fn rt_point(p: vec3<f32>, n: vec3<f32>, lp: vec3<f32>, k: u32, seed: vec2<f32>) -> f32 { return 1.0; }
+// Light bounced onto p (rgb) and the ambient's openness (a).
+fn rt_ambient(p: vec3<f32>, n: vec3<f32>, seed: vec2<f32>) -> vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+// Extra sunlight focused onto p by the water above (× the sun's colour).
+fn rt_caustics(p: vec3<f32>, ndl: f32) -> f32 { return caustics(p, lt.sun_dir.xyz) * 2.6; }
+// RT-END
+
 fn light(i: VOut, base: vec3<f32>) -> vec3<f32> {
     var n = normalize(i.normal);
     let v = normalize(lt.eye.xyz - i.world);
     if (dot(n, v) < 0.0) { n = -n; }
-    var l = mix(lt.ground.rgb, lt.sky.rgb, n.y * 0.5 + 0.5);
+    let seed = i.pos.xy;
+    let amb = rt_ambient(i.world, n, seed);
+    var l = mix(lt.ground.rgb, lt.sky.rgb, n.y * 0.5 + 0.5) * amb.a + amb.rgb;
     var spec = vec3<f32>(0.0);
     if (lt.sun_dir.w > 0.5) {
-        let sh = shadow(i.world + n * 2.0);
+        let sh = min(shadow(i.world + n * 2.0), rt_sun(i.world, n, seed));
         let ndl = max(dot(n, lt.sun_dir.xyz), 0.0);
         l += lt.sun_color.rgb * ndl * sh;
-        l += lt.sun_color.rgb * caustics(i.world, lt.sun_dir.xyz) * sh * 2.6;
+        l += lt.sun_color.rgb * rt_caustics(i.world, ndl) * sh;
         let h = normalize(lt.sun_dir.xyz + v);
         spec = lt.sun_color.rgb * pow(max(dot(n, h), 0.0), 48.0) * lt.sun_color.w * sh * step(0.0, ndl);
     }
@@ -673,8 +695,10 @@ fn light(i: VOut, base: vec3<f32>) -> vec3<f32> {
         let d = p.pos.xyz - i.world;
         let dist = length(d);
         let att = clamp(1.0 - dist / p.pos.w, 0.0, 1.0);
+        if (att <= 0.0) { continue; }
         // Half-wrapped so lights also reach surfaces seen edge-on (sprites' flames, lava).
-        l += p.color.rgb * att * att * clamp(dot(n, d / max(dist, 0.001)) * 0.75 + 0.25, 0.0, 1.0);
+        let w = clamp(dot(n, d / max(dist, 0.001)) * 0.75 + 0.25, 0.0, 1.0);
+        l += p.color.rgb * att * att * w * rt_point(i.world, n, p.pos.xyz, k, seed);
     }
     // The baked colours are the art's occlusion: dark corners get no highlight either.
     return base * l + spec * dot(i.color.rgb, vec3<f32>(1.0 / 3.0));
@@ -735,11 +759,11 @@ pub(crate) struct Gpu {
     shadow_pipeline: wgpu::RenderPipeline,
     /// recs, mats, prev, and the bind group over them.
     store: Option<(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup)>,
-    pipelines: HashMap<(wgpu::TextureFormat, u32, bool, bool), wgpu::RenderPipeline>,
+    pipelines: HashMap<(wgpu::TextureFormat, u32, bool, bool, bool), wgpu::RenderPipeline>,
     /// This frame's draw list: (record, mesh key, vertex range, texture, wrap, emissive).
     list: Vec<(u32, Key, core::ops::Range<u32>, TexHandle, bool, bool)>,
     /// Emissive and mean colour per texture CRC.
-    tex_info: HashMap<u32, (bool, [f32; 3])>,
+    tex_info: HashMap<u32, TexInfo>,
     /// The shadow map needs drawing this frame.
     shadows: bool,
     /// Subdivided water meshes, this frame's water draws (record, mesh, vertex range,
@@ -749,6 +773,40 @@ pub(crate) struct Gpu {
     water_pipelines: HashMap<(wgpu::TextureFormat, u32, bool, bool), wgpu::RenderPipeline>,
     surface_pipeline: wgpu::RenderPipeline,
     sim: crate::water::WaterSim,
+    /// Path-Traced (devices with ray queries), and whether this frame uses it.
+    rtx: Option<RtParts>,
+    rt_on: bool,
+    /// Frames prepared (the ray-traced noise changes every frame when `temporal`: a jittered
+    /// temporal upscaler averages it).
+    frame: u32,
+    temporal: bool,
+    shadow_s: wgpu::Sampler,
+    /// Mesh vertex buffer usage (`BLAS_INPUT` with ray queries).
+    vb_usage: wgpu::BufferUsages,
+}
+
+/// The ray-traced variant's state ([`crate::rt`]).
+struct RtParts {
+    rt: crate::rt::Rt,
+    shader: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
+    lights_layout: wgpu::BindGroupLayout,
+    /// Group 3 with the scene's acceleration structure (remade when it is replaced).
+    bg: Option<wgpu::BindGroup>,
+}
+
+/// The text of `src` between the lines `begin` and `end`.
+fn block<'a>(src: &'a str, begin: &str, end: &str) -> &'a str {
+    let a = src.find(begin).expect(begin) + begin.len();
+    let b = src[a..].find(end).expect(end) + a;
+    &src[a..b]
+}
+
+/// `src` with the text from `begin` to `end` (markers included) replaced by `with`.
+fn replace_block(src: &str, begin: &str, end: &str, with: &str) -> String {
+    let a = src.find(begin).expect(begin);
+    let b = src[a..].find(end).expect(end) + a + end.len();
+    format!("{}{}{}", &src[..a], with, &src[b..])
 }
 
 /// The lights of glowing group `g` drawn with matrix `m`: at its spots, the texture's colour
@@ -762,32 +820,48 @@ fn point_lights(m: &[[f32; 4]; 4], g: &Group, color: [f32; 3], out: &mut Vec<Poi
     }
 }
 
-/// Whether texture `crc` glows, and its mean colour (`None`: not loaded), cached in `info`.
-fn emissive(info: &mut HashMap<u32, (bool, [f32; 3])>, textures: &TextureRegistry, crc: u32) -> Option<(bool, [f32; 3])> {
+/// What the lights need to know of a texture.
+#[derive(Clone, Copy, Debug)]
+struct TexInfo {
+    /// Glows ([`is_emissive`]).
+    emissive: bool,
+    /// Mean colour.
+    color: [f32; 3],
+    /// No cut-out pixels (ray-traced shadows treat it as solid).
+    opaque: bool,
+}
+
+/// [`TexInfo`] of texture `crc` (`None`: not loaded), cached in `info`.
+fn tex_info(info: &mut HashMap<u32, TexInfo>, textures: &TextureRegistry, crc: u32) -> Option<TexInfo> {
     if let Some(i) = info.get(&crc) {
         return Some(*i);
     }
     let e = textures.entry(crc)?;
-    let col = textures.images.get(e.image.0 as usize).map_or([1.0; 3], |img| mean_color(&img.rgba));
-    let i = (is_emissive(&e.name), col);
+    let (color, opaque) = textures.images.get(e.image.0 as usize).map_or(([1.0; 3], true), |img| mean_color(&img.rgba));
+    let i = TexInfo { emissive: is_emissive(&e.name), color, opaque };
     info.insert(crc, i);
     Some(i)
 }
 
-/// Mean colour of an image (`rgba`, weighted by alpha).
-fn mean_color(rgba: &[u8]) -> [f32; 3] {
+/// Mean colour of an image (`rgba`, weighted by alpha), and whether almost all of it is
+/// opaque.
+fn mean_color(rgba: &[u8]) -> ([f32; 3], bool) {
     let mut acc = [0.0f64; 4];
-    for p in rgba.as_chunks::<4>().0 {
+    let mut holes = 0usize;
+    let px = rgba.as_chunks::<4>().0;
+    for p in px {
         let a = p[3] as f64 / 255.0;
         for c in 0..3 {
             acc[c] += p[c] as f64 / 255.0 * a;
         }
         acc[3] += a;
+        holes += (p[3] < 128) as usize;
     }
+    let opaque = holes * 50 <= px.len();
     if acc[3] <= 0.0 {
-        return [1.0; 3];
+        return ([1.0; 3], opaque);
     }
-    [(acc[0] / acc[3]) as f32, (acc[1] / acc[3]) as f32, (acc[2] / acc[3]) as f32]
+    ([(acc[0] / acc[3]) as f32, (acc[1] / acc[3]) as f32, (acc[2] / acc[3]) as f32], opaque)
 }
 
 impl Gpu {
@@ -812,40 +886,38 @@ impl Gpu {
             label: Some("gpu mesh draws"),
             entries: &[storage(0, v), storage(1, v), storage(2, v)],
         });
-        let lights_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("gpu mesh lights"),
-            entries: &[
-                ubo(0, vf),
-                storage(1, wgpu::ShaderStages::FRAGMENT),
-                storage(4, vf),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: vf,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
+        let light_entries = [
+            ubo(0, vf),
+            storage(1, wgpu::ShaderStages::FRAGMENT),
+            storage(4, vf),
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: vf,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                    count: None,
-                },
-            ],
-        });
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                count: None,
+            },
+        ];
+        let lights_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh lights"), entries: &light_entries });
         // The shadow pass reads only the lights' uniform block (the map is its target).
         let shadow_ubo_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh shadow"), entries: &[ubo(0, vf)] });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -857,6 +929,31 @@ impl Gpu {
             label: Some("gpu mesh shadow"),
             bind_group_layouts: &[None, None, Some(&store_layout), Some(&shadow_ubo_layout)],
             immediate_size: 0,
+        });
+        // Path-Traced: the same shader with the ray-traced hooks, and their bindings.
+        let rtx = device.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY).then(|| {
+            let f = wgpu::ShaderStages::FRAGMENT;
+            let mut entries = light_entries.to_vec();
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: f,
+                ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                count: None,
+            });
+            entries.push(storage(7, f));
+            entries.push(storage(8, f));
+            let lights_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh lights (ray traced)"), entries: &entries });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("gpu meshes (ray traced)"),
+                bind_group_layouts: &[Some(&cam_layout), Some(tex_layout), Some(&store_layout), Some(&lights_layout)],
+                immediate_size: 0,
+            });
+            let src = format!("enable wgpu_ray_query;\n{}", replace_block(SHADER, "// RT-BEGIN", "// RT-END", crate::rt::RT_FNS));
+            let shader = device
+                .create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gpu meshes (ray traced)"), source: wgpu::ShaderSource::Wgsl(src.into()) });
+            let rt = crate::rt::Rt::new(device, block(SHADER, "// LIGHTS-BEGIN", "// LIGHTS-END"), block(SHADER, "// WATER-BEGIN", "// WATER-END"));
+            RtParts { rt, shader, layout, lights_layout, bg: None }
         });
         let buf = |label, size, usage| {
             device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage: usage | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
@@ -973,6 +1070,12 @@ impl Gpu {
             water_pipelines: HashMap::new(),
             surface_pipeline,
             sim,
+            vb_usage: if rtx.is_some() { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT } else { wgpu::BufferUsages::VERTEX },
+            rtx,
+            rt_on: false,
+            frame: 0,
+            temporal: false,
+            shadow_s,
         }
     }
 
@@ -996,7 +1099,10 @@ impl Gpu {
         extra_lights: &[PointLight],
         water_clock: f64,
         splashes: &mut Vec<crate::water::Splash>,
+        ray_tracing: bool,
     ) -> Vec<(TexHandle, bool)> {
+        self.frame = self.frame.wrapping_add(1);
+        self.temporal = jitter != [0.0; 2];
         use wgpu::util::DeviceExt;
         for (key, verts, groups) in sink.water_pending.drain(..) {
             if verts.is_empty() {
@@ -1025,7 +1131,7 @@ impl Gpu {
             let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("gpu mesh"),
                 contents: bytemuck::cast_slice(&verts),
-                usage: wgpu::BufferUsages::VERTEX,
+                usage: self.vb_usage,
             });
             self.meshes.insert(key, (buf, groups));
         }
@@ -1094,7 +1200,8 @@ impl Gpu {
                     None if d.landscape => white,
                     None => continue,
                 };
-                let (emissive, color) = emissive(&mut self.tex_info, textures, g.crc).unwrap_or((false, [1.0; 3]));
+                let info = tex_info(&mut self.tex_info, textures, g.crc);
+                let (emissive, color) = info.map_or((false, [1.0; 3]), |i| (i.emissive, i.color));
                 let emissive = lit && emissive && d.override_tex.is_none() && !d.sky;
                 if emissive && auto_lights && d.key.1 != MESH_SKIN {
                     point_lights(&sink.mats[sink.recs[d.rec as usize].mat as usize], g, color, &mut found);
@@ -1122,14 +1229,77 @@ impl Gpu {
             for (key, m) in &sink.light_only {
                 let Some((_, groups)) = self.meshes.get(key) else { continue };
                 for g in groups {
-                    if let Some((true, color)) = emissive(&mut self.tex_info, textures, g.crc) {
+                    if let Some(TexInfo { emissive: true, color, .. }) = tex_info(&mut self.tex_info, textures, g.crc) {
                         point_lights(m, g, color, &mut found);
                     }
                 }
             }
         }
+        self.rt_on = ray_tracing && lighting.is_some() && self.rtx.is_some();
+        if self.rt_on {
+            self.prepare_rt(device, queue, sink, textures);
+        }
         self.write_lights(queue, view, lighting, found, extra_lights);
         need_bg
+    }
+
+    /// Path-Traced: acceleration structures for new meshes, this frame's instances, and the
+    /// bind groups over them.
+    fn prepare_rt(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, sink: &Sink, textures: &TextureRegistry) {
+        let Gpu { rtx, meshes, tex_info: info, .. } = self;
+        let Some(rx) = rtx.as_mut() else { return };
+        let mut inst = Vec::with_capacity(sink.draws.len());
+        for d in &sink.draws {
+            if d.key.1 == MESH_SKIN || d.sky {
+                continue;
+            }
+            let Some((_, groups)) = meshes.get(&d.key) else { continue };
+            if !rx.rt.has_mesh(&d.key) {
+                // Groups with solid textures (the landscape's untextured faces are solid too).
+                let opaque: Vec<(u32, u32)> =
+                    groups.iter().filter(|g| tex_info(info, textures, g.crc).map_or(d.landscape, |i| i.opaque)).map(|g| (g.first, g.count)).collect();
+                rx.rt.add_mesh(device, d.key, &opaque);
+            }
+            let (mut sum, mut n) = ([0.0f32; 3], 0.0f32);
+            for g in groups {
+                let c = d.override_tex.map_or_else(|| tex_info(info, textures, g.crc).map_or([0.8; 3], |i| i.color), |_| [0.8; 3]);
+                let w = g.count as f32;
+                sum = [sum[0] + c[0] * w, sum[1] + c[1] * w, sum[2] + c[2] * w];
+                n += w;
+            }
+            let albedo = if n > 0.0 { [sum[0] / n, sum[1] / n, sum[2] / n] } else { [0.8; 3] };
+            inst.push((d.key, sink.mats[sink.recs[d.rec as usize].mat as usize], albedo));
+        }
+        rx.rt.set_instances(device, queue, &inst);
+        if rx.rt.rebind || rx.bg.is_none() {
+            rx.rt.rebind = false;
+            rx.bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("gpu mesh lights (ray traced)"),
+                layout: &rx.lights_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.lights.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: self.points.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.shadow_view) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.shadow_s) },
+                    wgpu::BindGroupEntry { binding: 4, resource: self.sim.heights().as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.sim.surface_view) },
+                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::AccelerationStructure(&rx.rt.tlas) },
+                    wgpu::BindGroupEntry { binding: 7, resource: rx.rt.albedo.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 8, resource: rx.rt.photons.as_entire_binding() },
+                ],
+            }));
+            rx.rt.photon_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("photons"),
+                layout: &rx.rt.photon_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.lights.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: self.sim.heights().as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.sim.surface_view) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::AccelerationStructure(&rx.rt.tlas) },
+                    wgpu::BindGroupEntry { binding: 4, resource: rx.rt.photons.as_entire_binding() },
+                ],
+            }));
+        }
     }
 
     /// The lights' uniform block and point light list (the nearest to the camera's target).
@@ -1221,7 +1391,7 @@ impl Gpu {
             cam.source[0],
             cam.source[1],
             cam.source[2],
-            1.0,
+            if self.temporal { (self.frame % 4096) as f32 } else { -1.0 },
         ]);
         let wf = self.sim.frame;
         let on = l.water && self.sim.started();
@@ -1240,7 +1410,7 @@ impl Gpu {
 
     /// The passes before the frame: the sun's shadow map (every GPU mesh draw, on screen or
     /// not), and on simulation steps the water's surface map and the steps.
-    pub fn pre_passes(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn pre_passes(&mut self, encoder: &mut wgpu::CommandEncoder) {
         let Some((_, _, _, store_bg)) = &self.store else { return };
         if self.shadows && !self.list.is_empty() {
             let mut pass = depth_pass(encoder, "sun shadow", &self.shadow_view);
@@ -1257,6 +1427,13 @@ impl Gpu {
             draw_list(&mut pass, &self.water_meshes, self.water_list.iter().map(|d| (d.0, d.1, d.2.clone())));
             drop(pass);
             self.sim.run(encoder);
+        }
+        if self.rt_on {
+            let Gpu { rtx, meshes, sim, .. } = self;
+            if let Some(rx) = rtx.as_mut() {
+                rx.rt.build(encoder, |k| meshes.get(k).map(|m| m.0.clone()));
+                rx.rt.trace_photons(encoder, sim.started());
+            }
         }
     }
 
@@ -1319,7 +1496,12 @@ impl Gpu {
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water"),
             layout: Some(&self.layout),
-            vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_water"), compilation_options: Default::default(), buffers: &[Some(vertex_layout())] },
+            vertex: wgpu::VertexState {
+                module: &self.shader,
+                entry_point: Some("vs_water"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vertex_layout())],
+            },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
@@ -1346,10 +1528,14 @@ impl Gpu {
         self.water_pipelines.insert((format, samples, mrt, additive), p);
     }
 
-    fn pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool, emissive: bool) {
-        if self.pipelines.contains_key(&(format, samples, mrt, emissive)) {
+    fn pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool, emissive: bool, rt: bool) {
+        if self.pipelines.contains_key(&(format, samples, mrt, emissive, rt)) {
             return;
         }
+        let (shader, layout) = match (&self.rtx, rt) {
+            (Some(r), true) => (&r.shader, &r.layout),
+            _ => (&self.shader, &self.layout),
+        };
         let comp = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
         use wgpu::BlendFactor as F;
         let blend = wgpu::BlendState { color: comp(F::SrcAlpha, F::OneMinusSrcAlpha), alpha: comp(F::One, F::OneMinusSrcAlpha) };
@@ -1361,13 +1547,8 @@ impl Gpu {
         let constants = [("EMISSIVE", if emissive { 1.0 } else { 0.0 })];
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("gpu meshes"),
-            layout: Some(&self.layout),
-            vertex: wgpu::VertexState {
-                module: &self.shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(vertex_layout())],
-            },
+            layout: Some(layout),
+            vertex: wgpu::VertexState { module: shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[Some(vertex_layout())] },
             // `D3DCULL_CW` on a y-down screen: the faces drawn are counter-clockwise on screen.
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1384,7 +1565,7 @@ impl Gpu {
             }),
             multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
             fragment: Some(wgpu::FragmentState {
-                module: &self.shader,
+                module: shader,
                 entry_point: Some(if mrt { "fs_mrt" } else { "fs" }),
                 compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
                 targets: &targets[..if mrt { 3 } else { 1 }],
@@ -1392,13 +1573,15 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
-        self.pipelines.insert((format, samples, mrt, emissive), p);
+        self.pipelines.insert((format, samples, mrt, emissive, rt), p);
     }
 
     /// Creates the pipelines [`draw`](Self::draw) will use.
     pub fn ensure_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool) {
-        self.pipeline(device, format, samples, mrt, false);
-        self.pipeline(device, format, samples, mrt, true);
+        for rt in [false, self.rt_on] {
+            self.pipeline(device, format, samples, mrt, false, rt);
+            self.pipeline(device, format, samples, mrt, true, rt);
+        }
         self.water_pipeline(device, format, samples, mrt, false);
         self.water_pipeline(device, format, samples, mrt, true);
     }
@@ -1414,13 +1597,20 @@ impl Gpu {
         bind_group: impl Fn(TexHandle, bool) -> &'b wgpu::BindGroup,
     ) {
         let Some((_, _, _, store_bg)) = &self.store else { return };
-        let (Some(lit), Some(emi)) = (self.pipelines.get(&(format, samples, mrt, false)), self.pipelines.get(&(format, samples, mrt, true))) else { return };
+        let rt = self.rt_on;
+        let (Some(lit), Some(emi)) = (self.pipelines.get(&(format, samples, mrt, false, rt)), self.pipelines.get(&(format, samples, mrt, true, rt))) else {
+            return;
+        };
+        let lights_bg = match (&self.rtx, rt) {
+            (Some(RtParts { bg: Some(bg), .. }), true) => bg,
+            _ => &self.lights_bg,
+        };
         if self.list.is_empty() {
             return;
         }
         pass.set_bind_group(0, &self.cam_bg, &[]);
         pass.set_bind_group(2, store_bg, &[]);
-        pass.set_bind_group(3, &self.lights_bg, &[]);
+        pass.set_bind_group(3, lights_bg, &[]);
         let mut cur: Option<Key> = None;
         let mut cur_emissive = None;
         for (rec, key, range, tex, wrap, emissive) in &self.list {
@@ -1460,7 +1650,11 @@ fn depth_pass<'e>(encoder: &'e mut wgpu::CommandEncoder, label: &str, view: &wgp
 }
 
 /// Draws `(record, mesh, vertex range)`s of `meshes`.
-fn draw_list(pass: &mut wgpu::RenderPass<'_>, meshes: &HashMap<Key, (wgpu::Buffer, Vec<Group>)>, list: impl Iterator<Item = (u32, Key, core::ops::Range<u32>)>) {
+fn draw_list(
+    pass: &mut wgpu::RenderPass<'_>,
+    meshes: &HashMap<Key, (wgpu::Buffer, Vec<Group>)>,
+    list: impl Iterator<Item = (u32, Key, core::ops::Range<u32>)>,
+) {
     let mut cur: Option<Key> = None;
     for (rec, key, range) in list {
         if cur != Some(key) {

@@ -89,13 +89,23 @@ pub fn create(window: &Window, cfg: &Config, display: Box<dyn wgpu::wgt::WgpuHas
     f2_upscale::log(&format!("starting: {:?} upscaler, {:?} frame generation", cfg.upscale.upscaler, cfg.upscale.frame_generation));
     let mut desc = wgpu::InstanceDescriptor::new_with_display_handle_from_env(display);
     desc.backends = wgpu::Backends::DX12;
+    // DXC beside the exe (tools/run/fetch-dxc.sh): shader model 6.5+, so ray queries (the
+    // Path-Traced graphics). Without it wgpu's default (FXC) and no ray tracing.
+    if let Some(dxc) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("dxcompiler.dll"))).filter(|p| p.is_file()) {
+        desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::DynamicDxc { dxc_path: dxc.to_string_lossy().into_owned() };
+    }
     let instance = wgpu::Instance::new(desc);
     // After the instance: wgpu creates an `IDXGIFactoryMedia` there, which ReShade's
     // `CreateDXGIFactory1` hook crashes on. Device and swapchain creation come after.
     load_reshade();
     let u = &cfg.upscale;
     let ctx = GpuContext::for_adapter_named(instance, wgpu::Backends::DX12, u.adapter.as_deref()).map_err(|e| e.to_string())?;
-    f2_upscale::log(&format!("GPU: {} ({:?})", ctx.adapter.get_info().name, ctx.adapter.get_info().backend));
+    f2_upscale::log(&format!(
+        "GPU: {} ({:?}), ray tracing: {}",
+        ctx.adapter.get_info().name,
+        ctx.adapter.get_info().backend,
+        ctx.device.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+    ));
     let size = window.inner_size();
     let dir = runtime_dir(u);
 

@@ -749,7 +749,11 @@ impl App {
                 add(
                     Id::Graphics,
                     "Graphics",
-                    d.graphics.name().into(),
+                    if d.graphics == f2_platform::Graphics::PathTraced && !self.r.ray_tracing_supported() {
+                        "Path-Traced (no ray tracing: Enhanced)".into()
+                    } else {
+                        d.graphics.name().into()
+                    },
                     &gate(
                         enh,
                         "Original: the original renderer. Enhanced: dynamic lighting (sun / moon shadows, light from fire and lava). Path-Traced: ray-traced lighting on GPUs that support it.",

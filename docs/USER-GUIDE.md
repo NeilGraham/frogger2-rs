@@ -202,7 +202,8 @@ with a hint.
   graphics (*Original*: the original renderer; *Enhanced*: dynamic lighting with sun / moon
   shadows and light from fire and lava, see [LIGHTING.md](LIGHTING.md), and living water with
   waves and caustics, see [WATER.md](WATER.md); *Path-Traced*: ray-traced
-  lighting where supported), widescreen, polygon culling, render scale, anti-aliasing, texture filter, perspective-correct textures, draw
+  shadows, bounce light and caustics on GPUs with ray tracing, see
+  [PATH-TRACING.md](PATH-TRACING.md)), widescreen, polygon culling, render scale, anti-aliasing, texture filter, perspective-correct textures, draw
   distance, fog and font (*Modern* / *Original*, see below); on Windows the upscaler (NVIDIA DLSS,
   AMD FSR 3.1 / FSR 4) with its mode and preset or sharpening, frame generation (DLSS 2x / 3x /
   4x / dynamic, FSR 2x) and NVIDIA Reflex (see [UPSCALING.md](UPSCALING.md)); brightness (a final multiply) and the FPS counter (corner of your choice;

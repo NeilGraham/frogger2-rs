@@ -325,6 +325,10 @@ pub struct RenderOptions {
     /// (`crate::gpu_mesh`) instead of being projected on the CPU; the projection becomes exact
     /// ([`View::exact_depth`]). The basis of the modern renderer (lighting, shadows).
     pub gpu_meshes: bool,
+    /// Path-Traced: with [`gpu_meshes`](Self::gpu_meshes) and lighting, ray-traced shadows,
+    /// ambient / bounce light and photon-traced caustics (`crate::rt`) where the device has ray
+    /// queries ([`Renderer::ray_tracing_supported`](crate::Renderer::ray_tracing_supported)).
+    pub ray_tracing: bool,
     /// Enhanced (temporal upscalers, frame generation): the opaque passes also record each
     /// vertex's screen position in the previous frame ([`Frames::motion`]). Off = no extra
     /// work and the retail path unchanged.
@@ -347,6 +351,7 @@ impl Default for RenderOptions {
             msaa: 1,
             clip_faces: false,
             gpu_meshes: false,
+            ray_tracing: false,
             motion_vectors: false,
         }
     }

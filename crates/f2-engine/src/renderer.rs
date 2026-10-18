@@ -88,10 +88,23 @@ impl GpuContext {
     }
 
     fn with_adapter(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Result<GpuContext, EngineError> {
+        // Ray queries (the Path-Traced graphics, `crate::rt`) where the adapter has them;
+        // `F2_NO_RAY_TRACING` leaves them off.
+        let rt = adapter.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY) && std::env::var_os("F2_NO_RAY_TRACING").is_none();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("f2-engine"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            required_features: if rt { wgpu::Features::EXPERIMENTAL_RAY_QUERY } else { wgpu::Features::empty() },
+            required_limits: {
+                let l = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
+                if rt {
+                    l.using_acceleration_structure_values(adapter.limits())
+                } else {
+                    l
+                }
+            },
+            // SAFETY: ray queries are experimental in wgpu; the renderer only uses them on the
+            // Path-Traced graphics setting.
+            experimental_features: if rt { unsafe { wgpu::ExperimentalFeatures::enabled() } } else { wgpu::ExperimentalFeatures::disabled() },
             ..Default::default()
         }))
         .map_err(err)?;
@@ -1479,6 +1492,12 @@ impl Renderer {
         self.overlays.push(q);
     }
 
+    /// Whether the device can do the Path-Traced graphics ([`RenderOptions::ray_tracing`]).
+    #[cfg(feature = "gpu")]
+    pub fn ray_tracing_supported(&self) -> bool {
+        self.device.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+    }
+
     /// Enhanced water: something disturbs the water at `s.pos` (a landing, a splash). Applied
     /// at the next simulation step (where there is water near that height).
     #[cfg(feature = "gpu")]
@@ -1854,6 +1873,7 @@ impl Renderer {
             &self.sprite_lights,
             self.water_clock,
             &mut self.splashes,
+            self.options.ray_tracing,
         );
         gm.ensure_pipeline(&self.device, format, samples, mrt);
         let any = gm.has_draws() || gm.has_water();
@@ -1968,7 +1988,7 @@ impl Renderer {
             keys.push((c.tex.0, self.sampler_key(c.wrap)));
         }
         if gpu {
-            self.gpu_mesh.as_ref().unwrap().pre_passes(encoder);
+            self.gpu_mesh.as_mut().unwrap().pre_passes(encoder);
         }
         let depth_view = &self.depth.as_ref().unwrap().0;
         let main_target = if scaled { &self.internal.as_ref().unwrap().0 } else { target };
@@ -2211,7 +2231,7 @@ impl Renderer {
         let ut = self.up.as_ref().unwrap();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upscale scene") });
         if gpu {
-            self.gpu_mesh.as_ref().unwrap().pre_passes(&mut enc);
+            self.gpu_mesh.as_mut().unwrap().pre_passes(&mut enc);
         }
         {
             let att = |view, c: wgpu::Color| {

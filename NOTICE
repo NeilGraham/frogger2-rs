@@ -31,6 +31,10 @@ crates/f2-upscale/native vendors the NVIDIA Streamline SDK and AMD FidelityFX SD
 API headers (both MIT; licenses/LICENSE-Streamline-MIT.txt,
 licenses/LICENSE-FidelityFX-MIT.txt). The DLSS / Streamline and FSR runtime DLLs
 are not included: players supply them (UPSCALING.md).
+Windows packages may include Microsoft's DirectX Shader Compiler (dxcompiler.dll,
+dxil.dll; redistributable under its release license, University of Illinois/NCSA
+and MIT terms, https://github.com/microsoft/DirectXShaderCompiler) beside the
+game executable, for the Path-Traced graphics (PATH-TRACING.md).
 
 The PS5 package writer (crates/f2-package/src/ps5/: fself.rs, kraken/, pkg/)
 is a port of LibProsperoPkg 1.2.0 (drakmor / SvenGDK,

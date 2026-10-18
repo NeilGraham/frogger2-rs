@@ -261,8 +261,11 @@ fn enhanced_water_takes_splashes() {
     let root = object("pond", mesh, OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE | OBJECT_FLAGS_ADDITIVE);
     let model = Model { id: 3, radius: 150.0, object_size: 0, root, root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
     let lighting = f2_engine::Lighting { water: true, ..f2_engine::Lighting::daylight() };
+    let rt = r.ray_tracing_supported();
     let mut run = |splash: bool| {
         r.options.gpu_meshes = true;
+        // Also the photon-traced caustics where the adapter has ray queries.
+        r.options.ray_tracing = rt;
         r.lighting = Some(lighting.clone());
         let mut img = None;
         for f in 0..20 {
@@ -283,4 +286,48 @@ fn enhanced_water_takes_splashes() {
     assert!(lit > 320 * 240 / 4, "the pond is drawn ({lit} pixels)");
     let differ = calm.pixels.chunks(4).zip(rippled.pixels.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 6)).count();
     assert!(differ > 200, "the splash makes waves ({differ} pixels differ)");
+}
+
+#[test]
+fn ray_traced_lighting_casts_shadows() {
+    use f2_engine::{DirLight, Lighting};
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    if !r.ray_tracing_supported() {
+        eprintln!("no ray queries on this adapter: skipped");
+        return;
+    }
+    let white = f2_formats::crc("white.bmp");
+    r.textures.add_rgba(white, "white.bmp", TexType::Normal, 2, 2, vec![255; 16]);
+    let mut root = object("floor", quad(20.0, 40.0, [0.5, 0.5, 0.5, 1.0], white, true), 0);
+    root.children.push(object("card", quad(0.0, 5.0, [0.5, 0.5, 0.5, 1.0], white, true), 0));
+    let model = Model { id: 4, radius: 60.0, object_size: 0, root, root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
+    let sun = |shadows| Lighting {
+        sky: [0.5; 3],
+        ground: [0.5; 3],
+        sun: Some(DirLight { to_light: f2_engine::lighting::normalize([1.0, 0.0, -1.0]), color: [0.6; 3], shadows }),
+        point_lights: vec![],
+        emissive_lights: false,
+        specular: 0.0,
+        water: true,
+    };
+    let mut shot = |lighting: Lighting, rt: bool| {
+        r.options.gpu_meshes = true;
+        r.options.ray_tracing = rt;
+        r.lighting = Some(lighting);
+        let mut img = None;
+        // A few frames: the acceleration structures are built with the first.
+        for _ in 0..3 {
+            r.begin_frame(320, 240);
+            r.set_camera(&Camera { source: [0.0, 0.0, -100.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] });
+            r.draw_actor(&model, &mut Actor::default());
+            img = Some(r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap());
+        }
+        img.unwrap()
+    };
+    // No shadow map: the shadow comes from the rays alone.
+    let (open, traced) = (shot(sun(false), false), shot(sun(false), true));
+    traced.write_png(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/f2-engine-rt-shadow.png")).unwrap();
+    let darker = open.pixels.chunks(4).zip(traced.pixels.chunks(4)).filter(|(a, b)| a[0] > b[0] + 20).count();
+    assert!((80..1500).contains(&darker), "{darker} pixels in the traced shadow");
 }
