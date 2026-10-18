@@ -45,6 +45,9 @@ struct Group {
     first: u32,
     count: u32,
     spots: Vec<([f32; 3], f32)>,
+    /// Water: steep faces (waterfalls), still drawn from the mesh when the generated surface
+    /// replaces the flat ones.
+    steep: bool,
 }
 
 /// Cell size of a glowing surface's lights (a lava lake gets one light per cell).
@@ -60,7 +63,9 @@ struct Rec {
     /// First matrix (this frame's and last frame's lists are parallel).
     mat: u32,
     /// Bit 0: no far clip (sky); bit 1: Gouraud override; bit 2: landscape; bit 3: MODGE
-    /// (texture wobble); bit 4: WAVE (swell, water alpha).
+    /// (texture wobble); bit 4: WAVE (swell, water alpha); bit 5: a river bed (drawn on the CPU,
+    /// after the opaque meshes, by the original: pushed back in depth so the banks it runs
+    /// under win where they meet).
     flags: u32,
     /// `PCCalcModgeValues`' frame count; spare.
     modge_frame: u32,
@@ -143,6 +148,7 @@ impl Sink {
             self.pending.push((key, verts, groups));
         }
         let mut modge = o.modge;
+        let mut bed = false;
         if o.light_only {
             if o.override_tex.is_none() {
                 self.light_only.push((key, o.mats[0]));
@@ -154,7 +160,10 @@ impl Sink {
             match class {
                 Class::Cpu => return false,
                 // The wobble is the original's stand-in for caustics; the real ones replace it.
-                Class::Modge => modge = 0,
+                Class::Modge => {
+                    modge = 0;
+                    bed = true;
+                }
                 Class::Water => {
                     if let std::collections::hash_map::Entry::Vacant(e) = self.class.entry((key.0, key.1 ^ WATER_KEY)) {
                         e.insert(Class::Water);
@@ -178,7 +187,7 @@ impl Sink {
         self.prev.extend((0..o.mats.len()).map(|i| *o.prev.get(i).unwrap_or(&o.mats[i])));
         let flags = no_clip as u32 | (o.gouraud.is_some() as u32) << 1 | (o.landscape as u32) << 2;
         let g = o.gouraud.unwrap_or([1.0; 3]);
-        let flags = flags | (modge as u32 & 3) << 3;
+        let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5;
         self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0] });
         self.draws.push(Draw {
             key,
@@ -201,6 +210,9 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
+
+/// Quads per side of the generated water surface (2×2 simulation cells each).
+const GRID: u32 = 256;
 
 /// Marks a water mesh's entry in [`Sink::class`] (its subdivided upload).
 const WATER_KEY: u16 = 0x8000;
@@ -226,23 +238,34 @@ fn subdivide(verts: &[Vert], groups: &[Group]) -> (Vec<Vert>, Vec<Group>) {
     };
     let (mut out, mut gs) = (Vec::new(), Vec::new());
     for g in groups {
-        let first = out.len() as u32;
-        for t in verts[g.first as usize..(g.first + g.count) as usize].as_chunks::<3>().0 {
-            let len = |a: &Vert, b: &Vert| dot(sub(a.pos, b.pos), sub(a.pos, b.pos)).sqrt();
-            let e = len(&t[0], &t[1]).max(len(&t[1], &t[2])).max(len(&t[2], &t[0]));
-            let n = ((e / WATER_EDGE).ceil() as usize).clamp(1, 8);
-            let f = 1.0 / n as f32;
-            let p = |i: usize, j: usize| lerp(&t[0], &t[1], &t[2], i as f32 * f, j as f32 * f);
-            for i in 0..n {
-                for j in 0..n - i {
-                    out.extend([p(i, j), p(i + 1, j), p(i, j + 1)]);
-                    if i + j + 1 < n {
-                        out.extend([p(i + 1, j), p(i + 1, j + 1), p(i, j + 1)]);
+        for steep in [false, true] {
+            let first = out.len() as u32;
+            for t in verts[g.first as usize..(g.first + g.count) as usize].as_chunks::<3>().0 {
+                // Steep and tall: a waterfall (short skirts under the banks count as flat).
+                let n = crate::lighting::normalize(cross(sub(t[1].pos, t[0].pos), sub(t[2].pos, t[0].pos)));
+                let ys = t.map(|v| v.pos[1]);
+                let tall = ys.iter().copied().fold(f32::MIN, f32::max) - ys.iter().copied().fold(f32::MAX, f32::min) > 24.0;
+                if (n[1].abs() < 0.5 && tall) != steep {
+                    continue;
+                }
+                let len = |a: &Vert, b: &Vert| dot(sub(a.pos, b.pos), sub(a.pos, b.pos)).sqrt();
+                let e = len(&t[0], &t[1]).max(len(&t[1], &t[2])).max(len(&t[2], &t[0]));
+                let n = ((e / WATER_EDGE).ceil() as usize).clamp(1, 8);
+                let f = 1.0 / n as f32;
+                let p = |i: usize, j: usize| lerp(&t[0], &t[1], &t[2], i as f32 * f, j as f32 * f);
+                for i in 0..n {
+                    for j in 0..n - i {
+                        out.extend([p(i, j), p(i + 1, j), p(i, j + 1)]);
+                        if i + j + 1 < n {
+                            out.extend([p(i + 1, j), p(i + 1, j + 1), p(i, j + 1)]);
+                        }
                     }
                 }
             }
+            if out.len() as u32 > first {
+                gs.push(Group { crc: g.crc, first, count: out.len() as u32 - first, spots: Vec::new(), steep });
+            }
         }
-        gs.push(Group { crc: g.crc, first, count: out.len() as u32 - first, spots: Vec::new() });
     }
     (out, gs)
 }
@@ -305,7 +328,7 @@ fn expand(o: &GpuObj) -> (Vec<Vert>, Vec<Group>) {
         }
         let crc = mesh.textures.get(fi).copied().unwrap_or(0);
         if groups.last().is_none_or(|g| g.crc != crc) {
-            groups.push(Group { crc, first: verts.len() as u32, count: 0, spots: Vec::new() });
+            groups.push(Group { crc, first: verts.len() as u32, count: 0, spots: Vec::new(), steep: false });
         }
         for (k, &i) in idx.iter().enumerate() {
             let uv = mesh.face_uv.get(fi * 3 + k).copied().unwrap_or([0, 0]);
@@ -379,6 +402,8 @@ struct Lights {
     eye: vec4<f32>,       // camera position
     water: vec4<f32>,     // simulation window corner x, z; cell size; cells per side
     water2: vec4<f32>,    // clock (s); water on; surface map reference height, depth range
+    extra: vec4<f32>,     // baked shading kept, -, -, -
+    water3: vec4<f32>,    // generated water: tint rgb; w: on
 };
 // LIGHTS-END
 struct Point { pos: vec4<f32>, color: vec4<f32> };
@@ -394,6 +419,7 @@ struct Point { pos: vec4<f32>, color: vec4<f32> };
 @group(3) @binding(3) var shadow_s: sampler_comparison;
 @group(3) @binding(4) var<storage, read> wave: array<vec2<f32>>;
 @group(3) @binding(5) var surface: texture_depth_2d;
+@group(3) @binding(9) var bed: texture_depth_2d;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -427,6 +453,15 @@ fn xfm_dir(m: mat4x4<f32>, d: vec3<f32>) -> vec3<f32> {
 fn clip(pr: vec4<f32>, p: vec3<f32>) -> vec4<f32> {
     let z = p.z - 10.0;
     return vec4<f32>(-pr.x * p.x + pr.z * z, pr.y * p.y + pr.w * z, 0.0, z);
+}
+
+// The vertex colour with its baked shading faded to `lt.extra.x` (the dynamic lights shade
+// instead): brightness lifted towards 0.85 (about the art's average), hue kept, near-black (pits, fade-outs) kept.
+fn delight(c: vec3<f32>) -> vec3<f32> {
+    let m = max(max(c.r, c.g), c.b);
+    if (m <= 0.0) { return c; }
+    let lifted = mix(0.85, m, lt.extra.x);
+    return c / m * mix(m, lifted, smoothstep(0.02, 0.25, m));
 }
 
 // `PCCalcModgeValues` at model-space point p, frame t: texture wobble x / z, swell.
@@ -471,7 +506,10 @@ fn surface_y(xz: vec2<f32>) -> f32 {
 }
 // Small travelling ripples everywhere on the water (world units).
 fn ripples(xz: vec2<f32>, t: f32) -> f32 {
-    return 0.35 * sin(dot(xz, vec2<f32>(0.11, 0.05)) + t * 1.9)
+    // A slow swell (our own, in place of the original's low-poly WAVE lift) and small ripples.
+    return 0.9 * sin(dot(xz, vec2<f32>(0.031, 0.017)) + t * 1.1)
+         + 0.6 * sin(dot(xz, vec2<f32>(-0.022, 0.035)) + t * 0.9)
+         + 0.35 * sin(dot(xz, vec2<f32>(0.11, 0.05)) + t * 1.9)
          + 0.25 * sin(dot(xz, vec2<f32>(-0.06, 0.13)) + t * 2.3)
          + 0.15 * sin(dot(xz, vec2<f32>(0.19, -0.16)) + t * 3.1);
 }
@@ -486,6 +524,16 @@ fn water_n(xz: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(-hx, 2.0 * e, -hz));
 }
 // WATER-END
+// The river bed's height at world x / z (none: -1e9; covered by a bank: 1e9).
+fn bed_y(xz: vec2<f32>) -> f32 {
+    let c = vec2<i32>(floor(cell(xz) + 0.5));
+    if (!in_window(c)) { return -1e9; }
+    let d = textureLoad(bed, c, 0);
+    if (d >= 0.99999) { return -1e9; }
+    if (d <= 0.0) { return 1e9; }
+    return lt.water2.z + (0.5 - d) * lt.water2.w;
+}
+
 // Caustic network at world x / z: bright lines where three warped travelling waves cancel
 // (cells about 25 units across, two layers drifting apart).
 fn caustic_layer(p: vec2<f32>, t: f32) -> f32 {
@@ -528,11 +576,16 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
     let c = clip(cam.proj, vp);
     var o: VOut;
     // The CPU path's linear depth, so CPU and GPU geometry occlude each other as before.
-    let zl = clamp(vp.z * 0.00025, 0.0, 1.0);
+    var zl = clamp(vp.z * 0.00025, 0.0, 1.0);
+    if ((r.flags & 32u) != 0u) { zl = min(zl + 0.5 * 0.00025, 1.0); }
     let j = vec2<f32>(cam.size.z * 2.0 / cam.size.x, -cam.size.w * 2.0 / cam.size.y);
     o.pos = vec4<f32>(c.xy + j * c.w, zl * c.w, c.w);
     var col = i.color;
-    if ((r.flags & 2u) != 0u) { col = vec4<f32>(r.gouraud.rgb, col.a); }
+    if ((r.flags & 2u) != 0u) {
+        col = vec4<f32>(r.gouraud.rgb, col.a);
+    } else if (lt.sky.w > 0.5 && !EMISSIVE && (r.flags & 1u) == 0u) {
+        col = vec4<f32>(delight(col.rgb), col.a);
+    }
     o.color = clamp(col, vec4<f32>(0.0), vec4<f32>(1.0));
     o.uv = i.uv;
     if ((r.flags & 8u) != 0u) {
@@ -633,6 +686,120 @@ fn water_color(i: VOut, additive: bool) -> vec4<f32> {
     return o;
 }
 
+// The generated water surface: a grid of 2×2-cell quads over the simulation window, at the
+// surface map's height, moved by the waves; drawn where the surface map has water.
+const GRID: u32 = 256u;
+fn grid_y(c: vec2<i32>) -> f32 {
+    var best = -1e9;
+    for (var dy = -2; dy <= 2; dy++) {
+        for (var dx = -2; dx <= 2; dx++) {
+            let q = c + vec2<i32>(dx, dy);
+            if (!in_window(q)) { continue; }
+            let d = textureLoad(surface, q, 0);
+            if (d < 0.99999) { best = max(best, lt.water2.z + (0.5 - d) * lt.water2.w); }
+        }
+    }
+    return best;
+}
+@vertex fn vs_grid(@builtin(vertex_index) vi: u32) -> VOut {
+    let q = vi / 6u;
+    let corner = array<vec2<u32>, 6>(vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(0u, 1u), vec2<u32>(1u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 1u))[vi % 6u];
+    let g = vec2<u32>(q % GRID, q / GRID) + corner;
+    let c = vec2<i32>(g * 2u);
+    var o: VOut;
+    let y = grid_y(c);
+    if (y < -1e8 || lt.water3.w < 0.5) {
+        o.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return o;
+    }
+    let xz = lt.water.xy + (vec2<f32>(c) + 0.5) * lt.water.z;
+    // Crests reach the original surface, troughs go below it: the banks were made for that
+    // height (the original's swell only lifted the water).
+    let world = vec3<f32>(xz.x, y + water_h(xz) - 2.5, xz.y);
+    let vp = xfm(cam.v, world);
+    let cl = clip(cam.proj, vp);
+    let zl = clamp(vp.z * 0.00025, 0.0, 1.0);
+    let j = vec2<f32>(cam.size.z * 2.0 / cam.size.x, -cam.size.w * 2.0 / cam.size.y);
+    o.pos = vec4<f32>(cl.xy + j * cl.w, zl * cl.w, cl.w);
+    o.color = vec4<f32>(1.0);
+    o.uv = xz;
+    o.fog = 1.0;
+    if (cam.fog.x > 0.5) {
+        o.fog = clamp(1.0 - (vp.z - cam.fog.y) / (cam.fog.z - cam.fog.y), 0.0, 1.0);
+    }
+    o.vz = vp.z;
+    o.cur = cl;
+    o.prev = cl;
+    o.world = world;
+    o.normal = vec3<f32>(0.0, 1.0, 0.0);
+    return o;
+}
+
+fn grid_color(i: VOut) -> vec4<f32> {
+    if (i.vz - 10.0 >= cam.fog.w) { discard; }
+    let sy = surface_y(i.world.xz);
+    if (sy < -1e8) { discard; }
+    let by = bed_y(i.world.xz);
+    // No bed: open water, deep. Under a bank's lip: nothing to show (thickness 0).
+    let thick = select(max(sy - by, 0.0), 200.0, by < -1e8);
+    let n = water_n(i.world.xz);
+    let v = normalize(lt.eye.xyz - i.world);
+    let fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    let tm = lt.water2.x;
+    // The original water texture as detail, in world space, drifting and bent by the waves.
+    let detail = textureSample(t, s, i.world.xz / 48.0 + vec2<f32>(tm * 0.012, tm * 0.007) + n.xz * 0.05).rgb;
+    let body = lt.water3.rgb;
+    var sh = 1.0;
+    var spec = vec3<f32>(0.0);
+    var lit = mix(lt.ground.rgb, lt.sky.rgb, n.y * 0.5 + 0.5) * 0.8;
+    if (lt.sun_dir.w > 0.5) {
+        sh = shadow(i.world);
+        // Lit by the waves' slopes (the water's surface scatters a little).
+        lit += lt.sun_color.rgb * max(dot(n, lt.sun_dir.xyz), 0.0) * sh * 1.2;
+        let h = normalize(lt.sun_dir.xyz + v);
+        spec = lt.sun_color.rgb * (pow(max(dot(n, h), 0.0), 260.0) * 3.0 + pow(max(dot(n, h), 0.0), 40.0) * 0.1) * sh;
+    }
+    let col = body * lit * (0.75 + 0.5 * detail);
+    // Deeper water hides the bed; the shore fades out, with a little foam.
+    let opacity = 1.0 - exp(-thick / 45.0);
+    let edge = smoothstep(0.0, 4.0, thick);
+    let foam = (1.0 - smoothstep(0.0, 5.0, thick)) * (0.4 + 0.6 * caustic_layer(i.world.xz * 0.7, tm * 1.2)) * 0.35;
+    var rgb = mix(col, lt.sky.rgb * 1.1, fres) + spec + vec3<f32>(foam) * max(lit, vec3<f32>(0.6));
+    var a = clamp((max(opacity, fres * 0.9) + foam + dot(spec, vec3<f32>(0.33))) * edge, 0.0, 1.0);
+    if (cam.fog.x > 0.5) { rgb = mix(cam.fog_color.rgb, rgb, i.fog); }
+    return vec4<f32>(rgb, a);
+}
+@fragment fn fs_grid(i: VOut) -> @location(0) vec4<f32> {
+    return grid_color(i);
+}
+@fragment fn fs_grid_mrt(i: VOut) -> FOut {
+    var o: FOut;
+    o.c = grid_color(i);
+    return o;
+}
+
+// The opaque meshes seen from above into the bed map (the highest surface under the water).
+struct BedOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>, @location(1) @interpolate(flat) keep: u32 };
+@vertex fn vs_bed(i: VIn, @builtin(instance_index) inst: u32) -> BedOut {
+    let r = recs[inst];
+    let w = xfm(mats[r.mat + i.bone], i.pos);
+    let size = lt.water.z * lt.water.w;
+    var o: BedOut;
+    o.pos = vec4<f32>((w.x - lt.water.x) / size * 2.0 - 1.0, 1.0 - (w.z - lt.water.y) / size * 2.0, clamp(0.5 - (w.y - lt.water2.z) / lt.water2.w, 0.0, 1.0), 1.0);
+    o.world = w;
+    // The level and the river beds only (not fish, logs and other things in the water).
+    o.keep = r.flags & (4u | 32u);
+    return o;
+}
+// Depth 0 marks a cell covered by the level just above the water (a bank's lip: the water
+// under it is not seen).
+@fragment fn fs_bed(i: BedOut) -> @builtin(frag_depth) f32 {
+    let sy = surface_y(i.world.xz);
+    if (i.keep == 0u || i.world.y > sy + 15.0) { discard; }
+    if (i.world.y > sy - 0.5) { return 0.0; }
+    return i.pos.z;
+}
+
 // The water meshes seen from above into the surface map (depth = height).
 @vertex fn vs_surface(i: VIn, @builtin(instance_index) inst: u32) -> @builtin(position) vec4<f32> {
     let r = recs[inst];
@@ -666,6 +833,8 @@ fn rt_sun(p: vec3<f32>, n: vec3<f32>, seed: vec2<f32>) -> f32 { return 1.0; }
 fn rt_point(p: vec3<f32>, n: vec3<f32>, lp: vec3<f32>, k: u32, seed: vec2<f32>) -> f32 { return 1.0; }
 // Light bounced onto p (rgb) and the ambient's openness (a).
 fn rt_ambient(p: vec3<f32>, n: vec3<f32>, seed: vec2<f32>) -> vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+// Where a view ray refracted at water surface point sp along r lands, `depth` below (x / z).
+fn rt_refract(sp: vec3<f32>, r: vec3<f32>, depth: f32) -> vec2<f32> { return sp.xz + r.xz * (depth / max(-r.y, 0.05)); }
 // Extra sunlight focused onto p by the water above (× the sun's colour).
 fn rt_caustics(p: vec3<f32>, ndl: f32) -> f32 { return caustics(p, lt.sun_dir.xyz) * 2.6; }
 // RT-END
@@ -704,10 +873,35 @@ fn light(i: VOut, base: vec3<f32>) -> vec3<f32> {
     return base * l + spec * dot(i.color.rgb, vec3<f32>(1.0 / 3.0));
 }
 
+// Texture offset making what lies under the water waver as the waves bend the view rays (the
+// original wobbled river-bed textures for this): where the refracted ray lands minus where it
+// would land under flat water, turned into texture space by the surface's uv / world
+// derivatives (`d`: dpdx / dpdy of world x / z and of uv).
+fn refraction_uv(i: VOut, d: mat4x2<f32>) -> vec2<f32> {
+    if (lt.water2.y < 0.5 || (i.flags & 1u) != 0u) { return vec2<f32>(0.0); }
+    let sy = surface_y(i.world.xz);
+    let depth = sy - i.world.y;
+    let eye = lt.eye.xyz;
+    if (depth < 0.5 || eye.y <= sy) { return vec2<f32>(0.0); }
+    let sp = i.world + (eye - i.world) * (depth / (eye.y - i.world.y));
+    let v = normalize(i.world - eye);
+    let r = refract(v, water_n(sp.xz), 1.0 / 1.33);
+    let r0 = refract(v, vec3<f32>(0.0, 1.0, 0.0), 1.0 / 1.33);
+    let shift = rt_refract(sp, r, depth) - (sp.xz + r0.xz * (depth / max(-r0.y, 0.05)));
+    // world x / z -> uv: [du/dx du/dy] · inverse([dw/dx dw/dy]).
+    let det = d[0].x * d[1].y - d[1].x * d[0].y;
+    if (abs(det) < 1e-6) { return vec2<f32>(0.0); }
+    let inv = mat2x2<f32>(vec2<f32>(d[1].y, -d[0].y), vec2<f32>(-d[1].x, d[0].x)) * (1.0 / det);
+    let duv = mat2x2<f32>(d[2], d[3]) * (inv * shift);
+    return clamp(duv, vec2<f32>(-0.2), vec2<f32>(0.2)) * smoothstep(0.5, 4.0, depth);
+}
+
 fn shade(i: VOut) -> vec4<f32> {
+    // Derivatives first (uniform control flow).
+    let dd = mat4x2<f32>(dpdx(i.world.xz), dpdy(i.world.xz), dpdx(i.uv), dpdy(i.uv));
     // The far plane (`PCPrepareObject` drops faces past it; here per pixel, no popping).
     if ((i.flags & 1u) == 0u && i.vz - 10.0 >= cam.fog.w) { discard; }
-    var c = textureSample(t, s, i.uv) * i.color;
+    var c = textureSampleGrad(t, s, i.uv + refraction_uv(i, dd), dd[2], dd[3]) * i.color;
     if (floor(c.a * 255.0 + 0.5) <= cam.depth.y) { discard; }
     if (lt.sky.w > 0.5) {
         if (EMISSIVE) {
@@ -737,11 +931,14 @@ struct FOut { @location(0) c: vec4<f32>, @location(1) mv: vec2<f32>, @location(2
 
 /// Size of `Cam` and `Lights`.
 const CAM_SIZE: u64 = 64 * 2 + 16 * 6;
-const LIGHTS_SIZE: u64 = 16 * 11;
+const LIGHTS_SIZE: u64 = 16 * 13;
 /// Point lights drawn at once (the nearest to the camera's target).
 pub const MAX_POINT_LIGHTS: usize = 32;
 /// Shadow map size.
 const SHADOW_SIZE: u32 = 2048;
+
+/// A water draw: record, mesh, vertex range, texture, wrap, additive, steep (a waterfall).
+type WaterDraw = (u32, Key, core::ops::Range<u32>, TexHandle, bool, bool, bool);
 
 /// The GPU side: uploaded meshes, per-frame buffers, pipelines.
 pub(crate) struct Gpu {
@@ -769,9 +966,14 @@ pub(crate) struct Gpu {
     /// Subdivided water meshes, this frame's water draws (record, mesh, vertex range,
     /// texture, wrap, additive), their pipelines and the surface map's.
     water_meshes: HashMap<Key, (wgpu::Buffer, Vec<Group>)>,
-    water_list: Vec<(u32, Key, core::ops::Range<u32>, TexHandle, bool, bool)>,
+    water_list: Vec<WaterDraw>,
     water_pipelines: HashMap<(wgpu::TextureFormat, u32, bool, bool), wgpu::RenderPipeline>,
     surface_pipeline: wgpu::RenderPipeline,
+    bed_pipeline: wgpu::RenderPipeline,
+    bed_bg: wgpu::BindGroup,
+    /// The generated water surface this frame: its texture (wrapping) and tint.
+    grid: Option<(TexHandle, [f32; 3])>,
+    grid_pipelines: HashMap<(wgpu::TextureFormat, u32, bool), wgpu::RenderPipeline>,
     sim: crate::water::WaterSim,
     /// Path-Traced (devices with ray queries), and whether this frame uses it.
     rtx: Option<RtParts>,
@@ -916,10 +1118,37 @@ impl Gpu {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: vf,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ];
         let lights_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh lights"), entries: &light_entries });
         // The shadow pass reads only the lights' uniform block (the map is its target).
         let shadow_ubo_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh shadow"), entries: &[ubo(0, vf)] });
+        // The bed map pass reads the lights' block and the surface map.
+        let bed_ubo_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("water bed map"),
+            entries: &[
+                ubo(0, vf),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: vf,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu meshes"),
             bind_group_layouts: &[Some(&cam_layout), Some(tex_layout), Some(&store_layout), Some(&lights_layout)],
@@ -985,6 +1214,11 @@ impl Gpu {
             ..Default::default()
         });
         let sim = crate::water::WaterSim::new(device);
+        let bed_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("water bed map"),
+            bind_group_layouts: &[None, None, Some(&store_layout), Some(&bed_ubo_layout)],
+            immediate_size: 0,
+        });
         let lights_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpu mesh lights"),
             layout: &lights_layout,
@@ -995,6 +1229,7 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&shadow_s) },
                 wgpu::BindGroupEntry { binding: 4, resource: sim.heights().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&sim.surface_view) },
+                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&sim.bed_view) },
             ],
         });
         let shadow_ubo_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1021,6 +1256,36 @@ impl Gpu {
             }),
             multisample: Default::default(),
             fragment: None,
+            multiview_mask: None,
+            cache: None,
+        });
+        let bed_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("water bed map"),
+            layout: &bed_ubo_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: lights.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&sim.surface_view) },
+            ],
+        });
+        let bed_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("water bed map"),
+            layout: Some(&bed_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_bed"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vertex_layout())],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_bed"), compilation_options: Default::default(), targets: &[] }),
             multiview_mask: None,
             cache: None,
         });
@@ -1069,6 +1334,10 @@ impl Gpu {
             water_list: Vec::new(),
             water_pipelines: HashMap::new(),
             surface_pipeline,
+            bed_pipeline,
+            bed_bg,
+            grid: None,
+            grid_pipelines: HashMap::new(),
             sim,
             vb_usage: if rtx.is_some() { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT } else { wgpu::BufferUsages::VERTEX },
             rtx,
@@ -1210,14 +1479,23 @@ impl Gpu {
                 need_bg.push((tex, d.wrap));
             }
         }
+        // Water; the flat faces' biggest texture tints the generated surface.
+        let mut biggest: Option<(u32, u32, TexHandle)> = None;
         for &(key, rec, additive) in &sink.water {
             let Some((_, groups)) = self.water_meshes.get(&key) else { continue };
             for g in groups {
                 let Some(tex) = textures.current(g.crc) else { continue };
-                self.water_list.push((rec, key, g.first..g.first + g.count, tex, true, additive));
+                self.water_list.push((rec, key, g.first..g.first + g.count, tex, true, additive, g.steep));
                 need_bg.push((tex, true));
+                if !g.steep && biggest.is_none_or(|b| g.count > b.0) {
+                    biggest = Some((g.count, g.crc, tex));
+                }
             }
         }
+        self.grid = biggest.filter(|_| lighting.is_some_and(|l| l.water)).map(|(_, crc, tex)| {
+            let c = tex_info(&mut self.tex_info, textures, crc).map_or([0.3, 0.5, 0.7], |i| i.color);
+            (tex, c)
+        });
         // The wave simulation, around the camera's target.
         if lighting.is_some_and(|l| l.water) && (!self.water_list.is_empty() || !self.list.is_empty()) {
             let centre = view.camera.map_or([0.0; 3], |c| c.target);
@@ -1283,6 +1561,7 @@ impl Gpu {
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.shadow_s) },
                     wgpu::BindGroupEntry { binding: 4, resource: self.sim.heights().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.sim.surface_view) },
+                    wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&self.sim.bed_view) },
                     wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::AccelerationStructure(&rx.rt.tlas) },
                     wgpu::BindGroupEntry { binding: 7, resource: rx.rt.albedo.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 8, resource: rx.rt.photons.as_entire_binding() },
@@ -1395,6 +1674,10 @@ impl Gpu {
         ]);
         let wf = self.sim.frame;
         let on = l.water && self.sim.started();
+        u[44] = l.baked.clamp(0.0, 1.0);
+        if let Some((_, c)) = self.grid {
+            u[48..52].copy_from_slice(&[c[0], c[1], c[2], 1.0]);
+        }
         u[36..44].copy_from_slice(&[
             wf.origin[0],
             wf.origin[1],
@@ -1426,6 +1709,12 @@ impl Gpu {
             pass.set_bind_group(3, &self.shadow_ubo_bg, &[]);
             draw_list(&mut pass, &self.water_meshes, self.water_list.iter().map(|d| (d.0, d.1, d.2.clone())));
             drop(pass);
+            let mut pass = depth_pass(encoder, "water bed map", &self.sim.bed_view);
+            pass.set_pipeline(&self.bed_pipeline);
+            pass.set_bind_group(2, store_bg, &[]);
+            pass.set_bind_group(3, &self.bed_bg, &[]);
+            draw_list(&mut pass, &self.meshes, self.list.iter().map(|d| (d.0, d.1, d.2.clone())));
+            drop(pass);
             self.sim.run(encoder);
         }
         if self.rt_on {
@@ -1455,7 +1744,11 @@ impl Gpu {
         pass.set_bind_group(3, &self.lights_bg, &[]);
         let mut cur: Option<Key> = None;
         let mut cur_add = None;
-        for (rec, key, range, tex, wrap, additive) in &self.water_list {
+        for (rec, key, range, tex, wrap, additive, steep) in &self.water_list {
+            // The flat faces are the generated surface's.
+            if self.grid.is_some() && !*steep {
+                continue;
+            }
             if cur_add != Some(*additive) {
                 let Some(p) = self.water_pipelines.get(&(format, samples, mrt, *additive)) else { return };
                 pass.set_pipeline(p);
@@ -1468,6 +1761,11 @@ impl Gpu {
             }
             pass.set_bind_group(1, bind_group(*tex, *wrap), &[]);
             pass.draw(range.clone(), *rec..*rec + 1);
+        }
+        if let (Some((tex, _)), Some(p)) = (self.grid, self.grid_pipelines.get(&(format, samples, mrt))) {
+            pass.set_pipeline(p);
+            pass.set_bind_group(1, bind_group(tex, true), &[]);
+            pass.draw(0..GRID * GRID * 6, 0..1);
         }
     }
 
@@ -1491,7 +1789,34 @@ impl Gpu {
             Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL }),
             Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rg16Float, blend: None, write_mask: wgpu::ColorWrites::empty() }),
             Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Float, blend: None, write_mask: wgpu::ColorWrites::empty() }),
+            // The upscaler's reactive mask (CPU-drawn flickering textures only).
+            Some(wgpu::ColorTargetState { format: crate::renderer::REACTIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::empty() }),
         ];
+        if !additive && !self.grid_pipelines.contains_key(&(format, samples, mrt)) {
+            let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("generated water"),
+                layout: Some(&self.layout),
+                vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_grid"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.shader,
+                    entry_point: Some(if mrt { "fs_grid_mrt" } else { "fs_grid" }),
+                    compilation_options: Default::default(),
+                    targets: &targets[..if mrt { 4 } else { 1 }],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            self.grid_pipelines.insert((format, samples, mrt), p);
+        }
         let constants = [("ADDITIVE", if additive { 1.0 } else { 0.0 })];
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water"),
@@ -1520,7 +1845,7 @@ impl Gpu {
                 module: &self.shader,
                 entry_point: Some(if mrt { "fs_water_mrt" } else { "fs_water" }),
                 compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
-                targets: &targets[..if mrt { 3 } else { 1 }],
+                targets: &targets[..if mrt { 4 } else { 1 }],
             }),
             multiview_mask: None,
             cache: None,
@@ -1543,6 +1868,8 @@ impl Gpu {
             Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL }),
             Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rg16Float, blend: None, write_mask: wgpu::ColorWrites::ALL }),
             Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Float, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+            // The upscaler's reactive mask (CPU-drawn flickering textures only).
+            Some(wgpu::ColorTargetState { format: crate::renderer::REACTIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::empty() }),
         ];
         let constants = [("EMISSIVE", if emissive { 1.0 } else { 0.0 })];
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1568,7 +1895,7 @@ impl Gpu {
                 module: shader,
                 entry_point: Some(if mrt { "fs_mrt" } else { "fs" }),
                 compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
-                targets: &targets[..if mrt { 3 } else { 1 }],
+                targets: &targets[..if mrt { 4 } else { 1 }],
             }),
             multiview_mask: None,
             cache: None,

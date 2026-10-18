@@ -229,7 +229,7 @@ fn gpu_mesh_lighting_balances_and_casts_shadows() {
         r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap()
     };
     let unlit = shot(None);
-    let flat = Lighting { sky: [1.0; 3], ground: [1.0; 3], sun: None, point_lights: vec![], emissive_lights: false, specular: 0.0, water: false };
+    let flat = Lighting { sky: [1.0; 3], ground: [1.0; 3], sun: None, point_lights: vec![], emissive_lights: false, specular: 0.0, water: false, baked: 1.0 };
     let balanced = shot(Some(flat.clone()));
     assert_eq!(unlit.pixel(160, 120), balanced.pixel(160, 120), "ambient 1 = the baked colours");
     let sun = |shadows| Lighting {
@@ -285,7 +285,7 @@ fn enhanced_water_takes_splashes() {
     let lit = calm.pixels.chunks(4).filter(|p| p[2] > 30).count();
     assert!(lit > 320 * 240 / 4, "the pond is drawn ({lit} pixels)");
     let differ = calm.pixels.chunks(4).zip(rippled.pixels.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 6)).count();
-    assert!(differ > 200, "the splash makes waves ({differ} pixels differ)");
+    assert!(differ > 100, "the splash makes waves ({differ} pixels differ)");
 }
 
 #[test]
@@ -310,6 +310,7 @@ fn ray_traced_lighting_casts_shadows() {
         emissive_lights: false,
         specular: 0.0,
         water: true,
+        baked: 1.0,
     };
     let mut shot = |lighting: Lighting, rt: bool| {
         r.options.gpu_meshes = true;

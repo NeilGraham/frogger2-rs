@@ -11,6 +11,9 @@
 //!   surface returns its mean albedo lit by the ambient, and by the sun if a shadow ray from it
 //!   reaches the sun),
 //!
+//! - refraction: a view ray bent by the wavy water surface traced to what it lands on (what
+//!   lies under the water wavers like the original's wobbling river-bed textures),
+//!
 //! with per-pixel noise that changes every frame (the upscaler or TAA averages it), and
 //! caustics by **photon tracing**: a compute pass refracts the sun through the simulated water
 //! surface (2×2 photons per simulation cell), traces each photon to what it lands on and counts
@@ -117,6 +120,14 @@ fn rt_ambient(p: vec3<f32>, n: vec3<f32>, seed: vec2<f32>) -> vec4<f32> {
     }
     // Softened: the baked colours already darken the corners.
     return vec4<f32>(bounce, mix(1.0, open, 0.75));
+}
+
+// The view ray refracted at the water surface, traced to what it lands on.
+fn rt_refract(sp: vec3<f32>, r: vec3<f32>, depth: f32) -> vec2<f32> {
+    let flat = sp.xz + r.xz * (depth / max(-r.y, 0.05));
+    let h = closest(sp, r, depth * 4.0 + 20.0);
+    if (h.t < 0.0) { return flat; }
+    return (sp + r * h.t).xz;
 }
 
 fn photon_at(c: vec2<i32>) -> f32 {

@@ -61,6 +61,9 @@ typedef struct {
     float cam_pos[3], cam_up[3], cam_right[3], cam_fwd[3];
     float near_z, far_z, fov_y, aspect;
     uint64_t frame;
+    /* Optional (NULL = none): R8_UNORM, render size, 1 where the history must not be trusted
+     * (on/off flickering textures): DLSS bias-current-colour hint, FSR reactive mask. */
+    void* reactive;
 } f2up_frame_t;
 
 typedef struct {

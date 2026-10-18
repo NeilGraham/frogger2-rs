@@ -47,6 +47,10 @@ pub struct Lighting {
     /// The enhanced water (`crate::water`): water meshes drawn on the GPU with waves objects
     /// make, MODGE surfaces on the GPU, caustics under the water.
     pub water: bool,
+    /// How much of the shading baked into the vertex colours to keep (0 = none: the dynamic
+    /// lights alone shade; 1 = all, the original's look under the lights). Hue and near-black
+    /// (pits, fade-outs) are always kept.
+    pub baked: f32,
 }
 
 impl Lighting {
@@ -60,6 +64,7 @@ impl Lighting {
             emissive_lights: true,
             specular: 0.12,
             water: true,
+            baked: 0.35,
         }
     }
 }

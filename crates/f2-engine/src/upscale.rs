@@ -252,6 +252,9 @@ pub struct UpscaleInputs<'a> {
     pub camera: UpscaleCamera,
     /// Renderer frame number.
     pub frame: u64,
+    /// `R8Unorm`, render size: 1 where the history must not be trusted (textures that flick on
+    /// and off each tick, e.g. the bees' wings: averaged they would stop flickering).
+    pub reactive: Option<&'a wgpu::Texture>,
 }
 
 /// A temporal upscaler (DLSS, FSR, ...): implemented by the host, which owns the native side.

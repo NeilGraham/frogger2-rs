@@ -127,6 +127,9 @@ pub(crate) struct WaterSim {
     steps: wgpu::Buffer,
     splats: wgpu::Buffer,
     pub surface_view: wgpu::TextureView,
+    /// The river bed: top-down depth of the opaque meshes under the water (same frame as the
+    /// surface map): how deep the water is.
+    pub bed_view: wgpu::TextureView,
     pipeline: wgpu::ComputePipeline,
     /// A→B and B→A.
     groups: [wgpu::BindGroup; 2],
@@ -170,6 +173,17 @@ impl WaterSim {
             view_formats: &[],
         });
         let surface_view = surface.create_view(&Default::default());
+        let bed = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("water bed map"),
+            size: wgpu::Extent3d { width: N, height: N, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let bed_view = bed.create_view(&Default::default());
         let c = wgpu::ShaderStages::COMPUTE;
         let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
             binding,
@@ -235,7 +249,20 @@ impl WaterSim {
             compilation_options: Default::default(),
             cache: None,
         });
-        WaterSim { bufs, steps, splats, surface_view, pipeline, groups, cell: None, ref_y: 0.0, last_time: None, acc: 0.0, frame: WaterFrame::default() }
+        WaterSim {
+            bufs,
+            steps,
+            splats,
+            surface_view,
+            bed_view,
+            pipeline,
+            groups,
+            cell: None,
+            ref_y: 0.0,
+            last_time: None,
+            acc: 0.0,
+            frame: WaterFrame::default(),
+        }
     }
 
     /// Whether the simulation has a state (its first frame was planned).

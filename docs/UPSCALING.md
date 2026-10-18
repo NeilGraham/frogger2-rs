@@ -118,6 +118,11 @@ the host side is `crates/frogger/src/upscaling.rs`.
   x / y) or the depth instead of the picture.
 - `F2_UPSCALE_SHOT=out.png:FRAME` writes the presented image at that renderer frame;
   `F2_UPSCALE_EXIT=FRAME` quits then (unattended runs).
+- `F2_UPSCALE_CYCLE=N` switches the quality mode every N frames (features recreated mid-run).
+- The scene pass also writes a **reactive mask** (`R8Unorm`): 1 under textures that flick on and
+  off every tick (frame time -1, e.g. the bees' wings), passed to DLSS as the bias-current-colour
+  hint and to FSR as its reactive mask, so the upscaler does not average the flicker away. Frame
+  generation still blends the generated frames between an on and an off frame.
 - `F2_FSR4_PROBE=1` logs every FSR upscaler version the library offers and creates each FSR 4
   one on the running GPU (an unlisted 4.1.1 with its derived id too). On the RTX 5090 and the
   Ryzen iGPU it offers only 3.1.5 / 2.3.4 and the forced 4.1.1 create returns 4
@@ -154,6 +159,12 @@ device (MGS4 DLSS's `NrPreload` / `NrKick`).
 `NR Upscaled extents`, `CreateFeatureInstance end: result=0x00000001` and
 `NR vendor evaluate end: result=0x00000001` each frame (verified 2026-10-17, RTX 5090, RenoDX DLSS
 v0.2026.1003, ReShade 6.8.0). DLSS 5 together with frame generation was not tested.
+
+Turning Neural Rendering on from the ReShade overlay mid-game has crashed inside D3D12 (Streamline
+minidumps `sl-sha-*.dmp`, an access violation in `D3D12Core.dll` during the NR feature's creation,
+2026-10-17 20:02 / 20:05 / 23:33). Set the hook stage before starting (`ReShade.ini`
+`DirectNeuralRenderingHookStage=2`) and restart the game after changing it in the overlay; from
+start-up it worked at every hook stage and through quality mode changes (`F2_UPSCALE_CYCLE`).
 
 ## Limits
 

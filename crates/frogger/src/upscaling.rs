@@ -172,12 +172,14 @@ pub fn save_png(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture,
 
 /// Testing knobs from the environment: `F2_UPSCALE_DEBUG=motion|depth` (the upscaler's
 /// inputs instead of the picture), `F2_UPSCALE_SHOT=FILE.png:FRAME` (a screenshot of the
-/// presented image at that frame), `F2_UPSCALE_EXIT=FRAME` (quit then).
+/// presented image at that frame), `F2_UPSCALE_EXIT=FRAME` (quit then), `F2_UPSCALE_CYCLE=N`
+/// (switch the upscaler's quality mode every N frames: features recreated mid-run).
 #[derive(Clone, Debug, Default)]
 pub struct Debug {
     pub view: f2_engine::UpscaleDebug,
     pub shot: Option<(PathBuf, u64)>,
     pub exit: Option<u64>,
+    pub cycle: Option<u64>,
 }
 
 impl Debug {
@@ -192,7 +194,8 @@ impl Debug {
             Some((PathBuf::from(p), f.parse().ok()?))
         });
         let exit = std::env::var("F2_UPSCALE_EXIT").ok().and_then(|s| s.parse().ok());
-        Debug { view, shot, exit }
+        let cycle = std::env::var("F2_UPSCALE_CYCLE").ok().and_then(|s| s.parse().ok()).filter(|&n: &u64| n > 0);
+        Debug { view, shot, exit, cycle }
     }
 }
 

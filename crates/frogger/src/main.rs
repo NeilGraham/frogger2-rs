@@ -1122,7 +1122,12 @@ impl WindowApp for Host {
         if let Some(n) = &mut g.native {
             // `[upscale]` changes apply live (the frame generation library needs a restart).
             n.set_backend(frogger::upscaling::sr_backend(app.cfg.upscale.upscaler));
-            n.set_options(&frogger::upscaling::options(&app.cfg));
+            let mut opts = frogger::upscaling::options(&app.cfg);
+            if let Some(c) = g.upscale_debug.cycle {
+                use f2_engine::UpscaleMode as M;
+                opts.mode = [M::Quality, M::Balanced, M::Performance, M::Native][(app.r.frame_number() as u64 / c % 4) as usize];
+            }
+            n.set_options(&opts);
             // The authentic profile is the retail picture: no upscaler.
             let up = (app.profile == Profile::Enhanced).then(|| {
                 let render = n.render_size(rs);

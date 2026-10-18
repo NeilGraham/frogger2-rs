@@ -270,6 +270,9 @@ pub struct DrawCmd {
     pub wrap: bool,
     /// 3D frame triangle (scissored to the viewport when it is clamped).
     pub scene: bool,
+    /// The texture flicks on and off each tick (the upscaler's reactive mask, see
+    /// [`crate::upscale::UpscaleInputs::reactive`]).
+    pub reactive: bool,
     pub first: u32,
     pub count: u32,
 }
@@ -485,7 +488,8 @@ pub struct Renderer {
 
 /// Pipeline variant: blend, depth, samples, colour format, with the upscaler targets.
 #[cfg(feature = "gpu")]
-type PipeKey = (Blend, DepthMode, u32, wgpu::TextureFormat, bool);
+/// (blend, depth, samples, format, upscaler inputs (MRT), reactive).
+type PipeKey = (Blend, DepthMode, u32, wgpu::TextureFormat, bool, bool);
 
 /// Formats of the upscaler inputs ([`crate::upscale`]).
 #[cfg(feature = "gpu")]
@@ -494,6 +498,9 @@ pub const UPSCALE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8
 const MV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 #[cfg(feature = "gpu")]
 const UP_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+/// The upscaler's reactive mask.
+#[cfg(feature = "gpu")]
+pub(crate) const REACTIVE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 /// Textures of [`Renderer::render_upscaled`].
 #[cfg(feature = "gpu")]
@@ -503,6 +510,7 @@ struct UpTargets {
     color: (wgpu::Texture, wgpu::TextureView),
     motion: (wgpu::Texture, wgpu::TextureView),
     depth: (wgpu::Texture, wgpu::TextureView),
+    reactive: (wgpu::Texture, wgpu::TextureView),
     out: (wgpu::Texture, wgpu::TextureView),
     /// Depth-stencil of the HUD pass (its pipelines have a depth state).
     ui_depth: wgpu::TextureView,
@@ -616,12 +624,14 @@ fn shade(i: VOut) -> vec4<f32> {
 
 // Upscaling: colour, motion vector and reversed infinite depth (`near / z`; `rhw = 1 / z`
 // is linear in screen space, so it interpolates exactly).
-struct FOut { @location(0) c: vec4<f32>, @location(1) mv: vec2<f32>, @location(2) d: f32 };
+struct FOut { @location(0) c: vec4<f32>, @location(1) mv: vec2<f32>, @location(2) d: f32, @location(3) r: f32 };
 @fragment fn fs_mrt(i: VOut) -> FOut {
     var o: FOut;
     o.c = shade(i);
     o.mv = i.mv;
     o.d = clamp(u.depth_near * i.rhw, 0.0, 1.0);
+    // Reactive mask (written only by the reactive pipelines).
+    o.r = 1.0;
     return o;
 }
 "#;
@@ -998,14 +1008,14 @@ impl Renderer {
 
     #[cfg(feature = "gpu")]
     fn pipeline(&mut self, blend: Blend, depth: DepthMode, samples: u32) -> &wgpu::RenderPipeline {
-        self.pipeline_for((blend, depth, samples, self.format, false))
+        self.pipeline_for((blend, depth, samples, self.format, false, false))
     }
 
     /// A pipeline for `key`; with `key.4` (upscaling) it also writes the motion vector and
     /// depth targets, in the depth-writing (opaque) passes only.
     #[cfg(feature = "gpu")]
     fn pipeline_for(&mut self, key: PipeKey) -> &wgpu::RenderPipeline {
-        let (blend, depth, samples, format, mrt) = key;
+        let (blend, depth, samples, format, mrt, reactive) = key;
         if !self.pipelines.contains_key(&key) {
             let comp = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
             use wgpu::BlendFactor as F;
@@ -1030,8 +1040,13 @@ impl Renderer {
                 Some(wgpu::ColorTargetState { format, blend: Some(state), write_mask: wgpu::ColorWrites::ALL }),
                 Some(wgpu::ColorTargetState { format: MV_FORMAT, blend: None, write_mask: aux }),
                 Some(wgpu::ColorTargetState { format: UP_DEPTH_FORMAT, blend: None, write_mask: aux }),
+                Some(wgpu::ColorTargetState {
+                    format: REACTIVE_FORMAT,
+                    blend: None,
+                    write_mask: if reactive { wgpu::ColorWrites::RED } else { wgpu::ColorWrites::empty() },
+                }),
             ];
-            let n = if mrt { 3 } else { 1 };
+            let n = if mrt { 4 } else { 1 };
             let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("mdx"),
                 layout: Some(&self.pipeline_layout),
@@ -1689,6 +1704,18 @@ impl Renderer {
         let mut mvs: Vec<[f32; 2]> = Vec::with_capacity(if want_mv { verts.capacity() } else { 0 });
         let mut cmds: Vec<DrawCmd> = Vec::new();
         let white = self.white;
+        // Upscaler inputs: images of textures that flick on and off every tick (frame time -1,
+        // e.g. the bees' wings), for the reactive mask.
+        let flutter: Vec<TexHandle> = if want_mv {
+            self.textures
+                .entries
+                .iter()
+                .filter(|e| e.frames.len() > 1 && e.frames.iter().any(|f| f.1 == -1))
+                .flat_map(|e| e.frames.iter().filter_map(|f| f.0).chain([e.image]))
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Commands before `barrier` belong to an earlier segment and are never extended.
         let barrier = core::cell::Cell::new(0usize);
         #[allow(clippy::too_many_arguments)]
@@ -1719,7 +1746,8 @@ impl Renderer {
                     return;
                 }
             }
-            cmds.push(DrawCmd { blend, depth, tex, wrap, scene, first, count: tri.len() as u32 });
+            let reactive = flutter.contains(&tex);
+            cmds.push(DrawCmd { blend, depth, tex, wrap, scene, reactive, first, count: tri.len() as u32 });
         };
         let quad_tris = Quad2D::tl_vertices;
         if let Some([x, y, w, h]) = self.view.viewport {
@@ -2068,7 +2096,7 @@ impl Renderer {
                     }
                 }
             }
-            pass.set_pipeline(&self.pipelines[&(c.blend, c.depth, samples, self.format, false)]);
+            pass.set_pipeline(&self.pipelines[&(c.blend, c.depth, samples, self.format, false, false)]);
             pass.set_bind_group(1, &self.bind_groups[key], &[]);
             pass.draw(c.first..c.first + c.count, 0..1);
         }
@@ -2155,6 +2183,7 @@ impl Renderer {
             color: tex("upscale color", render, UPSCALE_COLOR_FORMAT, read),
             motion: tex("upscale motion", render, MV_FORMAT, read),
             depth: tex("upscale depth", render, UP_DEPTH_FORMAT, read),
+            reactive: tex("upscale reactive mask", render, REACTIVE_FORMAT, read),
             out: tex("upscale output", output, UPSCALE_COLOR_FORMAT, U::STORAGE_BINDING | U::TEXTURE_BINDING | U::COPY_SRC),
             ui_depth: tex("hud depth", output, DEPTH_FORMAT, U::RENDER_ATTACHMENT).1,
         });
@@ -2215,7 +2244,7 @@ impl Renderer {
         }
         let split = marks[8] as usize;
         self.upscale_draws = cmds[..split].iter().filter(|c| c.depth == DepthMode::TestWrite).fold((0, 0), |(n, t), c| (n + 1, t + c.count / 3));
-        let key = |c: &DrawCmd, scene: bool, fmt| (c.blend, c.depth, 1, fmt, scene);
+        let key = |c: &DrawCmd, scene: bool, fmt| (c.blend, c.depth, 1, fmt, scene, scene && c.reactive);
         let mut keys = Vec::with_capacity(cmds.len());
         for (i, c) in cmds.iter().enumerate() {
             let k = if i < split { key(c, true, UPSCALE_COLOR_FORMAT) } else { key(c, false, self.format) };
@@ -2248,6 +2277,7 @@ impl Renderer {
                     att(&ut.color.1, wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
                     att(&ut.motion.1, wgpu::Color::TRANSPARENT),
                     att(&ut.depth.1, wgpu::Color::TRANSPARENT),
+                    att(&ut.reactive.1, wgpu::Color::TRANSPARENT),
                 ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth.as_ref().unwrap().0,
@@ -2319,7 +2349,14 @@ impl Renderer {
         let tr = |texture, state| wgpu::TextureTransition { texture, selector: None, state };
         enc.transition_resources(
             core::iter::empty(),
-            [tr(&ut.color.0, Tu::RESOURCE), tr(&ut.motion.0, Tu::RESOURCE), tr(&ut.depth.0, Tu::RESOURCE), tr(&ut.out.0, Tu::STORAGE_READ_WRITE)].into_iter(),
+            [
+                tr(&ut.color.0, Tu::RESOURCE),
+                tr(&ut.motion.0, Tu::RESOURCE),
+                tr(&ut.depth.0, Tu::RESOURCE),
+                tr(&ut.reactive.0, Tu::RESOURCE),
+                tr(&ut.out.0, Tu::STORAGE_READ_WRITE),
+            ]
+            .into_iter(),
         );
         self.queue.submit([enc.finish()]);
         let inputs = crate::upscale::UpscaleInputs {
@@ -2333,6 +2370,7 @@ impl Renderer {
             reset: self.history_reset,
             camera: crate::upscale::UpscaleCamera::new(&self.view, self.motion.as_ref().and_then(|m| m.prev_view.as_ref())),
             frame: self.frame_no as u64,
+            reactive: Some(&ut.reactive.0),
         };
         let ok = up.upscale(&self.device, &self.queue, &inputs);
         if self.upscale_debug != UpscaleDebug::Off {

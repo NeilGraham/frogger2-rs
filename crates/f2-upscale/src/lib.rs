@@ -179,6 +179,7 @@ mod ffi {
         pub fov_y: f32,
         pub aspect: f32,
         pub frame: u64,
+        pub reactive: *mut c_void,
     }
 
     #[repr(C)]
@@ -586,6 +587,7 @@ impl Upscaler for Native {
                 fov_y: c.fov_y,
                 aspect: c.aspect,
                 frame: i.frame,
+                reactive: i.reactive.and_then(dx12::texture).unwrap_or(std::ptr::null_mut()),
             };
             // SAFETY: `raw` is alive; the resources are in the states `UpscaleInputs` documents.
             unsafe { ffi::f2up_evaluate(self.raw, &f) != 0 }

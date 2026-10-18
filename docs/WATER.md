@@ -21,9 +21,20 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   `sludge`, `swampi`, `swampyi`) goes to the **water pass**; an opaque MODGE-only mesh (river
   bed) goes to the lit **GPU mesh pass without its wobble** (the real caustics replace it).
   Anything else stays on the CPU.
-- **Geometry:** water meshes are subdivided once at upload (each triangle into n², n ≤ 8, edges
-  ≤ 12 units), and the MODGE wobble, WAVE swell and alpha are computed per vertex on the GPU with
-  the original formulas, so the surface keeps its look with smoother motion.
+- **Generated surface:** the flat parts of the water are drawn as our own surface instead of the
+  original meshes: a 256² grid of quads (2×2 simulation cells, 6 units) over the simulation
+  window, placed at the surface map's height and moved by our own swell (two long waves and three
+  ripples) plus the simulation. The original meshes only say where water is and how high
+  (surface map); their steep, tall faces (waterfalls, more than 24 units high) are still drawn
+  from the mesh, subdivided (n² per triangle, edges ≤ 12 units) with the original wobble / swell
+  / alpha per vertex. Crests reach the original surface height and troughs go below it, so the
+  banks made for that height stay dry.
+- **Depth:** a second top-down render, the *bed map*, holds the highest level surface (landscape
+  and river beds, not actors) under the water, so each point knows how deep the water is: shallow
+  water is clear, deep water takes the tint (the original water texture's mean colour, its
+  texture as world-space detail), and the surface fades out at the shore with a little foam. A
+  cell whose level geometry reaches up to 15 units above the water (a bank's lip) is marked
+  covered: no water drawn there. Open water with nothing under it is deep.
 - **Waves:** a 512² damped wave equation (3-unit cells, ~1500 units square around the camera's
   target, scrolling with it a cell at a time), stepped at 120 Hz in pairs from the host's
   clock (`Renderer::water_clock`, game ticks + interpolation). A top-down depth render of the
@@ -35,10 +46,17 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   - the frog landing on a platform splashes at the platform (`App::water_tick`), and
   - the platform and the frog dip by a couple of units on a damped spring (render-only
     `DrawCtx::dips`, interpolated between ticks).
-- **Surface shading:** per-pixel normals from the simulated height plus small travelling
-  ripples; the texture is bent by the normal (cheap refraction); Fresnel reflection of the sky
-  colour and a sharp sun glint (shadowed). Additive water stays additive, alpha-blended stays
-  alpha-blended; drawn after the opaque geometry, before the CPU's translucent triangles.
+- **Surface shading:** per-pixel normals from the simulated height plus the swell; the body lit by
+  the waves' slopes; Fresnel reflection of the sky colour and a sharp sun glint (shadowed). Drawn
+  after the opaque geometry, before the CPU's translucent triangles (the waterfalls keep the
+  original's additive or alpha blending).
+- **Refraction:** what lies under the water wavers as the waves bend the view rays: each pixel of
+  a surface under the water samples its texture where the ray refracted at the wavy surface lands,
+  minus where it would land under flat water (turned into texture space with the surface's screen
+  derivatives). This is what the original faked by wobbling the river beds' textures (their MODGE
+  wobble is off in Enhanced). Path-Traced traces the refracted ray against the scene.
+- **River beds** move from the CPU's late pass to the GPU mesh pass; they are pushed half a unit
+  back in depth so the banks they run under still win where the two meet (no z-fighting).
 - **Caustics** (performant, Enhanced): every lit GPU surface under the surface map's water gets
   a procedural caustic network (two layers of warped wave interference, ~25-unit cells),
   shifted along the sun direction by the depth, focused or spread by the simulated surface's

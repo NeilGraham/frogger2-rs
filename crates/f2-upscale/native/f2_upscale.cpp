@@ -787,6 +787,7 @@ struct f2up {
         auto depth = static_cast<ID3D12Resource*>(f->depth);
         auto mv = static_cast<ID3D12Resource*>(f->motion);
         auto out = static_cast<ID3D12Resource*>(f->output);
+        auto reactive = static_cast<ID3D12Resource*>(f->reactive);
         bool wrote = false;
         sr_active = F2UP_SR_NONE;
         const bool want_sl_frame = sl_ok && token && ((sr == F2UP_SR_DLSS && dlss_ok) || (sc_proxied && dlssg_ok));
@@ -831,6 +832,7 @@ struct f2up {
             sl::Resource rd = mk(depth, kReadState, f->render_w, f->render_h, DXGI_FORMAT_R32_FLOAT);
             sl::Resource rm = mk(mv, kReadState, f->render_w, f->render_h, DXGI_FORMAT_R16G16_FLOAT);
             sl::Resource ro = mk(out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, f->output_w, f->output_h, DXGI_FORMAT_R8G8B8A8_UNORM);
+            sl::Resource rr = mk(reactive, kReadState, f->render_w, f->render_h, DXGI_FORMAT_R8_UNORM);
             std::vector<sl::ResourceTag> tags;
             tags.emplace_back(&rd, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &rext);
             tags.emplace_back(&rm, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &rext);
@@ -838,6 +840,7 @@ struct f2up {
             if (dlss) {
                 tags.emplace_back(&rc, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &rext);
                 tags.emplace_back(&ro, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &oext);
+                if (reactive) tags.emplace_back(&rr, sl::kBufferTypeBiasCurrentColorHint, sl::ResourceLifecycle::eValidUntilEvaluate, &rext);
             }
             // The scene without the HUD: the upscaled image, or the render-size one when it is
             // the output size (no upscaler: it is what gets shown).
@@ -876,6 +879,7 @@ struct f2up {
             d.depth = ffx_res(depth, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ, FFX_API_SURFACE_FORMAT_R32_FLOAT);
             d.motionVectors = ffx_res(mv, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ, FFX_API_SURFACE_FORMAT_R16G16_FLOAT);
             d.output = ffx_res(out, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM);
+            if (reactive) d.reactive = ffx_res(reactive, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ, FFX_API_SURFACE_FORMAT_R8_UNORM);
             d.jitterOffset = { f->jitter_x, f->jitter_y };
             d.motionVectorScale = { 1.0f, 1.0f };
             d.renderSize = { f->render_w, f->render_h };

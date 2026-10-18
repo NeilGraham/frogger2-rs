@@ -25,6 +25,9 @@ DXC, wgpu's `static-dxc`, would need the Visual Studio ATL libraries to build.)
 - **Ambient and bounce:** cosine-weighted rays (90 units): the openness scales the ambient
   (softened, the baked colours already darken corners); a hit adds its albedo lit by half the
   ambient and, if a ray from it reaches the sun, half the sun (one bounce of colour).
+- **Refraction:** the view ray bent by the wavy water surface is traced to what it lands on, so
+  what lies under the water wavers where the waves really send the rays
+  ([WATER.md](WATER.md)).
 - **Caustics, by photon tracing:** a compute pass sends 2×2 photons per water-simulation cell
   from the sun through the simulated surface (sim waves + ripples, refracted at 1.33), traces
   each to what it lands on and counts landings per cell. A surface under the water is lit by the

@@ -13,6 +13,17 @@ exactly as before (CPU path, no lights). The N64 build has neither.
   particles, shadows) is drawn as before. Glowing CPU meshes and fire sprites still *emit*
   light (below).
 
+## Baked shading and blob shadows
+
+With the dynamic lights on, the original's own shadows would double up:
+
+- **Blob shadows** (the dark discs under the frog, enemies and platforms, `fx::process_shadows`)
+  are not drawn when the sun casts shadows; the frog's is kept while it jumps (it shows where the
+  jump lands). Levels without a sun (caves) keep them.
+- **Baked shading** in the vertex colours is faded: each colour keeps its hue, its brightness is
+  lifted towards 0.85 (about the art's average) keeping `Lighting::baked` (0.35) of the original
+  shading, and near-black colours (pits, fade-outs to black) are kept as they are.
+
 ## Terms
 
 For a surface with texture × vertex colour `base`, normal `n` (turned to face the viewer: the

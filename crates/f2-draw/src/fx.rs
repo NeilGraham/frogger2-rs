@@ -174,7 +174,14 @@ pub fn process_shadows(r: &mut Renderer, game: &Game) {
     let actors = &game.actor2.actors;
     let scale_div = f2_game::map::SCALE as f32;
     let wide = r.view.widened();
+    // Enhanced / Path-Traced with sun shadows: the real shadows replace the blobs, except the
+    // frog's while it jumps (it shows where the jump lands).
+    let real = r.options.gpu_meshes && r.lighting.as_ref().is_some_and(|l| l.sun.is_some_and(|s| s.shadows));
     for i in 0..(game.frogger.num_frogs.clamp(0, 4) as usize) {
+        use f2_game::frogmove::{FROGSTATUS_ISJUMPINGTOPLATFORM, FROGSTATUS_ISJUMPINGTOTILE};
+        if real && game.frogger.player[i].frog_state & (FROGSTATUS_ISJUMPINGTOTILE | FROGSTATUS_ISJUMPINGTOPLATFORM) == 0 {
+            continue;
+        }
         let Some(fid) = game.frogger.frog[i] else { continue };
         let Some(f) = actors.get(fid) else { continue };
         let Some(sh) = f.actor.shadow.as_ref() else { continue };
@@ -200,6 +207,9 @@ pub fn process_shadows(r: &mut Renderer, game: &Game) {
         draw_shadow(r, pos, up, size, -height + 1.0, alpha, tex);
     }
 
+    if real {
+        return;
+    }
     // enemy shadows
     let el = &game.enemies.enemy_list;
     let mut c = el.head.first;
