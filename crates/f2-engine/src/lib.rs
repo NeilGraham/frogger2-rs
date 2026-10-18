@@ -34,6 +34,7 @@ pub mod font;
 pub mod gles;
 #[cfg(feature = "gpu")]
 mod gpu_mesh;
+pub mod lighting;
 #[cfg(feature = "std")]
 pub mod load;
 pub mod math;
@@ -47,6 +48,7 @@ pub mod vkraw;
 
 pub use anim::{actor_bounds, xform_actor, Actor};
 pub use font::{Font, HiRes};
+pub use lighting::{DirLight, Lighting, PointLight};
 pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, FrameView, PassState, Quad2D, Renderer, RgbaImage, UpscaleDebug, OVERLAY_SPACE};
 #[cfg(feature = "gpu")]
 pub use renderer::{GpuContext, WindowSurface};

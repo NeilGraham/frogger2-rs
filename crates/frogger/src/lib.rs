@@ -15,6 +15,7 @@ pub mod gameplay;
 pub mod icon;
 #[cfg(feature = "desktop")]
 pub mod launcher;
+pub mod lights;
 pub mod mods;
 pub mod netplay;
 pub use f2_draw::overlay;

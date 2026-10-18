@@ -199,7 +199,9 @@ with a hint.
   rate), resolution (*Auto* shows the live size; a fixed size resizes the window, picks the
   exclusive video mode, or sets the render size in borderless), VSync, frame cap
   (Off/30/60/120/144/240 or a custom value from the file), profile, and in the enhanced profile
-  widescreen, render scale, anti-aliasing, texture filter, perspective-correct textures, draw
+  graphics (*Original*: the original renderer; *Enhanced*: dynamic lighting with sun / moon
+  shadows and light from fire and lava, see [LIGHTING.md](LIGHTING.md); *Path-Traced*: ray-traced
+  lighting where supported), widescreen, polygon culling, render scale, anti-aliasing, texture filter, perspective-correct textures, draw
   distance, fog and font (*Modern* / *Original*, see below); on Windows the upscaler (NVIDIA DLSS,
   AMD FSR 3.1 / FSR 4) with its mode and preset or sharpening, frame generation (DLSS 2x / 3x /
   4x / dynamic, FSR 2x) and NVIDIA Reflex (see [UPSCALING.md](UPSCALING.md)); brightness (a final multiply) and the FPS counter (corner of your choice;
@@ -287,6 +289,7 @@ brightness = 100            # percent
 show_fps = "off"            # "off" | "top_right" | "top_left" | "bottom_right" | "bottom_left"
 
 [display]                   # enhanced profile only; defaults shown
+graphics = "enhanced"       # "original" | "enhanced" | "path_traced"
 hor_plus = true
 hud_anchor = true
 max_aspect = 0.0            # e.g. 2.37 pillarboxes beyond 21:9; 0 = off

@@ -109,6 +109,8 @@ Replaces MDX + D3D7. Faithful first, enhanced later.
 - **GPU meshes** (`gpu_mesh.rs`, enhanced): opaque meshes offered by the CPU path
   (`scene::GpuObj` hook in `draw_actor` / `draw_landscape`) are drawn from uploaded model data
   with their matrices instead of CPU-projected triangles; the start of the modern renderer.
+  With `Renderer::lighting` (`lighting.rs`, set per world by the host's `lights.rs`) they are lit
+  per pixel with a sun shadow map and point lights ([LIGHTING.md](LIGHTING.md)).
 
 ## 6. Audio (`f2-audio`)
 

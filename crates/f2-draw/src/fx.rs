@@ -584,6 +584,11 @@ pub fn print_sprites(r: &mut Renderer, game: &Game, far_clip: f32, posed: &BTree
             continue;
         }
         let Some(tex) = r.textures.current(s.texture) else { continue };
+        // Modern renderer: glowing sprites (fire, flames) light their surroundings.
+        if r.lighting.is_some() {
+            let p = [s.pos.vx as f32 * 0.1, s.pos.vy as f32 * 0.1, s.pos.vz as f32 * 0.1];
+            r.light_sprite(s.texture, p, [s.r as f32 / 255.0, s.g as f32 / 255.0, s.b as f32 / 255.0], s.scale_x as f32);
+        }
         let d = fov / (sz + DIST);
         let distx = d * (s.scale_x as f32 / 64.0) * sprite_mul;
         let disty = d * (s.scale_y as f32 / 64.0) * sprite_mul;

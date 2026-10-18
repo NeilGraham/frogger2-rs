@@ -444,6 +444,13 @@ pub struct Renderer {
     gpu_sink: crate::gpu_mesh::Sink,
     #[cfg(feature = "gpu")]
     gpu_mesh: Option<crate::gpu_mesh::Gpu>,
+    /// Dynamic lights of the GPU meshes (`crate::lighting`; `None` = the baked vertex colours
+    /// only). Used only with [`RenderOptions::gpu_meshes`].
+    pub lighting: Option<crate::lighting::Lighting>,
+    /// This frame's point lights from emissive sprites ([`light_sprite`](Self::light_sprite)).
+    sprite_lights: Vec<crate::lighting::PointLight>,
+    /// Emissive flag per texture CRC (sprites).
+    emissive_crc: alloc::collections::BTreeMap<u32, bool>,
     #[cfg(feature = "gpu")]
     mv_buf: Option<wgpu::Buffer>,
     /// Uniforms of the HUD pass of [`render_upscaled`](Self::render_upscaled) (no jitter).
@@ -705,6 +712,9 @@ impl Renderer {
             up: None,
             gpu_sink: Default::default(),
             gpu_mesh: None,
+            lighting: None,
+            sprite_lights: Vec::new(),
+            emissive_crc: alloc::collections::BTreeMap::new(),
             mv_buf: None,
             ui_uniform: Some((ui_buf, ui_bg)),
             pipeline_layout,
@@ -742,6 +752,9 @@ impl Renderer {
             white: TexHandle(0),
             output: (640, 480),
             sprite_clip: None,
+            lighting: None,
+            sprite_lights: Vec::new(),
+            emissive_crc: alloc::collections::BTreeMap::new(),
             mesh_sink: None,
             cpu_models: Vec::new(),
             motion: None,
@@ -1059,9 +1072,15 @@ impl Renderer {
         let [kx, ky] = self.view.hor_plus_extent();
         self.view.horiz_clip = crate::scene::HORIZ_CLIP * kx;
         self.view.vert_clip = crate::scene::VERT_CLIP * ky;
+        // GPU meshes need storage buffers in the vertex shader (not on GLES-class adapters).
+        #[cfg(feature = "gpu")]
+        if self.options.gpu_meshes && self.device.limits().max_storage_buffers_per_shader_stage < 4 {
+            self.options.gpu_meshes = false;
+        }
         self.view.exact_depth = self.options.gpu_meshes;
         #[cfg(feature = "gpu")]
         self.gpu_sink.clear();
+        self.sprite_lights.clear();
         let v = &self.view;
         self.motion = last.map(|l| {
             let same = l.camera.is_some() && (l.width, l.height, l.viewport, l.hor_plus) == (v.width, v.height, v.viewport, v.hor_plus);
@@ -1426,6 +1445,26 @@ impl Renderer {
         self.overlays.push(q);
     }
 
+    /// [`lighting`](Self::lighting) with emissive lights, GPU meshes: a sprite drawn at world
+    /// position `pos` with texture `crc` lights its surroundings if the texture glows (fire,
+    /// flames: [`crate::lighting::is_emissive`]). `color` = its tint, `scale` = its size
+    /// (`scale_x`, 64 = one sprite unit).
+    pub fn light_sprite(&mut self, crc: u32, pos: [f32; 3], color: [f32; 3], scale: f32) {
+        if !self.options.gpu_meshes || !self.lighting.as_ref().is_some_and(|l| l.emissive_lights) {
+            return;
+        }
+        let textures = &self.textures;
+        let glows = *self.emissive_crc.entry(crc).or_insert_with(|| textures.entry(crc).is_some_and(|e| crate::lighting::is_emissive(&e.name)));
+        if glows && self.sprite_lights.len() < 256 {
+            let k = 0.9;
+            self.sprite_lights.push(crate::lighting::PointLight {
+                pos,
+                color: [color[0] * k * 1.3, color[1] * k * 1.05, color[2] * k * 0.8],
+                radius: 120.0 + scale * 1.5,
+            });
+        }
+    }
+
     /// Port of `DrawAlphaSprite` (mdxSprite.cpp:45): a screen-aligned sprite at
     /// screen position/size in pixels with screen depth `sz` (0..1), pushed into
     /// the late (post-`DrawAllFrames`) semi frame so it is depth-tested against the scene.
@@ -1741,7 +1780,19 @@ impl Renderer {
         let device = &self.device;
         let gm = self.gpu_mesh.get_or_insert_with(|| crate::gpu_mesh::Gpu::new(device, &self.tex_layout));
         let prev = self.motion.as_ref().and_then(|m| m.prev_view.as_ref());
-        let need = gm.prepare(&self.device, &self.queue, &mut self.gpu_sink, &self.textures, self.white, &self.view, prev, jitter, &self.options.fog);
+        let need = gm.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.gpu_sink,
+            &self.textures,
+            self.white,
+            &self.view,
+            prev,
+            jitter,
+            &self.options.fog,
+            self.lighting.as_ref(),
+            &self.sprite_lights,
+        );
         gm.ensure_pipeline(&self.device, format, samples, mrt);
         let any = gm.has_draws();
         for (t, w) in need {
@@ -1853,6 +1904,9 @@ impl Renderer {
             self.pipeline(c.blend, c.depth, samples);
             self.bind_group(c.tex, c.wrap);
             keys.push((c.tex.0, self.sampler_key(c.wrap)));
+        }
+        if gpu {
+            self.gpu_mesh.as_ref().unwrap().shadow_pass(encoder);
         }
         let depth_view = &self.depth.as_ref().unwrap().0;
         let main_target = if scaled { &self.internal.as_ref().unwrap().0 } else { target };
@@ -2080,6 +2134,9 @@ impl Renderer {
         });
         let ut = self.up.as_ref().unwrap();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upscale scene") });
+        if gpu {
+            self.gpu_mesh.as_ref().unwrap().shadow_pass(&mut enc);
+        }
         {
             let att = |view, c: wgpu::Color| {
                 Some(wgpu::RenderPassColorAttachment {

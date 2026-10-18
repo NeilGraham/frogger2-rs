@@ -647,6 +647,9 @@ pub(crate) struct GpuObj<'a> {
     pub prev: &'a [Mat4],
     pub gouraud: Option<[f32; 3]>,
     pub override_tex: Option<TexHandle>,
+    /// Drawn by the CPU (translucent, animated): offered only for the lights of its glowing
+    /// faces (animated lava); the hook's answer is ignored.
+    pub light_only: bool,
 }
 
 /// [`GpuObj`] receiver.
@@ -853,7 +856,18 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
         let frame = object_frame(extra, fade, wrap);
         if let Some(g) = gpu.as_mut().filter(|_| matches!(frame, Frame::Normal | Frame::Wrap)) {
             let prev = cx.motion.and_then(|m| m.prev_mats(actor, mats.len())).unwrap_or(&mats);
-            let o = GpuObj { model, object: MESH_SKIN, mesh, frame, landscape: false, mats: &mats, prev, gouraud: cx.gouraud, override_tex: cx.override_tex };
+            let o = GpuObj {
+                model,
+                object: MESH_SKIN,
+                mesh,
+                frame,
+                landscape: false,
+                mats: &mats,
+                prev,
+                gouraud: cx.gouraud,
+                override_tex: cx.override_tex,
+                light_only: false,
+            };
             if g(&o) {
                 if let Some(m) = cx.motion {
                     actor.motion_prev = Some((m.frame, mats));
@@ -886,8 +900,9 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
             let flags = o.flags | extra;
             let (modge, wave) = (flags & OBJECT_FLAGS_MODGE != 0, flags & OBJECT_FLAGS_WAVE != 0);
             let frame = object_frame(flags, fade, wrap);
-            if let Some(g) = gpu.as_mut().filter(|_| !modge && !wave && matches!(frame, Frame::Normal | Frame::Wrap)) {
+            if let Some(g) = gpu.as_mut() {
                 let prev = motion.map_or(&mats[i..i + 1], |(_, p)| &p[i..i + 1]);
+                let light_only = modge || wave || !matches!(frame, Frame::Normal | Frame::Wrap);
                 let ob = GpuObj {
                     model,
                     object: i as u16,
@@ -898,8 +913,9 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
                     prev,
                     gouraud: cx.gouraud,
                     override_tex: cx.override_tex,
+                    light_only,
                 };
-                if g(&ob) {
+                if g(&ob) && !light_only {
                     return;
                 }
             }
@@ -1215,7 +1231,18 @@ pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames, mut 
         let Some(mesh) = o.mesh.as_ref() else { return };
         if let Some(g) = gpu.as_mut() {
             let m = &mats[i..i + 1];
-            let ob = GpuObj { model, object: i as u16, mesh, frame: Frame::Normal, landscape: true, mats: m, prev: m, gouraud: None, override_tex: None };
+            let ob = GpuObj {
+                model,
+                object: i as u16,
+                mesh,
+                frame: Frame::Normal,
+                landscape: true,
+                mats: m,
+                prev: m,
+                gouraud: None,
+                override_tex: None,
+                light_only: false,
+            };
             if g(&ob) {
                 return;
             }

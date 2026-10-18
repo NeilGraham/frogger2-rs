@@ -207,3 +207,40 @@ fn gpu_meshes_match_the_cpu_path() {
     assert!(differ < 320 * 2, "{differ} pixels differ");
     assert_eq!(gpu.pixel(160, 120), [255, 0, 0, 255], "centre: the GPU's red quad, back face culled");
 }
+
+#[test]
+fn gpu_mesh_lighting_balances_and_casts_shadows() {
+    use f2_engine::{DirLight, Lighting};
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let white = f2_formats::crc("white.bmp");
+    r.textures.add_rgba(white, "white.bmp", TexType::Normal, 2, 2, vec![255; 16]);
+    // A grey floor facing the camera and a small card in front of it.
+    let mut root = object("floor", quad(20.0, 40.0, [0.5, 0.5, 0.5, 1.0], white, true), 0);
+    root.children.push(object("card", quad(0.0, 5.0, [0.5, 0.5, 0.5, 1.0], white, true), 0));
+    let model = Model { id: 2, radius: 60.0, object_size: 0, root, root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
+    let mut shot = |lighting: Option<Lighting>| {
+        r.options.gpu_meshes = true;
+        r.options.perspective_correct = true;
+        r.lighting = lighting;
+        r.begin_frame(320, 240);
+        r.set_camera(&Camera { source: [0.0, 0.0, -100.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] });
+        r.draw_actor(&model, &mut Actor::default());
+        r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap()
+    };
+    let unlit = shot(None);
+    let flat = Lighting { sky: [1.0; 3], ground: [1.0; 3], sun: None, point_lights: vec![], emissive_lights: false, specular: 0.0 };
+    let balanced = shot(Some(flat.clone()));
+    assert_eq!(unlit.pixel(160, 120), balanced.pixel(160, 120), "ambient 1 = the baked colours");
+    let sun = |shadows| Lighting {
+        sky: [0.5; 3],
+        ground: [0.5; 3],
+        sun: Some(DirLight { to_light: f2_engine::lighting::normalize([1.0, 0.0, -1.0]), color: [0.6; 3], shadows }),
+        ..flat.clone()
+    };
+    let (open, shaded) = (shot(Some(sun(false))), shot(Some(sun(true))));
+    shaded.write_png(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/f2-engine-gpu-shadow.png")).unwrap();
+    let darker = open.pixels.chunks(4).zip(shaded.pixels.chunks(4)).filter(|(a, b)| a[0] > b[0] + 20).count();
+    // The card's shadow: about 10×10 units on the floor (~ 15×15 px here).
+    assert!((80..1200).contains(&darker), "{darker} pixels in shadow");
+}

@@ -88,18 +88,26 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
   the authentic profile are the retail culling. Not compiled into `no_std` builds (N64).
   Remaining edge effects that are not culling: level art that ends past the 4:3 view (the clear
   colour shows), and the simulation's 4:3 culling (actors there hold their pose, see above).
-- [ ] Modern renderer (in progress). Milestone 1 done: GPU meshes (`display.gpu_meshes`, off by
-  default until the graphics presets exist; `crates/f2-engine/src/gpu_mesh.rs`). Opaque meshes
-  (`Normal` / `Wrap` frames, no MODGE/WAVE) are uploaded once (corners expanded, grouped by
-  texture; skins with a bone per vertex) and drawn with their object matrices, so the GPU has the
-  scene's geometry (the basis for lighting, shadows and ray tracing). The vertex shader uses the
-  game's projection with the exact depth (`View::exact_depth`, which the CPU path then uses too,
-  so sprites, shadows and effects line up) and the CPU path's linear depth; per-pixel far cut
-  instead of per-face popping; motion vectors and upscaler depth from last frame's matrices.
-  Translucent and wobbling meshes stay on the CPU path. Matches the CPU picture (headless test;
-  levels 1-1, 2-2, 4-1, 6-1 differ only by ~1 px on edges from the exact depth). Next: graphics
-  presets (Original / Enhanced / Modern / Path traced, separate from the gameplay profile),
-  per-pixel lighting from the mesh normals with level lights, shadow maps, then ray tracing.
+- [ ] Modern renderer (in progress; *Graphics* in the settings, `display.graphics` =
+  `original` / `enhanced` / `path_traced`, separate from the gameplay profile; enhanced default,
+  the authentic profile is always Original).
+  - [x] Milestone 1: GPU meshes (`crates/f2-engine/src/gpu_mesh.rs`; also `display.gpu_meshes`
+    on its own). Opaque meshes (`Normal` / `Wrap` frames, no MODGE/WAVE) are uploaded once
+    (corners expanded, grouped by texture; skins with a bone per vertex) and drawn with their
+    object matrices, so the GPU has the scene's geometry. The vertex shader uses the game's
+    projection with the exact depth (`View::exact_depth`, which the CPU path then uses too, so
+    sprites, shadows and effects line up) and the CPU path's linear depth; per-pixel far cut
+    instead of per-face popping; motion vectors and upscaler depth from last frame's matrices.
+    Translucent and wobbling meshes stay on the CPU path. Matches the CPU picture (headless test;
+    levels 1-1, 2-2, 4-1, 6-1 differ only by ~1 px on edges from the exact depth). Falls back to
+    the CPU path on adapters without vertex storage buffers.
+  - [x] Milestone 2: dynamic lighting (Enhanced; [LIGHTING.md](LIGHTING.md)): hemisphere
+    ambient, a sun / moon per world with a 2048² PCF shadow map, Blinn-Phong highlight, up to 32
+    point lights found on glowing textures (lava, fire, bulbs; also on CPU-drawn animated lava
+    and fire sprites); glowing surfaces drawn unlit.
+  - [ ] Milestone 3: water (wave simulation, objects and landings make waves, platforms dip,
+    caustics).
+  - [ ] Milestone 4: path tracing (Path-Traced preset).
 - [x] High refresh (interpolated rendering; follow camera derives from the interpolated frog
   position, free camera moves per frame; `video.frame_cap`)
 - [x] MSAA (`display.msaa`, 4×), supersampling (`display.render_scale`), anisotropic/trilinear

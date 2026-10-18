@@ -441,7 +441,11 @@ impl App {
         // test (no vertex inside the screen on an axis) would drop although they cover it.
         o.clip_faces = d.clip_faces;
         o.screen_reject = !d.clip_faces;
-        o.gpu_meshes = d.gpu_meshes;
+        // Enhanced / Path-Traced graphics: the modern renderer (GPU meshes, dynamic lights).
+        o.gpu_meshes = d.gpu_meshes || d.graphics != f2_platform::Graphics::Original;
+        if d.graphics == f2_platform::Graphics::Original {
+            self.r.lighting = None;
+        }
         // Retail draws translucent triangles in submission order (`sortMode` is never set);
         // the enhanced profile sorts them back to front.
         o.xlu_sort = match self.profile {
@@ -1711,6 +1715,10 @@ impl App {
             ctx.far_clip = render::far_clip(&self.game, scene) * d.draw_distance;
             // Enhanced fog: linear to the level's clear colour, ending at the far clip so
             // geometry fades in instead of popping (retail: fog disabled).
+            if d.graphics != f2_platform::Graphics::Original {
+                let p = &self.game.frogger.player[0];
+                self.r.lighting = Some(crate::lights::for_level(p.world_num as u32, p.level_num as u32));
+            }
             self.r.options.fog = if d.fog {
                 let c = scene.clear;
                 f2_engine::Fog { enabled: true, start: ctx.far_clip * 0.5, end: ctx.far_clip, color: [c[0] as f32, c[1] as f32, c[2] as f32] }

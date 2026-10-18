@@ -514,6 +514,31 @@ pub enum TextureFilter {
     Anisotropic,
 }
 
+/// Graphics preset of the enhanced profile (the renderer; gameplay options are separate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Graphics {
+    /// The original renderer: meshes projected on the CPU, lighting baked in the vertex
+    /// colours.
+    Original,
+    /// The modern renderer: GPU meshes with dynamic lighting (sun / moon with shadows, point
+    /// lights at fire and lava, emissive surfaces).
+    Enhanced,
+    /// Enhanced plus path-traced lighting where the GPU supports ray tracing.
+    #[serde(rename = "path_traced")]
+    PathTraced,
+}
+
+impl Graphics {
+    pub fn name(self) -> &'static str {
+        match self {
+            Graphics::Original => "Original",
+            Graphics::Enhanced => "Enhanced",
+            Graphics::PathTraced => "Path-Traced",
+        }
+    }
+}
+
 /// `[display]`: per-option overrides of the enhanced profile. Unset options take the
 /// enhanced defaults ([`DisplaySettings::enhanced`]).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -532,6 +557,7 @@ pub struct Display {
     pub modern_font: Option<bool>,
     pub clip_faces: Option<bool>,
     pub gpu_meshes: Option<bool>,
+    pub graphics: Option<Graphics>,
 }
 
 /// Concrete display settings of a profile (what the host applies to the renderer).
@@ -567,6 +593,9 @@ pub struct DisplaySettings {
     /// Draw the opaque meshes on the GPU from their model data (the modern renderer's basis:
     /// lighting, shadows); off = projected on the CPU like the original.
     pub gpu_meshes: bool,
+    /// Renderer preset ([`Graphics`]); Enhanced and Path-Traced draw GPU meshes whatever
+    /// `gpu_meshes` says.
+    pub graphics: Graphics,
 }
 
 impl DisplaySettings {
@@ -585,6 +614,7 @@ impl DisplaySettings {
         modern_font: false,
         clip_faces: false,
         gpu_meshes: false,
+        graphics: Graphics::Original,
     };
 
     /// Enhanced defaults.
@@ -602,6 +632,7 @@ impl DisplaySettings {
         modern_font: true,
         clip_faces: true,
         gpu_meshes: false,
+        graphics: Graphics::Enhanced,
     };
 
     /// The enhanced defaults with `d`'s overrides applied.
@@ -621,6 +652,7 @@ impl DisplaySettings {
             modern_font: d.modern_font.unwrap_or(e.modern_font),
             clip_faces: d.clip_faces.unwrap_or(e.clip_faces),
             gpu_meshes: d.gpu_meshes.unwrap_or(e.gpu_meshes),
+            graphics: d.graphics.unwrap_or(e.graphics),
         }
     }
 }

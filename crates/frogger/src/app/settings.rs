@@ -153,6 +153,7 @@ pub enum Id {
     VSync,
     FrameCap,
     Profile,
+    Graphics,
     Widescreen,
     RenderScale,
     Msaa,
@@ -745,6 +746,17 @@ impl App {
                     true,
                     true,
                 );
+                add(
+                    Id::Graphics,
+                    "Graphics",
+                    d.graphics.name().into(),
+                    &gate(
+                        enh,
+                        "Original: the original renderer. Enhanced: dynamic lighting (sun / moon shadows, light from fire and lava). Path-Traced: ray-traced lighting on GPUs that support it.",
+                    ),
+                    enh,
+                    true,
+                );
                 add(Id::Widescreen, "Widescreen", on_off(d.hor_plus), &gate(enh, "Hor+ field of view and edge-anchored HUD on wide screens."), enh, true);
                 add(
                     Id::RenderScale,
@@ -1046,7 +1058,16 @@ impl App {
                 self.requests.apply_window = true;
                 self.requests.apply_vsync = true;
             }
-            Id::Widescreen | Id::RenderScale | Id::Msaa | Id::Culling | Id::Filter | Id::Perspective | Id::DrawDistance | Id::Fog | Id::ModernFont => {
+            Id::Widescreen
+            | Id::Graphics
+            | Id::RenderScale
+            | Id::Msaa
+            | Id::Culling
+            | Id::Filter
+            | Id::Perspective
+            | Id::DrawDistance
+            | Id::Fog
+            | Id::ModernFont => {
                 let e = &mut self.enhanced;
                 let o = &mut self.cfg.display;
                 match id {
@@ -1062,6 +1083,11 @@ impl App {
                     Id::Msaa => {
                         e.msaa = if e.msaa > 1 { 1 } else { 4 };
                         o.msaa = Some(e.msaa);
+                    }
+                    Id::Graphics => {
+                        use f2_platform::Graphics as G;
+                        e.graphics = step(&[G::Original, G::Enhanced, G::PathTraced], e.graphics, dir);
+                        o.graphics = Some(e.graphics);
                     }
                     Id::Culling => {
                         e.clip_faces = !e.clip_faces;
