@@ -298,6 +298,7 @@ perspective_correct = true
 draw_distance = 1.0         # 0.25..16
 fog = false
 modern_font = true          # false = the original pixel fonts
+clip_faces = true           # false = the original culling (polygons blink out at the screen edges)
 
 [upscale]                   # DLSS / FSR, Windows; see docs/UPSCALING.md
 upscaler = "off"            # "off" | "dlss" | "fsr3" | "fsr4"

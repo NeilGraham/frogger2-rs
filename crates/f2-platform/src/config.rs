@@ -530,6 +530,7 @@ pub struct Display {
     pub draw_distance: Option<f32>,
     pub fog: Option<bool>,
     pub modern_font: Option<bool>,
+    pub clip_faces: Option<bool>,
 }
 
 /// Concrete display settings of a profile (what the host applies to the renderer).
@@ -558,6 +559,10 @@ pub struct DisplaySettings {
     /// Draw the game fonts from the high-resolution atlases built from their typeface
     /// (`f2-fontgen`) when present; off = the original pixel fonts.
     pub modern_font: bool,
+    /// Draw the polygons the original drops whole at the near and far planes and at the
+    /// screen edges (clipped instead); off = the original culling (polygons blink in and out
+    /// at the edges of wide views and pop in the distance).
+    pub clip_faces: bool,
 }
 
 impl DisplaySettings {
@@ -574,6 +579,7 @@ impl DisplaySettings {
         draw_distance: 1.0,
         fog: false,
         modern_font: false,
+        clip_faces: false,
     };
 
     /// Enhanced defaults.
@@ -589,6 +595,7 @@ impl DisplaySettings {
         draw_distance: 1.0,
         fog: false,
         modern_font: true,
+        clip_faces: true,
     };
 
     /// The enhanced defaults with `d`'s overrides applied.
@@ -606,6 +613,7 @@ impl DisplaySettings {
             draw_distance: d.draw_distance.unwrap_or(e.draw_distance).clamp(0.25, 16.0),
             fog: d.fog.unwrap_or(e.fog),
             modern_font: d.modern_font.unwrap_or(e.modern_font),
+            clip_faces: d.clip_faces.unwrap_or(e.clip_faces),
         }
     }
 }

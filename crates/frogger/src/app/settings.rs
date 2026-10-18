@@ -156,6 +156,7 @@ pub enum Id {
     Widescreen,
     RenderScale,
     Msaa,
+    Culling,
     Upscaler,
     UpscaleQuality,
     DlssPreset,
@@ -754,6 +755,14 @@ impl App {
                     true,
                 );
                 add(Id::Msaa, "Anti-aliasing", if d.msaa > 1 { "4x MSAA".into() } else { "Off".into() }, &gate(enh, "Multisample anti-aliasing."), enh, true);
+                add(
+                    Id::Culling,
+                    "Polygon culling",
+                    if d.clip_faces { "Extended" } else { "Original" }.into(),
+                    &gate(enh, "Extended draws the polygons the original drops at the screen edges and near the camera (wide screens)."),
+                    enh,
+                    true,
+                );
                 if !console {
                     self.upscale_items(&mut add, enh);
                 }
@@ -1037,7 +1046,7 @@ impl App {
                 self.requests.apply_window = true;
                 self.requests.apply_vsync = true;
             }
-            Id::Widescreen | Id::RenderScale | Id::Msaa | Id::Filter | Id::Perspective | Id::DrawDistance | Id::Fog | Id::ModernFont => {
+            Id::Widescreen | Id::RenderScale | Id::Msaa | Id::Culling | Id::Filter | Id::Perspective | Id::DrawDistance | Id::Fog | Id::ModernFont => {
                 let e = &mut self.enhanced;
                 let o = &mut self.cfg.display;
                 match id {
@@ -1053,6 +1062,10 @@ impl App {
                     Id::Msaa => {
                         e.msaa = if e.msaa > 1 { 1 } else { 4 };
                         o.msaa = Some(e.msaa);
+                    }
+                    Id::Culling => {
+                        e.clip_faces = !e.clip_faces;
+                        o.clip_faces = Some(e.clip_faces);
                     }
                     Id::Filter => {
                         let cur = (e.filter, if e.filter == TextureFilter::Anisotropic { e.anisotropy.max(1) } else { 1 });

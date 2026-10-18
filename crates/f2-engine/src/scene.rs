@@ -308,6 +308,11 @@ pub struct RenderOptions {
     /// Enhanced: MSAA sample count (1 or 4; other values are rounded to what every
     /// wgpu backend supports for the swapchain formats).
     pub msaa: u32,
+    /// Enhanced: faces with a vertex outside the near / far range are clipped at the near
+    /// plane and kept past the far one instead of being dropped whole (`PCPrepareObject`'s
+    /// `vz = 0`), so big polygons near the camera no longer blink out at the screen edges.
+    /// Off = the original (faces wholly past the far plane go either way).
+    pub clip_faces: bool,
     /// Enhanced (temporal upscalers, frame generation): the opaque passes also record each
     /// vertex's screen position in the previous frame ([`Frames::motion`]). Off = no extra
     /// work and the retail path unchanged.
@@ -328,6 +333,7 @@ impl Default for RenderOptions {
             hud_anchor: false,
             render_scale: 1.0,
             msaa: 1,
+            clip_faces: false,
             motion_vectors: false,
         }
     }
@@ -510,6 +516,13 @@ impl Motion {
     }
 }
 
+/// Whether every point of a polygon is past the same edge of the screen box `[x0, y0, x1, y1]`
+/// (so it cannot show): the culling of [`RenderOptions::clip_faces`], which unlike the
+/// original's screen test keeps polygons that cover the screen with no corner inside it.
+fn off_screen(p: &[[f32; 3]], b: [f32; 4]) -> bool {
+    p.iter().all(|v| v[0] < b[0]) || p.iter().all(|v| v[0] > b[2]) || p.iter().all(|v| v[1] < b[1]) || p.iter().all(|v| v[1] > b[3])
+}
+
 fn between(x: f32, a: f32, b: f32) -> bool {
     x > a && x < b
 }
@@ -532,18 +545,9 @@ pub(crate) struct EmitCtx<'a> {
 /// pushes the visible faces of `mesh` using the transformed vertices `tv`.
 /// `per_object_fog` reproduces the object path (`cFog` from the first face);
 /// the landscape path (`false`) fogs per vertex and keeps faces without a loaded texture.
-/// `tvp`: the vertices' previous-frame screen positions (motion vectors), else `None`.
+/// `ex`: per-vertex extras of the enhanced renderer (motion vectors, face clipping).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_mesh(
-    cx: &EmitCtx,
-    mesh: &Mesh,
-    tv: &[Tv],
-    tvp: Option<&[[f32; 2]]>,
-    frame: Frame,
-    per_object_fog: bool,
-    modge: Option<&Modge>,
-    out: &mut Frames,
-) {
+pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], ex: Extra, frame: Frame, per_object_fog: bool, modge: Option<&Modge>, out: &mut Frames) {
     let view = cx.view;
     let [vx, vy, vw, vh] = view.vp();
     let (clx0, cly0, clx1, cly1) = (vx, vy, vx + vw - 1.0, vy + vh - 1.0);
@@ -564,7 +568,15 @@ pub(crate) fn render_mesh(
             None => continue,
         };
         let get = |k: usize| tv.get(face[k] as usize).copied().flatten();
-        let (Some(a), Some(b), Some(c)) = (get(0), get(1), get(2)) else { continue };
+        let (Some(a), Some(b), Some(c)) = (get(0), get(1), get(2)) else {
+            // Enhanced: clip at the near plane and keep faces reaching past the far one
+            // instead of dropping them.
+            #[cfg(feature = "std")]
+            if let Some(vv) = ex.view {
+                clip_face(cx, mesh, fi, face, tex, vv, ex.prev, tv, frame, per_object_fog.then_some(c_fog), modge, out);
+            }
+            continue;
+        };
         let p = [a, b, c];
         if cx.opts.screen_reject {
             let yon = p.iter().filter(|v| between(v[1], cly0, cly1)).count();
@@ -572,6 +584,8 @@ pub(crate) fn render_mesh(
             if yon == 0 || xon == 0 {
                 continue;
             }
+        } else if cx.opts.clip_faces && off_screen(&p, [clx0, cly0, clx1, cly1]) {
+            continue;
         }
         // D3DCULL_CW: cull clockwise (y-down screen) triangles.
         let cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
@@ -580,40 +594,193 @@ pub(crate) fn render_mesh(
         }
         let mut v = [TlVertex::default(); 3];
         for k in 0..3 {
-            let mut col = mesh.colors.get(fi * 3 + k).copied().unwrap_or([1.0; 4]);
-            if let Some(g) = cx.gouraud {
-                col = [g[0], g[1], g[2], col[3]];
-            }
-            let uv = mesh.face_uv.get(fi * 3 + k).copied().unwrap_or([0, 0]);
+            let (color, uv) = corner(cx, mesh, fi, face, k, modge);
             let vz = p[k][2];
-            let mut uv = [uv[0] as f32 * UV_SCALE, uv[1] as f32 * UV_SCALE];
-            let mut alpha = col[3] * cx.alpha_mul;
-            if let Some(m) = modge {
-                let [mx, mz, _] = m.values.get(face[k] as usize).copied().unwrap_or_default();
-                uv = [uv[0] + mx * 0.4, uv[1] + mz * 0.4];
-                if m.wave {
-                    // `50+(unsigned long)((m1x+m1z)*400)<<24`
-                    alpha = (50 + ((mx + mz) * 400.0) as u32) as f32 / 255.0;
-                }
-            }
             v[k] = TlVertex {
                 sx: p[k][0],
                 sy: p[k][1],
                 sz: (vz * SZ_SCALE).clamp(0.0, 1.0),
                 rhw: 1.0 / (vz + DIST),
-                // D3DRGBA clamps to bytes.
-                color: [col[0].clamp(0.0, 1.0), col[1].clamp(0.0, 1.0), col[2].clamp(0.0, 1.0), alpha.clamp(0.0, 1.0)],
+                color,
                 uv,
                 fog: if per_object_fog && modge.is_none() { c_fog } else { fog_factor(vz) },
                 alpha_ref: 0.0,
             };
         }
-        match tvp {
+        match ex.prev {
             Some(tp) => {
                 let mv = |k: usize| tp.get(face[k] as usize).map_or([0.0; 2], |q| [q[0] - p[k][0], q[1] - p[k][1]]);
                 out.push_moving(frame, Tri { v, tex }, [mv(0), mv(1), mv(2)]);
             }
             None => out.push(frame, Tri { v, tex }),
+        }
+    }
+}
+
+/// Per-vertex extras of [`render_mesh`] (enhanced; `Default` = the original).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Extra<'a> {
+    /// The vertices' previous-frame screen positions (motion vectors).
+    pub prev: Option<&'a [[f32; 2]]>,
+    /// The vertices' view-space positions ([`RenderOptions::clip_faces`]).
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
+    pub view: Option<&'a [Vec3]>,
+}
+
+/// Colour (clamped to bytes like `D3DRGBA`, alpha included) and texture coordinates of
+/// corner `k` of face `fi`, as `PCRenderObject` and the modgy renderers set them.
+fn corner(cx: &EmitCtx, mesh: &Mesh, fi: usize, face: &[i16; 3], k: usize, modge: Option<&Modge>) -> ([f32; 4], [f32; 2]) {
+    let mut col = mesh.colors.get(fi * 3 + k).copied().unwrap_or([1.0; 4]);
+    if let Some(g) = cx.gouraud {
+        col = [g[0], g[1], g[2], col[3]];
+    }
+    let uv = mesh.face_uv.get(fi * 3 + k).copied().unwrap_or([0, 0]);
+    let mut uv = [uv[0] as f32 * UV_SCALE, uv[1] as f32 * UV_SCALE];
+    let mut alpha = col[3] * cx.alpha_mul;
+    if let Some(m) = modge {
+        let [mx, mz, _] = m.values.get(face[k] as usize).copied().unwrap_or_default();
+        uv = [uv[0] + mx * 0.4, uv[1] + mz * 0.4];
+        if m.wave {
+            // `50+(unsigned long)((m1x+m1z)*400)<<24`
+            alpha = (50 + ((mx + mz) * 400.0) as u32) as f32 / 255.0;
+        }
+    }
+    ([col[0].clamp(0.0, 1.0), col[1].clamp(0.0, 1.0), col[2].clamp(0.0, 1.0), alpha.clamp(0.0, 1.0)], uv)
+}
+
+/// View-space positions of `mesh`'s vertices under model matrix `m` (the transform
+/// `prepare_object` / `prepare_modgy_object` project), for [`RenderOptions::clip_faces`].
+fn prepare_view(view: &View, mesh: &Mesh, m: &Mat4, lift: Option<&ModgeValues>, out: &mut Vec<Vec3>) {
+    let f = mtx_cat(m, &view.v_matrix);
+    out.clear();
+    out.extend(mesh.vertices.iter().enumerate().map(|(i, &v)| {
+        let dy = lift.and_then(|l| l.get(i)).map_or(0.0, |w| w[2]);
+        mtx_xfm(&f, [v[0], v[1] + dy, v[2]])
+    }));
+}
+
+/// [`prepare_view`] for the root-mesh vertices one bone of a skin moves.
+fn prepare_skinned_view(view: &View, obj: &Object, mesh: &Mesh, m: &Mat4, out: &mut [Vec3]) {
+    let f = mtx_cat(m, &view.v_matrix);
+    for &j in &obj.effected_verts {
+        if let (Some(v), Some(slot)) = (mesh.vertices.get(j as usize), out.get_mut(j as usize)) {
+            *slot = mtx_xfm(&f, *v);
+        }
+    }
+}
+
+/// A face `render_mesh` would drop because a vertex is outside the near / far range
+/// (`PCPrepareObject` stores `vz = 0`), drawn instead (enhanced, [`RenderOptions::clip_faces`]):
+/// clipped at the near plane (Sutherland-Hodgman in view space, attributes interpolated) and
+/// kept when it only reaches past the far plane. Faces wholly beyond the far plane still go.
+/// `obj_fog`: the object path's per-object fog (`None` = per vertex).
+#[cfg(feature = "std")]
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn clip_face(
+    cx: &EmitCtx,
+    mesh: &Mesh,
+    fi: usize,
+    face: &[i16; 3],
+    tex: Option<TexHandle>,
+    vv: &[Vec3],
+    prev: Option<&[[f32; 2]]>,
+    tv: &[Tv],
+    frame: Frame,
+    obj_fog: Option<f32>,
+    modge: Option<&Modge>,
+    out: &mut Frames,
+) {
+    let view = cx.view;
+    // One clipped corner: view position, colour, uv, motion (previous screen position minus
+    // this one, in pixels; interpolated across a cut).
+    #[derive(Clone, Copy)]
+    struct C {
+        p: Vec3,
+        col: [f32; 4],
+        uv: [f32; 2],
+        mv: [f32; 2],
+    }
+    let mut corners = [C { p: [0.0; 3], col: [0.0; 4], uv: [0.0; 2], mv: [0.0; 2] }; 3];
+    for k in 0..3 {
+        let i = face[k] as usize;
+        let Some(&p) = vv.get(i).filter(|p| !p[0].is_nan()) else { return };
+        let (col, uv) = corner(cx, mesh, fi, face, k, modge);
+        // Motion of an unprojected vertex: from its unclipped screen position.
+        let mv = match prev.and_then(|q| q.get(i)) {
+            Some(q) => {
+                let s = tv.get(i).copied().flatten().map_or_else(|| view.screen_unclipped(p), |s| [s[0], s[1]]);
+                [q[0] - s[0], q[1] - s[1]]
+            }
+            None => [0.0; 2],
+        };
+        corners[k] = C { p, col, uv, mv };
+    }
+    let depth = |c: &C| c.p[2] + DIST;
+    // Wholly beyond the far plane: dropped as before (the draw distance setting moves it).
+    if !view.no_clip && corners.iter().all(|c| depth(c) >= view.far_clip) {
+        return;
+    }
+    // Clip against the near plane (a hair inside it: `oozd` needs a positive depth).
+    let near = view.near_clip + 0.01;
+    let mut poly: [C; 4] = [corners[0]; 4];
+    let mut n = 0;
+    for k in 0..3 {
+        let (a, b) = (corners[k], corners[(k + 1) % 3]);
+        let (da, db) = (depth(&a) - near, depth(&b) - near);
+        if da >= 0.0 {
+            poly[n] = a;
+            n += 1;
+        }
+        if (da >= 0.0) != (db >= 0.0) {
+            let t = da / (da - db);
+            let l = |x: f32, y: f32| x + (y - x) * t;
+            poly[n] = C {
+                p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])],
+                col: [l(a.col[0], b.col[0]), l(a.col[1], b.col[1]), l(a.col[2], b.col[2]), l(a.col[3], b.col[3])],
+                uv: [l(a.uv[0], b.uv[0]), l(a.uv[1], b.uv[1])],
+                mv: [l(a.mv[0], b.mv[0]), l(a.mv[1], b.mv[1])],
+            };
+            n += 1;
+        }
+    }
+    if n < 3 {
+        return;
+    }
+    let s: [[f32; 3]; 4] = core::array::from_fn(|k| view.to_screen(poly[k].p, view.oozd(poly[k].p[2])));
+    let [vx, vy, vw, vh] = view.vp();
+    if off_screen(&s[..n], [vx, vy, vx + vw - 1.0, vy + vh - 1.0]) {
+        return;
+    }
+    // D3DCULL_CW on the clipped polygon (clipping keeps the winding).
+    let cross = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[1][1] - s[0][1]) * (s[2][0] - s[0][0]);
+    if cross >= 0.0 {
+        return;
+    }
+    let fog = &cx.opts.fog;
+    let fog_factor = |vz: f32| if view.no_clip && fog.enabled { 1.0 } else { fog.factor(vz) };
+    let vert = |k: usize| {
+        let vz = s[k][2];
+        TlVertex {
+            sx: s[k][0],
+            sy: s[k][1],
+            sz: (vz * SZ_SCALE).clamp(0.0, 1.0),
+            rhw: 1.0 / (vz + DIST),
+            color: poly[k].col,
+            uv: poly[k].uv,
+            fog: match obj_fog {
+                Some(f) if modge.is_none() => f,
+                _ => fog_factor(vz),
+            },
+            alpha_ref: 0.0,
+        }
+    };
+    for (a, b, c) in [(0, 1, 2), (0, 2, 3)].into_iter().take(n - 2) {
+        let tri = Tri { v: [vert(a), vert(b), vert(c)], tex };
+        match prev {
+            Some(_) => out.push_moving(frame, tri, [poly[a].mv, poly[b].mv, poly[c].mv]),
+            None => out.push(frame, tri),
         }
     }
 }
@@ -644,7 +811,7 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
     let (wrap, fc) = (actor.wrap_tc, actor.modge_frame);
     // Motion vectors: last frame's matrices (this frame's when the actor was not drawn then).
     let motion = cx.motion.and_then(|m| Some((m.prev_view.as_ref()?, m.prev_mats(actor, mats.len()).unwrap_or(&mats))));
-    let mut tvp = Vec::new();
+    let (mut tvp, mut tvv) = (Vec::new(), Vec::new());
     if model.is_skinned {
         // All bones transform their share of the root mesh, then the root mesh is drawn once.
         let Some(mesh) = model.root.mesh.as_ref() else { return };
@@ -654,10 +821,16 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
             tvp = vec![[0.0; 2]; mesh.vertices.len()];
             for_each_object(model, |i, o| prepare_skinned_prev(m, o, mesh, &prev[i], &mut tvp));
         }
+        if cx.opts.clip_faces {
+            // NaN: a vertex no bone moves (dropped like the original's unset `tV`).
+            tvv = vec![[f32::NAN; 3]; mesh.vertices.len()];
+            for_each_object(model, |i, o| prepare_skinned_view(cx.view, o, mesh, &mats[i], &mut tvv));
+        }
         // `PCRenderObject(root)` runs after `DrawObject` restored the frame, so the
         // skin always lands in the caller's frame (normal); only run-time flags apply.
         let frame = object_frame(extra, fade, wrap);
-        render_mesh(cx, mesh, &tv, motion.map(|_| &tvp[..]), frame, true, None, out);
+        let ex = Extra { prev: motion.map(|_| &tvp[..]), view: cx.opts.clip_faces.then_some(&tvv[..]) };
+        render_mesh(cx, mesh, &tv, ex, frame, true, None, out);
     } else {
         let mut tv = Vec::new();
         let mut mv = ModgeValues::new();
@@ -678,10 +851,14 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
             if let Some((m, prev)) = motion {
                 prepare_prev(m, mesh, &prev[i], wave.then_some(&mv), &mut tvp);
             }
+            if cx.opts.clip_faces {
+                prepare_view(cx.view, mesh, &mats[i], wave.then_some(&mv), &mut tvv);
+            }
             let frame = object_frame(flags, fade, wrap);
             // PCRenderModgySheenObject (SHEEN as well) is drawn like PCRenderModgyObject.
             let m = modge.then_some(Modge { values: &mv, wave });
-            render_mesh(cx, mesh, &tv, motion.map(|_| &tvp[..]), frame, true, m.as_ref(), out);
+            let ex = Extra { prev: motion.map(|_| &tvp[..]), view: cx.opts.clip_faces.then_some(&tvv[..]) };
+            render_mesh(cx, mesh, &tv, ex, frame, true, m.as_ref(), out);
         });
     }
     if let Some(m) = cx.motion {
@@ -971,7 +1148,7 @@ pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink)
 pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames) {
     let mut actor = Actor { animated: false, ..Default::default() };
     let mats = xform_actor(model, &mut actor);
-    let (mut tv, mut tvp) = (Vec::new(), Vec::new());
+    let (mut tv, mut tvp, mut tvv) = (Vec::new(), Vec::new(), Vec::new());
     for_each_object(model, |i, o| {
         let Some(mesh) = o.mesh.as_ref() else { return };
         prepare_object(cx.view, mesh, &mats[i], &mut tv);
@@ -980,7 +1157,11 @@ pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames) {
         if let Some(pv) = prev {
             prepare_prev(pv, mesh, &mats[i], None, &mut tvp);
         }
-        render_mesh(cx, mesh, &tv, prev.map(|_| &tvp[..]), Frame::Normal, false, None, out);
+        if cx.opts.clip_faces {
+            prepare_view(cx.view, mesh, &mats[i], None, &mut tvv);
+        }
+        let ex = Extra { prev: prev.map(|_| &tvp[..]), view: cx.opts.clip_faces.then_some(&tvv[..]) };
+        render_mesh(cx, mesh, &tv, ex, Frame::Normal, false, None, out);
     });
 }
 

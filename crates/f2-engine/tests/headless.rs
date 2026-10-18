@@ -131,3 +131,38 @@ fn enhanced_options_render() {
     let edge = (0..640).map(|x| m.pixel(x, 180)[0]).filter(|&c| c > 0 && c < 255).count();
     assert!(edge > 0, "antialiased edges expected");
 }
+
+/// Extended culling (`RenderOptions::clip_faces`): a floor running from behind the camera into
+/// the distance is clipped at the near plane and drawn; the original drops every face of it
+/// that has a corner behind the near plane.
+#[test]
+fn clip_faces_draws_polygons_crossing_the_near_plane() {
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let white = f2_formats::crc("white.bmp");
+    r.textures.add_rgba(white, "white.bmp", TexType::Normal, 2, 2, vec![255; 16]);
+    // One big floor quad, both windings (whichever faces the camera is drawn).
+    let (h, y) = (200.0, -20.0);
+    let vertices = vec![[-h, y, -150.0], [h, y, -150.0], [h, y, 300.0], [-h, y, 300.0]];
+    let mesh = Mesh {
+        vertices,
+        faces: vec![[0, 1, 2], [0, 2, 3], [0, 2, 1], [0, 3, 2]],
+        face_uv: vec![[0, 0]; 12],
+        normals: vec![],
+        colors: vec![[1.0, 0.0, 0.0, 1.0]; 12],
+        face_flags: vec![0; 4],
+        textures: vec![white; 4],
+    };
+    let model = Model { id: 1, radius: 400.0, object_size: 0, root: object("floor", mesh, 0), root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
+    let mut red = |clip: bool| {
+        r.options.clip_faces = clip;
+        r.begin_frame(320, 240);
+        r.set_camera(&Camera { source: [0.0, 0.0, -100.0], target: [0.0, -10.0, 0.0], up: [0.0, 1.0, 0.0] });
+        r.draw_landscape(&model);
+        let img = r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap();
+        img.pixels.chunks(4).filter(|p| p[0] > 200 && p[1] < 50).count()
+    };
+    let (original, clipped) = (red(false), red(true));
+    assert_eq!(original, 0, "the original drops faces with a corner behind the near plane");
+    assert!(clipped > 320 * 240 / 4, "clipped floor covers the bottom of the screen: {clipped} px");
+}

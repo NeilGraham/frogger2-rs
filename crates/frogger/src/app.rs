@@ -437,6 +437,10 @@ impl App {
         o.max_aspect = d.max_aspect;
         o.render_scale = d.render_scale;
         o.msaa = d.msaa;
+        // Extended culling: clip faces at the near / far planes and keep the ones the screen
+        // test (no vertex inside the screen on an axis) would drop although they cover it.
+        o.clip_faces = d.clip_faces;
+        o.screen_reject = !d.clip_faces;
         // Retail draws translucent triangles in submission order (`sortMode` is never set);
         // the enhanced profile sorts them back to front.
         o.xlu_sort = match self.profile {

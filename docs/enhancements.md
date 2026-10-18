@@ -77,6 +77,17 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
   they hold the pose of their last on-screen frame; special effects whose origin is
   outside 4:3 are not spawned/updated by the simulation (`IsPointVisible`). Authentic and
   4:3 are unchanged (extent `[1, 1]`, empty pose set).
+- [x] Extended polygon culling (`display.clip_faces`, enhanced default; *Polygon culling* in the
+  settings): MDX drops a whole face when one corner is outside the near / far range
+  (`PCPrepareObject` stores `vz = 0`), which on wide screens makes big polygons beside and in
+  front of the camera blink out (100-350 faces a frame in a moving camera, measured on levels
+  1-1, 2-2, 6-1). Extended clips them at the near plane (Sutherland-Hodgman in view space,
+  colour / uv / fog / motion interpolated), keeps faces that only reach past the far plane, and
+  replaces the screen test (no corner inside the screen on an axis) with an all-corners-past-one-
+  edge test. Faces with every corner in range take the original path unchanged; *Original* and
+  the authentic profile are the retail culling. Not compiled into `no_std` builds (N64).
+  Remaining edge effects that are not culling: level art that ends past the 4:3 view (the clear
+  colour shows), and the simulation's 4:3 culling (actors there hold their pose, see above).
 - [x] High refresh (interpolated rendering; follow camera derives from the interpolated frog
   position, free camera moves per frame; `video.frame_cap`)
 - [x] MSAA (`display.msaa`, 4×), supersampling (`display.render_scale`), anisotropic/trilinear
