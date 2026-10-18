@@ -97,6 +97,10 @@ pub struct App {
     steps: VecDeque<Step>,
     pub video: Option<VideoPlayer>,
     video_queue: VecDeque<String>,
+    /// The last `PlayMusic` sent while a video played (track, looped), started when it ends: the
+    /// original plays its FMVs synchronously, so `InitLevel`'s `PrepareSong` follows the story
+    /// FMV; here both arrive in one frame and the video's sound would take the music stream.
+    music_after_video: Option<(u32, bool)>,
     // input
     pub mapper: InputMapper,
     /// Multi-binding table (keys + pad inputs); keys are mirrored into `mapper`.
@@ -320,6 +324,7 @@ impl App {
             steps: VecDeque::new(),
             video: None,
             video_queue: VecDeque::new(),
+            music_after_video: None,
             mapper,
             bindings: Bindings::default(),
             deadzone: f2_platform::bindings::DEFAULT_DEADZONE,
@@ -711,6 +716,23 @@ impl App {
         if let Some(next) = self.video_queue.pop_front() {
             self.start_video(&next);
         }
+        if self.video.is_none() {
+            if let Some((track, looped)) = self.music_after_video.take() {
+                self.play_music(track, looped);
+            }
+        }
+    }
+
+    fn play_music(&mut self, track: u32, looped: bool) {
+        match self.data.music_track(track).filter(|p| !self.data.mods.is_empty() && Some(p) != self.audio.music_path(track).as_ref()) {
+            // A mod's track (topmost VFS layer).
+            Some(p) => self.audio.play_music_stream(
+                f2_audio::wav::WavStream::open_any(&p).map_err(|e| eprintln!("frogger: {}: {e}", p.display())).ok(),
+                track,
+                looped,
+            ),
+            None => self.audio.play_music(track, looped),
+        }
     }
 
     /// Starts `INGAME_MODE` on `worldVisualData[world].levelVisualData[level]`, single player
@@ -938,6 +960,7 @@ impl App {
         if !self.has_session() {
             self.start_frontend();
         }
+        self.music_after_video = None;
         self.end_video();
         self.video_queue.clear();
         match c {
@@ -1657,17 +1680,9 @@ impl App {
                     self.audio.update_voice(v, volume, pitch as i16, pos.map(sv), radius);
                 }
             }
-            Effect::PlayMusic { track, looped } => {
-                match self.data.music_track(track).filter(|p| !self.data.mods.is_empty() && Some(p) != self.audio.music_path(track).as_ref()) {
-                    // A mod's track (topmost VFS layer).
-                    Some(p) => self.audio.play_music_stream(
-                        f2_audio::wav::WavStream::open_any(&p).map_err(|e| eprintln!("frogger: {}: {e}", p.display())).ok(),
-                        track,
-                        looped,
-                    ),
-                    None => self.audio.play_music(track, looped),
-                }
-            }
+            Effect::PlayMusic { track, looped } if self.video.is_some() => self.music_after_video = Some((track, looped)),
+            Effect::PlayMusic { track, looped } => self.play_music(track, looped),
+            Effect::StopMusic if self.video.is_some() => self.music_after_video = None,
             Effect::StopMusic => self.audio.stop_music(),
             Effect::PlayVideo { name } => {
                 use f2_game::story::{FMV, FMV_BLITZ_LOGO, FMV_HASBRO_LOGO};
