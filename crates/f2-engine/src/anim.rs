@@ -59,6 +59,8 @@ pub struct Actor {
     /// Motion vectors (`RenderOptions::motion_vectors`): the renderer frame number and the
     /// object matrices of the actor's last CPU draw, the "previous pose" of the next one.
     pub motion_prev: Option<(u32, Vec<Mat4>)>,
+    /// Enhanced water: the position of the actor's last draw (its movement makes waves).
+    pub water_prev: Option<Vec3>,
 }
 
 /// [`Actor::mesh_draws`]: `((model id, extra_flags, xlu fade, wrap_tc), draws)`.
@@ -119,6 +121,7 @@ impl Default for Actor {
             pose: PoseCache::default(),
             mesh_draws: None,
             motion_prev: None,
+            water_prev: None,
         }
     }
 }

@@ -105,8 +105,11 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
     ambient, a sun / moon per world with a 2048² PCF shadow map, Blinn-Phong highlight, up to 32
     point lights found on glowing textures (lava, fire, bulbs; also on CPU-drawn animated lava
     and fire sprites); glowing surfaces drawn unlit.
-  - [ ] Milestone 3: water (wave simulation, objects and landings make waves, platforms dip,
-    caustics).
+  - [x] Milestone 3: water ([WATER.md](WATER.md)): water meshes on the GPU, subdivided, with
+    the original wobble / swell per vertex; a 512² wave simulation around the camera that moving
+    actors and landings disturb; platforms dip under the frog (render only); Fresnel sky
+    reflection and sun glints; procedural caustics under the water (replacing the river beds'
+    moving-texture stand-in).
   - [ ] Milestone 4: path tracing (Path-Traced preset).
 - [x] High refresh (interpolated rendering; follow camera derives from the interpolated frog
   position, free camera moves per frame; `video.frame_cap`)

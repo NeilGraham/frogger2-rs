@@ -200,7 +200,8 @@ with a hint.
   exclusive video mode, or sets the render size in borderless), VSync, frame cap
   (Off/30/60/120/144/240 or a custom value from the file), profile, and in the enhanced profile
   graphics (*Original*: the original renderer; *Enhanced*: dynamic lighting with sun / moon
-  shadows and light from fire and lava, see [LIGHTING.md](LIGHTING.md); *Path-Traced*: ray-traced
+  shadows and light from fire and lava, see [LIGHTING.md](LIGHTING.md), and living water with
+  waves and caustics, see [WATER.md](WATER.md); *Path-Traced*: ray-traced
   lighting where supported), widescreen, polygon culling, render scale, anti-aliasing, texture filter, perspective-correct textures, draw
   distance, fog and font (*Modern* / *Original*, see below); on Windows the upscaler (NVIDIA DLSS,
   AMD FSR 3.1 / FSR 4) with its mode and preset or sharpening, frame generation (DLSS 2x / 3x /

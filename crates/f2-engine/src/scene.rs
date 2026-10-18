@@ -647,9 +647,14 @@ pub(crate) struct GpuObj<'a> {
     pub prev: &'a [Mat4],
     pub gouraud: Option<[f32; 3]>,
     pub override_tex: Option<TexHandle>,
-    /// Drawn by the CPU (translucent, animated): offered only for the lights of its glowing
-    /// faces (animated lava); the hook's answer is ignored.
+    /// Not an opaque static mesh (translucent, MODGE / WAVE animated): the CPU draws it unless
+    /// the hook takes it as water or a MODGE surface; its glowing faces still give lights
+    /// (animated lava).
     pub light_only: bool,
+    /// `OBJECT_FLAGS_MODGE` (bit 0) / `OBJECT_FLAGS_WAVE` (bit 1), and the frame count their
+    /// wobble runs on (`PCCalcModgeValues`).
+    pub modge: u8,
+    pub modge_frame: u32,
 }
 
 /// [`GpuObj`] receiver.
@@ -867,6 +872,8 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
                 gouraud: cx.gouraud,
                 override_tex: cx.override_tex,
                 light_only: false,
+                modge: 0,
+                modge_frame: 0,
             };
             if g(&o) {
                 if let Some(m) = cx.motion {
@@ -914,8 +921,10 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
                     gouraud: cx.gouraud,
                     override_tex: cx.override_tex,
                     light_only,
+                    modge: modge as u8 | (wave as u8) << 1,
+                    modge_frame: fc,
                 };
-                if g(&ob) && !light_only {
+                if g(&ob) {
                     return;
                 }
             }
@@ -1242,6 +1251,8 @@ pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames, mut 
                 gouraud: None,
                 override_tex: None,
                 light_only: false,
+                modge: 0,
+                modge_frame: 0,
             };
             if g(&ob) {
                 return;

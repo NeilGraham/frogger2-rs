@@ -229,7 +229,7 @@ fn gpu_mesh_lighting_balances_and_casts_shadows() {
         r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap()
     };
     let unlit = shot(None);
-    let flat = Lighting { sky: [1.0; 3], ground: [1.0; 3], sun: None, point_lights: vec![], emissive_lights: false, specular: 0.0 };
+    let flat = Lighting { sky: [1.0; 3], ground: [1.0; 3], sun: None, point_lights: vec![], emissive_lights: false, specular: 0.0, water: false };
     let balanced = shot(Some(flat.clone()));
     assert_eq!(unlit.pixel(160, 120), balanced.pixel(160, 120), "ambient 1 = the baked colours");
     let sun = |shadows| Lighting {
@@ -243,4 +243,44 @@ fn gpu_mesh_lighting_balances_and_casts_shadows() {
     let darker = open.pixels.chunks(4).zip(shaded.pixels.chunks(4)).filter(|(a, b)| a[0] > b[0] + 20).count();
     // The card's shadow: about 10×10 units on the floor (~ 15×15 px here).
     assert!((80..1200).contains(&darker), "{darker} pixels in shadow");
+}
+
+#[test]
+fn enhanced_water_takes_splashes() {
+    use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE, OBJECT_FLAGS_WAVE};
+    use f2_engine::water::Splash;
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let wat = f2_formats::crc("wat0.bmp");
+    r.textures.add_rgba(wat, "wat0.bmp", TexType::Normal, 2, 2, vec![60, 90, 160, 200].repeat(4));
+    // A horizontal pond (both windings), 200 units across at y = 0.
+    let h = 100.0;
+    let vertices = vec![[-h, 0.0, -h], [h, 0.0, -h], [h, 0.0, h], [-h, 0.0, h]];
+    let faces = vec![[0, 2, 1], [0, 3, 2], [0, 1, 2], [0, 2, 3]];
+    let mesh = Mesh { vertices, faces, face_uv: vec![[0, 0]; 12], normals: vec![], colors: vec![[1.0; 4]; 12], face_flags: vec![0; 4], textures: vec![wat; 4] };
+    let root = object("pond", mesh, OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE | OBJECT_FLAGS_ADDITIVE);
+    let model = Model { id: 3, radius: 150.0, object_size: 0, root, root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
+    let lighting = f2_engine::Lighting { water: true, ..f2_engine::Lighting::daylight() };
+    let mut run = |splash: bool| {
+        r.options.gpu_meshes = true;
+        r.lighting = Some(lighting.clone());
+        let mut img = None;
+        for f in 0..20 {
+            r.water_clock = f as f64 / 60.0;
+            r.begin_frame(320, 240);
+            r.set_camera(&Camera { source: [0.0, 120.0, -90.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] });
+            if splash && f == 3 {
+                r.water_splash(Splash { pos: [0.0, 0.0, 0.0], radius: 25.0, strength: 6.0 });
+            }
+            r.draw_actor(&model, &mut Actor { modge_frame: 0, ..Actor::default() });
+            img = Some(r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap());
+        }
+        img.unwrap()
+    };
+    let (calm, rippled) = (run(false), run(true));
+    rippled.write_png(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/f2-engine-water.png")).unwrap();
+    let lit = calm.pixels.chunks(4).filter(|p| p[2] > 30).count();
+    assert!(lit > 320 * 240 / 4, "the pond is drawn ({lit} pixels)");
+    let differ = calm.pixels.chunks(4).zip(rippled.pixels.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 6)).count();
+    assert!(differ > 200, "the splash makes waves ({differ} pixels differ)");
 }

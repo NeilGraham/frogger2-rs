@@ -44,6 +44,9 @@ pub struct Lighting {
     pub emissive_lights: bool,
     /// Strength of the sun's highlight (0 = none).
     pub specular: f32,
+    /// The enhanced water (`crate::water`): water meshes drawn on the GPU with waves objects
+    /// make, MODGE surfaces on the GPU, caustics under the water.
+    pub water: bool,
 }
 
 impl Lighting {
@@ -56,6 +59,7 @@ impl Lighting {
             point_lights: Vec::new(),
             emissive_lights: true,
             specular: 0.12,
+            water: true,
         }
     }
 }
@@ -76,6 +80,14 @@ pub fn is_emissive(name: &str) -> bool {
     ["lava", "fire", "flame", "glow", "burn", "bulb", "lairfl", "ember", "candle", "neon", "lamp"].iter().any(|k| n.contains(k))
 }
 
+/// Whether a texture (by file name) is a water surface: rivers, ponds, swamp water, sludge.
+pub fn is_water(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    let wat_n = n.strip_prefix("wat").is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
+    wat_n
+        || ["ai_water", "ai_ripple", "00wate", "00nwat", "aniswamp", "aqua0", "aquatop", "ripple", "sludge", "swampi", "swampyi"].iter().any(|k| n.starts_with(k))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +99,16 @@ mod tests {
         }
         for n in ["star1.bmp", "grasslight1", "wat0.bmp", "aqua001.bmp", "start2.bmp"] {
             assert!(!is_emissive(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn water_names() {
+        for n in ["00wate04.bm", "wat10.bmp", "ai_water.bm", "aniswamp03.", "aqua001.bmp", "sludge.bmp", "swampyi02.b", "ripple.bmp"] {
+            assert!(is_water(n), "{n}");
+        }
+        for n in ["watdrop.bmp", "swampy.bmp", "aquatil001.", "riverbottom", "00lava04.bm"] {
+            assert!(!is_water(n), "{n}");
         }
     }
 }

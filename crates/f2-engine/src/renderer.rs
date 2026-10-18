@@ -451,6 +451,18 @@ pub struct Renderer {
     sprite_lights: Vec<crate::lighting::PointLight>,
     /// Emissive flag per texture CRC (sprites).
     emissive_crc: alloc::collections::BTreeMap<u32, bool>,
+    /// [`Lighting::water`](crate::Lighting): the water simulation's clock (seconds; the host
+    /// advances it with the game, e.g. ticks / 60 plus the interpolation fraction).
+    pub water_clock: f64,
+    /// Disturbances waiting for the next simulation step ([`water_splash`](Self::water_splash),
+    /// moving actors).
+    #[cfg(feature = "gpu")]
+    splashes: Vec<crate::water::Splash>,
+    /// The clock (×60, whole) at which moving actors last made waves.
+    #[cfg(feature = "gpu")]
+    wake_tick: i64,
+    #[cfg(feature = "gpu")]
+    wake_frame: bool,
     #[cfg(feature = "gpu")]
     mv_buf: Option<wgpu::Buffer>,
     /// Uniforms of the HUD pass of [`render_upscaled`](Self::render_upscaled) (no jitter).
@@ -715,6 +727,10 @@ impl Renderer {
             lighting: None,
             sprite_lights: Vec::new(),
             emissive_crc: alloc::collections::BTreeMap::new(),
+            water_clock: 0.0,
+            splashes: Vec::new(),
+            wake_tick: i64::MIN,
+            wake_frame: false,
             mv_buf: None,
             ui_uniform: Some((ui_buf, ui_bg)),
             pipeline_layout,
@@ -755,6 +771,7 @@ impl Renderer {
             lighting: None,
             sprite_lights: Vec::new(),
             emissive_crc: alloc::collections::BTreeMap::new(),
+            water_clock: 0.0,
             mesh_sink: None,
             cpu_models: Vec::new(),
             motion: None,
@@ -1081,6 +1098,13 @@ impl Renderer {
         #[cfg(feature = "gpu")]
         self.gpu_sink.clear();
         self.sprite_lights.clear();
+        #[cfg(feature = "gpu")]
+        {
+            // Wakes once per 60 Hz tick of the water clock (whatever the frame rate).
+            let tick = (self.water_clock * 60.0).floor() as i64;
+            self.wake_frame = tick != self.wake_tick;
+            self.wake_tick = tick;
+        }
         let v = &self.view;
         self.motion = last.map(|l| {
             let same = l.camera.is_some() && (l.width, l.height, l.viewport, l.hor_plus) == (v.width, v.height, v.viewport, v.hor_plus);
@@ -1284,6 +1308,14 @@ impl Renderer {
     /// keeps the mesh-sink path small for a console's instruction cache).
     #[inline(never)]
     fn draw_actor_cpu(&mut self, model: &Model, actor: &mut Actor) {
+        #[cfg(feature = "gpu")]
+        {
+            // The host may set the lighting after `begin_frame`.
+            self.gpu_sink.water_on = self.options.gpu_meshes && self.lighting.as_ref().is_some_and(|l| l.water);
+            if self.gpu_sink.water_on {
+                self.actor_wake(model, actor);
+            }
+        }
         let mut frames = core::mem::take(&mut self.frames);
         #[cfg(feature = "gpu")]
         let mut sink = core::mem::take(&mut self.gpu_sink);
@@ -1291,7 +1323,8 @@ impl Renderer {
         #[cfg(feature = "gpu")]
         {
             let no_clip = self.view.no_clip;
-            let mut hook = |o: &crate::scene::GpuObj| sink.offer(o, no_clip);
+            let textures = &self.textures;
+            let mut hook = |o: &crate::scene::GpuObj| sink.offer(o, no_clip, textures);
             draw_actor(&cx, model, actor, &mut frames, if self.options.gpu_meshes { Some(&mut hook) } else { None });
         }
         #[cfg(not(feature = "gpu"))]
@@ -1315,7 +1348,8 @@ impl Renderer {
         {
             let mut sink = core::mem::take(&mut self.gpu_sink);
             let no_clip = self.view.no_clip;
-            let mut hook = |o: &crate::scene::GpuObj| sink.offer(o, no_clip);
+            let textures = &self.textures;
+            let mut hook = |o: &crate::scene::GpuObj| sink.offer(o, no_clip, textures);
             draw_landscape(&self.emit_ctx(1.0), model, &mut frames, if self.options.gpu_meshes { Some(&mut hook) } else { None });
             self.gpu_sink = sink;
         }
@@ -1443,6 +1477,32 @@ impl Renderer {
             }
         }
         self.overlays.push(q);
+    }
+
+    /// Enhanced water: something disturbs the water at `s.pos` (a landing, a splash). Applied
+    /// at the next simulation step (where there is water near that height).
+    #[cfg(feature = "gpu")]
+    pub fn water_splash(&mut self, s: crate::water::Splash) {
+        if self.gpu_sink.water_on && self.splashes.len() < crate::water::MAX_SPLATS {
+            self.splashes.push(s);
+        }
+    }
+
+    /// Enhanced water: an actor moving through the water makes waves (its movement since its
+    /// last wake, once per 60 Hz tick of the water clock).
+    #[cfg(feature = "gpu")]
+    fn actor_wake(&mut self, model: &Model, actor: &mut Actor) {
+        if !self.wake_frame {
+            return;
+        }
+        let p = actor.pos;
+        if let Some(q) = actor.water_prev.replace(p) {
+            let d = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+            let size = model.radius * actor.scale[0].abs().max(actor.scale[2].abs());
+            if d > 0.05 && d < 60.0 && self.splashes.len() < crate::water::MAX_SPLATS {
+                self.splashes.push(crate::water::Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: (d * 0.25).min(2.0) });
+            }
+        }
     }
 
     /// [`lighting`](Self::lighting) with emissive lights, GPU meshes: a sprite drawn at world
@@ -1792,9 +1852,11 @@ impl Renderer {
             &self.options.fog,
             self.lighting.as_ref(),
             &self.sprite_lights,
+            self.water_clock,
+            &mut self.splashes,
         );
         gm.ensure_pipeline(&self.device, format, samples, mrt);
-        let any = gm.has_draws();
+        let any = gm.has_draws() || gm.has_water();
         for (t, w) in need {
             self.bind_group(t, w);
         }
@@ -1906,7 +1968,7 @@ impl Renderer {
             keys.push((c.tex.0, self.sampler_key(c.wrap)));
         }
         if gpu {
-            self.gpu_mesh.as_ref().unwrap().shadow_pass(encoder);
+            self.gpu_mesh.as_ref().unwrap().pre_passes(encoder);
         }
         let depth_view = &self.depth.as_ref().unwrap().0;
         let main_target = if scaled { &self.internal.as_ref().unwrap().0 } else { target };
@@ -1947,14 +2009,21 @@ impl Renderer {
         let mut scissored = false;
         // GPU meshes: at the start of the 3D passes (opaque, depth-tested: their order against
         // the CPU's opaque triangles does not matter).
+        // Enhanced water: at the start of the translucent passes.
         let mut gpu_left = gpu;
-        let draw_gpu = |pass: &mut wgpu::RenderPass<'_>, scissored: &mut bool| {
+        let mut water_left = gpu && self.gpu_mesh.as_ref().is_some_and(|g| g.has_water());
+        let draw_gpu = |pass: &mut wgpu::RenderPass<'_>, scissored: &mut bool, water: bool| {
             if let Some([x, y, w, h]) = scissor {
                 pass.set_scissor_rect(x, y, w, h);
                 *scissored = true;
             }
             let bgs = &self.bind_groups;
-            self.gpu_mesh.as_ref().unwrap().draw(pass, fmt, samples, false, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+            let gm = self.gpu_mesh.as_ref().unwrap();
+            if water {
+                gm.draw_water(pass, fmt, samples, false, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+            } else {
+                gm.draw(pass, fmt, samples, false, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+            }
             if let Some(vb) = &self.vbuf {
                 pass.set_vertex_buffer(0, vb.slice(..));
             }
@@ -1962,8 +2031,12 @@ impl Renderer {
         };
         for (ci, (c, key)) in cmds.iter().zip(&keys).enumerate() {
             if gpu_left && ci >= marks[1] as usize {
-                draw_gpu(&mut pass, &mut scissored);
+                draw_gpu(&mut pass, &mut scissored, false);
                 gpu_left = false;
+            }
+            if water_left && ci >= marks[3] as usize {
+                draw_gpu(&mut pass, &mut scissored, true);
+                water_left = false;
             }
             if let Some([x, y, w, h]) = scissor {
                 if c.scene != scissored {
@@ -1980,7 +2053,10 @@ impl Renderer {
             pass.draw(c.first..c.first + c.count, 0..1);
         }
         if gpu_left {
-            draw_gpu(&mut pass, &mut scissored);
+            draw_gpu(&mut pass, &mut scissored, false);
+        }
+        if water_left {
+            draw_gpu(&mut pass, &mut scissored, true);
         }
         drop(pass);
         if scaled {
@@ -2135,7 +2211,7 @@ impl Renderer {
         let ut = self.up.as_ref().unwrap();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upscale scene") });
         if gpu {
-            self.gpu_mesh.as_ref().unwrap().shadow_pass(&mut enc);
+            self.gpu_mesh.as_ref().unwrap().pre_passes(&mut enc);
         }
         {
             let att = |view, c: wgpu::Color| {
@@ -2169,13 +2245,19 @@ impl Renderer {
             pass.set_bind_group(0, &self.uniform_bg, &[]);
             let mut scissored = false;
             let mut gpu_left = gpu;
-            let draw_gpu = |pass: &mut wgpu::RenderPass<'_>, scissored: &mut bool| {
+            let mut water_left = gpu && self.gpu_mesh.as_ref().is_some_and(|g| g.has_water());
+            let draw_gpu = |pass: &mut wgpu::RenderPass<'_>, scissored: &mut bool, water: bool| {
                 if let Some([x, y, w, h]) = scissor {
                     pass.set_scissor_rect(x, y, w, h);
                     *scissored = true;
                 }
                 let bgs = &self.bind_groups;
-                self.gpu_mesh.as_ref().unwrap().draw(pass, UPSCALE_COLOR_FORMAT, 1, true, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+                let gm = self.gpu_mesh.as_ref().unwrap();
+                if water {
+                    gm.draw_water(pass, UPSCALE_COLOR_FORMAT, 1, true, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+                } else {
+                    gm.draw(pass, UPSCALE_COLOR_FORMAT, 1, true, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+                }
                 if let (Some(vb), Some(mb)) = (&self.vbuf, &self.mv_buf) {
                     pass.set_vertex_buffer(0, vb.slice(..));
                     pass.set_vertex_buffer(1, mb.slice(..));
@@ -2184,8 +2266,12 @@ impl Renderer {
             };
             for (ci, (c, (k, bg))) in cmds[..split].iter().zip(&keys).enumerate() {
                 if gpu_left && ci >= marks[1] as usize {
-                    draw_gpu(&mut pass, &mut scissored);
+                    draw_gpu(&mut pass, &mut scissored, false);
                     gpu_left = false;
+                }
+                if water_left && ci >= marks[3] as usize {
+                    draw_gpu(&mut pass, &mut scissored, true);
+                    water_left = false;
                 }
                 if let Some([x, y, w, h]) = scissor {
                     if c.scene != scissored {
@@ -2202,7 +2288,10 @@ impl Renderer {
                 pass.draw(c.first..c.first + c.count, 0..1);
             }
             if gpu_left {
-                draw_gpu(&mut pass, &mut scissored);
+                draw_gpu(&mut pass, &mut scissored, false);
+            }
+            if water_left {
+                draw_gpu(&mut pass, &mut scissored, true);
             }
         }
         // Native code reads the inputs and writes the output in these states.

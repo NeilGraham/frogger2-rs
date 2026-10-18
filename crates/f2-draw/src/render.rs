@@ -309,6 +309,9 @@ pub struct DrawCtx<'a> {
     /// (0, 1 or several draws per tick) one step per draw would tie the flutter to the
     /// monitor (steady half-transparent wings at 144 Hz) instead of to game frames.
     pub tex_anim_steps: u32,
+    /// Enhanced water: actors drawn lower by this many units (platforms dipping under a frog
+    /// that landed on them, the frog with them). Render only; empty = the original.
+    pub dips: &'a [(ActorId, f32)],
 }
 
 /// Optional timing hook: called with a [`draw_phase`] id at the end of each part of
@@ -570,6 +573,9 @@ fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx:
         // Only an unmoved actor's conversion is reusable (an interpolated one depends on
         // alpha).
         sl.last = (prev == Some(&cur)).then_some((cur, size));
+        if let Some(&(_, d)) = ctx.dips.iter().find(|(a, _)| *a == id) {
+            ea.pos[1] -= d;
+        }
     }
     let anim = mdx.animation.as_ref();
     ea.animated = anim.is_some();

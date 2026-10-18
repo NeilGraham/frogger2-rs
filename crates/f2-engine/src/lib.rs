@@ -43,6 +43,8 @@ pub mod scene;
 pub mod soft;
 pub mod textures;
 pub mod upscale;
+#[cfg(feature = "gpu")]
+pub mod water;
 #[cfg(feature = "ps5-vulkan")]
 pub mod vkraw;
 

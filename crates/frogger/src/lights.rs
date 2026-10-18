@@ -19,6 +19,7 @@ fn setup(sky: [f32; 3], ground: [f32; 3], to_light: [f32; 3], sun: [f32; 3], spe
         point_lights: Vec::new(),
         emissive_lights: true,
         specular,
+        water: true,
     }
 }
 

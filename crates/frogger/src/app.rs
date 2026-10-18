@@ -120,6 +120,10 @@ pub struct App {
     prev: Vec<Option<Snap>>,
     /// Game camera before the last tick (interpolation).
     prev_cam: Option<Camera>,
+    /// Enhanced water: platforms (and the frog on them) dipping after a landing: actor,
+    /// depth now and at the last tick, speed (units per tick); and the frog's last platform.
+    water_dips: Vec<(f2_game::ids::ActorId, f32, f32, f32)>,
+    last_platform: Option<f2_game::ids::PlatformId>,
     pub ticks: u64,
     /// `ticks` at the last draw: animated textures step once per game frame
     /// (`DrawCtx::tex_anim_steps`), not once per displayed frame.
@@ -327,6 +331,8 @@ impl App {
             acc: Duration::ZERO,
             prev: Vec::new(),
             prev_cam: None,
+            water_dips: Vec::new(),
+            last_platform: None,
             ticks: 0,
             tex_anim_ticks: 0,
             free_cam: None,
@@ -422,6 +428,41 @@ impl App {
         self.r.options.motion_vectors = up.is_some();
         self.r.upscale_render = up.map(|u| u.0);
         self.r.jitter = up.map_or([0.0; 2], |u| u.1);
+    }
+
+    /// Enhanced water, once per tick: the platform dips settle (a damped spring), and a frog
+    /// landing on a platform pushes it (and itself) down and makes a wave. Render only.
+    fn water_tick(&mut self) {
+        if self.display().graphics == f2_platform::Graphics::Original {
+            self.water_dips.clear();
+            self.last_platform = None;
+            return;
+        }
+        for d in &mut self.water_dips {
+            d.2 = d.1;
+            d.3 += -0.12 * d.1 - 0.2 * d.3;
+            d.1 += d.3;
+        }
+        self.water_dips.retain(|d| d.1.abs() > 0.01 || d.2.abs() > 0.01 || d.3.abs() > 0.01);
+        let cur = self.game.platform.curr_platform[0];
+        if cur != self.last_platform {
+            if let Some(p) = cur {
+                let plt = self.game.platform.platform_list.array.get(p.idx()).and_then(|p| p.plt_actor);
+                let frog = self.game.frogger.frog[0];
+                for a in [plt, frog].into_iter().flatten() {
+                    match self.water_dips.iter_mut().find(|d| d.0 == a) {
+                        Some(d) => d.3 += 1.1,
+                        None => self.water_dips.push((a, 0.0, 0.0, 1.1)),
+                    }
+                }
+                if let Some(a) = plt.and_then(|a| self.game.actor2.actors.get(a)) {
+                    let q = &a.actor.position;
+                    let pos = [q.vx as f32 / 10.0, q.vy as f32 / 10.0, q.vz as f32 / 10.0];
+                    self.r.water_splash(f2_engine::water::Splash { pos, radius: 26.0, strength: 3.0 });
+                }
+            }
+        }
+        self.last_platform = cur;
     }
 
     /// Pushes the display settings into the renderer options (fog and far clip are set
@@ -1333,6 +1374,7 @@ impl App {
                                    // `actFrameCount` stays frozen, so path entities (placed from `actFrameCount`) do not run
                                    // on and jump on resume. Trace-identical to `tick` outside pause (research/n64-performance.md §3T).
         self.game.tick_frames(TickInput { pads }, 1);
+        self.water_tick();
         self.ticks += 1;
         if self.qol() && self.gameplay.speedrun_timer {
             let p = &self.game.frogger.player[0];
@@ -1691,6 +1733,8 @@ impl App {
         crate::overlay::set_button_prompts(self.button_prompts());
         let d = self.display();
         let authentic = self.profile == Profile::Authentic;
+        let dips: Vec<(f2_game::ids::ActorId, f32)> = self.water_dips.iter().map(|d| (d.0, d.2 + (d.1 - d.2) * alpha)).collect();
+        self.r.water_clock = (self.ticks as f64 + alpha as f64) / 60.0;
         let mut ctx = render::DrawCtx {
             prev: &self.prev,
             alpha,
@@ -1703,6 +1747,7 @@ impl App {
             backdrop,
             tile_scroll: self.tile_scroll,
             tex_anim_steps,
+            dips: &dips,
         };
         if let Some(scene) = &self.scene {
             let gcam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);
