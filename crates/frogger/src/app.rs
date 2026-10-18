@@ -144,6 +144,11 @@ pub struct App {
     /// On-screen message after a display hotkey, and its remaining time.
     osd: Option<(String, f32)>,
     /// Draw sample overlays in the 4096 space to check anchoring (`--hud-probe`).
+    /// The frame generation setting the host's DLSS / FSR path started with (`None` = not
+    /// running): the settings screen says when a change needs a restart.
+    pub upscale_native: Option<f2_platform::FrameGeneration>,
+    /// What DLSS / FSR run (desktop host, `[upscale]`), shown by the settings screen.
+    pub upscale_status: Option<String>,
     pub hud_probe: bool,
     /// Prompts as if player 1 used a pad (screenshots of console prompts: `--prompts ps`).
     pub force_pad_prompts: bool,
@@ -337,6 +342,8 @@ impl App {
             profile: Profile::Enhanced,
             enhanced: DisplaySettings::ENHANCED,
             osd: None,
+            upscale_native: None,
+            upscale_status: None,
             hud_probe: false,
             force_pad_prompts: false,
             pad_override: None,
@@ -407,6 +414,14 @@ impl App {
             Profile::Authentic => DisplaySettings::AUTHENTIC,
             Profile::Enhanced => self.enhanced,
         }
+    }
+
+    /// Temporal upscaling for the next [`draw`](Self::draw): the 3D render size and this
+    /// frame's sub-pixel jitter (`None` = off). Motion vectors are recorded while it is on.
+    pub fn prepare_upscale(&mut self, up: Option<((u32, u32), [f32; 2])>) {
+        self.r.options.motion_vectors = up.is_some();
+        self.r.upscale_render = up.map(|u| u.0);
+        self.r.jitter = up.map_or([0.0; 2], |u| u.1);
     }
 
     /// Pushes the display settings into the renderer options (fog and far clip are set
@@ -494,12 +509,14 @@ impl App {
     /// modern atlases are resampled to about their on-screen size (sampled ~1:1, no mipmaps).
     fn sync_game_fonts(&mut self) {
         let Some((big, small)) = &self.game_font_files else { return };
-        // Button icons about as tall as the big font's capitals on screen.
-        self.r.set_button_icons(((big.height as f32 * 0.8 * self.r.view.height / 480.0).ceil() as u32).clamp(12, 256));
+        // Button icons about as tall as the big font's capitals on screen. The HUD is drawn at
+        // the output size (with an upscaler the 3D render size is smaller), so size by that.
+        let screen_h = self.r.output_size().1.max(self.r.view.height as u32) as f32;
+        self.r.set_button_icons(((big.height as f32 * 0.8 * screen_h / 480.0).ceil() as u32).clamp(12, 256));
         let modern = self.modern_font_files.as_ref().filter(|_| self.display().modern_font);
         // Atlas pixels per original pixel: the 480-line magnification, with headroom for
         // zoomed text.
-        let k = modern.map_or(0, |(b, _)| ((self.r.view.height / 480.0 * 1.5).ceil() as u32).clamp(2, b.scale as u32));
+        let k = modern.map_or(0, |(b, _)| ((screen_h / 480.0 * 1.5).ceil() as u32).clamp(2, b.scale as u32));
         let key = (modern.is_some(), k);
         if self.game_fonts.is_some() && self.game_fonts_key == key {
             return;

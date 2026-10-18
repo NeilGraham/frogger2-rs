@@ -156,6 +156,13 @@ pub enum Id {
     Widescreen,
     RenderScale,
     Msaa,
+    Upscaler,
+    UpscaleQuality,
+    DlssPreset,
+    Sharpness,
+    FrameGen,
+    FgTarget,
+    Reflex,
     Filter,
     Perspective,
     DrawDistance,
@@ -350,6 +357,9 @@ fn on_off(b: bool) -> String {
 }
 
 /// Steps through `list` from the entry nearest `cur` by `dir`, wrapping.
+/// Dynamic frame generation targets (0 = the display's refresh rate).
+const FG_TARGETS: [u32; 7] = [0, 120, 144, 165, 240, 360, 480];
+
 fn step<T: PartialEq + Copy>(list: &[T], cur: T, dir: i32) -> T {
     let n = list.len() as i32;
     if n == 0 {
@@ -744,6 +754,9 @@ impl App {
                     true,
                 );
                 add(Id::Msaa, "Anti-aliasing", if d.msaa > 1 { "4x MSAA".into() } else { "Off".into() }, &gate(enh, "Multisample anti-aliasing."), enh, true);
+                if !console {
+                    self.upscale_items(&mut add, enh);
+                }
                 let filt = match d.filter {
                     TextureFilter::Nearest => "Nearest".to_string(),
                     TextureFilter::Linear => "Bilinear".into(),
@@ -892,11 +905,86 @@ impl App {
         out
     }
 
+    /// The DLSS / FSR rows of the Display page (docs/UPSCALING.md).
+    fn upscale_items(&self, add: &mut impl FnMut(Id, &str, String, &str, bool, bool), enh: bool) {
+        use f2_platform::{FrameGeneration, UpscalerKind};
+        let u = &self.cfg.upscale;
+        let windows = cfg!(windows);
+        let on = enh && windows;
+        // What the running native path was started with (`None` = not running).
+        let restart = match self.upscale_native {
+            _ if !windows => "",
+            None if u.active() => " Restart to turn it on.",
+            Some(fg) if (fg == FrameGeneration::Off) != (u.frame_generation == FrameGeneration::Off) || fg.is_dlss() != u.frame_generation.is_dlss() => {
+                " Restart to switch library."
+            }
+            _ => "",
+        };
+        let running = self.upscale_status.as_deref().map(|s| format!(" Now: {s}.")).unwrap_or_default();
+        let base = if windows {
+            "DLSS (GeForce RTX), FSR 3.1 (any GPU), FSR 4 (Radeon RX 7000 / 9000). DLLs go in upscalers."
+        } else {
+            "NVIDIA DLSS and AMD FSR need Windows (Direct3D 12)."
+        };
+        add(Id::Upscaler, "Upscaler", u.upscaler.name().into(), &format!("{base}{restart}{running}"), on, true);
+        let up = u.upscaler != UpscalerKind::Off;
+        add(
+            Id::UpscaleQuality,
+            "Upscaling mode",
+            u.quality.name(u.upscaler).into(),
+            "DLAA / Native AA renders at full size; Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x smaller.",
+            on && up,
+            true,
+        );
+        if u.upscaler == UpscalerKind::Dlss {
+            add(
+                Id::DlssPreset,
+                "DLSS preset",
+                u.dlss_preset.name().into(),
+                "DLSS model: Default = NVIDIA's choice per mode (K, L, M); J / K / L / M forced.",
+                on,
+                true,
+            );
+        }
+        if matches!(u.upscaler, UpscalerKind::Fsr3 | UpscalerKind::Fsr4) {
+            let sharp = if u.sharpness == 0 { "Off".to_string() } else { format!("{}%", u.sharpness) };
+            add(Id::Sharpness, "FSR sharpening", sharp, "Extra sharpening after FSR (RCAS).", on, true);
+        }
+        add(
+            Id::FrameGen,
+            "Frame generation",
+            u.frame_generation.name().into(),
+            &format!("DLSS 2x (RTX 40 / 50), 3x / 4x / dynamic (RTX 50), FSR 2x (any GPU). Best with VSync off.{restart}"),
+            on,
+            true,
+        );
+        if u.frame_generation == FrameGeneration::DlssDynamic {
+            let t = if u.target_fps == 0 { "Display refresh".to_string() } else { format!("{} fps", u.target_fps) };
+            add(Id::FgTarget, "Target frame rate", t, "Dynamic frame generation picks 2x, 3x or 4x to reach this.", on, true);
+        }
+        if u.upscaler == UpscalerKind::Dlss || u.frame_generation.is_dlss() {
+            add(Id::Reflex, "NVIDIA Reflex", u.reflex.name().into(), "Lower input latency (always on with DLSS frame generation).", on, true);
+        }
+    }
+
     /// Changes `id` by `dir` (Left/Right) or confirms it (`ok`). Returns whether anything
     /// changed (sound + save).
     fn settings_change(&mut self, id: Id, dir: i32, ok: bool) -> bool {
         let v = &mut self.cfg.video;
         match id {
+            Id::Upscaler | Id::UpscaleQuality | Id::DlssPreset | Id::Sharpness | Id::FrameGen | Id::FgTarget | Id::Reflex => {
+                use f2_platform::{DlssPreset, FrameGeneration, ReflexMode, UpscaleQuality, UpscalerKind};
+                let u = &mut self.cfg.upscale;
+                match id {
+                    Id::Upscaler => u.upscaler = step(&UpscalerKind::ALL, u.upscaler, dir),
+                    Id::UpscaleQuality => u.quality = step(&UpscaleQuality::ALL, u.quality, dir),
+                    Id::DlssPreset => u.dlss_preset = step(&DlssPreset::ALL, u.dlss_preset, dir),
+                    Id::Sharpness => u.sharpness = step_num(u.sharpness as f32, dir, 10.0, 0.0, 100.0) as u32,
+                    Id::FrameGen => u.frame_generation = step(&FrameGeneration::ALL, u.frame_generation, dir),
+                    Id::FgTarget => u.target_fps = step(&FG_TARGETS, u.target_fps, dir),
+                    _ => u.reflex = step(&ReflexMode::ALL, u.reflex, dir),
+                }
+            }
             Id::WindowMode => {
                 // Step from the requested mode: the window follows asynchronously, and
                 // repeated presses must not restart from a stale state.
@@ -1390,9 +1478,9 @@ impl App {
         let grey = [96, 96, 96, 255];
         let r = &mut self.r;
         let c = Canvas::new(r);
-        // Dim the game like a menu backdrop.
-        let (iw, ih) = (r.view.width, r.view.height);
-        r.draw_quad(Quad2D::rect(0.0, 0.0, iw, ih, [0.0; 4], None, [0, 0, 0, 215], Blend::Semi));
+        // Dim the game like a menu backdrop (`draw_quad` takes output pixels).
+        let (ow, oh) = r.output_size();
+        r.draw_quad(Quad2D::rect(0.0, 0.0, ow as f32, oh as f32, [0.0; 4], None, [0, 0, 0, 215], Blend::Semi));
         let t = |r: &mut Renderer, big_font: bool, x: f32, y: f32, s: &str, col: [u8; 4], align: i32| {
             let (id, f) = if big_font { (fonts.normal, &big) } else { (fonts.small, &small) };
             c.text(r, id, f, big_font, x, y, s, col, align, 1.0);
@@ -1569,8 +1657,6 @@ struct Canvas {
     oh: f32,
     /// Output pixels per 640×480 font pixel.
     k: f32,
-    /// Output to internal pixels (render scale) for quads.
-    ui: f32,
 }
 
 impl Canvas {
@@ -1578,7 +1664,7 @@ impl Canvas {
         let (ow, oh) = r.output_size();
         let (ow, oh) = (ow as f32, oh as f32);
         let sw = ow.min(oh * 4.0 / 3.0);
-        Canvas { x0: ((ow - sw) / 2.0).floor(), sw, oh, k: sw / 640.0, ui: r.ui_scale() }
+        Canvas { x0: ((ow - sw) / 2.0).floor(), sw, oh, k: sw / 640.0 }
     }
 
     fn px(&self, ux: f32) -> f32 {
@@ -1633,10 +1719,9 @@ impl Canvas {
     }
 
     fn tri(&self, r: &mut Renderer, p: [[f32; 2]; 3], col: [u8; 4]) {
-        let s = self.ui;
-        let q = |v: [f32; 2]| [v[0] * s, v[1] * s];
+        // Output pixels: `draw_quad` maps them to the render size itself.
         let mut quad = Quad2D::rect(0.0, 0.0, 1.0, 1.0, [0.0; 4], None, col, Blend::Semi);
-        quad.pos = [q(p[0]), q(p[1]), q(p[2]), q(p[2])];
+        quad.pos = [p[0], p[1], p[2], p[2]];
         r.draw_quad(quad);
     }
 

@@ -153,9 +153,9 @@ impl ControlsUi {
 
 /// The settings screen's dimmed backdrop and page title; returns the output width.
 pub fn draw_backdrop(r: &mut Renderer, font: FontId, title: &str) -> f32 {
-    let (iw, ih) = (r.view.width, r.view.height);
-    r.draw_quad(Quad2D::rect(0.0, 0.0, iw, ih, [0.0, 0.0, 1.0, 1.0], None, [0, 0, 0, 225], Blend::Semi));
-    let ow = r.output_size().0 as f32;
+    // `draw_quad` takes output pixels.
+    let (ow, oh) = (r.output_size().0 as f32, r.output_size().1 as f32);
+    r.draw_quad(Quad2D::rect(0.0, 0.0, ow, oh, [0.0, 0.0, 1.0, 1.0], None, [0, 0, 0, 225], Blend::Semi));
     r.draw_text(font, 0.0, 14.0, title, [255, 255, 255, 255], 1.5, Some(ow / 2.0));
     ow
 }

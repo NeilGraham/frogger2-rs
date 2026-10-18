@@ -235,6 +235,13 @@ impl View {
         [x + w / 2.0 + p[0] * o, y + h / 2.0 + p[1] * o, p[2]]
     }
 
+    /// Screen position of view-space `p` without the near/far rejection of
+    /// [`project`](Self::project) (motion vectors: where a vertex was last frame).
+    pub fn screen_unclipped(&self, p: Vec3) -> [f32; 2] {
+        let s = self.to_screen(p, self.oozd(p[2]));
+        [s[0], s[1]]
+    }
+
     /// Projects a view-space point like `PCPrepareObject`: returns `(sx, sy, vz)`,
     /// or `None` where the original stores `vz = 0` (outside near/far).
     pub fn project(&self, p: Vec3) -> Option<[f32; 3]> {
@@ -301,6 +308,10 @@ pub struct RenderOptions {
     /// Enhanced: MSAA sample count (1 or 4; other values are rounded to what every
     /// wgpu backend supports for the swapchain formats).
     pub msaa: u32,
+    /// Enhanced (temporal upscalers, frame generation): the opaque passes also record each
+    /// vertex's screen position in the previous frame ([`Frames::motion`]). Off = no extra
+    /// work and the retail path unchanged.
+    pub motion_vectors: bool,
 }
 
 impl Default for RenderOptions {
@@ -317,6 +328,7 @@ impl Default for RenderOptions {
             hud_anchor: false,
             render_scale: 1.0,
             msaa: 1,
+            motion_vectors: false,
         }
     }
 }
@@ -337,12 +349,20 @@ pub struct Frames {
     pub shadow_xlu_at: Option<usize>,
     /// Triangles dropped this frame because a list could not grow (out of memory: consoles).
     pub dropped: u32,
+    /// Per frame list, the screen motion of each triangle's vertices (previous position minus
+    /// current, internal pixels) for [`RenderOptions::motion_vectors`]: `motion[f][i]` belongs to
+    /// `tris[f][i]`; triangles past the end (pushed without motion) have none (zero). Only the
+    /// opaque lists use it (translucent ones are sorted and do not write motion vectors).
+    pub motion: [Vec<[[f32; 2]; 3]>; NUM_FRAMES],
 }
 
 impl Frames {
     pub fn clear(&mut self) {
         for f in &mut self.tris {
             f.clear();
+        }
+        for m in &mut self.motion {
+            m.clear();
         }
         self.shadows.clear();
         self.late_split = None;
@@ -374,6 +394,18 @@ impl Frames {
         }
         v.push(tri);
     }
+
+    /// [`push`](Self::push) with the vertices' screen motion ([`Frames::motion`]).
+    pub fn push_moving(&mut self, frame: Frame, tri: Tri, mv: [[f32; 2]; 3]) {
+        let n = self.tris[frame as usize].len();
+        self.push(frame, tri);
+        if self.tris[frame as usize].len() > n {
+            let m = &mut self.motion[frame as usize];
+            m.resize(n, [[0.0; 2]; 3]);
+            m.push(mv);
+        }
+    }
+
     pub fn total(&self) -> usize {
         self.tris.iter().map(Vec::len).sum::<usize>() + self.shadows.len()
     }
@@ -440,6 +472,44 @@ fn prepare_skinned(view: &View, obj: &Object, mesh: &Mesh, m: &Mat4, tv: &mut [T
     }
 }
 
+/// Previous-frame screen positions of `mesh`'s vertices (motion vectors, not in the original):
+/// model matrix `m` of the last frame (the current one for static geometry) through the
+/// last frame's view, unclipped. `lift` = the wave heights `prepare_modgy_object` adds.
+fn prepare_prev(prev: &View, mesh: &Mesh, m: &Mat4, lift: Option<&ModgeValues>, tvp: &mut Vec<[f32; 2]>) {
+    let f = mtx_cat(m, &prev.v_matrix);
+    tvp.clear();
+    tvp.extend(mesh.vertices.iter().enumerate().map(|(i, &v)| {
+        let dy = lift.and_then(|l| l.get(i)).map_or(0.0, |w| w[2]);
+        prev.screen_unclipped(mtx_xfm(&f, [v[0], v[1] + dy, v[2]]))
+    }));
+}
+
+/// [`prepare_prev`] for the root-mesh vertices one bone of a skin moves.
+fn prepare_skinned_prev(prev: &View, obj: &Object, mesh: &Mesh, m: &Mat4, tvp: &mut [[f32; 2]]) {
+    let f = mtx_cat(m, &prev.v_matrix);
+    for &j in &obj.effected_verts {
+        let (Some(v), Some(slot)) = (mesh.vertices.get(j as usize), tvp.get_mut(j as usize)) else { continue };
+        *slot = prev.screen_unclipped(mtx_xfm(&f, *v));
+    }
+}
+
+/// Last frame's state for motion vectors ([`RenderOptions::motion_vectors`]).
+pub(crate) struct Motion {
+    /// The view the previous frame was drawn with (same internal size); `None` = nothing to
+    /// compare with this frame (first frame, cut): poses are still recorded for the next one.
+    pub prev_view: Option<View>,
+    /// This frame's renderer frame number ([`Actor::motion_prev`] of the last one is `frame - 1`).
+    pub frame: u32,
+}
+
+impl Motion {
+    /// The object matrices `actor` was drawn with last frame, if it was drawn then with as many
+    /// objects; `None` = not drawn last frame (it has not moved, as far as motion vectors go).
+    fn prev_mats<'a>(&self, actor: &'a Actor, n: usize) -> Option<&'a [Mat4]> {
+        actor.motion_prev.as_ref().filter(|(f, m)| *f == self.frame.wrapping_sub(1) && m.len() == n).map(|(_, m)| &m[..])
+    }
+}
+
 fn between(x: f32, a: f32, b: f32) -> bool {
     x > a && x < b
 }
@@ -454,13 +524,26 @@ pub(crate) struct EmitCtx<'a> {
     pub override_tex: Option<TexHandle>,
     /// Gouraud RGB set with `SetObjectGouraudValues`.
     pub gouraud: Option<[f32; 3]>,
+    /// Motion vectors on: last frame's view (see [`Motion`]).
+    pub motion: Option<&'a Motion>,
 }
 
 /// Port of `PCRenderObject` (mdxRender.cpp:2090) (`overrideTex` from the context):
 /// pushes the visible faces of `mesh` using the transformed vertices `tv`.
 /// `per_object_fog` reproduces the object path (`cFog` from the first face);
 /// the landscape path (`false`) fogs per vertex and keeps faces without a loaded texture.
-pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, per_object_fog: bool, modge: Option<&Modge>, out: &mut Frames) {
+/// `tvp`: the vertices' previous-frame screen positions (motion vectors), else `None`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_mesh(
+    cx: &EmitCtx,
+    mesh: &Mesh,
+    tv: &[Tv],
+    tvp: Option<&[[f32; 2]]>,
+    frame: Frame,
+    per_object_fog: bool,
+    modge: Option<&Modge>,
+    out: &mut Frames,
+) {
     let view = cx.view;
     let [vx, vy, vw, vh] = view.vp();
     let (clx0, cly0, clx1, cly1) = (vx, vy, vx + vw - 1.0, vy + vh - 1.0);
@@ -525,7 +608,13 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], frame: Frame, pe
                 alpha_ref: 0.0,
             };
         }
-        out.push(frame, Tri { v, tex });
+        match tvp {
+            Some(tp) => {
+                let mv = |k: usize| tp.get(face[k] as usize).map_or([0.0; 2], |q| [q[0] - p[k][0], q[1] - p[k][1]]);
+                out.push_moving(frame, Tri { v, tex }, [mv(0), mv(1), mv(2)]);
+            }
+            None => out.push(frame, Tri { v, tex }),
+        }
     }
 }
 
@@ -553,15 +642,22 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
     let fade = actor.xlu < 1.0;
     let extra = actor.extra_flags;
     let (wrap, fc) = (actor.wrap_tc, actor.modge_frame);
+    // Motion vectors: last frame's matrices (this frame's when the actor was not drawn then).
+    let motion = cx.motion.and_then(|m| Some((m.prev_view.as_ref()?, m.prev_mats(actor, mats.len()).unwrap_or(&mats))));
+    let mut tvp = Vec::new();
     if model.is_skinned {
         // All bones transform their share of the root mesh, then the root mesh is drawn once.
         let Some(mesh) = model.root.mesh.as_ref() else { return };
         let mut tv: Vec<Tv> = vec![None; mesh.vertices.len()];
         for_each_object(model, |i, o| prepare_skinned(cx.view, o, mesh, &mats[i], &mut tv));
+        if let Some((m, prev)) = motion {
+            tvp = vec![[0.0; 2]; mesh.vertices.len()];
+            for_each_object(model, |i, o| prepare_skinned_prev(m, o, mesh, &prev[i], &mut tvp));
+        }
         // `PCRenderObject(root)` runs after `DrawObject` restored the frame, so the
         // skin always lands in the caller's frame (normal); only run-time flags apply.
         let frame = object_frame(extra, fade, wrap);
-        render_mesh(cx, mesh, &tv, frame, true, None, out);
+        render_mesh(cx, mesh, &tv, motion.map(|_| &tvp[..]), frame, true, None, out);
     } else {
         let mut tv = Vec::new();
         let mut mv = ModgeValues::new();
@@ -579,11 +675,17 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
             } else {
                 prepare_object(cx.view, mesh, &mats[i], &mut tv);
             }
+            if let Some((m, prev)) = motion {
+                prepare_prev(m, mesh, &prev[i], wave.then_some(&mv), &mut tvp);
+            }
             let frame = object_frame(flags, fade, wrap);
             // PCRenderModgySheenObject (SHEEN as well) is drawn like PCRenderModgyObject.
             let m = modge.then_some(Modge { values: &mv, wave });
-            render_mesh(cx, mesh, &tv, frame, true, m.as_ref(), out);
+            render_mesh(cx, mesh, &tv, motion.map(|_| &tvp[..]), frame, true, m.as_ref(), out);
         });
+    }
+    if let Some(m) = cx.motion {
+        actor.motion_prev = Some((m.frame, mats));
     }
 }
 
@@ -869,11 +971,16 @@ pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink)
 pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames) {
     let mut actor = Actor { animated: false, ..Default::default() };
     let mats = xform_actor(model, &mut actor);
-    let mut tv = Vec::new();
+    let (mut tv, mut tvp) = (Vec::new(), Vec::new());
     for_each_object(model, |i, o| {
         let Some(mesh) = o.mesh.as_ref() else { return };
         prepare_object(cx.view, mesh, &mats[i], &mut tv);
-        render_mesh(cx, mesh, &tv, Frame::Normal, false, None, out);
+        // Static: only the camera moves it.
+        let prev = cx.motion.and_then(|m| m.prev_view.as_ref());
+        if let Some(pv) = prev {
+            prepare_prev(pv, mesh, &mats[i], None, &mut tvp);
+        }
+        render_mesh(cx, mesh, &tv, prev.map(|_| &tvp[..]), Frame::Normal, false, None, out);
     });
 }
 

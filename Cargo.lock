@@ -1144,6 +1144,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "f2-upscale"
+version = "0.8.1"
+dependencies = [
+ "cc",
+ "f2-engine",
+ "wgpu",
+ "windows-core 0.62.2",
+]
+
+[[package]]
 name = "f2-viewer"
 version = "0.8.1"
 dependencies = [
@@ -1278,6 +1288,7 @@ dependencies = [
  "f2-net",
  "f2-package",
  "f2-platform",
+ "f2-upscale",
  "fontdue",
  "png 0.18.1",
  "serde_json",

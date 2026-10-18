@@ -64,6 +64,30 @@ impl GpuContext {
             ..Default::default()
         }))
         .map_err(err)?;
+        Self::with_adapter(instance, adapter)
+    }
+
+    /// A context on the adapter of `backends` whose name contains `name` (any case), else the
+    /// high-performance one: no surface (a host that presents itself, e.g. the upscalers'
+    /// Direct3D 12 swapchain).
+    pub fn for_adapter_named(instance: wgpu::Instance, backends: wgpu::Backends, name: Option<&str>) -> Result<GpuContext, EngineError> {
+        let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+        let want = name.map(|n| n.to_lowercase());
+        let named = want.as_ref().and_then(|n| adapters.iter().position(|a| a.get_info().name.to_lowercase().contains(n.as_str())));
+        let adapter = match named {
+            Some(i) => adapters.into_iter().nth(i).unwrap(),
+            None => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+                ..Default::default()
+            }))
+            .map_err(err)?,
+        };
+        Self::with_adapter(instance, adapter)
+    }
+
+    fn with_adapter(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Result<GpuContext, EngineError> {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("f2-engine"),
             required_features: wgpu::Features::empty(),
@@ -315,6 +339,10 @@ impl RgbaImage {
 #[cfg(feature = "gpu")]
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// Size of the shader's uniform block `U`.
+#[cfg(feature = "gpu")]
+const UNIFORM_SIZE: u64 = 48;
+
 /// The MDX replacement renderer.
 ///
 /// Per frame: [`begin_frame`](Self::begin_frame), set the camera, queue
@@ -370,7 +398,7 @@ pub struct Renderer {
     #[cfg(feature = "gpu")]
     shader: wgpu::ShaderModule,
     #[cfg(feature = "gpu")]
-    pipelines: HashMap<(Blend, DepthMode, u32), wgpu::RenderPipeline>,
+    pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     #[cfg(feature = "gpu")]
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
     /// Depth buffer (view, width, height, samples).
@@ -392,11 +420,102 @@ pub struct Renderer {
     /// Whether the GPU images were uploaded with mip chains.
     #[cfg(feature = "gpu")]
     gpu_mips: bool,
+    /// Motion vectors ([`RenderOptions::motion_vectors`]): last frame's view, when this frame
+    /// can be compared with it (set up by [`begin_frame`](Self::begin_frame)).
+    motion: Option<Motion>,
+    /// Frame counter ([`begin_frame`](Self::begin_frame)).
+    frame_no: u32,
+    /// This frame cannot use the upscaler's history (first frame, camera cut, size change).
+    history_reset: bool,
+    /// Upscaling: the 3D render size the host wants instead of `render_scale` (the
+    /// upscaler's input size), set before [`begin_frame`](Self::begin_frame).
+    pub upscale_render: Option<(u32, u32)>,
+    /// Upscaling: this frame's sub-pixel jitter in render pixels ([`crate::upscale::jitter`]).
+    pub jitter: [f32; 2],
+    /// Upscaling debug view: shows an upscaler input instead of the picture.
+    pub upscale_debug: UpscaleDebug,
+    /// Upscaling: depth-writing draws (and their triangles) that wrote motion vectors and
+    /// depth last frame (diagnostics).
+    pub upscale_draws: (u32, u32),
+    #[cfg(feature = "gpu")]
+    up: Option<UpTargets>,
+    #[cfg(feature = "gpu")]
+    mv_buf: Option<wgpu::Buffer>,
+    /// Uniforms of the HUD pass of [`render_upscaled`](Self::render_upscaled) (no jitter).
+    #[cfg(feature = "gpu")]
+    ui_uniform: Option<(wgpu::Buffer, wgpu::BindGroup)>,
 }
+
+/// Pipeline variant: blend, depth, samples, colour format, with the upscaler targets.
+#[cfg(feature = "gpu")]
+type PipeKey = (Blend, DepthMode, u32, wgpu::TextureFormat, bool);
+
+/// Formats of the upscaler inputs ([`crate::upscale`]).
+#[cfg(feature = "gpu")]
+pub const UPSCALE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+#[cfg(feature = "gpu")]
+const MV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+#[cfg(feature = "gpu")]
+const UP_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+
+/// Textures of [`Renderer::render_upscaled`].
+#[cfg(feature = "gpu")]
+struct UpTargets {
+    render: (u32, u32),
+    output: (u32, u32),
+    color: (wgpu::Texture, wgpu::TextureView),
+    motion: (wgpu::Texture, wgpu::TextureView),
+    depth: (wgpu::Texture, wgpu::TextureView),
+    out: (wgpu::Texture, wgpu::TextureView),
+    /// Depth-stencil of the HUD pass (its pipelines have a depth state).
+    ui_depth: wgpu::TextureView,
+}
+
+/// [`Renderer::upscale_debug`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UpscaleDebug {
+    #[default]
+    Off,
+    /// Motion vectors: grey = still, red/green = x/y motion (±20 render pixels saturate).
+    Motion,
+    /// The reversed depth (bright = near, black = nothing drawn).
+    Depth,
+}
+
+/// [`UpscaleDebug`] views of the motion vector and depth targets.
+#[cfg(feature = "gpu")]
+const DEBUG_SHADER: &str = r#"
+@group(0) @binding(0) var mvt: texture_2d<f32>;
+@group(0) @binding(1) var dt: texture_2d<f32>;
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VOut {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var o: VOut;
+    o.pos = vec4<f32>(p * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+    o.uv = p;
+    return o;
+}
+fn texel(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let s = vec2<f32>(textureDimensions(t));
+    return textureLoad(t, vec2<i32>(clamp(uv * s, vec2<f32>(0.0), s - 1.0)), 0);
+}
+@fragment fn fs_motion(i: VOut) -> @location(0) vec4<f32> {
+    let m = texel(mvt, i.uv).xy / 20.0;
+    return vec4<f32>(clamp(0.5 + m.x, 0.0, 1.0), clamp(0.5 + m.y, 0.0, 1.0), 0.5, 1.0);
+}
+@fragment fn fs_depth(i: VOut) -> @location(0) vec4<f32> {
+    let d = sqrt(texel(dt, i.uv).r);
+    return vec4<f32>(d, d, d, 1.0);
+}
+"#;
+
+/// Camera moves bigger than this between two frames are cuts (motion vectors and the
+/// upscaler history are dropped): render units, ~4 tiles.
+const CUT_DISTANCE: f32 = 250.0;
 
 #[cfg(feature = "gpu")]
 const SHADER: &str = r#"
-struct U { size: vec2<f32>, persp: f32, fog_on: f32, fog_color: vec4<f32> };
+struct U { size: vec2<f32>, persp: f32, fog_on: f32, fog_color: vec4<f32>, jitter: vec2<f32>, depth_near: f32, pad: f32 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(1) @binding(0) var t: texture_2d<f32>;
 @group(1) @binding(1) var s: sampler;
@@ -414,12 +533,16 @@ struct VOut {
     @location(1) uv: vec2<f32>,
     @location(2) fog: f32,
     @location(3) @interpolate(flat) aref: f32,
+    @location(4) mv: vec2<f32>,
+    @location(5) @interpolate(linear) rhw: f32,
 };
 
-@vertex fn vs(i: VIn) -> VOut {
+fn vert(i: VIn) -> VOut {
     var o: VOut;
-    // D3D7 TL pixel centres are at integer coordinates.
-    let ndc = vec2<f32>((i.pos.x + 0.5) / u.size.x * 2.0 - 1.0, 1.0 - (i.pos.y + 0.5) / u.size.y * 2.0);
+    // D3D7 TL pixel centres are at integer coordinates. `jitter`: the upscalers' sub-pixel
+    // camera jitter (render pixels; zero otherwise).
+    let p = i.pos.xy + vec2<f32>(0.5, 0.5) + u.jitter;
+    let ndc = vec2<f32>(p.x / u.size.x * 2.0 - 1.0, 1.0 - p.y / u.size.y * 2.0);
     var w = 1.0;
     if (u.persp > 0.5 && i.pos.w > 0.0) { w = 1.0 / i.pos.w; }
     o.pos = vec4<f32>(ndc * w, clamp(i.pos.z, 0.0, 1.0) * w, w);
@@ -427,14 +550,42 @@ struct VOut {
     o.uv = i.uv;
     o.fog = i.fog;
     o.aref = i.aref;
+    o.mv = vec2<f32>(0.0, 0.0);
+    o.rhw = i.pos.w;
     return o;
 }
 
-@fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
+@vertex fn vs(i: VIn) -> VOut {
+    return vert(i);
+}
+
+// Upscaling: the vertex's screen motion (previous position minus current, render pixels).
+@vertex fn vs_mrt(i: VIn, @location(5) mv: vec2<f32>) -> VOut {
+    var o = vert(i);
+    o.mv = mv;
+    return o;
+}
+
+fn shade(i: VOut) -> vec4<f32> {
     var c = textureSample(t, s, i.uv) * i.color;
     if (floor(c.a * 255.0 + 0.5) <= i.aref) { discard; }
     if (u.fog_on > 0.5) { c = vec4<f32>(mix(u.fog_color.rgb, c.rgb, i.fog), c.a); }
     return c;
+}
+
+@fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
+    return shade(i);
+}
+
+// Upscaling: colour, motion vector and reversed infinite depth (`near / z`; `rhw = 1 / z`
+// is linear in screen space, so it interpolates exactly).
+struct FOut { @location(0) c: vec4<f32>, @location(1) mv: vec2<f32>, @location(2) d: f32 };
+@fragment fn fs_mrt(i: VOut) -> FOut {
+    var o: FOut;
+    o.c = shade(i);
+    o.mv = i.mv;
+    o.d = clamp(u.depth_near * i.rhw, 0.0, 1.0);
+    return o;
 }
 "#;
 
@@ -495,7 +646,7 @@ impl Renderer {
         });
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
-            size: 32,
+            size: UNIFORM_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -503,6 +654,17 @@ impl Renderer {
             label: Some("uniforms"),
             layout: &ulayout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() }],
+        });
+        let ui_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hud uniforms"),
+            size: UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ui_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hud uniforms"),
+            layout: &ulayout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: ui_buf.as_entire_binding() }],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mdx"),
@@ -528,6 +690,16 @@ impl Renderer {
             tex_layout,
             uniform_buf,
             uniform_bg,
+            motion: None,
+            frame_no: 0,
+            history_reset: true,
+            upscale_render: None,
+            jitter: [0.0; 2],
+            upscale_debug: UpscaleDebug::Off,
+            upscale_draws: (0, 0),
+            up: None,
+            mv_buf: None,
+            ui_uniform: Some((ui_buf, ui_bg)),
             pipeline_layout,
             shader,
             pipelines: HashMap::new(),
@@ -565,6 +737,13 @@ impl Renderer {
             sprite_clip: None,
             mesh_sink: None,
             cpu_models: Vec::new(),
+            motion: None,
+            frame_no: 0,
+            history_reset: true,
+            upscale_render: None,
+            jitter: [0.0; 2],
+            upscale_debug: UpscaleDebug::Off,
+            upscale_draws: (0, 0),
         };
         r.white = r.textures.add_image(1, 1, vec![255; 4]);
         r
@@ -769,7 +948,14 @@ impl Renderer {
 
     #[cfg(feature = "gpu")]
     fn pipeline(&mut self, blend: Blend, depth: DepthMode, samples: u32) -> &wgpu::RenderPipeline {
-        let key = (blend, depth, samples);
+        self.pipeline_for((blend, depth, samples, self.format, false))
+    }
+
+    /// A pipeline for `key`; with `key.4` (upscaling) it also writes the motion vector and
+    /// depth targets, in the depth-writing (opaque) passes only.
+    #[cfg(feature = "gpu")]
+    fn pipeline_for(&mut self, key: PipeKey) -> &wgpu::RenderPipeline {
+        let (blend, depth, samples, format, mrt) = key;
         if !self.pipelines.contains_key(&key) {
             let comp = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
             use wgpu::BlendFactor as F;
@@ -784,18 +970,26 @@ impl Renderer {
                 DepthMode::Off => (false, wgpu::CompareFunction::Always),
             };
             let attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x2, 3 => Float32, 4 => Float32];
+            let mv_attrs = wgpu::vertex_attr_array![5 => Float32x2];
+            let tl =
+                wgpu::VertexBufferLayout { array_stride: core::mem::size_of::<TlVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs };
+            let mvl = wgpu::VertexBufferLayout { array_stride: 8, step_mode: wgpu::VertexStepMode::Vertex, attributes: &mv_attrs };
+            let buffers = [Some(tl), Some(mvl)];
+            let aux = if write { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() };
+            let targets = [
+                Some(wgpu::ColorTargetState { format, blend: Some(state), write_mask: wgpu::ColorWrites::ALL }),
+                Some(wgpu::ColorTargetState { format: MV_FORMAT, blend: None, write_mask: aux }),
+                Some(wgpu::ColorTargetState { format: UP_DEPTH_FORMAT, blend: None, write_mask: aux }),
+            ];
+            let n = if mrt { 3 } else { 1 };
             let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("mdx"),
                 layout: Some(&self.pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &self.shader,
-                    entry_point: Some("vs"),
+                    entry_point: Some(if mrt { "vs_mrt" } else { "vs" }),
                     compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: core::mem::size_of::<TlVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attrs,
-                    })],
+                    buffers: &buffers[..if mrt { 2 } else { 1 }],
                 },
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -808,9 +1002,9 @@ impl Renderer {
                 multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
                 fragment: Some(wgpu::FragmentState {
                     module: &self.shader,
-                    entry_point: Some("fs"),
+                    entry_point: Some(if mrt { "fs_mrt" } else { "fs" }),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: Some(state), write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &targets[..n],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -833,8 +1027,15 @@ impl Renderer {
     pub fn begin_frame(&mut self, width: u32, height: u32) {
         let (w, h) = (width.max(1), height.max(1));
         self.output = (w, h);
+        self.frame_no = self.frame_no.wrapping_add(1);
+        // Still the last frame's view (camera included): what motion vectors compare with.
+        let last = self.options.motion_vectors.then(|| self.view.clone());
         let s = self.render_scale();
-        let (iw, ih) = if s == 1.0 { (w, h) } else { (((w as f32 * s).round() as u32).max(1), ((h as f32 * s).round() as u32).max(1)) };
+        let (iw, ih) = match self.upscale_render {
+            Some((rw, rh)) => (rw.max(1), rh.max(1)),
+            None if s == 1.0 => (w, h),
+            None => (((w as f32 * s).round() as u32).max(1), ((h as f32 * s).round() as u32).max(1)),
+        };
         self.view.width = iw as f32;
         self.view.height = ih as f32;
         self.view.hor_plus = self.options.hor_plus;
@@ -851,6 +1052,12 @@ impl Renderer {
         let [kx, ky] = self.view.hor_plus_extent();
         self.view.horiz_clip = crate::scene::HORIZ_CLIP * kx;
         self.view.vert_clip = crate::scene::VERT_CLIP * ky;
+        let v = &self.view;
+        self.motion = last.map(|l| {
+            let same = l.camera.is_some() && (l.width, l.height, l.viewport, l.hor_plus) == (v.width, v.height, v.viewport, v.hor_plus);
+            Motion { prev_view: same.then_some(l), frame: self.frame_no }
+        });
+        self.history_reset = self.motion.as_ref().is_none_or(|m| m.prev_view.is_none());
         self.frames.clear();
         self.backdrops.clear();
         self.overlays.clear();
@@ -932,6 +1139,37 @@ impl Renderer {
 
     pub fn set_camera(&mut self, cam: &Camera) {
         self.view.set_camera(cam);
+        // A cut (a new level, a camera jump): nothing to compare this frame with.
+        let d = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2])).sqrt();
+        if let Some(p) = self.motion.as_ref().and_then(|m| m.prev_view.as_ref()?.camera) {
+            if d(p.source, cam.source) > CUT_DISTANCE || d(p.target, cam.target) > 2.0 * CUT_DISTANCE {
+                self.reset_motion();
+            }
+        }
+    }
+
+    /// Drops this frame's motion vectors and the upscaler's history (e.g. a scene change
+    /// the camera test cannot see).
+    pub fn reset_motion(&mut self) {
+        if let Some(m) = &mut self.motion {
+            m.prev_view = None;
+        }
+        self.history_reset = true;
+    }
+
+    /// Whether this frame cannot use the upscaler's history (see [`reset_motion`](Self::reset_motion)).
+    pub fn history_reset(&self) -> bool {
+        self.history_reset
+    }
+
+    /// The camera for the upscaling libraries ([`crate::upscale::UpscaleCamera`]).
+    pub fn upscale_camera(&self) -> crate::upscale::UpscaleCamera {
+        crate::upscale::UpscaleCamera::new(&self.view, self.motion.as_ref().and_then(|m| m.prev_view.as_ref()))
+    }
+
+    /// Renderer frame number (advanced by [`begin_frame`](Self::begin_frame)).
+    pub fn frame_number(&self) -> u32 {
+        self.frame_no
     }
 
     /// Advances animated textures to `frame_count` game frames.
@@ -940,7 +1178,7 @@ impl Renderer {
     }
 
     fn emit_ctx(&self, alpha_mul: f32) -> EmitCtx<'_> {
-        EmitCtx { view: &self.view, opts: &self.options, textures: &self.textures, alpha_mul, override_tex: None, gouraud: None }
+        EmitCtx { view: &self.view, opts: &self.options, textures: &self.textures, alpha_mul, override_tex: None, gouraud: None, motion: self.motion.as_ref() }
     }
 
     /// Transforms and draws an actor (`XformActor` + `DrawActor`).
@@ -955,6 +1193,7 @@ impl Renderer {
                 alpha_mul: actor.xlu.clamp(0.0, 1.0),
                 override_tex: actor.override_tex,
                 gouraud: actor.gouraud,
+                motion: None,
             };
             record_actor(&cx, model, actor, sink);
             return;
@@ -1288,17 +1527,40 @@ impl Renderer {
     /// 8 = 2D overlays); `marks[9]` = the number of commands. Commands never span two
     /// segments, so a back end can interleave its own geometry between them.
     pub fn build_segments(&mut self, clear: [f64; 4]) -> (Vec<TlVertex>, Vec<DrawCmd>, [u32; 10]) {
+        let (v, _, c, m) = self.build_all(clear, false);
+        (v, c, m)
+    }
+
+    /// [`build_segments`](Self::build_segments); with `want_mv` also each vertex's screen
+    /// motion ([`Frames::motion`], zero where none was recorded), parallel to the vertices.
+    fn build_all(&mut self, clear: [f64; 4], want_mv: bool) -> (Vec<TlVertex>, Vec<[f32; 2]>, Vec<DrawCmd>, [u32; 10]) {
         let mut marks = [0u32; 10];
         let mut verts: Vec<TlVertex> = Vec::with_capacity(self.frames.total() * 3 + 6 * (self.backdrops.len() + self.overlays.len() + 1));
+        let mut mvs: Vec<[f32; 2]> = Vec::with_capacity(if want_mv { verts.capacity() } else { 0 });
         let mut cmds: Vec<DrawCmd> = Vec::new();
         let white = self.white;
         // Commands before `barrier` belong to an earlier segment and are never extended.
         let barrier = core::cell::Cell::new(0usize);
         #[allow(clippy::too_many_arguments)]
-        let push = |verts: &mut Vec<TlVertex>, cmds: &mut Vec<DrawCmd>, blend, depth, wrap, scene: bool, tex: Option<TexHandle>, tri: &[TlVertex]| {
+        let push = |verts: &mut Vec<TlVertex>,
+                    mvs: &mut Vec<[f32; 2]>,
+                    cmds: &mut Vec<DrawCmd>,
+                    blend,
+                    depth,
+                    wrap,
+                    scene: bool,
+                    tex: Option<TexHandle>,
+                    tri: &[TlVertex],
+                    mv: Option<&[[f32; 2]; 3]>| {
             let tex = tex.unwrap_or(white);
             let first = verts.len() as u32;
             verts.extend_from_slice(tri);
+            if want_mv {
+                match mv {
+                    Some(m) if tri.len() == 3 => mvs.extend_from_slice(m),
+                    _ => mvs.extend(core::iter::repeat_n([0.0; 2], tri.len())),
+                }
+            }
             let open = cmds.len() > barrier.get();
             if let Some(last) = cmds.last_mut().filter(|_| open) {
                 if last.blend == blend && last.depth == depth && last.tex == tex && last.wrap == wrap && last.scene == scene && last.first + last.count == first
@@ -1315,10 +1577,10 @@ impl Renderer {
             // scene's clear colour.
             let c = clear.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
             let q = Quad2D::rect(x, y, w, h, [0.0; 4], None, [c[0], c[1], c[2], 255], Blend::Semi);
-            push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(&q));
+            push(&mut verts, &mut mvs, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(&q), None);
         }
         for q in &self.backdrops {
-            push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q));
+            push(&mut verts, &mut mvs, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q), None);
         }
         // Retail's two `DrawAllFrames` flushes around `ProcessShadows`: the opaque passes'
         // early triangles (landscape, list-0 actors), the shadows, then their late ones
@@ -1331,45 +1593,60 @@ impl Renderer {
             (Frame::Normal | Frame::Wrap, None) => len,
             _ => 0,
         };
-        let emit = |verts: &mut Vec<TlVertex>, cmds: &mut Vec<DrawCmd>, tris: &[Tri], blend, depth, wrap, aref| {
-            for t in tris {
-                let mut v = t.v;
-                for x in &mut v {
-                    x.alpha_ref = aref;
+        // `mot`: the motion of `tris` (aligned with it, possibly shorter: none for the rest).
+        #[allow(clippy::too_many_arguments)]
+        let emit =
+            |verts: &mut Vec<TlVertex>, mvs: &mut Vec<[f32; 2]>, cmds: &mut Vec<DrawCmd>, tris: &[Tri], mot: &[[[f32; 2]; 3]], blend, depth, wrap, aref| {
+                for (i, t) in tris.iter().enumerate() {
+                    let mut v = t.v;
+                    for x in &mut v {
+                        x.alpha_ref = aref;
+                    }
+                    push(verts, mvs, cmds, blend, depth, wrap, true, t.tex, &v, mot.get(i));
                 }
-                push(verts, cmds, blend, depth, wrap, true, t.tex, &v);
-            }
-        };
+            };
         let (n_early, w_early) =
             (early(Frame::Normal, self.frames.tris[Frame::Normal as usize].len()), early(Frame::Wrap, self.frames.tris[Frame::Wrap as usize].len()));
+        // Motion of a frame list's `range` (only the unsorted opaque lists keep theirs aligned).
+        fn motion_of(frames: &Frames, f: Frame, range: core::ops::Range<usize>, want: bool) -> &[[[f32; 2]; 3]] {
+            if !want || !matches!(f, Frame::Normal | Frame::Wrap) {
+                return &[];
+            }
+            let m = &frames.motion[f as usize];
+            &m[range.start.min(m.len())..range.end.min(m.len())]
+        }
         for (k, (frame, blend, depth, wrap, aref, sorted)) in PASSES.into_iter().enumerate() {
             barrier.set(cmds.len());
             marks[k + 1] = cmds.len() as u32;
             if sorted {
                 self.options.xlu_sort.sort(&mut self.frames.tris[frame as usize]);
             }
-            let tris = &self.frames.tris[frame as usize];
+            let frames = &self.frames;
+            let tris = &frames.tris[frame as usize];
             match frame {
                 // Segment 1 holds the early opaque triangles of both opaque passes, the
                 // shadows (`xluZRS`, `normalAlphaCmpRS`, clamped) and the late `Normal` ones.
                 Frame::Normal => {
-                    emit(&mut verts, &mut cmds, &tris[..n_early], blend, depth, wrap, aref);
+                    emit(&mut verts, &mut mvs, &mut cmds, &tris[..n_early], motion_of(frames, frame, 0..n_early, want_mv), blend, depth, wrap, aref);
                     let (_, wb, wd, ww, wa, _) = PASSES[1];
-                    emit(&mut verts, &mut cmds, &self.frames.tris[Frame::Wrap as usize][..w_early], wb, wd, ww, wa);
-                    emit(&mut verts, &mut cmds, &self.frames.shadows, Blend::Semi, DepthMode::Test, false, ALPHA_NONZERO);
-                    emit(&mut verts, &mut cmds, &tris[n_early..], blend, depth, wrap, aref);
+                    let wt = &frames.tris[Frame::Wrap as usize][..w_early];
+                    emit(&mut verts, &mut mvs, &mut cmds, wt, motion_of(frames, Frame::Wrap, 0..w_early, want_mv), wb, wd, ww, wa);
+                    emit(&mut verts, &mut mvs, &mut cmds, &frames.shadows, &[], Blend::Semi, DepthMode::Test, false, ALPHA_NONZERO);
+                    emit(&mut verts, &mut mvs, &mut cmds, &tris[n_early..], motion_of(frames, frame, n_early..tris.len(), want_mv), blend, depth, wrap, aref);
                 }
-                Frame::Wrap => emit(&mut verts, &mut cmds, &tris[w_early..], blend, depth, wrap, aref),
-                _ => emit(&mut verts, &mut cmds, tris, blend, depth, wrap, aref),
+                Frame::Wrap => {
+                    emit(&mut verts, &mut mvs, &mut cmds, &tris[w_early..], motion_of(frames, frame, w_early..tris.len(), want_mv), blend, depth, wrap, aref)
+                }
+                _ => emit(&mut verts, &mut mvs, &mut cmds, tris, &[], blend, depth, wrap, aref),
             }
         }
         barrier.set(cmds.len());
         marks[8] = cmds.len() as u32;
         for q in &self.overlays {
-            push(&mut verts, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q));
+            push(&mut verts, &mut mvs, &mut cmds, q.blend, DepthMode::Off, false, false, q.tex, &quad_tris(q), None);
         }
         marks[9] = cmds.len() as u32;
-        (verts, cmds, marks)
+        (verts, mvs, cmds, marks)
     }
 
     /// The frame's parts in [`build_segments`](Self::build_segments) order without building
@@ -1444,7 +1721,15 @@ impl Renderer {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
             self.internal = Some((self.colour_texture("internal", w, h, 1, usage), w, h));
         }
-        if scaled && self.blit.is_none() {
+        if scaled {
+            self.ensure_blit();
+        }
+    }
+
+    /// The bilinear full-screen blit pipeline (render scale resolve, upscaler output).
+    #[cfg(feature = "gpu")]
+    fn ensure_blit(&mut self) {
+        if self.blit.is_none() {
             let shader =
                 self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blit"), source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()) });
             let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1493,17 +1778,8 @@ impl Renderer {
         let scaled = (iw, ih) != (width, height);
         self.ensure_targets(iw, ih, samples, scaled);
         let fog = self.options.fog;
-        let uni: [f32; 8] = [
-            self.view.width,
-            self.view.height,
-            if self.options.perspective_correct { 1.0 } else { 0.0 },
-            if fog.enabled { 1.0 } else { 0.0 },
-            fog.color[0],
-            fog.color[1],
-            fog.color[2],
-            1.0,
-        ];
-        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(&uni));
+        let _ = fog;
+        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(&self.uniforms([0.0; 2])));
         let (verts, cmds) = self.build(clear);
         let clear = if self.view.viewport.is_some() { [0.0, 0.0, 0.0, 1.0] } else { clear };
         if !verts.is_empty() {
@@ -1573,7 +1849,7 @@ impl Renderer {
                     }
                 }
             }
-            pass.set_pipeline(&self.pipelines[&(c.blend, c.depth, samples)]);
+            pass.set_pipeline(&self.pipelines[&(c.blend, c.depth, samples, self.format, false)]);
             pass.set_bind_group(1, &self.bind_groups[key], &[]);
             pass.draw(c.first..c.first + c.count, 0..1);
         }
@@ -1605,6 +1881,335 @@ impl Renderer {
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+
+    /// The shader's uniform block `U` with sub-pixel `jitter`.
+    #[cfg(feature = "gpu")]
+    fn uniforms(&self, jitter: [f32; 2]) -> [f32; 12] {
+        let fog = self.options.fog;
+        [
+            self.view.width,
+            self.view.height,
+            if self.options.perspective_correct { 1.0 } else { 0.0 },
+            if fog.enabled { 1.0 } else { 0.0 },
+            fog.color[0],
+            fog.color[1],
+            fog.color[2],
+            1.0,
+            jitter[0],
+            jitter[1],
+            crate::upscale::DEPTH_NEAR,
+            0.0,
+        ]
+    }
+
+    #[cfg(feature = "gpu")]
+    fn ensure_up_targets(&mut self, render: (u32, u32), output: (u32, u32)) {
+        if self.up.as_ref().is_some_and(|u| u.render == render && u.output == output) {
+            return;
+        }
+        let tex = |label, (w, h): (u32, u32), format, usage| {
+            let t = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            });
+            let v = t.create_view(&Default::default());
+            (t, v)
+        };
+        use wgpu::TextureUsages as U;
+        let read = U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC;
+        self.up = Some(UpTargets {
+            render,
+            output,
+            color: tex("upscale color", render, UPSCALE_COLOR_FORMAT, read),
+            motion: tex("upscale motion", render, MV_FORMAT, read),
+            depth: tex("upscale depth", render, UP_DEPTH_FORMAT, read),
+            out: tex("upscale output", output, UPSCALE_COLOR_FORMAT, U::STORAGE_BINDING | U::TEXTURE_BINDING | U::COPY_SRC),
+            ui_depth: tex("hud depth", output, DEPTH_FORMAT, U::RENDER_ATTACHMENT).1,
+        });
+        // Different sizes: the history is of no use.
+        self.history_reset = true;
+    }
+
+    /// The upscaler's last output (the scene at the output size, before the HUD): what frame
+    /// generation is given as the HUD-less image. `None` before the first upscaled frame.
+    #[cfg(feature = "gpu")]
+    pub fn upscaled_output(&self) -> Option<&wgpu::Texture> {
+        self.up.as_ref().map(|u| &u.out.0)
+    }
+
+    /// [`render`](Self::render) through a temporal upscaler: the backdrops and the 3D passes
+    /// at the render size ([`upscale_render`](Self::upscale_render), jittered by
+    /// [`jitter`](Self::jitter)) with motion vectors and depth, `up` makes the output-sized
+    /// image, then the 2D overlays are drawn over it at `width`×`height` into `target`
+    /// (format `self.format`). Turn on [`RenderOptions::motion_vectors`] before drawing the
+    /// frame; MSAA and the render scale do not apply.
+    #[cfg(feature = "gpu")]
+    pub fn render_upscaled(&mut self, target: &wgpu::TextureView, width: u32, height: u32, clear: [f64; 4], up: &mut dyn crate::upscale::Upscaler) {
+        self.upload_dirty();
+        let render = (self.view.width as u32, self.view.height as u32);
+        let (iw, ih) = render;
+        let output = (width.max(1), height.max(1));
+        self.ensure_targets(iw, ih, 1, false);
+        self.ensure_blit();
+        self.ensure_up_targets(render, output);
+        let jitter = self.jitter;
+        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(&self.uniforms(jitter)));
+        if let Some((b, _)) = &self.ui_uniform {
+            self.queue.write_buffer(b, 0, bytemuck::cast_slice(&self.uniforms([0.0; 2])));
+        }
+        let (verts, mvs, cmds, marks) = self.build_all(clear, true);
+        let clear = if self.view.viewport.is_some() { [0.0, 0.0, 0.0, 1.0] } else { clear };
+        if !verts.is_empty() {
+            let bytes: &[u8] = bytemuck::cast_slice(&verts);
+            if self.vbuf.as_ref().is_none_or(|b| b.size() < bytes.len() as u64) {
+                self.vbuf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("tl vertices"),
+                    size: (bytes.len() as u64).next_power_of_two().max(4096),
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            self.queue.write_buffer(self.vbuf.as_ref().unwrap(), 0, bytes);
+            let mb: &[u8] = bytemuck::cast_slice(&mvs);
+            if self.mv_buf.as_ref().is_none_or(|b| b.size() < mb.len() as u64) {
+                self.mv_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("motion"),
+                    size: (mb.len() as u64).next_power_of_two().max(4096),
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            self.queue.write_buffer(self.mv_buf.as_ref().unwrap(), 0, mb);
+        }
+        let split = marks[8] as usize;
+        self.upscale_draws = cmds[..split].iter().filter(|c| c.depth == DepthMode::TestWrite).fold((0, 0), |(n, t), c| (n + 1, t + c.count / 3));
+        let key = |c: &DrawCmd, scene: bool, fmt| (c.blend, c.depth, 1, fmt, scene);
+        let mut keys = Vec::with_capacity(cmds.len());
+        for (i, c) in cmds.iter().enumerate() {
+            let k = if i < split { key(c, true, UPSCALE_COLOR_FORMAT) } else { key(c, false, self.format) };
+            self.pipeline_for(k);
+            self.bind_group(c.tex, c.wrap);
+            keys.push((k, (c.tex.0, self.sampler_key(c.wrap))));
+        }
+        let scissor = self.view.viewport.map(|[x, y, w, h]| {
+            let (x, y) = ((x as u32).min(iw - 1), (y as u32).min(ih - 1));
+            [x, y, (w as u32).min(iw - x).max(1), (h as u32).min(ih - y).max(1)]
+        });
+        let ut = self.up.as_ref().unwrap();
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upscale scene") });
+        {
+            let att = |view, c: wgpu::Color| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(c), store: wgpu::StoreOp::Store },
+                })
+            };
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mdx scene (upscaler input)"),
+                color_attachments: &[
+                    att(&ut.color.1, wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
+                    att(&ut.motion.1, wgpu::Color::TRANSPARENT),
+                    att(&ut.depth.1, wgpu::Color::TRANSPARENT),
+                ],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth.as_ref().unwrap().0,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if let (Some(vb), Some(mb)) = (&self.vbuf, &self.mv_buf) {
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_vertex_buffer(1, mb.slice(..));
+            }
+            pass.set_bind_group(0, &self.uniform_bg, &[]);
+            let mut scissored = false;
+            for (c, (k, bg)) in cmds[..split].iter().zip(&keys) {
+                if let Some([x, y, w, h]) = scissor {
+                    if c.scene != scissored {
+                        scissored = c.scene;
+                        if scissored {
+                            pass.set_scissor_rect(x, y, w, h);
+                        } else {
+                            pass.set_scissor_rect(0, 0, iw, ih);
+                        }
+                    }
+                }
+                pass.set_pipeline(&self.pipelines[k]);
+                pass.set_bind_group(1, &self.bind_groups[bg], &[]);
+                pass.draw(c.first..c.first + c.count, 0..1);
+            }
+        }
+        // Native code reads the inputs and writes the output in these states.
+        use wgpu::TextureUses as Tu;
+        let tr = |texture, state| wgpu::TextureTransition { texture, selector: None, state };
+        enc.transition_resources(
+            core::iter::empty(),
+            [tr(&ut.color.0, Tu::RESOURCE), tr(&ut.motion.0, Tu::RESOURCE), tr(&ut.depth.0, Tu::RESOURCE), tr(&ut.out.0, Tu::STORAGE_READ_WRITE)].into_iter(),
+        );
+        self.queue.submit([enc.finish()]);
+        let inputs = crate::upscale::UpscaleInputs {
+            color: &ut.color.0,
+            depth: &ut.depth.0,
+            motion: &ut.motion.0,
+            output: &ut.out.0,
+            render_size: render,
+            output_size: output,
+            jitter,
+            reset: self.history_reset,
+            camera: crate::upscale::UpscaleCamera::new(&self.view, self.motion.as_ref().and_then(|m| m.prev_view.as_ref())),
+            frame: self.frame_no as u64,
+        };
+        let ok = up.upscale(&self.device, &self.queue, &inputs);
+        if self.upscale_debug != UpscaleDebug::Off {
+            self.debug_view(target);
+        }
+        let ut = self.up.as_ref().unwrap();
+        // The upscaled image (or, failing that, the render-size scene stretched), then the HUD.
+        let src = if ok { &ut.out.1 } else { &ut.color.1 };
+        let (pipeline, sampler) = self.blit.as_ref().unwrap();
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("upscale blit"),
+            layout: &self.tex_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upscale hud") });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("upscaled image"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if self.upscale_debug == UpscaleDebug::Off { wgpu::LoadOp::Clear(wgpu::Color::BLACK) } else { wgpu::LoadOp::Load },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if self.upscale_debug == UpscaleDebug::Off {
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &bg, &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+        if cmds.len() > split && self.upscale_debug == UpscaleDebug::Off {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hud"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &ut.ui_depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if let Some(vb) = &self.vbuf {
+                pass.set_vertex_buffer(0, vb.slice(..));
+            }
+            pass.set_bind_group(0, &self.ui_uniform.as_ref().unwrap().1, &[]);
+            for (c, (k, bg)) in cmds[split..].iter().zip(&keys[split..]) {
+                pass.set_pipeline(&self.pipelines[k]);
+                pass.set_bind_group(1, &self.bind_groups[bg], &[]);
+                pass.draw(c.first..c.first + c.count, 0..1);
+            }
+        }
+        self.queue.submit([enc.finish()]);
+    }
+
+    /// Draws the [`UpscaleDebug`] view of this frame's upscaler inputs over `target`.
+    #[cfg(feature = "gpu")]
+    fn debug_view(&mut self, target: &wgpu::TextureView) {
+        let Some(ut) = &self.up else { return };
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("upscale debug"), source: wgpu::ShaderSource::Wgsl(DEBUG_SHADER.into()) });
+        let tex = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let bgl = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("upscale debug"), entries: &[tex(0), tex(1)] });
+        let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("upscale debug"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+        let entry = if self.upscale_debug == UpscaleDebug::Motion { "fs_motion" } else { "fs_depth" };
+        let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("upscale debug"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("upscale debug"),
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&ut.motion.1) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ut.depth.1) },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upscale debug") });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("upscale debug"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&p);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
     }
 
     /// Renders the queued frame to `target` and submits.

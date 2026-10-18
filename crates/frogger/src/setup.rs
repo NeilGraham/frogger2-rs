@@ -139,11 +139,18 @@ pub fn attach_parent_console() {
         #[link(name = "kernel32")]
         extern "system" {
             fn AttachConsole(process: u32) -> i32;
+            fn GetStdHandle(which: u32) -> isize;
         }
         const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
-        // SAFETY: plain Win32 call without pointers; failure (no parent console) is fine.
+        const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+        // SAFETY: plain Win32 calls without pointers; failure (no parent console) is fine.
         unsafe {
-            AttachConsole(ATTACH_PARENT_PROCESS);
+            // Redirected output (`frogger2 2> log.txt`) already has a handle: attaching to the
+            // console would send the log there instead.
+            let h = GetStdHandle(STD_ERROR_HANDLE);
+            if h == 0 || h == -1 {
+                AttachConsole(ATTACH_PARENT_PROCESS);
+            }
         }
     }
 }

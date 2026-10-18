@@ -13,6 +13,7 @@ members = [
     "crates/f2-math",
     "crates/f2-game",
     "crates/f2-engine",
+    "crates/f2-upscale",
     "crates/f2-draw",
     "crates/f2-audio",
     "crates/f2-platform",

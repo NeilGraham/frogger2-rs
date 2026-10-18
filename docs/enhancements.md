@@ -82,6 +82,10 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
 - [x] MSAA (`display.msaa`, 4×), supersampling (`display.render_scale`), anisotropic/trilinear
   filtering with generated mipmaps (`display.filter`, `display.anisotropy`), nearest-neighbour
   "PSX look" (`filter = "nearest"`), perspective-correct texturing (`display.perspective_correct`)
+- [x] Temporal upscaling and frame generation (`[upscale]`, Windows / Direct3D 12): NVIDIA DLSS
+  (DLAA to Ultra Performance, presets), AMD FSR 3.1 / FSR 4, DLSS (multi) frame generation 2x / 3x /
+  4x / dynamic, FSR frame generation 2x, Reflex; per-vertex motion vectors and reversed depth for
+  the upscalers; DLSS 5 Neural Rendering through RenoDX's add-on (`docs/UPSCALING.md`)
 - [x] High-res UI fonts (`display.modern_font`): `bigfont`/`smallfont` re-rendered from their
   typeface, Gill Sans Ultra Bold, read from the user's system fonts (`crates/f2-fontgen`)
 - [x] Draw distance (`display.draw_distance`, far-clip multiplier) / fog (`display.fog`, linear

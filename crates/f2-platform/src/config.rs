@@ -27,6 +27,232 @@ pub struct Config {
     pub gameplay: Gameplay,
     /// `[launcher]`: what the app opens on start, and which installed version runs.
     pub launcher: LauncherCfg,
+    /// `[upscale]`: DLSS / FSR super resolution and frame generation (docs/UPSCALING.md).
+    pub upscale: Upscale,
+}
+
+/// `[upscale]` (enhanced profile, Windows / Direct3D 12; docs/UPSCALING.md).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Upscale {
+    pub upscaler: UpscalerKind,
+    /// Render size per axis: `native` (DLAA / FSR Native AA) to `ultra_performance` (3x).
+    pub quality: UpscaleQuality,
+    /// DLSS model preset (`default` = the driver's choice per mode).
+    pub dlss_preset: DlssPreset,
+    /// FSR sharpening, 0 (off) to 100.
+    pub sharpness: u32,
+    pub frame_generation: FrameGeneration,
+    /// `dlss_dynamic`: the frame rate to generate up to (0 = the display's refresh rate).
+    pub target_fps: u32,
+    pub reflex: ReflexMode,
+    /// Folder with the DLSS / Streamline and FSR DLLs; `None` = `upscalers` beside the
+    /// executable, else the executable's own folder.
+    pub runtime_dir: Option<PathBuf>,
+    /// GPU to run on (a substring of its name, e.g. `Radeon`); `None` = the fastest.
+    pub adapter: Option<String>,
+    /// DLSS 5 Neural Rendering through RenoDX's ReShade add-on: preload its runtime and nudge
+    /// the add-on to attach (docs/UPSCALING.md "DLSS 5").
+    pub dlss5_helpers: bool,
+}
+
+impl Default for Upscale {
+    fn default() -> Self {
+        Upscale {
+            upscaler: UpscalerKind::Off,
+            quality: UpscaleQuality::Quality,
+            dlss_preset: DlssPreset::Default,
+            sharpness: 0,
+            frame_generation: FrameGeneration::Off,
+            target_fps: 0,
+            reflex: ReflexMode::Off,
+            runtime_dir: None,
+            adapter: None,
+            dlss5_helpers: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod upscale_tests {
+    use super::*;
+
+    #[test]
+    fn upscale_section_round_trips() {
+        let mut c = Config::default();
+        c.upscale.upscaler = UpscalerKind::Fsr4;
+        c.upscale.quality = UpscaleQuality::UltraPerformance;
+        for f in FrameGeneration::ALL {
+            c.upscale.frame_generation = f;
+            let t = c.to_toml();
+            assert_eq!(Config::from_toml(&t).unwrap().upscale, c.upscale, "{t}");
+        }
+        let c = Config::from_toml("[upscale]\nupscaler = \"dlss\"\nquality = \"native\"\nframe_generation = \"dlss_4x\"\nreflex = \"boost\"\n").unwrap();
+        assert_eq!(c.upscale.frame_generation, FrameGeneration::Dlss4x);
+        assert_eq!(c.upscale.reflex, ReflexMode::Boost);
+        assert!(c.upscale.active());
+    }
+}
+
+impl Upscale {
+    /// Whether the native (Direct3D 12, own swapchain) path is needed.
+    pub fn active(&self) -> bool {
+        self.upscaler != UpscalerKind::Off || self.frame_generation != FrameGeneration::Off
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpscalerKind {
+    #[default]
+    Off,
+    /// NVIDIA DLSS (GeForce RTX).
+    Dlss,
+    /// AMD FSR 3.1 (any GPU).
+    Fsr3,
+    /// AMD FSR 4 (Radeon RX 7000 / 9000).
+    Fsr4,
+}
+
+impl UpscalerKind {
+    pub const ALL: [UpscalerKind; 4] = [UpscalerKind::Off, UpscalerKind::Dlss, UpscalerKind::Fsr3, UpscalerKind::Fsr4];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            UpscalerKind::Off => "Off",
+            UpscalerKind::Dlss => "NVIDIA DLSS",
+            UpscalerKind::Fsr3 => "AMD FSR 3.1",
+            UpscalerKind::Fsr4 => "AMD FSR 4",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpscaleQuality {
+    /// Render at the output size: DLAA / FSR Native AA.
+    Native,
+    #[default]
+    Quality,
+    Balanced,
+    Performance,
+    UltraPerformance,
+}
+
+impl UpscaleQuality {
+    pub const ALL: [UpscaleQuality; 5] =
+        [UpscaleQuality::Native, UpscaleQuality::Quality, UpscaleQuality::Balanced, UpscaleQuality::Performance, UpscaleQuality::UltraPerformance];
+
+    /// The mode's name for `upscaler` (DLSS calls native anti-aliasing DLAA, FSR "Native AA").
+    pub fn name(self, upscaler: UpscalerKind) -> &'static str {
+        match self {
+            UpscaleQuality::Native if upscaler == UpscalerKind::Dlss => "DLAA",
+            UpscaleQuality::Native => "Native AA",
+            UpscaleQuality::Quality => "Quality",
+            UpscaleQuality::Balanced => "Balanced",
+            UpscaleQuality::Performance => "Performance",
+            UpscaleQuality::UltraPerformance => "Ultra Performance",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DlssPreset {
+    #[default]
+    Default,
+    J,
+    K,
+    L,
+    M,
+}
+
+impl DlssPreset {
+    pub const ALL: [DlssPreset; 5] = [DlssPreset::Default, DlssPreset::J, DlssPreset::K, DlssPreset::L, DlssPreset::M];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DlssPreset::Default => "Default",
+            DlssPreset::J => "J",
+            DlssPreset::K => "K",
+            DlssPreset::L => "L",
+            DlssPreset::M => "M",
+        }
+    }
+
+    /// `sl::DLSSPreset`.
+    pub fn streamline(self) -> u32 {
+        match self {
+            DlssPreset::Default => 0,
+            DlssPreset::J => 10,
+            DlssPreset::K => 11,
+            DlssPreset::L => 12,
+            DlssPreset::M => 13,
+        }
+    }
+}
+
+/// Frame generation: which library and how many frames per rendered one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameGeneration {
+    #[default]
+    Off,
+    /// DLSS Frame Generation (GeForce RTX 40 / 50).
+    #[serde(rename = "dlss_2x")]
+    Dlss2x,
+    /// DLSS Multi Frame Generation (GeForce RTX 50).
+    #[serde(rename = "dlss_3x")]
+    Dlss3x,
+    #[serde(rename = "dlss_4x")]
+    Dlss4x,
+    /// DLSS dynamic Multi Frame Generation to `target_fps` (GeForce RTX 50).
+    #[serde(rename = "dlss_dynamic")]
+    DlssDynamic,
+    /// AMD FSR Frame Generation (any GPU).
+    #[serde(rename = "fsr_2x")]
+    Fsr2x,
+}
+
+impl FrameGeneration {
+    pub const ALL: [FrameGeneration; 6] =
+        [FrameGeneration::Off, FrameGeneration::Dlss2x, FrameGeneration::Dlss3x, FrameGeneration::Dlss4x, FrameGeneration::DlssDynamic, FrameGeneration::Fsr2x];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "Off",
+            FrameGeneration::Dlss2x => "DLSS 2x",
+            FrameGeneration::Dlss3x => "DLSS 3x",
+            FrameGeneration::Dlss4x => "DLSS 4x",
+            FrameGeneration::DlssDynamic => "DLSS dynamic",
+            FrameGeneration::Fsr2x => "FSR 2x",
+        }
+    }
+
+    pub fn is_dlss(self) -> bool {
+        matches!(self, FrameGeneration::Dlss2x | FrameGeneration::Dlss3x | FrameGeneration::Dlss4x | FrameGeneration::DlssDynamic)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReflexMode {
+    #[default]
+    Off,
+    On,
+    Boost,
+}
+
+impl ReflexMode {
+    pub const ALL: [ReflexMode; 3] = [ReflexMode::Off, ReflexMode::On, ReflexMode::Boost];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ReflexMode::Off => "Off",
+            ReflexMode::On => "On",
+            ReflexMode::Boost => "On + Boost",
+        }
+    }
 }
 
 /// `[launcher]` (docs/USER-GUIDE.md "Launcher").
@@ -499,6 +725,7 @@ impl Default for Config {
             mods: Mods::default(),
             gameplay: Gameplay::default(),
             launcher: LauncherCfg::default(),
+            upscale: Upscale::default(),
         }
     }
 }

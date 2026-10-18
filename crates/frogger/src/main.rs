@@ -639,7 +639,29 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
 
 struct Gfx {
     ctx: GpuContext,
-    surface: WindowSurface,
+    /// wgpu's window surface; `None` when DLSS / FSR present through their own swapchain.
+    surface: Option<WindowSurface>,
+    /// DLSS / FSR (`[upscale]`, Windows): owns the swapchain.
+    native: Option<frogger::upscaling::Native>,
+    /// What the native path presents from.
+    backbuffer: Option<frogger::upscaling::Backbuffer>,
+    size: (u32, u32),
+    format: wgpu::TextureFormat,
+    /// Last logged upscaler state.
+    upscale_log: String,
+    upscale_debug: frogger::upscaling::Debug,
+}
+
+impl Gfx {
+    fn resize(&mut self, w: u32, h: u32) {
+        self.size = (w.max(1), h.max(1));
+        if let Some(s) = &mut self.surface {
+            s.resize(&self.ctx.device, w, h);
+        }
+        if let Some(n) = &mut self.native {
+            n.resize(w, h);
+        }
+    }
 }
 
 struct Host {
@@ -719,7 +741,7 @@ impl Host {
     fn observe_window(&mut self, window: &window::Window) {
         let (Some(app), Some(g)) = (&mut self.app, &self.gfx) else { return };
         let actual = window::actual_mode(window);
-        let size = (g.surface.config.width, g.surface.config.height);
+        let size = g.size;
         app.win.mode = actual;
         app.win.size = size;
         if app.win.modes.is_empty() || app.win.desktop != window::monitor_mode(window) {
@@ -773,16 +795,42 @@ impl WindowApp for Host {
             return;
         }
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())));
         let vsync = self.cfg.video.vsync;
+        // DLSS / FSR: Direct3D 12 and a swapchain of their own (falls back to the normal path).
+        let native = if self.cfg.upscale.active() {
+            match frogger::upscaling::create(window, &self.cfg, Box::new(window.clone())) {
+                Ok((ctx, n)) => Some((ctx, n)),
+                Err(e) => {
+                    f2_upscale::log(&format!("unavailable: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let res = (|| -> Result<Gfx, String> {
+            if let Some((ctx, n)) = native {
+                let size = (size.width.max(1), size.height.max(1));
+                return Ok(Gfx {
+                    ctx,
+                    surface: None,
+                    native: Some(n),
+                    backbuffer: None,
+                    size,
+                    format: frogger::upscaling::PRESENT_FORMAT,
+                    upscale_log: String::new(),
+                    upscale_debug: frogger::upscaling::Debug::from_env(),
+                });
+            }
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())));
             let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
             let ctx = GpuContext::with_instance(instance, Some(&surface)).map_err(|e| e.to_string())?;
             let mut surface = WindowSurface::new(&ctx, surface, size.width, size.height).map_err(|e| e.to_string())?;
             // Present at display rate (vsync); the simulation is decoupled from it.
             surface.config.present_mode = if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
             surface.surface.configure(&ctx.device, &surface.config);
-            Ok(Gfx { ctx, surface })
+            let (size, format) = ((surface.config.width, surface.config.height), surface.config.format);
+            Ok(Gfx { ctx, surface: Some(surface), native: None, backbuffer: None, size, format, upscale_log: String::new(), upscale_debug: Default::default() })
         })();
         match res {
             Ok(g) => {
@@ -806,12 +854,12 @@ impl WindowApp for Host {
                     "frogger: {} {:?} ({:?}), audio {}",
                     g.ctx.adapter.get_info().name,
                     g.ctx.adapter.get_info().backend,
-                    g.surface.config.format,
+                    g.format,
                     if audio.is_realtime() { "on" } else { "muted" }
                 );
                 let data = self.data.take().expect("data");
                 appicon::use_game_art(window, &data);
-                let mut app = App::new(data, &g.ctx.device, &g.ctx.queue, g.surface.config.format, audio, mapper);
+                let mut app = App::new(data, &g.ctx.device, &g.ctx.queue, g.format, audio, mapper);
                 app.set_config(self.cfg.clone());
                 app.apply_master_volume();
                 app.set_display(self.cfg.profile, self.cfg.display_settings(Profile::Enhanced));
@@ -824,6 +872,7 @@ impl WindowApp for Host {
                     }
                 }
                 app.hud_probe = self.hud_probe;
+                app.upscale_native = g.native.as_ref().map(|_| self.cfg.upscale.frame_generation);
                 app.editor_mods = Some(self.editor_setup.0.clone());
                 app.editor_cmds = std::mem::take(&mut self.editor_setup.1);
                 app.pad_script = self.pad_script.take();
@@ -873,7 +922,7 @@ impl WindowApp for Host {
 
     fn resized(&mut self, w: &Arc<window::Window>, size: winit::dpi::PhysicalSize<u32>) {
         if let Some(g) = &mut self.gfx {
-            g.surface.resize(&g.ctx.device, size.width, size.height);
+            g.resize(size.width, size.height);
         }
         if let Some(r) = &mut self.mode_req {
             r.last_resize = Instant::now();
@@ -940,6 +989,10 @@ impl WindowApp for Host {
                 }
             }
         }
+        if let Some(n) = &mut g.native {
+            // Reflex / latency markers: the frame starts before the simulation runs.
+            n.begin_frame(app.r.frame_number() as u64 + 1);
+        }
         app.update(dt, frame.keyboard, &raw, frame.focused);
         if let Some(p) = &mut self.gamepads {
             for (player, strength, frames) in app.rumble.drain(..) {
@@ -954,8 +1007,10 @@ impl WindowApp for Host {
             | rq.save_volumes.take().is_some()
             | std::mem::take(&mut rq.save_config);
         if std::mem::take(&mut rq.apply_vsync) {
-            g.surface.config.present_mode = if app.cfg.video.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
-            g.surface.surface.configure(&g.ctx.device, &g.surface.config);
+            if let Some(s) = &mut g.surface {
+                s.config.present_mode = if app.cfg.video.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
+                s.surface.configure(&g.ctx.device, &s.config);
+            }
         }
         if std::mem::take(&mut rq.apply_input) {
             if let Some(p) = &mut self.gamepads {
@@ -1056,20 +1111,76 @@ impl WindowApp for Host {
         // A mode switch can end without a final `Resized` (or with a stale one): the surface
         // always follows the real client size.
         let inner = frame.window.inner_size();
-        if inner.width > 0 && inner.height > 0 && (inner.width, inner.height) != (g.surface.config.width, g.surface.config.height) {
-            g.surface.resize(&g.ctx.device, inner.width, inner.height);
+        if inner.width > 0 && inner.height > 0 && (inner.width, inner.height) != g.size {
+            g.resize(inner.width, inner.height);
         }
 
-        let (w, h) = (g.surface.config.width, g.surface.config.height);
+        let (w, h) = g.size;
         let v = &app.cfg.video;
         let (rs, via_present) = present::plan((w, h), app.win.mode == f2_platform::WindowMode::Borderless, v.resolution, v.brightness);
         let brightness = v.brightness;
+        if let Some(n) = &mut g.native {
+            // `[upscale]` changes apply live (the frame generation library needs a restart).
+            n.set_backend(frogger::upscaling::sr_backend(app.cfg.upscale.upscaler));
+            n.set_options(&frogger::upscaling::options(&app.cfg));
+            // The authentic profile is the retail picture: no upscaler.
+            let up = (app.profile == Profile::Enhanced).then(|| {
+                let render = n.render_size(rs);
+                (render, n.jitter(app.r.frame_number() as u64 + 1, render, rs))
+            });
+            app.prepare_upscale(up);
+            app.r.upscale_debug = g.upscale_debug.view;
+            app.draw(rs.0, rs.1);
+            let clear = app.clear_color();
+            let bb = frogger::upscaling::Backbuffer::ensure(&mut g.backbuffer, &g.ctx.device, w, h);
+            let target = if via_present {
+                let p = self.present.get_or_insert_with(|| present::Present::new(&g.ctx.device, g.format));
+                p.target(&g.ctx.device, rs.0, rs.1).clone()
+            } else {
+                bb.view.clone()
+            };
+            if up.is_some() {
+                app.r.render_upscaled(&target, rs.0, rs.1, clear, n);
+            } else {
+                app.r.render(&target, rs.0, rs.1, clear);
+            }
+            if via_present {
+                if let Some(p) = &self.present {
+                    p.blit(&g.ctx.device, &g.ctx.queue, &bb.view, w, h, brightness);
+                }
+            }
+            let fno = app.r.frame_number() as u64;
+            if let Some((p, f)) = &g.upscale_debug.shot {
+                if *f == fno {
+                    match frogger::upscaling::save_png(&g.ctx.device, &g.ctx.queue, &bb.texture, p) {
+                        Ok(()) => f2_upscale::log(&format!("wrote {} (frame {fno}, {:?} depth-writing draws/triangles)", p.display(), app.r.upscale_draws)),
+                        Err(e) => eprintln!("frogger: upscale: screenshot: {e}"),
+                    }
+                }
+            }
+            frame.window.pre_present_notify();
+            n.present(&g.ctx.device, &g.ctx.queue, &bb.texture);
+            if g.upscale_debug.exit.is_some_and(|f| fno >= f) {
+                return Flow::Exit;
+            }
+            let st = n.status();
+            let line = format!("{}{}", frogger::upscaling::describe(&st), if st.error.is_empty() { String::new() } else { format!(" ({})", st.error) });
+            if line != g.upscale_log {
+                f2_upscale::log(&line);
+                g.upscale_log = line;
+            }
+            app.upscale_status = Some(frogger::upscaling::describe(&st));
+            frame_cap(&app.cfg, now);
+            return Flow::Continue;
+        }
+        app.prepare_upscale(None);
         app.draw(rs.0, rs.1);
-        let tex = match g.surface.surface.get_current_texture() {
+        let Some(surface) = &mut g.surface else { return Flow::Continue };
+        let tex = match surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 let s = frame.window.inner_size();
-                g.surface.resize(&g.ctx.device, s.width, s.height);
+                g.resize(s.width, s.height);
                 return Flow::Continue;
             }
             _ => {
@@ -1080,7 +1191,7 @@ impl WindowApp for Host {
         let view = tex.texture.create_view(&Default::default());
         let clear = app.clear_color();
         if via_present {
-            let p = self.present.get_or_insert_with(|| present::Present::new(&g.ctx.device, g.surface.config.format));
+            let p = self.present.get_or_insert_with(|| present::Present::new(&g.ctx.device, g.format));
             {
                 let off = p.target(&g.ctx.device, rs.0, rs.1);
                 app.r.render(off, rs.0, rs.1, clear);
@@ -1091,17 +1202,21 @@ impl WindowApp for Host {
         }
         frame.window.pre_present_notify();
         g.ctx.queue.present(tex);
-        // Frame cap (`video.frame_cap`): the simulation is fixed 60 Hz and rendering is
-        // interpolated, so any cap/refresh rate is smooth.
-        let cap = app.cfg.video.frame_cap;
-        if cap > 0 {
-            let period = Duration::from_secs_f64(1.0 / cap as f64);
-            let spent = now.elapsed();
-            if spent < period {
-                std::thread::sleep(period - spent);
-            }
-        }
+        frame_cap(&app.cfg, now);
         Flow::Continue
+    }
+}
+
+/// Frame cap (`video.frame_cap`): the simulation is fixed 60 Hz and rendering is
+/// interpolated, so any cap/refresh rate is smooth. `start` = when the frame began.
+fn frame_cap(cfg: &Config, start: Instant) {
+    let cap = cfg.video.frame_cap;
+    if cap > 0 {
+        let period = Duration::from_secs_f64(1.0 / cap as f64);
+        let spent = start.elapsed();
+        if spent < period {
+            std::thread::sleep(period - spent);
+        }
     }
 }
 

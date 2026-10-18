@@ -101,6 +101,11 @@ Replaces MDX + D3D7. Faithful first, enhanced later.
   re-anchored for widescreen (enhanced). Bitmap fonts from `Font.fla`.
 - **Backdrops/FMV**: full-screen textured quads.
 - Enhancements later: MSAA, texture filtering choice, widescreen FOV, high-res UI scaling.
+- **Upscaling / frame generation** (`upscale.rs`, `Renderer::render_upscaled`; native side in
+  `f2-upscale`): the 3D passes at a jittered render size with per-vertex motion vectors (each
+  vertex's previous-frame screen position from the CPU transform) and reversed depth, an
+  `Upscaler` (DLSS / FSR on Direct3D 12), then the 2D overlays at the output size
+  ([UPSCALING.md](UPSCALING.md)).
 
 ## 6. Audio (`f2-audio`)
 

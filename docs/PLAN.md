@@ -17,7 +17,7 @@ all 26 levels and the 3 demos are identical to the retail oracle trace.
 | 3 Gameplay port | done, parity verified | all of `f2-game` except the items in PORT-GAPS | multiplayer HUD |
 | 4 Full single-player | done | frontend, menus, options, story, savegame, language, training, cheats, FMV, fades | none known |
 | 5 Multiplayer and hardening | partial | local multiplayer and split-screen game logic (`multi.c`), packaging | multiplayer HUD |
-| 6 Enhancements and online | done (first cut) | display profiles (authentic / enhanced), gamepads and rebinding, rollback netplay (`f2-net`), settings screen | culling for wider-than-4:3 views, see below |
+| 6 Enhancements and online | done (first cut) | display profiles (authentic / enhanced), gamepads and rebinding, rollback netplay (`f2-net`), settings screen, DLSS / FSR upscaling and frame generation ([UPSCALING.md](UPSCALING.md)) | culling for wider-than-4:3 views, see below |
 | Launcher | done (first cut) | `launcher` (desktop) and the Android launcher screen: import, side-by-side versions from GitHub releases, mods, start-up choice; portable installs | self-update of the launcher, mod downloads |
 | 7 Modding | done (first cut) | `f2-mods` layered VFS, `f2-etc` script tool, `f2-modkit`, level editor | glTF/PNG/WAV replacement polish |
 | Platforms | see [PLATFORMS.md](PLATFORMS.md) | Windows, Linux, macOS, Android, PS4, PS5, N64 (experimental) | N64 black screen after a level; Linux not yet played on a desktop |

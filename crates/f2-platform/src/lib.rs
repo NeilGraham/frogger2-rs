@@ -18,5 +18,8 @@ pub mod paths;
 pub mod window;
 
 pub use bindings::{Binding, Bindings, ControllerFamily, HopBuffer, PadAxis, PadButton, RawEvent, RawPad, Rebind, RebindStatus};
-pub use config::{Config, DisplaySettings, FpsCorner, FullscreenType, Gameplay, Profile, TextureFilter, Video, WindowMode};
+pub use config::{
+    Config, DisplaySettings, DlssPreset, FpsCorner, FrameGeneration, FullscreenType, Gameplay, Profile, ReflexMode, TextureFilter, Upscale, UpscaleQuality,
+    UpscalerKind, Video, WindowMode,
+};
 pub use input::{Controller, InputMapper, JoypadState, KeyboardState, Keymap, PadData, PadState};

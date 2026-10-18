@@ -56,6 +56,9 @@ pub struct Actor {
     /// (`((model id, extra_flags, xlu fade, wrap_tc), draws)`): walked instead of the object
     /// tree every frame (same objects, same order, same frames).
     pub mesh_draws: Option<MeshDraws>,
+    /// Motion vectors (`RenderOptions::motion_vectors`): the renderer frame number and the
+    /// object matrices of the actor's last CPU draw, the "previous pose" of the next one.
+    pub motion_prev: Option<(u32, Vec<Mat4>)>,
 }
 
 /// [`Actor::mesh_draws`]: `((model id, extra_flags, xlu fade, wrap_tc), draws)`.
@@ -115,6 +118,7 @@ impl Default for Actor {
             modge_frame: 0,
             pose: PoseCache::default(),
             mesh_draws: None,
+            motion_prev: None,
         }
     }
 }

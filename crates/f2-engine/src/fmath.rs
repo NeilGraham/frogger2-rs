@@ -14,6 +14,7 @@ pub(crate) trait FloatExt {
     fn ceil(self) -> Self;
     fn round(self) -> Self;
     fn trunc(self) -> Self;
+    fn atan(self) -> Self;
 }
 
 impl FloatExt for f32 {
@@ -44,6 +45,9 @@ impl FloatExt for f32 {
     fn trunc(self) -> f32 {
         libm::truncf(self)
     }
+    fn atan(self) -> f32 {
+        libm::atanf(self)
+    }
 }
 
 impl FloatExt for f64 {
@@ -73,5 +77,8 @@ impl FloatExt for f64 {
     }
     fn trunc(self) -> f64 {
         libm::trunc(self)
+    }
+    fn atan(self) -> f64 {
+        libm::atan(self)
     }
 }

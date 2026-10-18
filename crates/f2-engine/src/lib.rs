@@ -39,17 +39,21 @@ pub mod renderer;
 pub mod scene;
 pub mod soft;
 pub mod textures;
+pub mod upscale;
 #[cfg(feature = "ps5-vulkan")]
 pub mod vkraw;
 
 pub use anim::{actor_bounds, xform_actor, Actor};
 pub use font::{Font, HiRes};
-pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, FrameView, PassState, Quad2D, Renderer, RgbaImage, OVERLAY_SPACE};
+pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, FrameView, PassState, Quad2D, Renderer, RgbaImage, UpscaleDebug, OVERLAY_SPACE};
 #[cfg(feature = "gpu")]
 pub use renderer::{GpuContext, WindowSurface};
 pub use scene::{Camera, Fog, Frame, MeshBackend, MeshDraw, MeshSink, ObjDraw, ObjSphere, RenderOptions, TlVertex, Tri, View, XluSort, MESH_SKIN};
 pub use soft::SoftTarget;
 pub use textures::{TexHandle, TextureRegistry};
+pub use upscale::{UpscaleCamera, UpscaleMode};
+#[cfg(feature = "gpu")]
+pub use upscale::{UpscaleInputs, Upscaler};
 
 /// Finds a model in a bank by root object name (case-insensitive, with or
 /// without `.obe`), by `CRC("<name>.obe")`, or by decimal index.

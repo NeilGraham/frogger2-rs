@@ -35,6 +35,9 @@ From WSL you can cross-build with the Windows toolchain: `tools/package/build-wi
 sources to `C:\f2-build\<checkout>` (cmd.exe rejects UNC working directories and MSVC linking over
 9P is slow), builds `frogger2`, `f2-import`, `f2-viewer` for `x86_64-pc-windows-msvc`, and copies the
 exes to `target/package/win-bin/`. Override with `F2_WIN_CARGO` / `F2_BUILD_ROOT`.
+`crates/f2-upscale` compiles `native/f2_upscale.cpp` (DLSS / FSR glue, docs/UPSCALING.md)
+with the MSVC compiler through `cc` on Windows MSVC targets; elsewhere it is a stub and needs no
+C++ compiler. The DLSS / FSR libraries are loaded at run time, never linked.
 `crates/f2fix` is a separate i686 workspace built by `tools/run/build_f2fix.sh`; it is not packaged.
 
 ## macOS

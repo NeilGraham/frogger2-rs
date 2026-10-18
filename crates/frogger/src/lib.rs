@@ -30,4 +30,6 @@ pub mod shortcut;
 pub mod tinyfont;
 #[cfg(feature = "gpu")]
 pub mod uikit;
+#[cfg(feature = "desktop")]
+pub mod upscaling;
 pub mod video;

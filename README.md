@@ -60,6 +60,9 @@ Everything else (controls, saves, multiplayer, troubleshooting) is in
   - *Display*: windowed / borderless / fullscreen, resolution, VSync, frame cap up to 240,
     widescreen and ultrawide, render scale, anti-aliasing, texture filtering, perspective-correct
     textures, draw distance, fog, brightness, FPS counter, and a sharp high-resolution font.
+  - *Upscaling* (Windows): NVIDIA DLSS (DLAA to Ultra Performance), AMD FSR 3.1 and FSR 4, DLSS
+    frame generation 2x / 3x / 4x / dynamic, FSR frame generation, Reflex; DLSS 5 Neural
+    Rendering through RenoDX ([docs/UPSCALING.md](docs/UPSCALING.md)). Bring your own DLLs.
   - *Audio*: master, music and effects volume.
   - *Controls*: rebindable keyboard and gamepad, stick dead zone, button layout, rumble, input
     buffering for hops.

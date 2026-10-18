@@ -200,7 +200,9 @@ with a hint.
   exclusive video mode, or sets the render size in borderless), VSync, frame cap
   (Off/30/60/120/144/240 or a custom value from the file), profile, and in the enhanced profile
   widescreen, render scale, anti-aliasing, texture filter, perspective-correct textures, draw
-  distance, fog and font (*Modern* / *Original*, see below); brightness (a final multiply) and the FPS counter (corner of your choice;
+  distance, fog and font (*Modern* / *Original*, see below); on Windows the upscaler (NVIDIA DLSS,
+  AMD FSR 3.1 / FSR 4) with its mode and preset or sharpening, frame generation (DLSS 2x / 3x /
+  4x / dynamic, FSR 2x) and NVIDIA Reflex (see [UPSCALING.md](UPSCALING.md)); brightness (a final multiply) and the FPS counter (corner of your choice;
   rendered FPS, frame time and the 60 Hz simulation rate; works in menus, levels and videos).
 - **Modern font**: the game's pixel fonts were made from Monotype's *Gill Sans Ultra Bold*.
   If that typeface is installed (`GILSANUB.TTF`, which comes with Windows / Microsoft Office),
@@ -296,6 +298,11 @@ perspective_correct = true
 draw_distance = 1.0         # 0.25..16
 fog = false
 modern_font = true          # false = the original pixel fonts
+
+[upscale]                   # DLSS / FSR, Windows; see docs/UPSCALING.md
+upscaler = "off"            # "off" | "dlss" | "fsr3" | "fsr4"
+quality = "quality"         # "native" | "quality" | "balanced" | "performance" | "ultra_performance"
+frame_generation = "off"    # "off" | "dlss_2x" | "dlss_3x" | "dlss_4x" | "dlss_dynamic" | "fsr_2x"
 
 [audio]
 master = 100                # 0..100

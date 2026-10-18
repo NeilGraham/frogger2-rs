@@ -27,6 +27,10 @@ crates/console-host/csrc/emutls.c is adapted from LLVM compiler-rt
 (Apache-2.0 WITH LLVM-exception, noted in the file). The launcher's text uses a
 subset of the Roboto fonts (Apache-2.0, Copyright 2011 The Roboto Project
 Authors; crates/frogger/assets/LICENSE-Roboto.txt).
+crates/f2-upscale/native vendors the NVIDIA Streamline SDK and AMD FidelityFX SDK
+API headers (both MIT; licenses/LICENSE-Streamline-MIT.txt,
+licenses/LICENSE-FidelityFX-MIT.txt). The DLSS / Streamline and FSR runtime DLLs
+are not included: players supply them (UPSCALING.md).
 
 The PS5 package writer (crates/f2-package/src/ps5/: fself.rs, kraken/, pkg/)
 is a port of LibProsperoPkg 1.2.0 (drakmor / SvenGDK,
