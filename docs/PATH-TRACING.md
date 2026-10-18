@@ -28,10 +28,10 @@ DXC, wgpu's `static-dxc`, would need the Visual Studio ATL libraries to build.)
 - **Refraction:** the view ray bent by the wavy water surface is traced to what it lands on, so
   what lies under the water wavers where the waves really send the rays
   ([WATER.md](WATER.md)).
-- **Caustics, by photon tracing:** a compute pass sends 2×2 photons per water-simulation cell
+- **Caustics, by photon tracing:** a compute pass sends one photon per water-simulation cell (1.5 units)
   from the sun through the simulated surface (sim waves + ripples, refracted at 1.33), traces
   each to what it lands on and counts landings per cell. A surface under the water is lit by the
-  sun in proportion to the photon density over it (3×3 tent filtered): bright where the waves
+  sun in proportion to the photon density over it (5×5 tent filtered): bright where the waves
   focus the light, dimmer between. This replaces the procedural caustics of Enhanced.
 
 Noise: with a temporal upscaler (DLSS, FSR) the ray directions change every frame and the
