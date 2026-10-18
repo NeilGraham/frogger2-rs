@@ -16,7 +16,7 @@
 //!
 //! with per-pixel noise that changes every frame (the upscaler or TAA averages it), and
 //! caustics by **photon tracing**: a compute pass refracts the sun through the simulated water
-//! surface (2×2 photons per simulation cell), traces each photon to what it lands on and counts
+//! surface (one photon per simulation cell), traces each photon to what it lands on and counts
 //! the landings per cell; surfaces under the water are lit by the photon density there instead
 //! of the procedural pattern.
 
@@ -142,9 +142,9 @@ fn rt_caustics(p: vec3<f32>, ndl: f32) -> f32 {
     let i = vec2<i32>(floor(cell(p.xz) + 0.5));
     var sum = 0.0;
     var wsum = 0.0;
-    for (var dy = -1; dy <= 1; dy++) {
-        for (var dx = -1; dx <= 1; dx++) {
-            let w = f32((2 - abs(dx)) * (2 - abs(dy)));
+    for (var dy = -2; dy <= 2; dy++) {
+        for (var dx = -2; dx <= 2; dx++) {
+            let w = f32((3 - abs(dx)) * (3 - abs(dy)));
             sum += photon_at(i + vec2<i32>(dx, dy)) * w;
             wsum += w;
         }
@@ -180,9 +180,8 @@ fn trace(@builtin(global_invocation_id) id: vec3<u32>) {
     let n = u32(lt.water.w);
     if (id.x >= n || id.y >= n || lt.sun_dir.w < 0.5 || lt.water2.y < 0.5) { return; }
     let l = lt.sun_dir.xyz;
-    for (var k = 0u; k < 4u; k++) {
-        let j = (vec2<f32>(f32(k & 1u), f32(k >> 1u)) + 0.5) * 0.5;
-        let xz = lt.water.xy + (vec2<f32>(id.xy) + j) * lt.water.z;
+    for (var k = 0u; k < 1u; k++) {
+        let xz = lt.water.xy + (vec2<f32>(id.xy) + 0.5) * lt.water.z;
         let sy = surface_y(xz);
         if (sy < -1e8) { continue; }
         let o = vec3<f32>(xz.x, sy + water_h(xz), xz.y);
@@ -192,7 +191,7 @@ fn trace(@builtin(global_invocation_id) id: vec3<u32>) {
         if (t < 0.0) { continue; }
         let c = vec2<i32>(floor(cell((o + d * t).xz) + 0.5));
         if (!in_window(c)) { continue; }
-        atomicAdd(&photons[u32(c.y) * n + u32(c.x)], 256u);
+        atomicAdd(&photons[u32(c.y) * n + u32(c.x)], 1024u);
     }
 }
 "#;

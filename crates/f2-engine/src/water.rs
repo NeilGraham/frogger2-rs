@@ -15,18 +15,18 @@
 //! the frame rate.
 
 /// Cells per side of the simulation window.
-pub(crate) const N: u32 = 512;
+pub(crate) const N: u32 = 1024;
 /// World units per cell.
-pub(crate) const TEXEL: f32 = 3.0;
+pub(crate) const TEXEL: f32 = 1.5;
 /// Simulation steps per second.
-pub(crate) const STEP_HZ: f64 = 120.0;
+pub(crate) const STEP_HZ: f64 = 240.0;
 /// Splashes applied per step.
 pub(crate) const MAX_SPLATS: usize = 128;
 /// Depth range of the surface map (world units around the reference height).
 pub(crate) const RANGE: f32 = 8000.0;
 /// Uniform stride of the per-step parameters (dynamic offsets).
 const STEP_STRIDE: u64 = 256;
-const MAX_STEPS: u32 = 4;
+const MAX_STEPS: u32 = 8;
 
 /// Something disturbing the water at `pos` (world units): the surface within `radius` is
 /// pushed down by up to `strength` units (if the water there is within `radius` of `pos`'s
@@ -335,7 +335,7 @@ impl WaterSim {
             w.extend(bytemuck::cast_slice::<i32, u8>(&sh));
             w.extend(bytemuck::bytes_of(&ns));
             w.extend(bytemuck::bytes_of(&N));
-            w.extend(bytemuck::cast_slice::<f32, u8>(&[origin[0], origin[1], TEXEL, self.ref_y, RANGE, 0.994, 0.0, 0.0]));
+            w.extend(bytemuck::cast_slice::<f32, u8>(&[origin[0], origin[1], TEXEL, self.ref_y, RANGE, 0.997, 0.0, 0.0]));
             let at = k * STEP_STRIDE as usize;
             u[at..at + 48].copy_from_slice(&w);
         }

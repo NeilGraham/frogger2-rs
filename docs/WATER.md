@@ -22,7 +22,7 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   bed) goes to the lit **GPU mesh pass without its wobble** (the real caustics replace it).
   Anything else stays on the CPU.
 - **Generated surface:** the flat parts of the water are drawn as our own surface instead of the
-  original meshes: a 256² grid of quads (2×2 simulation cells, 6 units) over the simulation
+  original meshes: a 512² grid of quads (2×2 simulation cells, 3 units) over the simulation
   window, placed at the surface map's height and moved by our own swell (two long waves and three
   ripples) plus the simulation. The original meshes only say where water is and how high
   (surface map); their steep, tall faces (waterfalls, more than 24 units high) are still drawn
@@ -34,15 +34,15 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   water is clear, deep water takes the tint (the original water texture's mean colour, its
   texture as world-space detail), and the surface fades out at the shore with a little foam (the
   thickness is blended between the four nearest cells, so shores are smooth). Level geometry up
-  to 15 units above the water is a bank's lip: under a low one (within 5 units, which the waves
-  would poke through, like a stone rim) no water is drawn; under a higher one (grass and leaves
-  hanging over the water) the water goes on as deep as the nearest river bed beside it, up to the
-  bank. Open water with nothing under it is deep.
+  to 15 units above the water is a bank's lip (a stone rim, grass hanging over the water): under
+  it the water goes on as deep as the nearest river bed beside it, up to the bank, which hides
+  it; the grid points next to a lip keep still (no waves), below the lip, so waves never poke
+  through a low rim. Open water with nothing under it is deep.
 - **Edges of the grid:** a triangle is drawn when any of its corners has water within 2 cells;
   its other corners take the height of water within 4 cells, so triangles along the shore stay
   in place (their dry part is discarded per pixel).
-- **Waves:** a 512² damped wave equation (3-unit cells, ~1500 units square around the camera's
-  target, scrolling with it a cell at a time), stepped at 120 Hz in pairs from the host's
+- **Waves:** a 1024² damped wave equation (1.5-unit cells, ~1500 units square around the
+  camera's target, scrolling with it a cell at a time), stepped at 240 Hz in pairs from the host's
   clock (`Renderer::water_clock`, game ticks + interpolation). A top-down depth render of the
   water meshes (the surface map) says where water is and how high; dry cells stay flat and
   reflect waves. Disturbances (`water::Splash`) push the surface down where there is water near

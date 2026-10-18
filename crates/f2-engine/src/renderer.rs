@@ -2017,6 +2017,8 @@ impl Renderer {
             keys.push((c.tex.0, self.sampler_key(c.wrap)));
         }
         if gpu {
+            let bgs = &self.bind_groups;
+            self.gpu_mesh.as_ref().unwrap().shadow_pass(encoder, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
             self.gpu_mesh.as_mut().unwrap().pre_passes(encoder);
         }
         let depth_view = &self.depth.as_ref().unwrap().0;
@@ -2300,6 +2302,8 @@ impl Renderer {
         let depth_view = &self.depth.as_ref().unwrap().0;
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upscale scene") });
         if gpu {
+            let bgs = &self.bind_groups;
+            self.gpu_mesh.as_ref().unwrap().shadow_pass(&mut enc, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
             self.gpu_mesh.as_mut().unwrap().pre_passes(&mut enc);
         }
         {

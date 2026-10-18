@@ -219,7 +219,7 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 /// Quads per side of the generated water surface (2×2 simulation cells each).
-const GRID: u32 = 256;
+const GRID: u32 = 512;
 
 /// Marks a water mesh's entry in [`Sink::class`] (its subdivided upload).
 const WATER_KEY: u16 = 0x8000;
@@ -553,8 +553,8 @@ fn bed_y(xz: vec2<f32>) -> f32 {
     if (d >= 0.99999) { return -1e9; }
     return lt.water2.z + (0.5 - d) * lt.water2.w;
 }
-// The deepest river bed (below sy) on the nearest ring around x / z that has one, out to 4
-// cells in 8 directions. Cells with no bed are under tall land as often as open water, so
+// The deepest river bed (below sy) on the nearest ring around x / z that has one, out to 12
+// units in 8 directions. Cells with no bed are under tall land as often as open water, so
 // they count only when no ring has a bed (then -1e9: deep); nothing at all: sy.
 fn bed_beside(xz: vec2<f32>, sy: f32) -> f32 {
     var open = false;
@@ -562,7 +562,7 @@ fn bed_beside(xz: vec2<f32>, sy: f32) -> f32 {
         var best = 1e9;
         for (var k = 0; k < 8; k++) {
             let a = f32(k) * 0.7853982;
-            let y = bed_y(xz + vec2<f32>(cos(a), sin(a)) * (f32(r) * lt.water.z));
+            let y = bed_y(xz + vec2<f32>(cos(a), sin(a)) * (f32(r) * 3.0));
             if (y < -1e8) { open = true; } else if (y < sy - 0.5) { best = min(best, y); }
         }
         if (best < 1e8) { return best; }
@@ -641,10 +641,25 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
 }
 
 // Depth only, from the sun.
-@vertex fn vs_shadow(i: VIn, @builtin(instance_index) inst: u32) -> @builtin(position) vec4<f32> {
+fn shadow_pos(i: VIn, inst: u32) -> vec4<f32> {
     let r = recs[inst];
     let l = light_space(xfm(mats[r.mat + i.bone], i.pos));
     return vec4<f32>(l.xy, clamp(l.z, 0.0, 1.0), 1.0);
+}
+@vertex fn vs_shadow(i: VIn, @builtin(instance_index) inst: u32) -> @builtin(position) vec4<f32> {
+    return shadow_pos(i, inst);
+}
+// Cut-out textures (leaves, butterfly wings): their see-through pixels cast no shadow (the
+// alpha test of the drawn pixels, `tightAlphaCmpRS`).
+struct ShadowCut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex fn vs_shadow_cut(i: VIn, @builtin(instance_index) inst: u32) -> ShadowCut {
+    var o: ShadowCut;
+    o.pos = shadow_pos(i, inst);
+    o.uv = i.uv;
+    return o;
+}
+@fragment fn fs_shadow_cut(i: ShadowCut) {
+    if (floor(textureSample(t, s, i.uv).a * 255.0 + 0.5) <= 100.0) { discard; }
 }
 
 // Water surface: the mesh's own swell (WAVE) plus the simulated waves and ripples.
@@ -724,9 +739,7 @@ fn water_color(i: VOut, additive: bool) -> vec4<f32> {
 
 // The generated water surface: a grid of 2×2-cell quads over the simulation window, at the
 // surface map's height, moved by the waves; drawn where the surface map has water.
-const GRID: u32 = 256u;
-// A bank's lip lower than this over the water hides it (the waves would poke through).
-const LOW_LIP: f32 = 5.0;
+const GRID: u32 = 512u;
 // The highest water within r cells of c (none: -1e9).
 fn grid_y_within(c: vec2<i32>, r: i32) -> f32 {
     var best = -1e9;
@@ -768,9 +781,21 @@ fn grid_cell(vi: u32) -> vec2<i32> {
         return o;
     }
     let xz = lt.water.xy + (vec2<f32>(c) + 0.5) * lt.water.z;
+    // Next to a bank's lip (level geometry just over the water) the water lies still, below
+    // it: waves would poke through a low stone rim.
+    var lip = false;
+    for (var dy = -2; dy <= 2; dy += 2) {
+        for (var dx = -2; dx <= 2; dx += 2) {
+            let q = c + vec2<i32>(dx, dy);
+            if (in_window(q)) {
+                let d = textureLoad(bed, q, 0);
+                if (d < 0.99999 && lt.water2.z + (0.5 - d) * lt.water2.w > y - 0.5) { lip = true; }
+            }
+        }
+    }
     // Crests reach the original surface, troughs go below it: the banks were made for that
     // height (the original's swell only lifted the water).
-    let world = vec3<f32>(xz.x, y + water_h(xz) - 2.5, xz.y);
+    let world = vec3<f32>(xz.x, y + select(water_h(xz), 0.0, lip) - 2.5, xz.y);
     let vp = xfm(cam.v, world);
     let cl = clip(cam.proj, vp);
     let zl = clamp(vp.z * 0.00025, 0.0, 1.0);
@@ -798,11 +823,10 @@ fn cell_thick(c: vec2<i32>) -> f32 {
     let sy = lt.water2.z + (0.5 - d) * lt.water2.w;
     let xz = lt.water.xy + (vec2<f32>(c) + 0.5) * lt.water.z;
     var by = bed_y(xz);
-    // Under a bank's lip: a low one (a stone rim the waves would poke through) hides the
-    // water; under a higher one (grass and leaves hanging over the water) the water goes on
-    // as deep as the open water beside it, up to the bank, which hides it.
+    // Under a bank's lip (a stone rim, grass hanging over the water) the water goes on as
+    // deep as the open water beside it, up to the bank, which hides it (`vs_grid` keeps it
+    // still there, below the lip).
     if (by > sy - 0.5) {
-        if (by <= sy + LOW_LIP) { return 0.0; }
         by = bed_beside(xz, sy);
     }
     // No bed: open water, deep.
@@ -874,12 +898,17 @@ fn fine_slope(xz: vec2<f32>, t: f32) -> vec2<f32> {
     return g;
 }
 // How much the simulated surface is moving at x / z (churn: wakes, splashes, waterfalls).
-fn churn(xz: vec2<f32>) -> f32 {
-    if (lt.water2.y < 0.5) { return 0.0; }
-    let c = vec2<i32>(floor(cell(xz) + 0.5));
+fn churn_at(c: vec2<i32>) -> f32 {
     if (!in_window(c)) { return 0.0; }
     let w = wave[u32(c.y) * u32(lt.water.w) + u32(c.x)];
     return abs(w.x - w.y);
+}
+fn churn(xz: vec2<f32>) -> f32 {
+    if (lt.water2.y < 0.5) { return 0.0; }
+    let c = cell(xz);
+    let i = vec2<i32>(floor(c));
+    let f = c - floor(c);
+    return mix(mix(churn_at(i), churn_at(i + vec2<i32>(1, 0)), f.x), mix(churn_at(i + vec2<i32>(0, 1)), churn_at(i + vec2<i32>(1, 1)), f.x), f.y);
 }
 
 fn grid_color(i: VOut) -> vec4<f32> {
@@ -1141,11 +1170,14 @@ pub(crate) struct Gpu {
     shadow_ubo_bg: wgpu::BindGroup,
     shadow_view: wgpu::TextureView,
     shadow_pipeline: wgpu::RenderPipeline,
+    /// The shadow pass for cut-out textures (their see-through pixels cast no shadow).
+    shadow_cut_pipeline: wgpu::RenderPipeline,
     /// recs, mats, prev, and the bind group over them.
     store: Option<(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup)>,
     pipelines: HashMap<(wgpu::TextureFormat, u32, bool, bool, bool), wgpu::RenderPipeline>,
-    /// This frame's draw list: (record, mesh key, vertex range, texture, wrap, emissive).
-    list: Vec<(u32, Key, core::ops::Range<u32>, TexHandle, bool, bool)>,
+    /// This frame's draw list: (record, mesh key, vertex range, texture, wrap, emissive,
+    /// cut-out: the texture has see-through pixels).
+    list: Vec<(u32, Key, core::ops::Range<u32>, TexHandle, bool, bool, bool)>,
     /// Emissive and mean colour per texture CRC.
     tex_info: HashMap<u32, TexInfo>,
     /// The shadow map needs drawing this frame.
@@ -1537,6 +1569,33 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
+        let shadow_cut_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gpu mesh shadow (cut-out)"),
+            bind_group_layouts: &[None, Some(tex_layout), Some(&store_layout), Some(&shadow_ubo_layout)],
+            immediate_size: 0,
+        });
+        let shadow_cut_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sun shadow (cut-out)"),
+            layout: Some(&shadow_cut_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_shadow_cut"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vertex_layout())],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_shadow_cut"), compilation_options: Default::default(), targets: &[] }),
+            multiview_mask: None,
+            cache: None,
+        });
         let bed_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("water bed map"),
             layout: &bed_ubo_layout,
@@ -1603,6 +1662,7 @@ impl Gpu {
             shadow_ubo_bg,
             shadow_view,
             shadow_pipeline,
+            shadow_cut_pipeline,
             store: None,
             pipelines: HashMap::new(),
             list: Vec::new(),
@@ -1759,7 +1819,8 @@ impl Gpu {
                 if emissive && auto_lights && d.key.1 != MESH_SKIN {
                     point_lights(&sink.mats[sink.recs[d.rec as usize].mat as usize], g, color, &mut found);
                 }
-                self.list.push((d.rec, d.key, g.first..g.first + g.count, tex, d.wrap, emissive));
+                let cut = d.override_tex.is_none() && info.is_some_and(|i| !i.opaque);
+                self.list.push((d.rec, d.key, g.first..g.first + g.count, tex, d.wrap, emissive, cut));
                 need_bg.push((tex, d.wrap));
             }
         }
@@ -1781,7 +1842,7 @@ impl Gpu {
                     };
                     let pos = [p[0] + h(1) * FOOT_CELL, p[1], p[2] + h(2) * FOOT_CELL];
                     // The fall's mesh may go on far under its pool's surface.
-                    falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.35 + 0.25 * h(3), above: 400.0 });
+                    falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.18 + 0.12 * h(3), above: 400.0 });
                 }
                 let Some(tex) = textures.current(g.crc) else { continue };
                 self.water_list.push((rec, key, g.first..g.first + g.count, tex, true, additive, g.steep));
@@ -1992,15 +2053,36 @@ impl Gpu {
 
     /// The passes before the frame: the sun's shadow map (every GPU mesh draw, on screen or
     /// not), and on simulation steps the water's surface map and the steps.
+    /// The sun's shadow map (before [`pre_passes`](Self::pre_passes)); `bind_group` as in
+    /// [`draw`](Self::draw), for the cut-out textures.
+    pub fn shadow_pass<'b>(&self, encoder: &mut wgpu::CommandEncoder, bind_group: impl Fn(TexHandle, bool) -> &'b wgpu::BindGroup) {
+        let Some((_, _, _, store_bg)) = &self.store else { return };
+        if !self.shadows || self.list.is_empty() {
+            return;
+        }
+        let mut pass = depth_pass(encoder, "sun shadow", &self.shadow_view);
+        pass.set_pipeline(&self.shadow_pipeline);
+        pass.set_bind_group(2, store_bg, &[]);
+        pass.set_bind_group(3, &self.shadow_ubo_bg, &[]);
+        draw_list(&mut pass, &self.meshes, self.list.iter().filter(|d| !d.6).map(|d| (d.0, d.1, d.2.clone())));
+        pass.set_pipeline(&self.shadow_cut_pipeline);
+        let mut cur: Option<Key> = None;
+        for (rec, key, range, tex, wrap, _, cut) in &self.list {
+            if !*cut {
+                continue;
+            }
+            if cur != Some(*key) {
+                let Some((buf, _)) = self.meshes.get(key) else { continue };
+                pass.set_vertex_buffer(0, buf.slice(..));
+                cur = Some(*key);
+            }
+            pass.set_bind_group(1, bind_group(*tex, *wrap), &[]);
+            pass.draw(range.clone(), *rec..*rec + 1);
+        }
+    }
+
     pub fn pre_passes(&mut self, encoder: &mut wgpu::CommandEncoder) {
         let Some((_, _, _, store_bg)) = &self.store else { return };
-        if self.shadows && !self.list.is_empty() {
-            let mut pass = depth_pass(encoder, "sun shadow", &self.shadow_view);
-            pass.set_pipeline(&self.shadow_pipeline);
-            pass.set_bind_group(2, store_bg, &[]);
-            pass.set_bind_group(3, &self.shadow_ubo_bg, &[]);
-            draw_list(&mut pass, &self.meshes, self.list.iter().map(|d| (d.0, d.1, d.2.clone())));
-        }
         if self.sim.frame.steps > 0 {
             let mut pass = depth_pass(encoder, "water surface map", &self.sim.surface_view);
             pass.set_pipeline(&self.surface_pipeline);
@@ -2274,7 +2356,7 @@ impl Gpu {
         pass.set_bind_group(3, lights_bg, &[]);
         let mut cur: Option<Key> = None;
         let mut cur_emissive = None;
-        for (rec, key, range, tex, wrap, emissive) in &self.list {
+        for (rec, key, range, tex, wrap, emissive, _) in &self.list {
             if cur_emissive != Some(*emissive) {
                 pass.set_pipeline(if *emissive { emi } else { lit });
                 cur_emissive = Some(*emissive);
