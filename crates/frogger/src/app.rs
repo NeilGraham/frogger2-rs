@@ -441,6 +441,7 @@ impl App {
         // test (no vertex inside the screen on an axis) would drop although they cover it.
         o.clip_faces = d.clip_faces;
         o.screen_reject = !d.clip_faces;
+        o.gpu_meshes = d.gpu_meshes;
         // Retail draws translucent triangles in submission order (`sortMode` is never set);
         // the enhanced profile sorts them back to front.
         o.xlu_sort = match self.profile {

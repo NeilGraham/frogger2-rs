@@ -531,6 +531,7 @@ pub struct Display {
     pub fog: Option<bool>,
     pub modern_font: Option<bool>,
     pub clip_faces: Option<bool>,
+    pub gpu_meshes: Option<bool>,
 }
 
 /// Concrete display settings of a profile (what the host applies to the renderer).
@@ -563,6 +564,9 @@ pub struct DisplaySettings {
     /// screen edges (clipped instead); off = the original culling (polygons blink in and out
     /// at the edges of wide views and pop in the distance).
     pub clip_faces: bool,
+    /// Draw the opaque meshes on the GPU from their model data (the modern renderer's basis:
+    /// lighting, shadows); off = projected on the CPU like the original.
+    pub gpu_meshes: bool,
 }
 
 impl DisplaySettings {
@@ -580,6 +584,7 @@ impl DisplaySettings {
         fog: false,
         modern_font: false,
         clip_faces: false,
+        gpu_meshes: false,
     };
 
     /// Enhanced defaults.
@@ -596,6 +601,7 @@ impl DisplaySettings {
         fog: false,
         modern_font: true,
         clip_faces: true,
+        gpu_meshes: false,
     };
 
     /// The enhanced defaults with `d`'s overrides applied.
@@ -614,6 +620,7 @@ impl DisplaySettings {
             fog: d.fog.unwrap_or(e.fog),
             modern_font: d.modern_font.unwrap_or(e.modern_font),
             clip_faces: d.clip_faces.unwrap_or(e.clip_faces),
+            gpu_meshes: d.gpu_meshes.unwrap_or(e.gpu_meshes),
         }
     }
 }

@@ -153,7 +153,17 @@ fn clip_faces_draws_polygons_crossing_the_near_plane() {
         face_flags: vec![0; 4],
         textures: vec![white; 4],
     };
-    let model = Model { id: 1, radius: 400.0, object_size: 0, root: object("floor", mesh, 0), root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
+    let model = Model {
+        id: 1,
+        radius: 400.0,
+        object_size: 0,
+        root: object("floor", mesh, 0),
+        root_siblings: vec![],
+        animations: vec![],
+        loc_mesh: None,
+        is_skinned: false,
+        num_vtx: 0,
+    };
     let mut red = |clip: bool| {
         r.options.clip_faces = clip;
         r.begin_frame(320, 240);
@@ -165,4 +175,35 @@ fn clip_faces_draws_polygons_crossing_the_near_plane() {
     let (original, clipped) = (red(false), red(true));
     assert_eq!(original, 0, "the original drops faces with a corner behind the near plane");
     assert!(clipped > 320 * 240 / 4, "clipped floor covers the bottom of the screen: {clipped} px");
+}
+
+/// The GPU mesh renderer (`RenderOptions::gpu_meshes`) draws the same picture as the CPU
+/// path: the opaque quad from the GPU, its back-facing child culled, the translucent quad
+/// still from the CPU blended over it.
+#[test]
+fn gpu_meshes_match_the_cpu_path() {
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let white = f2_formats::crc("white.bmp");
+    r.textures.add_rgba(white, "white.bmp", TexType::Normal, 2, 2, vec![255; 16]);
+    let mut root = object("root", quad(0.0, 20.0, [1.0, 0.0, 0.0, 1.0], white, true), 0);
+    root.children.push(object("back", quad(-10.0, 20.0, [0.0, 1.0, 0.0, 1.0], white, false), 0));
+    let mut xlu = object("xlu", quad(-5.0, 10.0, [1.0, 1.0, 1.0, 0.5], white, true), OBJECT_FLAGS_XLU);
+    xlu.move_keys[0].v = [15.0, 0.0, 0.0];
+    root.children.push(xlu);
+    let model = Model { id: 1, radius: 30.0, object_size: 0, root, root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
+    let mut shot = |gpu: bool| {
+        r.options.gpu_meshes = gpu;
+        r.options.perspective_correct = true;
+        r.begin_frame(320, 240);
+        r.set_camera(&Camera { source: [0.0, 0.0, -100.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] });
+        r.draw_actor(&model, &mut Actor::default());
+        r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap()
+    };
+    let (cpu, gpu) = (shot(false), shot(true));
+    gpu.write_png(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/f2-engine-gpu-meshes.png")).unwrap();
+    let differ = cpu.pixels.chunks(4).zip(gpu.pixels.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 8)).count();
+    // Edge pixels may round differently; the picture must be the same.
+    assert!(differ < 320 * 2, "{differ} pixels differ");
+    assert_eq!(gpu.pixel(160, 120), [255, 0, 0, 255], "centre: the GPU's red quad, back face culled");
 }

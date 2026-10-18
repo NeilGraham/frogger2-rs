@@ -100,8 +100,20 @@ impl Upscaler for Grab<'_> {
 
 #[test]
 fn moving_quad_writes_motion_and_depth() {
+    moving_quad(false);
+}
+
+/// The same from the GPU mesh renderer (`RenderOptions::gpu_meshes`).
+#[test]
+fn gpu_meshes_write_motion_and_depth() {
+    moving_quad(true);
+}
+
+fn moving_quad(gpu: bool) {
     let ctx = GpuContext::new_headless().expect("no GPU adapter");
     let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    r.options.gpu_meshes = gpu;
+    r.options.perspective_correct = true;
     let white = f2_formats::crc("white.bmp");
     r.textures.add_rgba(white, "white.bmp", TexType::Normal, 2, 2, vec![255; 16]);
     let model = quad_model(white);

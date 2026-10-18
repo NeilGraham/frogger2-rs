@@ -439,6 +439,11 @@ pub struct Renderer {
     pub upscale_draws: (u32, u32),
     #[cfg(feature = "gpu")]
     up: Option<UpTargets>,
+    /// [`RenderOptions::gpu_meshes`]: this frame's GPU mesh draws and the GPU side.
+    #[cfg(feature = "gpu")]
+    gpu_sink: crate::gpu_mesh::Sink,
+    #[cfg(feature = "gpu")]
+    gpu_mesh: Option<crate::gpu_mesh::Gpu>,
     #[cfg(feature = "gpu")]
     mv_buf: Option<wgpu::Buffer>,
     /// Uniforms of the HUD pass of [`render_upscaled`](Self::render_upscaled) (no jitter).
@@ -698,6 +703,8 @@ impl Renderer {
             upscale_debug: UpscaleDebug::Off,
             upscale_draws: (0, 0),
             up: None,
+            gpu_sink: Default::default(),
+            gpu_mesh: None,
             mv_buf: None,
             ui_uniform: Some((ui_buf, ui_bg)),
             pipeline_layout,
@@ -1052,6 +1059,9 @@ impl Renderer {
         let [kx, ky] = self.view.hor_plus_extent();
         self.view.horiz_clip = crate::scene::HORIZ_CLIP * kx;
         self.view.vert_clip = crate::scene::VERT_CLIP * ky;
+        self.view.exact_depth = self.options.gpu_meshes;
+        #[cfg(feature = "gpu")]
+        self.gpu_sink.clear();
         let v = &self.view;
         self.motion = last.map(|l| {
             let same = l.camera.is_some() && (l.width, l.height, l.viewport, l.hor_plus) == (v.width, v.height, v.viewport, v.hor_plus);
@@ -1256,9 +1266,22 @@ impl Renderer {
     #[inline(never)]
     fn draw_actor_cpu(&mut self, model: &Model, actor: &mut Actor) {
         let mut frames = core::mem::take(&mut self.frames);
+        #[cfg(feature = "gpu")]
+        let mut sink = core::mem::take(&mut self.gpu_sink);
         let cx = EmitCtx { override_tex: actor.override_tex, gouraud: actor.gouraud, ..self.emit_ctx(actor.xlu.clamp(0.0, 1.0)) };
-        draw_actor(&cx, model, actor, &mut frames);
+        #[cfg(feature = "gpu")]
+        {
+            let no_clip = self.view.no_clip;
+            let mut hook = |o: &crate::scene::GpuObj| sink.offer(o, no_clip);
+            draw_actor(&cx, model, actor, &mut frames, if self.options.gpu_meshes { Some(&mut hook) } else { None });
+        }
+        #[cfg(not(feature = "gpu"))]
+        draw_actor(&cx, model, actor, &mut frames, None);
         self.frames = frames;
+        #[cfg(feature = "gpu")]
+        {
+            self.gpu_sink = sink;
+        }
     }
 
     /// Draws a static level model like `DrawLandscape` (key-0 pose).
@@ -1269,7 +1292,16 @@ impl Renderer {
             return;
         }
         let mut frames = core::mem::take(&mut self.frames);
-        draw_landscape(&self.emit_ctx(1.0), model, &mut frames);
+        #[cfg(feature = "gpu")]
+        {
+            let mut sink = core::mem::take(&mut self.gpu_sink);
+            let no_clip = self.view.no_clip;
+            let mut hook = |o: &crate::scene::GpuObj| sink.offer(o, no_clip);
+            draw_landscape(&self.emit_ctx(1.0), model, &mut frames, if self.options.gpu_meshes { Some(&mut hook) } else { None });
+            self.gpu_sink = sink;
+        }
+        #[cfg(not(feature = "gpu"))]
+        draw_landscape(&self.emit_ctx(1.0), model, &mut frames, None);
         self.frames = frames;
     }
 
@@ -1699,6 +1731,25 @@ impl Renderer {
             .create_view(&Default::default())
     }
 
+    /// [`RenderOptions::gpu_meshes`]: uploads the frame's GPU mesh draws and prepares their
+    /// pipeline and texture bind groups. Returns whether there is anything to draw.
+    #[cfg(feature = "gpu")]
+    fn prepare_gpu_meshes(&mut self, format: wgpu::TextureFormat, samples: u32, mrt: bool, jitter: [f32; 2]) -> bool {
+        if !self.options.gpu_meshes {
+            return false;
+        }
+        let device = &self.device;
+        let gm = self.gpu_mesh.get_or_insert_with(|| crate::gpu_mesh::Gpu::new(device, &self.tex_layout));
+        let prev = self.motion.as_ref().and_then(|m| m.prev_view.as_ref());
+        let need = gm.prepare(&self.device, &self.queue, &mut self.gpu_sink, &self.textures, self.white, &self.view, prev, jitter, &self.options.fog);
+        gm.ensure_pipeline(&self.device, format, samples, mrt);
+        let any = gm.has_draws();
+        for (t, w) in need {
+            self.bind_group(t, w);
+        }
+        any
+    }
+
     #[cfg(feature = "gpu")]
     fn ensure_targets(&mut self, w: u32, h: u32, samples: u32, scaled: bool) {
         if !matches!(self.depth, Some((_, dw, dh, ds)) if dw == w && dh == h && ds == samples) {
@@ -1780,7 +1831,9 @@ impl Renderer {
         let fog = self.options.fog;
         let _ = fog;
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(&self.uniforms([0.0; 2])));
-        let (verts, cmds) = self.build(clear);
+        let (verts, _, cmds, marks) = self.build_all(clear, false);
+        let fmt = self.format;
+        let gpu = self.prepare_gpu_meshes(fmt, samples, false, [0.0; 2]);
         let clear = if self.view.viewport.is_some() { [0.0, 0.0, 0.0, 1.0] } else { clear };
         if !verts.is_empty() {
             let bytes: &[u8] = bytemuck::cast_slice(&verts);
@@ -1838,7 +1891,26 @@ impl Renderer {
             [x, y, (w as u32).min(iw - x).max(1), (h as u32).min(ih - y).max(1)]
         });
         let mut scissored = false;
-        for (c, key) in cmds.iter().zip(&keys) {
+        // GPU meshes: at the start of the 3D passes (opaque, depth-tested: their order against
+        // the CPU's opaque triangles does not matter).
+        let mut gpu_left = gpu;
+        let draw_gpu = |pass: &mut wgpu::RenderPass<'_>, scissored: &mut bool| {
+            if let Some([x, y, w, h]) = scissor {
+                pass.set_scissor_rect(x, y, w, h);
+                *scissored = true;
+            }
+            let bgs = &self.bind_groups;
+            self.gpu_mesh.as_ref().unwrap().draw(pass, fmt, samples, false, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+            if let Some(vb) = &self.vbuf {
+                pass.set_vertex_buffer(0, vb.slice(..));
+            }
+            pass.set_bind_group(0, &self.uniform_bg, &[]);
+        };
+        for (ci, (c, key)) in cmds.iter().zip(&keys).enumerate() {
+            if gpu_left && ci >= marks[1] as usize {
+                draw_gpu(&mut pass, &mut scissored);
+                gpu_left = false;
+            }
             if let Some([x, y, w, h]) = scissor {
                 if c.scene != scissored {
                     scissored = c.scene;
@@ -1852,6 +1924,9 @@ impl Renderer {
             pass.set_pipeline(&self.pipelines[&(c.blend, c.depth, samples, self.format, false)]);
             pass.set_bind_group(1, &self.bind_groups[key], &[]);
             pass.draw(c.first..c.first + c.count, 0..1);
+        }
+        if gpu_left {
+            draw_gpu(&mut pass, &mut scissored);
         }
         drop(pass);
         if scaled {
@@ -1998,6 +2073,7 @@ impl Renderer {
             self.bind_group(c.tex, c.wrap);
             keys.push((k, (c.tex.0, self.sampler_key(c.wrap))));
         }
+        let gpu = self.prepare_gpu_meshes(UPSCALE_COLOR_FORMAT, 1, true, jitter);
         let scissor = self.view.viewport.map(|[x, y, w, h]| {
             let (x, y) = ((x as u32).min(iw - 1), (y as u32).min(ih - 1));
             [x, y, (w as u32).min(iw - x).max(1), (h as u32).min(ih - y).max(1)]
@@ -2035,7 +2111,25 @@ impl Renderer {
             }
             pass.set_bind_group(0, &self.uniform_bg, &[]);
             let mut scissored = false;
-            for (c, (k, bg)) in cmds[..split].iter().zip(&keys) {
+            let mut gpu_left = gpu;
+            let draw_gpu = |pass: &mut wgpu::RenderPass<'_>, scissored: &mut bool| {
+                if let Some([x, y, w, h]) = scissor {
+                    pass.set_scissor_rect(x, y, w, h);
+                    *scissored = true;
+                }
+                let bgs = &self.bind_groups;
+                self.gpu_mesh.as_ref().unwrap().draw(pass, UPSCALE_COLOR_FORMAT, 1, true, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+                if let (Some(vb), Some(mb)) = (&self.vbuf, &self.mv_buf) {
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_vertex_buffer(1, mb.slice(..));
+                }
+                pass.set_bind_group(0, &self.uniform_bg, &[]);
+            };
+            for (ci, (c, (k, bg))) in cmds[..split].iter().zip(&keys).enumerate() {
+                if gpu_left && ci >= marks[1] as usize {
+                    draw_gpu(&mut pass, &mut scissored);
+                    gpu_left = false;
+                }
                 if let Some([x, y, w, h]) = scissor {
                     if c.scene != scissored {
                         scissored = c.scene;
@@ -2049,6 +2143,9 @@ impl Renderer {
                 pass.set_pipeline(&self.pipelines[k]);
                 pass.set_bind_group(1, &self.bind_groups[bg], &[]);
                 pass.draw(c.first..c.first + c.count, 0..1);
+            }
+            if gpu_left {
+                draw_gpu(&mut pass, &mut scissored);
             }
         }
         // Native code reads the inputs and writes the output in these states.

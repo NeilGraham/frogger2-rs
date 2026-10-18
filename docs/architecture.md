@@ -106,6 +106,9 @@ Replaces MDX + D3D7. Faithful first, enhanced later.
   vertex's previous-frame screen position from the CPU transform) and reversed depth, an
   `Upscaler` (DLSS / FSR on Direct3D 12), then the 2D overlays at the output size
   ([UPSCALING.md](UPSCALING.md)).
+- **GPU meshes** (`gpu_mesh.rs`, enhanced): opaque meshes offered by the CPU path
+  (`scene::GpuObj` hook in `draw_actor` / `draw_landscape`) are drawn from uploaded model data
+  with their matrices instead of CPU-projected triangles; the start of the modern renderer.
 
 ## 6. Audio (`f2-audio`)
 

@@ -88,6 +88,18 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
   the authentic profile are the retail culling. Not compiled into `no_std` builds (N64).
   Remaining edge effects that are not culling: level art that ends past the 4:3 view (the clear
   colour shows), and the simulation's 4:3 culling (actors there hold their pose, see above).
+- [ ] Modern renderer (in progress). Milestone 1 done: GPU meshes (`display.gpu_meshes`, off by
+  default until the graphics presets exist; `crates/f2-engine/src/gpu_mesh.rs`). Opaque meshes
+  (`Normal` / `Wrap` frames, no MODGE/WAVE) are uploaded once (corners expanded, grouped by
+  texture; skins with a bone per vertex) and drawn with their object matrices, so the GPU has the
+  scene's geometry (the basis for lighting, shadows and ray tracing). The vertex shader uses the
+  game's projection with the exact depth (`View::exact_depth`, which the CPU path then uses too,
+  so sprites, shadows and effects line up) and the CPU path's linear depth; per-pixel far cut
+  instead of per-face popping; motion vectors and upscaler depth from last frame's matrices.
+  Translucent and wobbling meshes stay on the CPU path. Matches the CPU picture (headless test;
+  levels 1-1, 2-2, 4-1, 6-1 differ only by ~1 px on edges from the exact depth). Next: graphics
+  presets (Original / Enhanced / Modern / Path traced, separate from the gameplay profile),
+  per-pixel lighting from the mesh normals with level lights, shadow maps, then ray tracing.
 - [x] High refresh (interpolated rendering; follow camera derives from the interpolated frog
   position, free camera moves per frame; `video.frame_cap`)
 - [x] MSAA (`display.msaa`, 4×), supersampling (`display.render_scale`), anisotropic/trilinear

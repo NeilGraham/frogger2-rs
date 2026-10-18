@@ -156,6 +156,10 @@ pub struct View {
     /// 3D viewport `[x, y, w, h]` in pixels (`None` = the whole `width`×`height`); used for
     /// the ultrawide clamp (pillarboxed 3D view).
     pub viewport: Option<[f32; 4]>,
+    /// Enhanced (GPU meshes): project with the exact depth instead of the original's
+    /// integer-truncated one (`oneOver[(long)vz]`), so CPU-projected sprites and effects line
+    /// up with meshes the GPU projects.
+    pub exact_depth: bool,
 }
 
 impl View {
@@ -173,6 +177,7 @@ impl View {
             camera: None,
             hor_plus: false,
             viewport: None,
+            exact_depth: false,
         }
     }
 
@@ -225,6 +230,9 @@ impl View {
     /// `-FOV * oneOver[(long)vz + DIST]` with `oneOver[i] = (rXRes/640)/i`
     /// (`InitOneOverTable`, mdxRender.cpp:362). The depth is truncated to an integer.
     fn oozd(&self, vz: f32) -> f32 {
+        if self.exact_depth {
+            return -self.fov * (self.proj_scale() / (vz + DIST).max(1.0));
+        }
         let i = ((vz as i64) + DIST as i64).clamp(1, 65534) as f32;
         -self.fov * (self.proj_scale() / i)
     }
@@ -313,6 +321,10 @@ pub struct RenderOptions {
     /// `vz = 0`), so big polygons near the camera no longer blink out at the screen edges.
     /// Off = the original (faces wholly past the far plane go either way).
     pub clip_faces: bool,
+    /// Enhanced: opaque meshes are drawn by the GPU from their model data and matrices
+    /// (`crate::gpu_mesh`) instead of being projected on the CPU; the projection becomes exact
+    /// ([`View::exact_depth`]). The basis of the modern renderer (lighting, shadows).
+    pub gpu_meshes: bool,
     /// Enhanced (temporal upscalers, frame generation): the opaque passes also record each
     /// vertex's screen position in the previous frame ([`Frames::motion`]). Off = no extra
     /// work and the retail path unchanged.
@@ -334,6 +346,7 @@ impl Default for RenderOptions {
             render_scale: 1.0,
             msaa: 1,
             clip_faces: false,
+            gpu_meshes: false,
             motion_vectors: false,
         }
     }
@@ -617,6 +630,28 @@ pub(crate) fn render_mesh(cx: &EmitCtx, mesh: &Mesh, tv: &[Tv], ex: Extra, frame
     }
 }
 
+/// A mesh offered to the GPU mesh renderer ([`RenderOptions::gpu_meshes`]) before the CPU
+/// transforms it: the CPU path draws it only when the hook returns false.
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+pub(crate) struct GpuObj<'a> {
+    pub model: &'a Model,
+    /// Pre-order object index, or [`MESH_SKIN`].
+    pub object: u16,
+    pub mesh: &'a Mesh,
+    pub frame: Frame,
+    /// Landscape: faces without a loaded texture are drawn untextured (objects skip them),
+    /// fog per vertex.
+    pub landscape: bool,
+    /// This frame's matrices (one; every bone for a skin) and last frame's.
+    pub mats: &'a [Mat4],
+    pub prev: &'a [Mat4],
+    pub gouraud: Option<[f32; 3]>,
+    pub override_tex: Option<TexHandle>,
+}
+
+/// [`GpuObj`] receiver.
+pub(crate) type GpuHook<'h> = Option<&'h mut dyn FnMut(&GpuObj) -> bool>;
+
 /// Per-vertex extras of [`render_mesh`] (enhanced; `Default` = the original).
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Extra<'a> {
@@ -804,7 +839,7 @@ fn object_frame(flags: i16, xlu_fade: bool, wrap: bool) -> Frame {
 }
 
 /// Port of `XformActor` + `DrawActor` (mdxActor.cpp:225/547) for one model.
-pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &mut Frames) {
+pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &mut Frames, mut gpu: GpuHook) {
     let mats = xform_actor(model, actor);
     let fade = actor.xlu < 1.0;
     let extra = actor.extra_flags;
@@ -815,6 +850,17 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
     if model.is_skinned {
         // All bones transform their share of the root mesh, then the root mesh is drawn once.
         let Some(mesh) = model.root.mesh.as_ref() else { return };
+        let frame = object_frame(extra, fade, wrap);
+        if let Some(g) = gpu.as_mut().filter(|_| matches!(frame, Frame::Normal | Frame::Wrap)) {
+            let prev = cx.motion.and_then(|m| m.prev_mats(actor, mats.len())).unwrap_or(&mats);
+            let o = GpuObj { model, object: MESH_SKIN, mesh, frame, landscape: false, mats: &mats, prev, gouraud: cx.gouraud, override_tex: cx.override_tex };
+            if g(&o) {
+                if let Some(m) = cx.motion {
+                    actor.motion_prev = Some((m.frame, mats));
+                }
+                return;
+            }
+        }
         let mut tv: Vec<Tv> = vec![None; mesh.vertices.len()];
         for_each_object(model, |i, o| prepare_skinned(cx.view, o, mesh, &mats[i], &mut tv));
         if let Some((m, prev)) = motion {
@@ -828,7 +874,6 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
         }
         // `PCRenderObject(root)` runs after `DrawObject` restored the frame, so the
         // skin always lands in the caller's frame (normal); only run-time flags apply.
-        let frame = object_frame(extra, fade, wrap);
         let ex = Extra { prev: motion.map(|_| &tvp[..]), view: cx.opts.clip_faces.then_some(&tvv[..]) };
         render_mesh(cx, mesh, &tv, ex, frame, true, None, out);
     } else {
@@ -840,6 +885,24 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
             // lifts the vertices, MODGE picks the modgy renderers.
             let flags = o.flags | extra;
             let (modge, wave) = (flags & OBJECT_FLAGS_MODGE != 0, flags & OBJECT_FLAGS_WAVE != 0);
+            let frame = object_frame(flags, fade, wrap);
+            if let Some(g) = gpu.as_mut().filter(|_| !modge && !wave && matches!(frame, Frame::Normal | Frame::Wrap)) {
+                let prev = motion.map_or(&mats[i..i + 1], |(_, p)| &p[i..i + 1]);
+                let ob = GpuObj {
+                    model,
+                    object: i as u16,
+                    mesh,
+                    frame,
+                    landscape: false,
+                    mats: &mats[i..i + 1],
+                    prev,
+                    gouraud: cx.gouraud,
+                    override_tex: cx.override_tex,
+                };
+                if g(&ob) {
+                    return;
+                }
+            }
             if modge || wave {
                 calc_modge_values(mesh, fc, &mut mv);
             }
@@ -854,7 +917,6 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
             if cx.opts.clip_faces {
                 prepare_view(cx.view, mesh, &mats[i], wave.then_some(&mv), &mut tvv);
             }
-            let frame = object_frame(flags, fade, wrap);
             // PCRenderModgySheenObject (SHEEN as well) is drawn like PCRenderModgyObject.
             let m = modge.then_some(Modge { values: &mv, wave });
             let ex = Extra { prev: motion.map(|_| &tvp[..]), view: cx.opts.clip_faces.then_some(&tvv[..]) };
@@ -1145,12 +1207,19 @@ pub(crate) fn record_landscape(cx: &EmitCtx, model: &Model, sink: &mut MeshSink)
 /// Port of `ConvertObjectToLandscape` + `DrawLandscape` (mdxLandscape.cpp:63,
 /// mdxRender.cpp:1005): static level geometry baked with key-0 transforms,
 /// drawn into the current (normal) frame with per-vertex fog.
-pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames) {
+pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames, mut gpu: GpuHook) {
     let mut actor = Actor { animated: false, ..Default::default() };
     let mats = xform_actor(model, &mut actor);
     let (mut tv, mut tvp, mut tvv) = (Vec::new(), Vec::new(), Vec::new());
     for_each_object(model, |i, o| {
         let Some(mesh) = o.mesh.as_ref() else { return };
+        if let Some(g) = gpu.as_mut() {
+            let m = &mats[i..i + 1];
+            let ob = GpuObj { model, object: i as u16, mesh, frame: Frame::Normal, landscape: true, mats: m, prev: m, gouraud: None, override_tex: None };
+            if g(&ob) {
+                return;
+            }
+        }
         prepare_object(cx.view, mesh, &mats[i], &mut tv);
         // Static: only the camera moves it.
         let prev = cx.motion.and_then(|m| m.prev_view.as_ref());

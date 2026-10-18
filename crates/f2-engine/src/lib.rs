@@ -32,6 +32,8 @@ pub mod anim;
 pub mod font;
 #[cfg(feature = "gles2")]
 pub mod gles;
+#[cfg(feature = "gpu")]
+mod gpu_mesh;
 #[cfg(feature = "std")]
 pub mod load;
 pub mod math;
