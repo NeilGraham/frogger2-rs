@@ -524,14 +524,30 @@ fn water_n(xz: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(-hx, 2.0 * e, -hz));
 }
 // WATER-END
-// The river bed's height at world x / z (none: -1e9; covered by a bank: 1e9).
+// The river bed's height at world x / z (none: -1e9): the highest level surface below 15
+// units over the water (above the water: a bank's lip hanging over it).
 fn bed_y(xz: vec2<f32>) -> f32 {
     let c = vec2<i32>(floor(cell(xz) + 0.5));
     if (!in_window(c)) { return -1e9; }
     let d = textureLoad(bed, c, 0);
     if (d >= 0.99999) { return -1e9; }
-    if (d <= 0.0) { return 1e9; }
     return lt.water2.z + (0.5 - d) * lt.water2.w;
+}
+// The deepest river bed (below sy) on the nearest ring around x / z that has one, out to 4
+// cells in 8 directions. Cells with no bed are under tall land as often as open water, so
+// they count only when no ring has a bed (then -1e9: deep); nothing at all: sy.
+fn bed_beside(xz: vec2<f32>, sy: f32) -> f32 {
+    var open = false;
+    for (var r = 1; r <= 4; r++) {
+        var best = 1e9;
+        for (var k = 0; k < 8; k++) {
+            let a = f32(k) * 0.7853982;
+            let y = bed_y(xz + vec2<f32>(cos(a), sin(a)) * (f32(r) * lt.water.z));
+            if (y < -1e8) { open = true; } else if (y < sy - 0.5) { best = min(best, y); }
+        }
+        if (best < 1e8) { return best; }
+    }
+    return select(sy, -1e9, open);
 }
 
 // Caustic network at world x / z: bright lines where three warped travelling waves cancel
@@ -689,10 +705,13 @@ fn water_color(i: VOut, additive: bool) -> vec4<f32> {
 // The generated water surface: a grid of 2×2-cell quads over the simulation window, at the
 // surface map's height, moved by the waves; drawn where the surface map has water.
 const GRID: u32 = 256u;
-fn grid_y(c: vec2<i32>) -> f32 {
+// A bank's lip lower than this over the water hides it (the waves would poke through).
+const LOW_LIP: f32 = 5.0;
+// The highest water within r cells of c (none: -1e9).
+fn grid_y_within(c: vec2<i32>, r: i32) -> f32 {
     var best = -1e9;
-    for (var dy = -2; dy <= 2; dy++) {
-        for (var dx = -2; dx <= 2; dx++) {
+    for (var dy = -r; dy <= r; dy++) {
+        for (var dx = -r; dx <= r; dx++) {
             let q = c + vec2<i32>(dx, dy);
             if (!in_window(q)) { continue; }
             let d = textureLoad(surface, q, 0);
@@ -701,13 +720,29 @@ fn grid_y(c: vec2<i32>) -> f32 {
     }
     return best;
 }
-@vertex fn vs_grid(@builtin(vertex_index) vi: u32) -> VOut {
+const CORNERS = array<vec2<u32>, 6>(vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(0u, 1u), vec2<u32>(1u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 1u));
+fn grid_cell(vi: u32) -> vec2<i32> {
     let q = vi / 6u;
-    let corner = array<vec2<u32>, 6>(vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(0u, 1u), vec2<u32>(1u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 1u))[vi % 6u];
-    let g = vec2<u32>(q % GRID, q / GRID) + corner;
-    let c = vec2<i32>(g * 2u);
+    return vec2<i32>((vec2<u32>(q % GRID, q / GRID) + CORNERS[vi % 6u]) * 2u);
+}
+@vertex fn vs_grid(@builtin(vertex_index) vi: u32) -> VOut {
+    let c = grid_cell(vi);
     var o: VOut;
-    let y = grid_y(c);
+    // A corner's height is the water within 2 cells (its quads reach 2 cells). A triangle is
+    // drawn when any corner has water so near; its dry corners take the water within 4 cells
+    // (which holds the wet corner's search), so edge triangles stay in place and their dry
+    // part is discarded per pixel. Decided per triangle: a corner dropped alone would drag
+    // its triangles across the screen.
+    var y = grid_y_within(c, 2);
+    if (y < -1e8) {
+        let t = vi - vi % 3u;
+        var wet = false;
+        for (var k = 0u; k < 3u; k++) {
+            let ck = grid_cell(t + k);
+            if (any(ck != c) && grid_y_within(ck, 2) > -1e8) { wet = true; }
+        }
+        if (wet) { y = grid_y_within(c, 4); }
+    }
     if (y < -1e8 || lt.water3.w < 0.5) {
         o.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
         return o;
@@ -735,13 +770,34 @@ fn grid_y(c: vec2<i32>) -> f32 {
     return o;
 }
 
+// How thick the water is over cell c (no water: 0).
+fn cell_thick(c: vec2<i32>) -> f32 {
+    if (!in_window(c)) { return 0.0; }
+    let d = textureLoad(surface, c, 0);
+    if (d >= 0.99999) { return 0.0; }
+    let sy = lt.water2.z + (0.5 - d) * lt.water2.w;
+    let xz = lt.water.xy + (vec2<f32>(c) + 0.5) * lt.water.z;
+    var by = bed_y(xz);
+    // Under a bank's lip: a low one (a stone rim the waves would poke through) hides the
+    // water; under a higher one (grass and leaves hanging over the water) the water goes on
+    // as deep as the open water beside it, up to the bank, which hides it.
+    if (by > sy - 0.5) {
+        if (by <= sy + LOW_LIP) { return 0.0; }
+        by = bed_beside(xz, sy);
+    }
+    // No bed: open water, deep.
+    if (by < -1e8) { return 200.0; }
+    return max(sy - by, 0.0);
+}
 fn grid_color(i: VOut) -> vec4<f32> {
     if (i.vz - 10.0 >= cam.fog.w) { discard; }
-    let sy = surface_y(i.world.xz);
-    if (sy < -1e8) { discard; }
-    let by = bed_y(i.world.xz);
-    // No bed: open water, deep. Under a bank's lip: nothing to show (thickness 0).
-    let thick = select(max(sy - by, 0.0), 200.0, by < -1e8);
+    // The water's thickness, blended between the four nearest cells (smooth shores).
+    let cf = cell(i.world.xz);
+    let c0 = vec2<i32>(floor(cf));
+    let f = cf - floor(cf);
+    let thick = mix(mix(cell_thick(c0), cell_thick(c0 + vec2<i32>(1, 0)), f.x),
+                    mix(cell_thick(c0 + vec2<i32>(0, 1)), cell_thick(c0 + vec2<i32>(1, 1)), f.x), f.y);
+    if (thick <= 0.0) { discard; }
     let n = water_n(i.world.xz);
     let v = normalize(lt.eye.xyz - i.world);
     let fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
@@ -791,12 +847,10 @@ struct BedOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>
     o.keep = r.flags & (4u | 32u);
     return o;
 }
-// Depth 0 marks a cell covered by the level just above the water (a bank's lip: the water
-// under it is not seen).
+// Up to 15 units over the water: a bank's lip hanging over it (`grid_color`).
 @fragment fn fs_bed(i: BedOut) -> @builtin(frag_depth) f32 {
     let sy = surface_y(i.world.xz);
     if (i.keep == 0u || i.world.y > sy + 15.0) { discard; }
-    if (i.world.y > sy - 0.5) { return 0.0; }
     return i.pos.z;
 }
 

@@ -32,9 +32,15 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
 - **Depth:** a second top-down render, the *bed map*, holds the highest level surface (landscape
   and river beds, not actors) under the water, so each point knows how deep the water is: shallow
   water is clear, deep water takes the tint (the original water texture's mean colour, its
-  texture as world-space detail), and the surface fades out at the shore with a little foam. A
-  cell whose level geometry reaches up to 15 units above the water (a bank's lip) is marked
-  covered: no water drawn there. Open water with nothing under it is deep.
+  texture as world-space detail), and the surface fades out at the shore with a little foam (the
+  thickness is blended between the four nearest cells, so shores are smooth). Level geometry up
+  to 15 units above the water is a bank's lip: under a low one (within 5 units, which the waves
+  would poke through, like a stone rim) no water is drawn; under a higher one (grass and leaves
+  hanging over the water) the water goes on as deep as the nearest river bed beside it, up to the
+  bank. Open water with nothing under it is deep.
+- **Edges of the grid:** a triangle is drawn when any of its corners has water within 2 cells;
+  its other corners take the height of water within 4 cells, so triangles along the shore stay
+  in place (their dry part is discarded per pixel).
 - **Waves:** a 512² damped wave equation (3-unit cells, ~1500 units square around the camera's
   target, scrolling with it a cell at a time), stepped at 120 Hz in pairs from the host's
   clock (`Renderer::water_clock`, game ticks + interpolation). A top-down depth render of the
