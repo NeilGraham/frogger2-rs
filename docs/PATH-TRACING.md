@@ -8,8 +8,9 @@ renderer ([LIGHTING.md](LIGHTING.md), [WATER.md](WATER.md)) with its lighting tr
 queries off for testing.
 
 On Windows (DX12) ray queries need shader model 6.5, i.e. Microsoft's DXC compiler:
-put `dxcompiler.dll` and `dxil.dll` beside `frogger2.exe` (`tools/run/fetch-dxc.sh GAME_DIR`;
-packages built with them in the build folder include them). Without DXC wgpu compiles with FXC
+put `dxcompiler.dll` and `dxil.dll` beside `frogger2.exe` or in `engine\` beside it, as in a
+release install (`tools/run/fetch-dxc.sh GAME_DIR`; packages built with them in the build folder
+include them in `engine\`). Without DXC wgpu compiles with FXC
 and reports no ray tracing. `logs/upscale.log` says `ray tracing: true/false`. (Statically linked
 DXC, wgpu's `static-dxc`, would need the Visual Studio ATL libraries to build.)
 

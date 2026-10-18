@@ -7,15 +7,15 @@
 # cargo.exe refuses a UNC (\\wsl$\...) working directory and MSVC link.exe is
 # slow/flaky on 9P paths, so the crate's sources are rsynced to a Windows-side
 # mirror and built there:
-#     C:\f2-build\<checkout>\f2fix    (rsync --delete mirror of crates/f2fix)
-#     C:\f2-build\<checkout>\target   (CARGO_TARGET_DIR, persists)
+#     C:\frogger2-rs-dev\build\<checkout>\f2fix    (rsync --delete mirror of crates/f2fix)
+#     C:\frogger2-rs-dev\build\<checkout>\target   (CARGO_TARGET_DIR, persists)
 # f2fix is a standalone cargo workspace (no path dependencies), so only its own
 # directory is mirrored. The DLL is copied to target/oracle-bin/f2fix.dll
 # (gitignored) and checked: PE32, i386, DLL, DirectInput exports present.
 #
 # Environment overrides:
 #   F2_WIN_CARGO    cargo.exe (default <your Windows home>/.cargo/bin/cargo.exe)
-#   F2_BUILD_ROOT   WSL path of the Windows build root (default /mnt/c/f2-build)
+#   F2_BUILD_ROOT   WSL path of the Windows build root (default /mnt/c/frogger2-rs-dev/build)
 set -euo pipefail
 WINHOME="$(wslpath "$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d "\\r")" 2>/dev/null || true)"   # your Windows home (WSL)
 
@@ -28,7 +28,7 @@ esac
 
 TARGET=i686-pc-windows-msvc
 CARGO_EXE="${F2_WIN_CARGO:-$WINHOME/.cargo/bin/cargo.exe}"
-BUILD_ROOT="${F2_BUILD_ROOT:-/mnt/c/f2-build}"
+BUILD_ROOT="${F2_BUILD_ROOT:-/mnt/c/frogger2-rs-dev/build}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NAME="$(basename "$REPO")"
 MIRROR="$BUILD_ROOT/$NAME"

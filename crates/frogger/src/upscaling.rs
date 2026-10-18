@@ -91,7 +91,7 @@ pub fn create(window: &Window, cfg: &Config, display: Box<dyn wgpu::wgt::WgpuHas
     desc.backends = wgpu::Backends::DX12;
     // DXC beside the exe (tools/run/fetch-dxc.sh): shader model 6.5+, so ray queries (the
     // Path-Traced graphics). Without it wgpu's default (FXC) and no ray tracing.
-    if let Some(dxc) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("dxcompiler.dll"))).filter(|p| p.is_file()) {
+    if let Some(dxc) = beside_exe("dxcompiler.dll") {
         desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::DynamicDxc { dxc_path: dxc.to_string_lossy().into_owned() };
     }
     let instance = wgpu::Instance::new(desc);
@@ -200,7 +200,15 @@ impl Debug {
 }
 
 /// ReShade (DLSS 5 Neural Rendering through RenoDX's add-on, docs/UPSCALING.md): when
-/// `ReShade64.dll` sits beside the executable, [`create`] loads it after wgpu's instance and
+/// The file `name` beside the executable, or in `engine` beside it: an install's `frogger2.exe`
+/// (the launcher's copy of `engine\frogger2.exe`, `crate::setup`) finds the DLLs that ship with
+/// the engine.
+fn beside_exe(name: &str) -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    [dir.join(name), dir.join("engine").join(name)].into_iter().find(|p| p.is_file())
+}
+
+/// `ReShade64.dll` sits beside the executable (or in `engine`), [`create`] loads it after wgpu's instance and
 /// before the device and swapchain (as a `dxgi.dll` proxy ReShade sees the instance's
 /// `IDXGIFactoryMedia` request and crashes inside DXGI).
 pub fn load_reshade() {
@@ -212,11 +220,7 @@ pub fn load_reshade() {
             fn GetSystemDirectoryW(buf: *mut u16, len: u32) -> u32;
         }
         use std::os::windows::ffi::OsStrExt;
-        let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else { return };
-        let dll = dir.join("ReShade64.dll");
-        if !dll.is_file() {
-            return;
-        }
+        let Some(dll) = beside_exe("ReShade64.dll") else { return };
         let wide = |p: &std::path::Path| p.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
         let mut sys = [0u16; 260];
         // SAFETY: the buffer is valid for its length; the names are NUL-terminated.

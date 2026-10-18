@@ -32,7 +32,7 @@ takes precedence over the `cfg(all())` one (`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC
 `cargo build` is unaffected.
 
 From WSL you can cross-build with the Windows toolchain: `tools/package/build-windows.sh`. It mirrors
-sources to `C:\f2-build\<checkout>` (cmd.exe rejects UNC working directories and MSVC linking over
+sources to `C:\frogger2-rs-dev\build\<checkout>` (cmd.exe rejects UNC working directories and MSVC linking over
 9P is slow), builds `frogger2`, `f2-import`, `f2-viewer` for `x86_64-pc-windows-msvc`, and copies the
 exes to `target/package/win-bin/`. Override with `F2_WIN_CARGO` / `F2_BUILD_ROOT`.
 `crates/f2-upscale` compiles `native/f2_upscale.cpp` (DLSS / FSR glue, docs/UPSCALING.md)
