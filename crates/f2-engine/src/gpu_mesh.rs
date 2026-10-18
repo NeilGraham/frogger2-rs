@@ -1040,7 +1040,7 @@ struct BedOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>
 // large-scale shading (canopies, walls, the scenery around a view, much of it out of sight)
 // into the vertex colours; the sun adds the near shadows (actors, props, nearby scenery) and
 // leaves that scenery's far ones out rather than darkening what the art lit.
-const SHADOW_FADE = vec2<f32>(90.0, 260.0);
+const SHADOW_FADE = vec2<f32>(40.0, 110.0);
 fn caster_fade(gap: f32) -> f32 {
     return 1.0 - smoothstep(SHADOW_FADE.x, SHADOW_FADE.y, gap);
 }
