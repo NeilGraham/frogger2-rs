@@ -1085,10 +1085,15 @@ fn rt_refract(sp: vec3<f32>, r: vec3<f32>, depth: f32) -> vec2<f32> { return sp.
 fn rt_caustics(p: vec3<f32>, ndl: f32) -> f32 { return caustics(p, lt.sun_dir.xyz) * 2.6; }
 // RT-END
 
-fn light(i: VOut, base: vec3<f32>) -> vec3<f32> {
+// `face`: the triangle's own normal, facing the camera.
+fn light(i: VOut, base: vec3<f32>, face: vec3<f32>) -> vec3<f32> {
+    // The art's smoothed normals often lean far from their faces (the book's curled pages), or
+    // point out of the side the camera sees (two-sided faces): a normal behind the face is
+    // mirrored in its plane, which turns it smoothly (no edge where it crosses the face).
     var n = normalize(i.normal);
+    let behind = dot(n, face);
+    if (behind < 0.0) { n = normalize(n - face * (2.0 * behind)); }
     let v = normalize(lt.eye.xyz - i.world);
-    if (dot(n, v) < 0.0) { n = -n; }
     let seed = i.pos.xy;
     let amb = rt_ambient(i.world, n, seed);
     var l = mix(lt.ground.rgb, lt.sky.rgb, n.y * 0.5 + 0.5) * amb.a + amb.rgb;
@@ -1145,6 +1150,9 @@ fn refraction_uv(i: VOut, d: mat4x2<f32>) -> vec2<f32> {
 fn shade(i: VOut) -> vec4<f32> {
     // Derivatives first (uniform control flow).
     let dd = mat4x2<f32>(dpdx(i.world.xz), dpdy(i.world.xz), dpdx(i.uv), dpdy(i.uv));
+    var face = cross(dpdx(i.world), dpdy(i.world));
+    face = select(normalize(i.normal), normalize(face), dot(face, face) > 1e-12);
+    if (dot(face, lt.eye.xyz - i.world) < 0.0) { face = -face; }
     // The far plane (`PCPrepareObject` drops faces past it; here per pixel, no popping).
     if ((i.flags & 1u) == 0u && i.vz - 10.0 >= cam.fog.w) { discard; }
     var c = textureSampleGrad(t, s, i.uv + refraction_uv(i, dd), dd[2], dd[3]) * i.color;
@@ -1153,7 +1161,7 @@ fn shade(i: VOut) -> vec4<f32> {
         if (EMISSIVE) {
             c = vec4<f32>(min(c.rgb * 1.15, vec3<f32>(1.0)), c.a);
         } else if ((i.flags & 1u) == 0u) {
-            c = vec4<f32>(light(i, c.rgb), c.a);
+            c = vec4<f32>(light(i, c.rgb, face), c.a);
         }
     }
     if (cam.fog.x > 0.5) { c = vec4<f32>(mix(cam.fog_color.rgb, c.rgb, i.fog), c.a); }

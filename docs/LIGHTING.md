@@ -26,9 +26,11 @@ With the dynamic lights on, the original's own shadows would double up:
 
 ## Terms
 
-For a surface with texture × vertex colour `base`, normal `n` (turned to face the viewer: the
-game's meshes are one-sided and their normals are not always consistent) and world position
-`p`:
+For a surface with texture × vertex colour `base`, normal `n` (the smoothed vertex normal; one
+that points behind the triangle's camera-facing side is mirrored in the triangle's plane, so it
+turns smoothly: the game's normals are not always consistent and some lean far from their faces,
+e.g. the frontend book's curled pages, where flipping by the view direction left hard-edged dark
+margins) and world position `p`:
 
 ```
 light = mix(ground, sky, n.y / 2 + 1/2)                         hemisphere ambient
