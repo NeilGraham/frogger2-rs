@@ -19,8 +19,7 @@ DXC, wgpu's `static-dxc`, would need the Visual Studio ATL libraries to build.)
   than 2% cut-out pixels, e.g. leaves and fences, and skinned meshes are left to the sun's shadow
   map, which still applies: shadow = min(map, rays)); each frame's draws are the TLAS instances,
   each with its mean texture colour.
-- **Sun / moon:** soft shadows, rays into a 1.7° disc, 110 units long: far casters fade out as
-  in the shadow map ([LIGHTING.md](LIGHTING.md)).
+- **Sun / moon:** soft shadows, rays into a 1.7° disc.
 - **Point lights:** the 8 nearest the camera's target cast shadows (one ray each to a jittered
   point on the light).
 - **Ambient and bounce:** cosine-weighted rays (90 units): the openness scales the ambient

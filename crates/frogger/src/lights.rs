@@ -28,7 +28,6 @@ fn setup(sky: [f32; 3], ground: [f32; 3], to_light: [f32; 3], sun: [f32; 3], spe
 
 /// The lights of world `world`, level `level` (`player[0].world_num` / `level_num`).
 pub fn for_level(world: u32, level: u32) -> Lighting {
-    let _ = level;
     // Balanced so a surface facing up comes out a little brighter than the original (~1.2),
     // one facing the sun side-on about as bright, one facing away a little darker.
     match world {
@@ -44,6 +43,15 @@ pub fn for_level(world: u32, level: u32) -> Lighting {
         5 => setup([0.82, 0.86, 0.90], [0.64, 0.66, 0.68], [0.1, 1.0, 0.15], [0.42, 0.46, 0.50], 0.30),
         // Halloween: blue moonlight.
         6 => setup([0.74, 0.76, 0.88], [0.56, 0.54, 0.62], [0.45, 0.7, 0.4], [0.46, 0.52, 0.72], 0.22),
+        // The frontend: daylight from screen right. The book's close-up stands under the
+        // backdrop's canopy, which shades the pages from the usual screen-left sun.
+        8 if level == 0 => {
+            let mut l = Lighting::daylight();
+            if let Some(s) = l.sun.as_mut() {
+                s.to_light = normalize([-0.3, 0.8, 0.4]);
+            }
+            l
+        }
         // Retro, the hub, multiplayer: neutral daylight.
         _ => Lighting::daylight(),
     }

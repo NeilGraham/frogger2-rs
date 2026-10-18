@@ -1036,39 +1036,19 @@ struct BedOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>
     return vec4<f32>(x, y, clamp(0.5 - (w.y - lt.water2.z) / lt.water2.w, 0.0, 1.0), 1.0);
 }
 
-// How much of its shadow a caster `gap` units towards the sun casts. The art bakes the
-// large-scale shading (canopies, walls, the scenery around a view, much of it out of sight)
-// into the vertex colours; the sun adds the near shadows (actors, props, nearby scenery) and
-// leaves that scenery's far ones out rather than darkening what the art lit.
-const SHADOW_FADE = vec2<f32>(40.0, 110.0);
-fn caster_fade(gap: f32) -> f32 {
-    return 1.0 - smoothstep(SHADOW_FADE.x, SHADOW_FADE.y, gap);
-}
-
 fn shadow(p: vec3<f32>) -> f32 {
     if (lt.sh_up.w < 0.5) { return 1.0; }
     let l = light_space(p);
     let uv = vec2<f32>(l.x * 0.5 + 0.5, 0.5 - l.y * 0.5);
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || l.z > 1.0) { return 1.0; }
     let ts = lt.sh_dir.w;
-    let size = vec2<f32>(textureDimensions(shadow_map));
     var sum = 0.0;
-    // The casters' mean distance (the texels that shadow p).
-    var gap = 0.0;
-    var casters = 0.0;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
-            let q = uv + vec2<f32>(f32(x), f32(y)) * ts;
-            sum += textureSampleCompareLevel(shadow_map, shadow_s, q, l.z - 0.002);
-            let g = (l.z - textureLoad(shadow_map, vec2<i32>(q * size), 0)) * lt.sh_right.w;
-            if (g > 0.002 * lt.sh_right.w) {
-                gap += g;
-                casters += 1.0;
-            }
+            sum += textureSampleCompareLevel(shadow_map, shadow_s, uv + vec2<f32>(f32(x), f32(y)) * ts, l.z - 0.002);
         }
     }
-    if (casters == 0.0) { return sum / 9.0; }
-    return 1.0 - (1.0 - sum / 9.0) * caster_fade(gap / casters);
+    return sum / 9.0;
 }
 
 // RT-BEGIN

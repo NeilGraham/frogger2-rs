@@ -65,14 +65,6 @@ fn blocked(o: vec3<f32>, d: vec3<f32>, tmax: f32) -> bool {
     return rayQueryGetCommittedIntersection(&rq).kind != RAY_QUERY_INTERSECTION_NONE;
 }
 
-// The sunlight along a ray towards the sun: far casters fade out as in the shadow map
-// (`caster_fade`).
-fn sun_ray(o: vec3<f32>, d: vec3<f32>) -> f32 {
-    let h = closest(o, d, SHADOW_FADE.y);
-    if (h.t < 0.0) { return 1.0; }
-    return 1.0 - caster_fade(h.t);
-}
-
 fn rt_sun(p: vec3<f32>, n: vec3<f32>, seed: vec2<f32>) -> f32 {
     let f = frame(lt.sun_dir.xyz);
     var lit = 0.0;
@@ -82,7 +74,7 @@ fn rt_sun(p: vec3<f32>, n: vec3<f32>, seed: vec2<f32>) -> f32 {
         let a = r.x * 6.2831853;
         let rad = sqrt(r.y) * 0.03;
         let d = normalize(f * vec3<f32>(cos(a) * rad, sin(a) * rad, 1.0));
-        lit += sun_ray(p + n * 0.75, d);
+        if (!blocked(p + n * 0.75, d, 6000.0)) { lit += 1.0; }
     }
     return lit / f32(rays);
 }
@@ -121,7 +113,7 @@ fn rt_ambient(p: vec3<f32>, n: vec3<f32>, seed: vec2<f32>) -> vec4<f32> {
             let alb = albedo[h.inst].rgb;
             let hp = p + n * 0.75 + d * (h.t - 0.5);
             var sun = 0.0;
-            if (lt.sun_dir.w > 0.5) { sun = 0.5 * sun_ray(hp, lt.sun_dir.xyz); }
+            if (lt.sun_dir.w > 0.5 && !blocked(hp, lt.sun_dir.xyz, 6000.0)) { sun = 0.5; }
             let lit = (lt.sky.rgb + lt.ground.rgb) * 0.25 + lt.sun_color.rgb * sun;
             bounce += share * alb * lit * (1.0 - w * w);
         }
