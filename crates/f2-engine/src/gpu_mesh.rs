@@ -48,7 +48,14 @@ struct Group {
     /// Water: steep faces (waterfalls), still drawn from the mesh when the generated surface
     /// replaces the flat ones.
     steep: bool,
+    /// A waterfall's lowest points (model space, one per [`FOOT_CELL`]): where it lands.
+    feet: Vec<[f32; 3]>,
 }
+
+/// Spacing of a waterfall's landing points.
+const FOOT_CELL: f32 = 8.0;
+/// Landing points per waterfall group at most.
+const MAX_FEET: usize = 12;
 
 /// Cell size of a glowing surface's lights (a lava lake gets one light per cell).
 const SPOT_CELL: f32 = 220.0;
@@ -240,6 +247,7 @@ fn subdivide(verts: &[Vert], groups: &[Group]) -> (Vec<Vert>, Vec<Group>) {
     for g in groups {
         for steep in [false, true] {
             let first = out.len() as u32;
+            let mut feet = Vec::new();
             for t in verts[g.first as usize..(g.first + g.count) as usize].as_chunks::<3>().0 {
                 // Steep and tall: a waterfall (short skirts under the banks count as flat).
                 let n = crate::lighting::normalize(cross(sub(t[1].pos, t[0].pos), sub(t[2].pos, t[0].pos)));
@@ -247,6 +255,13 @@ fn subdivide(verts: &[Vert], groups: &[Group]) -> (Vec<Vert>, Vec<Group>) {
                 let tall = ys.iter().copied().fold(f32::MIN, f32::max) - ys.iter().copied().fold(f32::MAX, f32::min) > 24.0;
                 if (n[1].abs() < 0.5 && tall) != steep {
                     continue;
+                }
+                if steep {
+                    let low = t.iter().map(|v| v.pos).fold([0.0, f32::MAX, 0.0], |a, p| if p[1] < a[1] { p } else { a });
+                    let q = |p: [f32; 3]| [(p[0] / FOOT_CELL).round(), (p[1] / FOOT_CELL).round(), (p[2] / FOOT_CELL).round()];
+                    if feet.len() < MAX_FEET && !feet.iter().any(|&f| q(f) == q(low)) {
+                        feet.push(low);
+                    }
                 }
                 let len = |a: &Vert, b: &Vert| dot(sub(a.pos, b.pos), sub(a.pos, b.pos)).sqrt();
                 let e = len(&t[0], &t[1]).max(len(&t[1], &t[2])).max(len(&t[2], &t[0]));
@@ -263,7 +278,7 @@ fn subdivide(verts: &[Vert], groups: &[Group]) -> (Vec<Vert>, Vec<Group>) {
                 }
             }
             if out.len() as u32 > first {
-                gs.push(Group { crc: g.crc, first, count: out.len() as u32 - first, spots: Vec::new(), steep });
+                gs.push(Group { crc: g.crc, first, count: out.len() as u32 - first, spots: Vec::new(), steep, feet });
             }
         }
     }
@@ -328,7 +343,7 @@ fn expand(o: &GpuObj) -> (Vec<Vert>, Vec<Group>) {
         }
         let crc = mesh.textures.get(fi).copied().unwrap_or(0);
         if groups.last().is_none_or(|g| g.crc != crc) {
-            groups.push(Group { crc, first: verts.len() as u32, count: 0, spots: Vec::new(), steep: false });
+            groups.push(Group { crc, first: verts.len() as u32, count: 0, spots: Vec::new(), steep: false, feet: Vec::new() });
         }
         for (k, &i) in idx.iter().enumerate() {
             let uv = mesh.face_uv.get(fi * 3 + k).copied().unwrap_or([0, 0]);
@@ -408,6 +423,11 @@ struct Lights {
 // LIGHTS-END
 struct Point { pos: vec4<f32>, color: vec4<f32> };
 @group(0) @binding(0) var<uniform> cam: Cam;
+// The generated water's: the frame drawn before it (x of `scene_on`: there is one).
+@group(0) @binding(1) var scene_c: texture_2d<f32>;
+@group(0) @binding(2) var scene_d: texture_depth_2d;
+@group(0) @binding(3) var scene_s: sampler;
+@group(0) @binding(4) var<uniform> scene_on: vec4<f32>;
 @group(1) @binding(0) var t: texture_2d<f32>;
 @group(1) @binding(1) var s: sampler;
 @group(2) @binding(0) var<storage, read> recs: array<Rec>;
@@ -789,6 +809,79 @@ fn cell_thick(c: vec2<i32>) -> f32 {
     if (by < -1e8) { return 200.0; }
     return max(sy - by, 0.0);
 }
+// World point p on the screen: uv and view depth (behind the camera: uv -1).
+fn screen_uv(p: vec3<f32>) -> vec3<f32> {
+    let vp = xfm(cam.v, p);
+    let c = clip(cam.proj, vp);
+    if (c.w < 1.0) { return vec3<f32>(-1.0, -1.0, vp.z); }
+    let j = vec2<f32>(cam.size.z * 2.0 / cam.size.x, -cam.size.w * 2.0 / cam.size.y);
+    let ndc = c.xy / c.w + j;
+    return vec3<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, vp.z);
+}
+// View depth of the frame drawn before the water at uv (the depth buffer is linear).
+fn scene_vz(uv: vec2<f32>) -> f32 {
+    let dims = vec2<i32>(textureDimensions(scene_d));
+    let px = clamp(vec2<i32>(uv * vec2<f32>(dims)), vec2<i32>(0), dims - 1);
+    return textureLoad(scene_d, px, 0) / 0.00025;
+}
+// Screen-space reflection: what the ray from p along r hits in the frame drawn before the
+// water (rgb) and how sure that is (a; 0: off the screen or nothing hit).
+fn ssr(p: vec3<f32>, r: vec3<f32>) -> vec4<f32> {
+    var len = 3.0;
+    var a = p;
+    for (var k = 0; k < 32; k++) {
+        let b = a + r * len;
+        let sb = screen_uv(b);
+        if (any(sb.xy < vec2<f32>(0.0)) || any(sb.xy > vec2<f32>(1.0))) { return vec4<f32>(0.0); }
+        let d = sb.z - scene_vz(sb.xy);
+        // Behind what the frame shows there, not far behind it (else it passed behind a thin
+        // thing and goes on).
+        if (d > 0.0 && d < len * 2.0 + 20.0) {
+            var lo = a;
+            var hi = b;
+            for (var m = 0; m < 5; m++) {
+                let mid = (lo + hi) * 0.5;
+                let sm = screen_uv(mid);
+                if (sm.z - scene_vz(sm.xy) > 0.0) { hi = mid; } else { lo = mid; }
+            }
+            let sh = screen_uv(hi);
+            let border = min(min(sh.x, 1.0 - sh.x), min(sh.y, 1.0 - sh.y));
+            let sure = smoothstep(0.0, 0.06, border) * (1.0 - f32(k) / 32.0);
+            return vec4<f32>(textureSampleLevel(scene_c, scene_s, sh.xy, 0.0).rgb, sure);
+        }
+        a = b;
+        len *= 1.15;
+    }
+    return vec4<f32>(0.0);
+}
+// The sky seen along r: the level's backdrop colour (its fog) where there is one, else a
+// blue as bright as the sky light; deeper overhead, paler towards the horizon.
+fn sky_along(r: vec3<f32>) -> vec3<f32> {
+    var sky = vec3<f32>(0.42, 0.62, 0.9) * dot(lt.sky.rgb, vec3<f32>(0.333));
+    if (cam.fog.x > 0.5 && dot(cam.fog_color.rgb, vec3<f32>(1.0)) > 0.05) { sky = cam.fog_color.rgb; }
+    let horizon = mix(sky, vec3<f32>(1.0), 0.2);
+    return mix(horizon, sky * vec3<f32>(0.75, 0.85, 1.0), sqrt(clamp(r.y, 0.0, 1.0)));
+}
+// Fine ripples too small for the grid (wavelengths 9 to 25 units): slopes x / z.
+fn fine_slope(xz: vec2<f32>, t: f32) -> vec2<f32> {
+    var g = vec2<f32>(0.0);
+    let ks = array<vec3<f32>, 5>(vec3<f32>(0.27, 0.11, 2.1), vec3<f32>(-0.18, 0.31, 2.6), vec3<f32>(0.41, -0.29, 3.3), vec3<f32>(-0.52, -0.37, 3.9), vec3<f32>(0.08, 0.66, 4.4));
+    for (var k = 0; k < 5; k++) {
+        let w = ks[k];
+        let a = 0.11 / length(w.xy);
+        g += w.xy * (a * 0.32 * cos(dot(w.xy, xz) + t * w.z));
+    }
+    return g;
+}
+// How much the simulated surface is moving at x / z (churn: wakes, splashes, waterfalls).
+fn churn(xz: vec2<f32>) -> f32 {
+    if (lt.water2.y < 0.5) { return 0.0; }
+    let c = vec2<i32>(floor(cell(xz) + 0.5));
+    if (!in_window(c)) { return 0.0; }
+    let w = wave[u32(c.y) * u32(lt.water.w) + u32(c.x)];
+    return abs(w.x - w.y);
+}
+
 fn grid_color(i: VOut) -> vec4<f32> {
     if (i.vz - 10.0 >= cam.fog.w) { discard; }
     // The water's thickness, blended between the four nearest cells (smooth shores).
@@ -798,10 +891,15 @@ fn grid_color(i: VOut) -> vec4<f32> {
     let thick = mix(mix(cell_thick(c0), cell_thick(c0 + vec2<i32>(1, 0)), f.x),
                     mix(cell_thick(c0 + vec2<i32>(0, 1)), cell_thick(c0 + vec2<i32>(1, 1)), f.x), f.y);
     if (thick <= 0.0) { discard; }
-    let n = water_n(i.world.xz);
-    let v = normalize(lt.eye.xyz - i.world);
-    let fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
     let tm = lt.water2.x;
+    // The grid's waves plus the fine ripples (fading out with distance, no shimmer).
+    let near = 1.0 - smoothstep(250.0, 1200.0, i.vz);
+    let fs = fine_slope(i.world.xz, tm) * near;
+    let n = normalize(water_n(i.world.xz) + vec3<f32>(-fs.x, 0.0, -fs.y));
+    let v = normalize(lt.eye.xyz - i.world);
+    // Fresnel, lifted a little (the game's cameras look down steeply, where real water
+    // reflects little).
+    let fres = 0.07 + 0.93 * pow(1.0 - max(dot(n, v), 0.0), 4.0);
     // The original water texture as detail, in world space, drifting and bent by the waves.
     let detail = textureSample(t, s, i.world.xz / 48.0 + vec2<f32>(tm * 0.012, tm * 0.007) + n.xz * 0.05).rgb;
     let body = lt.water3.rgb;
@@ -813,16 +911,51 @@ fn grid_color(i: VOut) -> vec4<f32> {
         // Lit by the waves' slopes (the water's surface scatters a little).
         lit += lt.sun_color.rgb * max(dot(n, lt.sun_dir.xyz), 0.0) * sh * 1.2;
         let h = normalize(lt.sun_dir.xyz + v);
-        spec = lt.sun_color.rgb * (pow(max(dot(n, h), 0.0), 260.0) * 3.0 + pow(max(dot(n, h), 0.0), 40.0) * 0.1) * sh;
+        let nh = max(dot(n, h), 0.0);
+        // A sharp glint, sparkles off the fine ripples, a soft sheen.
+        spec = lt.sun_color.rgb * (pow(nh, 260.0) * 3.0 + pow(nh, 900.0) * 6.0 * near + pow(nh, 40.0) * 0.1) * sh;
     }
-    let col = body * lit * (0.75 + 0.5 * detail);
-    // Deeper water hides the bed; the shore fades out, with a little foam.
-    let opacity = 1.0 - exp(-thick / 45.0);
+    // In the water: its colour (the original texture's) lit, with the texture as detail.
+    let scatter = body * lit * (0.75 + 0.5 * detail);
+    // Reflection: the frame itself where the reflected ray finds it, else the sky.
+    var r = reflect(-v, n);
+    r = normalize(vec3<f32>(r.x, max(r.y, 0.02), r.z));
+    var refl = sky_along(r);
+    let on = scene_on.x > 0.5;
+    if (on) {
+        let hit = ssr(i.world, r);
+        refl = mix(refl, hit.rgb, hit.a);
+    }
+    // Shore foam, and foam where the simulation churns (waterfalls landing, wakes).
     let edge = smoothstep(0.0, 4.0, thick);
-    let foam = (1.0 - smoothstep(0.0, 5.0, thick)) * (0.4 + 0.6 * caustic_layer(i.world.xz * 0.7, tm * 1.2)) * 0.35;
-    var rgb = mix(col, lt.sky.rgb * 1.1, fres) + spec + vec3<f32>(foam) * max(lit, vec3<f32>(0.6));
-    var a = clamp((max(opacity, fres * 0.9) + foam + dot(spec, vec3<f32>(0.33))) * edge, 0.0, 1.0);
-    if (cam.fog.x > 0.5) { rgb = mix(cam.fog_color.rgb, rgb, i.fog); }
+    let shore = (1.0 - smoothstep(0.0, 5.0, thick)) * 0.35;
+    let stir = smoothstep(0.04, 0.35, churn(i.world.xz)) * 0.8;
+    let foam = clamp((shore + stir) * (0.4 + 0.6 * caustic_layer(i.world.xz * 0.7, tm * 1.2)), 0.0, 1.0);
+    let foam_rgb = vec3<f32>(foam) * max(lit, vec3<f32>(0.6));
+    var rgb: vec3<f32>;
+    var a: f32;
+    if (on) {
+        // What lies under the water (bent a little by the waves, never something in front of
+        // the water), dimmed and tinted along the path through it (red goes first).
+        let px = i.pos.xy / vec2<f32>(textureDimensions(scene_c));
+        var uv = px + n.xz * vec2<f32>(-1.0, 1.0) * (min(thick, 30.0) * 0.6 / max(i.vz, 40.0));
+        if (scene_vz(uv) < i.vz) { uv = px; }
+        let under = textureSampleLevel(scene_c, scene_s, uv, 0.0).rgb;
+        let path = thick / max(v.y, 0.2);
+        let tr = exp(-path * vec3<f32>(0.024, 0.010, 0.007));
+        let water = under * tr + scatter * (vec3<f32>(1.0) - tr);
+        rgb = mix(water, refl, fres) + spec + foam_rgb;
+        a = 1.0;
+    } else {
+        // No copy of the frame: the water is blended over it.
+        let opacity = 1.0 - exp(-thick / 45.0);
+        rgb = scatter * opacity * (1.0 - fres) + refl * fres + spec + foam_rgb;
+        a = clamp(1.0 - (1.0 - opacity) * (1.0 - fres) + foam, 0.0, 1.0);
+    }
+    // Premultiplied; the shore fades out.
+    rgb *= edge;
+    a *= edge;
+    if (cam.fog.x > 0.5) { rgb = mix(cam.fog_color.rgb * a, rgb, i.fog); }
     return vec4<f32>(rgb, a);
 }
 @fragment fn fs_grid(i: VOut) -> @location(0) vec4<f32> {
@@ -1028,6 +1161,15 @@ pub(crate) struct Gpu {
     /// The generated water surface this frame: its texture (wrapping) and tint.
     grid: Option<(TexHandle, [f32; 3])>,
     grid_pipelines: HashMap<(wgpu::TextureFormat, u32, bool), wgpu::RenderPipeline>,
+    /// The generated surface's group 0: the camera plus a copy of the frame drawn so far
+    /// (colour and depth: reflections and what the water lets through) and whether there is
+    /// one this frame.
+    grid_layout: wgpu::PipelineLayout,
+    grid_cam_layout: wgpu::BindGroupLayout,
+    grid_cam_bg: wgpu::BindGroup,
+    scene_flag: wgpu::Buffer,
+    scene_copy: (wgpu::Texture, wgpu::Texture),
+    linear_s: wgpu::Sampler,
     sim: crate::water::WaterSim,
     /// Path-Traced (devices with ray queries), and whether this frame uses it.
     rtx: Option<RtParts>,
@@ -1120,6 +1262,45 @@ fn mean_color(rgba: &[u8]) -> ([f32; 3], bool) {
     ([(acc[0] / acc[3]) as f32, (acc[1] / acc[3]) as f32, (acc[2] / acc[3]) as f32], opaque)
 }
 
+/// The copies of the frame drawn so far that the generated water reads (colour in `format`,
+/// depth).
+fn scene_copy_textures(device: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat) -> (wgpu::Texture, wgpu::Texture) {
+    let tex = |label, format| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    };
+    (tex("scene copy", format), tex("scene depth copy", wgpu::TextureFormat::Depth32Float))
+}
+
+fn grid_cam_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    cam: &wgpu::Buffer,
+    copy: &(wgpu::Texture, wgpu::Texture),
+    sampler: &wgpu::Sampler,
+    flag: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("generated water camera"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: cam.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&copy.0.create_view(&Default::default())) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&copy.1.create_view(&Default::default())) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 4, resource: flag.as_entire_binding() },
+        ],
+    })
+}
+
 impl Gpu {
     pub fn new(device: &wgpu::Device, tex_layout: &wgpu::BindGroupLayout) -> Gpu {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gpu meshes"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
@@ -1184,6 +1365,35 @@ impl Gpu {
             },
         ];
         let lights_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh lights"), entries: &light_entries });
+        let fr = wgpu::ShaderStages::FRAGMENT;
+        let grid_cam_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("generated water camera"),
+            entries: &[
+                ubo(0, vf),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: fr,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: fr,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: fr, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                ubo(4, fr),
+            ],
+        });
         // The shadow pass reads only the lights' uniform block (the map is its target).
         let shadow_ubo_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh shadow"), entries: &[ubo(0, vf)] });
         // The bed map pass reads the lights' block and the surface map.
@@ -1206,6 +1416,11 @@ impl Gpu {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu meshes"),
             bind_group_layouts: &[Some(&cam_layout), Some(tex_layout), Some(&store_layout), Some(&lights_layout)],
+            immediate_size: 0,
+        });
+        let grid_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("generated water"),
+            bind_group_layouts: &[Some(&grid_cam_layout), Some(tex_layout), Some(&store_layout), Some(&lights_layout)],
             immediate_size: 0,
         });
         let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1268,6 +1483,15 @@ impl Gpu {
             ..Default::default()
         });
         let sim = crate::water::WaterSim::new(device);
+        let linear_s = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("scene copy"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let scene_flag = buf("scene copy flag", 16, wgpu::BufferUsages::UNIFORM);
+        let scene_copy = scene_copy_textures(device, 1, 1, wgpu::TextureFormat::Rgba8Unorm);
+        let grid_cam_bg = grid_cam_bind_group(device, &grid_cam_layout, &cam, &scene_copy, &linear_s, &scene_flag);
         let bed_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water bed map"),
             bind_group_layouts: &[None, None, Some(&store_layout), Some(&bed_ubo_layout)],
@@ -1392,6 +1616,12 @@ impl Gpu {
             bed_bg,
             grid: None,
             grid_pipelines: HashMap::new(),
+            grid_layout,
+            grid_cam_layout,
+            grid_cam_bg,
+            scene_flag,
+            scene_copy,
+            linear_s,
             sim,
             vb_usage: if rtx.is_some() { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT } else { wgpu::BufferUsages::VERTEX },
             rtx,
@@ -1535,9 +1765,24 @@ impl Gpu {
         }
         // Water; the flat faces' biggest texture tints the generated surface.
         let mut biggest: Option<(u32, u32, TexHandle)> = None;
+        // Waterfalls stir the water where they land (a steady source, turbulent: the points
+        // move about a little from step to step).
+        let mut falls = Vec::new();
         for &(key, rec, additive) in &sink.water {
             let Some((_, groups)) = self.water_meshes.get(&key) else { continue };
             for g in groups {
+                let m = &sink.mats[sink.recs[rec as usize].mat as usize];
+                for (k, &f) in g.feet.iter().enumerate() {
+                    let p = crate::math::mtx_xfm(m, f);
+                    let h = |salt: u32| {
+                        let x = ((water_clock * 30.0) as u32).wrapping_mul(747796405).wrapping_add(k as u32 * 2891336453 + salt * 1013904223);
+                        let x = (x ^ (x >> 16)).wrapping_mul(2246822519);
+                        (x ^ (x >> 13)) as f32 / u32::MAX as f32 - 0.5
+                    };
+                    let pos = [p[0] + h(1) * FOOT_CELL, p[1], p[2] + h(2) * FOOT_CELL];
+                    // The fall's mesh may go on far under its pool's surface.
+                    falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.35 + 0.25 * h(3), above: 400.0 });
+                }
                 let Some(tex) = textures.current(g.crc) else { continue };
                 self.water_list.push((rec, key, g.first..g.first + g.count, tex, true, additive, g.steep));
                 need_bg.push((tex, true));
@@ -1553,7 +1798,7 @@ impl Gpu {
         // The wave simulation, around the camera's target.
         if lighting.is_some_and(|l| l.water) && (!self.water_list.is_empty() || !self.list.is_empty()) {
             let centre = view.camera.map_or([0.0; 3], |c| c.target);
-            if self.sim.plan(queue, centre, water_clock, splashes) {
+            if self.sim.plan(queue, centre, water_clock, splashes, &falls) {
                 splashes.clear();
             }
         }
@@ -1761,7 +2006,8 @@ impl Gpu {
             pass.set_pipeline(&self.surface_pipeline);
             pass.set_bind_group(2, store_bg, &[]);
             pass.set_bind_group(3, &self.shadow_ubo_bg, &[]);
-            draw_list(&mut pass, &self.water_meshes, self.water_list.iter().map(|d| (d.0, d.1, d.2.clone())));
+            // Level water only: a waterfall would lift the pool it lands in to its top.
+            draw_list(&mut pass, &self.water_meshes, self.water_list.iter().filter(|d| !d.6).map(|d| (d.0, d.1, d.2.clone())));
             drop(pass);
             let mut pass = depth_pass(encoder, "water bed map", &self.sim.bed_view);
             pass.set_pipeline(&self.bed_pipeline);
@@ -1818,6 +2064,7 @@ impl Gpu {
         }
         if let (Some((tex, _)), Some(p)) = (self.grid, self.grid_pipelines.get(&(format, samples, mrt))) {
             pass.set_pipeline(p);
+            pass.set_bind_group(0, &self.grid_cam_bg, &[]);
             pass.set_bind_group(1, bind_group(tex, true), &[]);
             pass.draw(0..GRID * GRID * 6, 0..1);
         }
@@ -1825,6 +2072,32 @@ impl Gpu {
 
     pub fn has_water(&self) -> bool {
         !self.water_list.is_empty()
+    }
+
+    /// Whether this frame's water reads a copy of the frame drawn before it (colour `color`,
+    /// depth `depth`, single-sampled, the size of the 3D frame). With `Some`, the caller
+    /// copies them into [`scene_copy`](Self::scene_copy) right before
+    /// [`draw_water`](Self::draw_water).
+    pub fn use_scene_copy(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: Option<(&wgpu::Texture, &wgpu::Texture)>) {
+        let on = frame.is_some_and(|(c, d)| c.size() == d.size() && c.sample_count() == 1 && d.format() == wgpu::TextureFormat::Depth32Float);
+        if let (true, Some((c, _))) = (on, frame) {
+            let (w, h, f) = (c.width(), c.height(), c.format());
+            let cur = &self.scene_copy.0;
+            if (cur.width(), cur.height(), cur.format()) != (w, h, f) {
+                self.scene_copy = scene_copy_textures(device, w, h, f);
+                self.grid_cam_bg = grid_cam_bind_group(device, &self.grid_cam_layout, &self.cam, &self.scene_copy, &self.linear_s, &self.scene_flag);
+            }
+        }
+        queue.write_buffer(&self.scene_flag, 0, bytemuck::cast_slice(&[if on { 1.0f32 } else { 0.0 }, 0.0, 0.0, 0.0]));
+    }
+
+    /// Copies the frame drawn so far (`color`, `depth`) for the water to read.
+    pub fn scene_copy(&self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::Texture, depth: &wgpu::Texture) {
+        if color.size() != self.scene_copy.0.size() || color.format() != self.scene_copy.0.format() {
+            return;
+        }
+        encoder.copy_texture_to_texture(color.as_image_copy(), self.scene_copy.0.as_image_copy(), color.size());
+        encoder.copy_texture_to_texture(depth.as_image_copy(), self.scene_copy.1.as_image_copy(), depth.size());
     }
 
     fn water_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool, additive: bool) {
@@ -1847,9 +2120,16 @@ impl Gpu {
             Some(wgpu::ColorTargetState { format: crate::renderer::REACTIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::empty() }),
         ];
         if !additive && !self.grid_pipelines.contains_key(&(format, samples, mrt)) {
+            // Premultiplied: the reflection is added whatever the water lets through.
+            let mut targets = targets.clone();
+            targets[0] = Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState { color: comp(F::One, F::OneMinusSrcAlpha), alpha: comp(F::One, F::OneMinusSrcAlpha) }),
+                write_mask: wgpu::ColorWrites::ALL,
+            });
             let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("generated water"),
-                layout: Some(&self.layout),
+                layout: Some(&self.grid_layout),
                 vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_grid"), compilation_options: Default::default(), buffers: &[] },
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
                 depth_stencil: Some(wgpu::DepthStencilState {

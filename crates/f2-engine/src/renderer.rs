@@ -1534,7 +1534,7 @@ impl Renderer {
             let d = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
             let size = model.radius * actor.scale[0].abs().max(actor.scale[2].abs());
             if d > 0.05 && d < 60.0 && self.splashes.len() < crate::water::MAX_SPLATS {
-                self.splashes.push(crate::water::Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: (d * 0.25).min(2.0) });
+                self.splashes.push(crate::water::Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: (d * 0.25).min(2.0), above: 0.0 });
             }
         }
     }
@@ -1921,7 +1921,8 @@ impl Renderer {
                 sample_count: samples,
                 dimension: wgpu::TextureDimension::D2,
                 format: DEPTH_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                // Copied for the enhanced water (`GpuMesh::scene_copy`).
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
             self.depth = Some((tex.create_view(&Default::default()), w, h, samples));
@@ -1930,7 +1931,7 @@ impl Renderer {
             self.msaa_target = Some((self.colour_texture("msaa", w, h, samples, wgpu::TextureUsages::RENDER_ATTACHMENT), w, h, samples));
         }
         if scaled && !matches!(self.internal, Some((_, iw, ih)) if iw == w && ih == h) {
-            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
             self.internal = Some((self.colour_texture("internal", w, h, 1, usage), w, h));
         }
         if scaled {
@@ -2020,35 +2021,55 @@ impl Renderer {
         }
         let depth_view = &self.depth.as_ref().unwrap().0;
         let main_target = if scaled { &self.internal.as_ref().unwrap().0 } else { target };
-        let (view, resolve) = if samples > 1 { (&self.msaa_target.as_ref().unwrap().0, Some(main_target)) } else { (main_target, None) };
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("mdx frame"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                depth_slice: None,
-                resolve_target: resolve,
-                ops: wgpu::Operations {
-                    load: if self.overlay && samples == 1 && !scaled {
-                        wgpu::LoadOp::Load
-                    } else {
-                        wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] })
-                    },
-                    store: if samples > 1 { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth_view,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        if let Some(vb) = &self.vbuf {
-            pass.set_vertex_buffer(0, vb.slice(..));
+        // Enhanced water reads a copy of the frame drawn before it: the pass is split there
+        // (single-sampled frames whose target can be copied).
+        let copy = gpu
+            && self.gpu_mesh.as_ref().is_some_and(|g| g.has_water())
+            && samples == 1
+            && main_target.texture().usage().contains(wgpu::TextureUsages::COPY_SRC)
+            && main_target.texture().size() == depth_view.texture().size();
+        if gpu {
+            let frame = copy.then(|| (main_target.texture(), depth_view.texture()));
+            self.gpu_mesh.as_mut().unwrap().use_scene_copy(&self.device, &self.queue, frame);
         }
-        pass.set_bind_group(0, &self.uniform_bg, &[]);
+        let (view, resolve) = if samples > 1 { (&self.msaa_target.as_ref().unwrap().0, Some(main_target)) } else { (main_target, None) };
+        let begin = |encoder: &mut wgpu::CommandEncoder, first: bool| {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(if first { "mdx frame" } else { "mdx frame (water on)" }),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: resolve,
+                        ops: wgpu::Operations {
+                            load: if !first || (self.overlay && samples == 1 && !scaled) {
+                                wgpu::LoadOp::Load
+                            } else {
+                                wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] })
+                            },
+                            store: if samples > 1 { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: if first { wgpu::LoadOp::Clear(1.0) } else { wgpu::LoadOp::Load },
+                            store: if copy && first { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            if let Some(vb) = &self.vbuf {
+                pass.set_vertex_buffer(0, vb.slice(..));
+            }
+            pass.set_bind_group(0, &self.uniform_bg, &[]);
+            pass
+        };
+        let mut pass = begin(encoder, true);
         // Ultrawide clamp: 3D frames are scissored to the viewport.
         let scissor = self.view.viewport.map(|[x, y, w, h]| {
             let (x, y) = ((x as u32).min(iw - 1), (y as u32).min(ih - 1));
@@ -2083,6 +2104,12 @@ impl Renderer {
                 gpu_left = false;
             }
             if water_left && ci >= marks[3] as usize {
+                if copy {
+                    drop(pass);
+                    self.gpu_mesh.as_ref().unwrap().scene_copy(encoder, main_target.texture(), depth_view.texture());
+                    pass = begin(encoder, false);
+                    scissored = false;
+                }
                 draw_gpu(&mut pass, &mut scissored, true);
                 water_left = false;
             }
@@ -2104,6 +2131,11 @@ impl Renderer {
             draw_gpu(&mut pass, &mut scissored, false);
         }
         if water_left {
+            if copy {
+                drop(pass);
+                self.gpu_mesh.as_ref().unwrap().scene_copy(encoder, main_target.texture(), depth_view.texture());
+                pass = begin(encoder, false);
+            }
             draw_gpu(&mut pass, &mut scissored, true);
         }
         drop(pass);
@@ -2257,42 +2289,59 @@ impl Renderer {
             let (x, y) = ((x as u32).min(iw - 1), (y as u32).min(ih - 1));
             [x, y, (w as u32).min(iw - x).max(1), (h as u32).min(ih - y).max(1)]
         });
+        // Enhanced water reads a copy of the frame drawn before it: the pass is split there.
+        let copy = gpu && self.gpu_mesh.as_ref().is_some_and(|g| g.has_water());
+        if gpu {
+            let (ut, depth) = (self.up.as_ref().unwrap(), self.depth.as_ref().unwrap().0.texture());
+            let frame = copy.then_some((&ut.color.0, depth));
+            self.gpu_mesh.as_mut().unwrap().use_scene_copy(&self.device, &self.queue, frame);
+        }
         let ut = self.up.as_ref().unwrap();
+        let depth_view = &self.depth.as_ref().unwrap().0;
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upscale scene") });
         if gpu {
             self.gpu_mesh.as_mut().unwrap().pre_passes(&mut enc);
         }
         {
-            let att = |view, c: wgpu::Color| {
-                Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(c), store: wgpu::StoreOp::Store },
-                })
+            let begin = |enc: &mut wgpu::CommandEncoder, first: bool| {
+                let att = |view, c: wgpu::Color| {
+                    Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: if first { wgpu::LoadOp::Clear(c) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store },
+                    })
+                };
+                let mut pass = enc
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some(if first { "mdx scene (upscaler input)" } else { "mdx scene (upscaler input, water on)" }),
+                        color_attachments: &[
+                            att(&ut.color.1, wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
+                            att(&ut.motion.1, wgpu::Color::TRANSPARENT),
+                            att(&ut.depth.1, wgpu::Color::TRANSPARENT),
+                            att(&ut.reactive.1, wgpu::Color::TRANSPARENT),
+                        ],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: if first { wgpu::LoadOp::Clear(1.0) } else { wgpu::LoadOp::Load },
+                                store: if copy && first { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    })
+                    .forget_lifetime();
+                if let (Some(vb), Some(mb)) = (&self.vbuf, &self.mv_buf) {
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_vertex_buffer(1, mb.slice(..));
+                }
+                pass.set_bind_group(0, &self.uniform_bg, &[]);
+                pass
             };
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("mdx scene (upscaler input)"),
-                color_attachments: &[
-                    att(&ut.color.1, wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
-                    att(&ut.motion.1, wgpu::Color::TRANSPARENT),
-                    att(&ut.depth.1, wgpu::Color::TRANSPARENT),
-                    att(&ut.reactive.1, wgpu::Color::TRANSPARENT),
-                ],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth.as_ref().unwrap().0,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            if let (Some(vb), Some(mb)) = (&self.vbuf, &self.mv_buf) {
-                pass.set_vertex_buffer(0, vb.slice(..));
-                pass.set_vertex_buffer(1, mb.slice(..));
-            }
-            pass.set_bind_group(0, &self.uniform_bg, &[]);
+            let mut pass = begin(&mut enc, true);
             let mut scissored = false;
             let mut gpu_left = gpu;
             let mut water_left = gpu && self.gpu_mesh.as_ref().is_some_and(|g| g.has_water());
@@ -2320,6 +2369,12 @@ impl Renderer {
                     gpu_left = false;
                 }
                 if water_left && ci >= marks[3] as usize {
+                    if copy {
+                        drop(pass);
+                        self.gpu_mesh.as_ref().unwrap().scene_copy(&mut enc, &ut.color.0, depth_view.texture());
+                        pass = begin(&mut enc, false);
+                        scissored = false;
+                    }
                     draw_gpu(&mut pass, &mut scissored, true);
                     water_left = false;
                 }
@@ -2341,6 +2396,11 @@ impl Renderer {
                 draw_gpu(&mut pass, &mut scissored, false);
             }
             if water_left {
+                if copy {
+                    drop(pass);
+                    self.gpu_mesh.as_ref().unwrap().scene_copy(&mut enc, &ut.color.0, depth_view.texture());
+                    pass = begin(&mut enc, false);
+                }
                 draw_gpu(&mut pass, &mut scissored, true);
             }
         }

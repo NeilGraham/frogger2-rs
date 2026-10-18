@@ -458,7 +458,7 @@ impl App {
                 if let Some(a) = plt.and_then(|a| self.game.actor2.actors.get(a)) {
                     let q = &a.actor.position;
                     let pos = [q.vx as f32 / 10.0, q.vy as f32 / 10.0, q.vz as f32 / 10.0];
-                    self.r.water_splash(f2_engine::water::Splash { pos, radius: 26.0, strength: 3.0 });
+                    self.r.water_splash(f2_engine::water::Splash { pos, radius: 26.0, strength: 3.0, above: 0.0 });
                 }
             }
         }

@@ -21,7 +21,7 @@ pub(crate) const TEXEL: f32 = 3.0;
 /// Simulation steps per second.
 pub(crate) const STEP_HZ: f64 = 120.0;
 /// Splashes applied per step.
-pub(crate) const MAX_SPLATS: usize = 64;
+pub(crate) const MAX_SPLATS: usize = 128;
 /// Depth range of the surface map (world units around the reference height).
 pub(crate) const RANGE: f32 = 8000.0;
 /// Uniform stride of the per-step parameters (dynamic offsets).
@@ -30,12 +30,13 @@ const MAX_STEPS: u32 = 4;
 
 /// Something disturbing the water at `pos` (world units): the surface within `radius` is
 /// pushed down by up to `strength` units (if the water there is within `radius` of `pos`'s
-/// height).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// height, or up to `above` units higher: a waterfall plunging into its pool).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Splash {
     pub pos: [f32; 3],
     pub radius: f32,
     pub strength: f32,
+    pub above: f32,
 }
 
 const SIM: &str = r#"
@@ -97,7 +98,7 @@ fn step(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var k = 0u; k < st.nsplat; k++) {
         let a = splats[k * 2u];
         let b = splats[k * 2u + 1u];
-        if (abs(a.y - surf_y) < a.w + 12.0) {
+        if (surf_y - a.y < a.w + 12.0 + b.y && a.y - surf_y < a.w + 12.0) {
             let dist = distance(wp, a.xz);
             if (dist < a.w) {
                 h -= b.x * (0.5 + 0.5 * cos(3.14159265 * dist / a.w));
@@ -277,8 +278,9 @@ impl WaterSim {
 
     /// Plans this frame: how many steps the clock `time` (seconds) allows, the window around
     /// `centre`, and the parameters and `splashes` of the steps. Returns whether the splashes
-    /// were used (no steps this frame: the caller keeps them for the next).
-    pub fn plan(&mut self, queue: &wgpu::Queue, centre: [f32; 3], time: f64, splashes: &[Splash]) -> bool {
+    /// were used (no steps this frame: the caller keeps them for the next). `sources` stir the
+    /// water steadily (waterfalls): their strength is per pair of steps.
+    pub fn plan(&mut self, queue: &wgpu::Queue, centre: [f32; 3], time: f64, splashes: &[Splash], sources: &[Splash]) -> bool {
         let dt = match self.last_time {
             Some(t) if time >= t => (time - t).min(0.25),
             _ => 0.0,
@@ -318,10 +320,12 @@ impl WaterSim {
         let origin = [cell[0] as f32 * TEXEL, cell[1] as f32 * TEXEL];
         self.frame.origin = origin;
         self.frame.ref_y = self.ref_y;
-        let n = splashes.len().min(MAX_SPLATS);
+        let all = splashes.iter().copied().chain(sources.iter().map(|s| Splash { strength: s.strength * pairs as f32, ..*s }));
         let mut sp = vec![0.0f32; MAX_SPLATS * 8];
-        for (k, s) in splashes.iter().take(n).enumerate() {
-            sp[k * 8..k * 8 + 5].copy_from_slice(&[s.pos[0], s.pos[1], s.pos[2], s.radius, s.strength]);
+        let mut n = 0;
+        for (k, s) in all.take(MAX_SPLATS).enumerate() {
+            sp[k * 8..k * 8 + 6].copy_from_slice(&[s.pos[0], s.pos[1], s.pos[2], s.radius, s.strength, s.above]);
+            n = k + 1;
         }
         queue.write_buffer(&self.splats, 0, bytemuck::cast_slice(&sp));
         let mut u = vec![0u8; (STEP_STRIDE * MAX_STEPS as u64) as usize];

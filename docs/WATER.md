@@ -52,10 +52,27 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   - the frog landing on a platform splashes at the platform (`App::water_tick`), and
   - the platform and the frog dip by a couple of units on a damped spring (render-only
     `DrawCtx::dips`, interpolated between ticks).
-- **Surface shading:** per-pixel normals from the simulated height plus the swell; the body lit by
-  the waves' slopes; Fresnel reflection of the sky colour and a sharp sun glint (shadowed). Drawn
-  after the opaque geometry, before the CPU's translucent triangles (the waterfalls keep the
-  original's additive or alpha blending).
+- **Surface shading:** per-pixel normals from the simulated height plus the swell, and fine
+  ripples (wavelengths 9 to 25 units, faded out with distance) for sparkle; the body lit by the
+  waves' slopes; a sharp sun glint and sparkles (shadowed). Drawn after the opaque geometry,
+  before the CPU's translucent triangles (the waterfalls keep the original's additive or alpha
+  blending).
+- **Reflections and what shows through:** the frame's pass is split before the water and the
+  frame so far (colour and depth) copied (`GpuMesh::use_scene_copy` / `scene_copy`; any
+  single-sampled frame whose target can be copied: always with DLSS / FSR, not with MSAA). The
+  generated surface then ray-marches its reflection through the copy (screen-space reflections,
+  32 growing steps and 5 refining ones; off the screen: the level's backdrop colour, paler to the
+  horizon), weighted by a Fresnel term lifted for the game's steep cameras. What lies under the
+  water is read from the copy, bent a little by the waves, and tinted along the path through
+  the water (red absorbed first) into the water's own colour. Without a copy the surface is
+  blended over the frame as before. The surface is premultiplied, so its reflection does not
+  depend on how clear the water is.
+- **Waterfalls** (the steep faces) stir the water where they land: each waterfall group keeps up
+  to 12 of its lowest points, which push the simulated surface every step (moving about a little,
+  so the water churns), reaching water up to 400 units above them (a fall's mesh may go on far
+  under its pool). Where the simulated surface moves fast (churn: under falls, wakes,
+  splashes) the water foams. Waterfalls are left out of the surface map (they would lift their
+  pool to their top).
 - **Refraction:** what lies under the water wavers as the waves bend the view rays: each pixel of
   a surface under the water samples its texture where the ray refracted at the wavy surface lands,
   minus where it would land under flat water (turned into texture space with the surface's screen

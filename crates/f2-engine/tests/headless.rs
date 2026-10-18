@@ -273,7 +273,7 @@ fn enhanced_water_takes_splashes() {
             r.begin_frame(320, 240);
             r.set_camera(&Camera { source: [0.0, 120.0, -90.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] });
             if splash && f == 3 {
-                r.water_splash(Splash { pos: [0.0, 0.0, 0.0], radius: 25.0, strength: 6.0 });
+                r.water_splash(Splash { pos: [0.0, 0.0, 0.0], radius: 25.0, strength: 6.0, above: 0.0 });
             }
             r.draw_actor(&model, &mut Actor { modge_frame: 0, ..Actor::default() });
             img = Some(r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap());
