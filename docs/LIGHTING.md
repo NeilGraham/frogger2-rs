@@ -48,6 +48,12 @@ colour = base × light + sun_color × spec × (n·h)^48 × shadow × mean(vertex
   screen or not), centred on the camera's target and sized by the camera distance
   (1.6×, 500..3000 units), snapped to whole texels so it does not crawl as the camera moves.
   3×3 PCF with a hardware comparison sampler, normal offset 2 units, slope-scaled bias.
+- **Far casters fade:** a shadow fades with its caster's distance towards the sun (full up to
+  90 units, gone by 260; `caster_fade`, the casters' mean distance from the 3×3 texels). The
+  art bakes large-scale shading into the vertex colours; scenery far above or behind the view
+  (the canopy around the frontend's book, a level's tree walls, much of it out of sight) would
+  otherwise darken what the art lit, in hard-edged patches. Path-Traced does the same with its
+  sun rays (cast 260 units).
 - **Glowing surfaces:** textures whose names contain `lava`, `fire`, `flame`, `glow`, `burn`,
   `bulb`, `lairfl`, `ember`, `candle`, `neon` or `lamp` (`lighting::is_emissive`) are drawn
   unlit (×1.15) and emit light: each glowing texture group is split into 220-unit cells and

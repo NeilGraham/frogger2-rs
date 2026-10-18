@@ -229,7 +229,17 @@ fn gpu_mesh_lighting_balances_and_casts_shadows() {
         r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap()
     };
     let unlit = shot(None);
-    let flat = Lighting { sky: [1.0; 3], ground: [1.0; 3], sun: None, point_lights: vec![], emissive_lights: false, specular: 0.0, water: false, baked: 1.0, ..Lighting::daylight() };
+    let flat = Lighting {
+        sky: [1.0; 3],
+        ground: [1.0; 3],
+        sun: None,
+        point_lights: vec![],
+        emissive_lights: false,
+        specular: 0.0,
+        water: false,
+        baked: 1.0,
+        ..Lighting::daylight()
+    };
     let balanced = shot(Some(flat.clone()));
     assert_eq!(unlit.pixel(160, 120), balanced.pixel(160, 120), "ambient 1 = the baked colours");
     let sun = |shadows| Lighting {
