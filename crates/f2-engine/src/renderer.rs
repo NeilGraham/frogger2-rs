@@ -1534,7 +1534,7 @@ impl Renderer {
             let d = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
             let size = model.radius * actor.scale[0].abs().max(actor.scale[2].abs());
             if d > 0.05 && d < 60.0 && self.splashes.len() < crate::water::MAX_SPLATS {
-                self.splashes.push(crate::water::Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: (d * 0.25).min(2.0), above: 0.0 });
+                self.splashes.push(crate::water::Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: (d * 0.35).min(2.5), above: 0.0 });
             }
         }
     }

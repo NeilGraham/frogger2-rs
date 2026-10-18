@@ -23,21 +23,26 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   Anything else stays on the CPU.
 - **Generated surface:** the flat parts of the water are drawn as our own surface instead of the
   original meshes: a 512² grid of quads (2×2 simulation cells, 3 units) over the simulation
-  window, placed at the surface map's height and moved by our own swell (two long waves and three
-  ripples) plus the simulation. The original meshes only say where water is and how high
+  window, resting 2.5 units below the surface map's height and moved by the simulation, a slow
+  swell (two long waves and three shorter ones, scaled per level by `Lighting::water_swell`:
+  standing water keeps 15% of it, so what moves through it shows) and fine ripples (always
+  there: they bend the light into caustics and catch the sun). `Lighting::water_flow` (world
+  units per second; zero: standing water) carries the swell, the ripples, the texture detail
+  and the caustics along, for rivers. The original meshes only say where water is and how high
   (surface map); their steep, tall faces (waterfalls, more than 24 units high) are still drawn
   from the mesh, subdivided (n² per triangle, edges ≤ 12 units) with the original wobble / swell
   / alpha per vertex. Crests reach the original surface height and troughs go below it, so the
   banks made for that height stay dry.
-- **Depth:** a second top-down render, the *bed map*, holds the highest level surface (landscape
+- **Depth** is measured from where the water rests, so a platform's top between the rest and
+  the original surface stays dry. A second top-down render, the *bed map*, holds the highest level surface (landscape
   and river beds, not actors) under the water, so each point knows how deep the water is: shallow
   water is clear, deep water takes the tint (the original water texture's mean colour, its
   texture as world-space detail), and the surface fades out at the shore with a little foam (the
   thickness is blended between the four nearest cells, so shores are smooth). Level geometry up
   to 15 units above the water is a bank's lip (a stone rim, grass hanging over the water): under
   it the water goes on as deep as the nearest river bed beside it, up to the bank, which hides
-  it; the grid points next to a lip keep still (no waves), below the lip, so waves never poke
-  through a low rim. Open water with nothing under it is deep.
+  it; the grid points next to anything the crests could reach (a lip, a platform's top just over
+  the water) keep still at rest, so waves never poke through. Open water with nothing under it is deep.
 - **Edges of the grid:** a triangle is drawn when any of its corners has water within 2 cells;
   its other corners take the height of water within 4 cells, so triangles along the shore stay
   in place (their dry part is discarded per pixel).
@@ -49,7 +54,8 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   their height:
   - actors moving through water make a wake each 60 Hz tick (`Renderer::actor_wake`, from the
     distance moved and the model's size);
-  - the frog landing on a platform splashes at the platform (`App::water_tick`), and
+  - the frog landing on a platform splashes at the platform, hopping off one lets it bob up
+    with a smaller wave, and falling in makes a big splash (`App::water_tick`), and
   - the platform and the frog dip by a couple of units on a damped spring (render-only
     `DrawCtx::dips`, interpolated between ticks).
 - **Surface shading:** per-pixel normals from the simulated height plus the swell, and fine
@@ -61,7 +67,8 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   frame so far (colour and depth) copied (`GpuMesh::use_scene_copy` / `scene_copy`; any
   single-sampled frame whose target can be copied: always with DLSS / FSR, not with MSAA). The
   generated surface then ray-marches its reflection through the copy (screen-space reflections,
-  32 growing steps and 5 refining ones; off the screen: the level's backdrop colour, paler to the
+  32 growing steps from a per-pixel jittered start (no dotted seams), 5 refining ones, and a
+  hit only on a surface close behind the refined point; off the screen: the level's backdrop colour, paler to the
   horizon), weighted by a Fresnel term lifted for the game's steep cameras. What lies under the
   water is read from the copy, bent a little by the waves, and tinted along the path through
   the water (red absorbed first) into the water's own colour. Without a copy the surface is

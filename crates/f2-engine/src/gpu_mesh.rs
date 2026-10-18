@@ -419,6 +419,7 @@ struct Lights {
     water2: vec4<f32>,    // clock (s); water on; surface map reference height, depth range
     extra: vec4<f32>,     // baked shading kept, -, -, -
     water3: vec4<f32>,    // generated water: tint rgb; w: on
+    water4: vec4<f32>,    // flow x / z (units per second), swell (1: the full swell), -
 };
 // LIGHTS-END
 struct Point { pos: vec4<f32>, color: vec4<f32> };
@@ -525,13 +526,27 @@ fn surface_y(xz: vec2<f32>) -> f32 {
     return lt.water2.z + (0.5 - d) * lt.water2.w;
 }
 // Small travelling ripples everywhere on the water (world units).
-fn ripples(xz: vec2<f32>, t: f32) -> f32 {
-    // A slow swell (our own, in place of the original's low-poly WAVE lift) and small ripples.
-    return 0.9 * sin(dot(xz, vec2<f32>(0.031, 0.017)) + t * 1.1)
+// Where x / z's water was at time 0 (the flow carries the ripples along).
+fn flowed(xz: vec2<f32>, t: f32) -> vec2<f32> {
+    return xz - lt.water4.xy * t;
+}
+fn ripples(xz0: vec2<f32>, t: f32) -> f32 {
+    let xz = flowed(xz0, t);
+    // A slow swell (our own, in place of the original's low-poly WAVE lift; scaled by the
+    // level: standing water is nearly still) and fine ripples, which always stay (they bend
+    // the light into caustics and catch the sun).
+    let swell = 0.9 * sin(dot(xz, vec2<f32>(0.031, 0.017)) + t * 1.1)
          + 0.6 * sin(dot(xz, vec2<f32>(-0.022, 0.035)) + t * 0.9)
          + 0.35 * sin(dot(xz, vec2<f32>(0.11, 0.05)) + t * 1.9)
          + 0.25 * sin(dot(xz, vec2<f32>(-0.06, 0.13)) + t * 2.3)
          + 0.15 * sin(dot(xz, vec2<f32>(0.19, -0.16)) + t * 3.1);
+    var fine = 0.0;
+    let ks = array<vec3<f32>, 5>(vec3<f32>(0.27, 0.11, 2.1), vec3<f32>(-0.18, 0.31, 2.6), vec3<f32>(0.41, -0.29, 3.3), vec3<f32>(-0.52, -0.37, 3.9), vec3<f32>(0.08, 0.66, 4.4));
+    for (var k = 0; k < 5; k++) {
+        let w = ks[k];
+        fine += (0.035 / length(w.xy)) * sin(dot(w.xy, xz) + t * w.z);
+    }
+    return swell * lt.water4.z + fine;
 }
 fn water_h(xz: vec2<f32>) -> f32 {
     return wave_h(xz) + ripples(xz, lt.water2.x);
@@ -595,7 +610,7 @@ fn caustics(p: vec3<f32>, to_light: vec3<f32>) -> f32 {
     let lap = wave_h(q + vec2<f32>(e, 0.0)) + wave_h(q - vec2<f32>(e, 0.0)) + wave_h(q + vec2<f32>(0.0, e)) + wave_h(q - vec2<f32>(0.0, e)) - 4.0 * wave_h(q);
     let focus = clamp(1.0 + lap * 1.5, 0.3, 3.0);
     let fade = exp(-depth / 240.0) * smoothstep(0.5, 6.0, depth);
-    return caustic(q, lt.water2.x) * focus * fade;
+    return caustic(flowed(q, lt.water2.x), lt.water2.x) * focus * fade;
 }
 
 // World point in the sun's shadow map: (u-ish x, y in -1..1, depth 0..1).
@@ -740,6 +755,8 @@ fn water_color(i: VOut, additive: bool) -> vec4<f32> {
 // The generated water surface: a grid of 2×2-cell quads over the simulation window, at the
 // surface map's height, moved by the waves; drawn where the surface map has water.
 const GRID: u32 = 512u;
+// How far below the original water surface the generated one rests.
+const REST: f32 = 2.5;
 // The highest water within r cells of c (none: -1e9).
 fn grid_y_within(c: vec2<i32>, r: i32) -> f32 {
     var best = -1e9;
@@ -781,21 +798,21 @@ fn grid_cell(vi: u32) -> vec2<i32> {
         return o;
     }
     let xz = lt.water.xy + (vec2<f32>(c) + 0.5) * lt.water.z;
-    // Next to a bank's lip (level geometry just over the water) the water lies still, below
-    // it: waves would poke through a low stone rim.
+    // Next to anything the crests could reach (a bank's lip, a platform's top just over the
+    // water) the water lies still, at rest below it: waves would poke through.
     var lip = false;
     for (var dy = -2; dy <= 2; dy += 2) {
         for (var dx = -2; dx <= 2; dx += 2) {
             let q = c + vec2<i32>(dx, dy);
             if (in_window(q)) {
                 let d = textureLoad(bed, q, 0);
-                if (d < 0.99999 && lt.water2.z + (0.5 - d) * lt.water2.w > y - 0.5) { lip = true; }
+                if (d < 0.99999 && lt.water2.z + (0.5 - d) * lt.water2.w > y - 3.5) { lip = true; }
             }
         }
     }
-    // Crests reach the original surface, troughs go below it: the banks were made for that
-    // height (the original's swell only lifted the water).
-    let world = vec3<f32>(xz.x, y + select(water_h(xz), 0.0, lip) - 2.5, xz.y);
+    // At rest 2.5 below the original surface (`REST`): crests reach it, troughs go below; the
+    // banks were made for that height (the original's swell only lifted the water).
+    let world = vec3<f32>(xz.x, y + select(water_h(xz), 0.0, lip) - REST, xz.y);
     let vp = xfm(cam.v, world);
     let cl = clip(cam.proj, vp);
     let zl = clamp(vp.z * 0.00025, 0.0, 1.0);
@@ -829,9 +846,10 @@ fn cell_thick(c: vec2<i32>) -> f32 {
     if (by > sy - 0.5) {
         by = bed_beside(xz, sy);
     }
-    // No bed: open water, deep.
+    // No bed: open water, deep. Measured from where the water rests: a surface between the
+    // rest and the original height is dry (no water drawn over a platform's top).
     if (by < -1e8) { return 200.0; }
-    return max(sy - by, 0.0);
+    return max(sy - REST - by, 0.0);
 }
 // World point p on the screen: uv and view depth (behind the camera: uv -1).
 fn screen_uv(p: vec3<f32>) -> vec3<f32> {
@@ -850,9 +868,11 @@ fn scene_vz(uv: vec2<f32>) -> f32 {
 }
 // Screen-space reflection: what the ray from p along r hits in the frame drawn before the
 // water (rgb) and how sure that is (a; 0: off the screen or nothing hit).
-fn ssr(p: vec3<f32>, r: vec3<f32>) -> vec4<f32> {
+fn ssr(p: vec3<f32>, r: vec3<f32>, jitter: f32) -> vec4<f32> {
+    // The first step jittered per pixel: fixed steps would land on the same things along a
+    // line (dotted seams).
     var len = 3.0;
-    var a = p;
+    var a = p + r * (len * jitter);
     for (var k = 0; k < 32; k++) {
         let b = a + r * len;
         let sb = screen_uv(b);
@@ -869,6 +889,8 @@ fn ssr(p: vec3<f32>, r: vec3<f32>) -> vec4<f32> {
                 if (sm.z - scene_vz(sm.xy) > 0.0) { hi = mid; } else { lo = mid; }
             }
             let sh = screen_uv(hi);
+            // Only a surface the ray really reaches (close behind the refined point).
+            if (sh.z - scene_vz(sh.xy) > 4.0 + len * 0.25) { return vec4<f32>(0.0); }
             let border = min(min(sh.x, 1.0 - sh.x), min(sh.y, 1.0 - sh.y));
             let sure = smoothstep(0.0, 0.06, border) * (1.0 - f32(k) / 32.0);
             return vec4<f32>(textureSampleLevel(scene_c, scene_s, sh.xy, 0.0).rgb, sure);
@@ -885,17 +907,6 @@ fn sky_along(r: vec3<f32>) -> vec3<f32> {
     if (cam.fog.x > 0.5 && dot(cam.fog_color.rgb, vec3<f32>(1.0)) > 0.05) { sky = cam.fog_color.rgb; }
     let horizon = mix(sky, vec3<f32>(1.0), 0.2);
     return mix(horizon, sky * vec3<f32>(0.75, 0.85, 1.0), sqrt(clamp(r.y, 0.0, 1.0)));
-}
-// Fine ripples too small for the grid (wavelengths 9 to 25 units): slopes x / z.
-fn fine_slope(xz: vec2<f32>, t: f32) -> vec2<f32> {
-    var g = vec2<f32>(0.0);
-    let ks = array<vec3<f32>, 5>(vec3<f32>(0.27, 0.11, 2.1), vec3<f32>(-0.18, 0.31, 2.6), vec3<f32>(0.41, -0.29, 3.3), vec3<f32>(-0.52, -0.37, 3.9), vec3<f32>(0.08, 0.66, 4.4));
-    for (var k = 0; k < 5; k++) {
-        let w = ks[k];
-        let a = 0.11 / length(w.xy);
-        g += w.xy * (a * 0.32 * cos(dot(w.xy, xz) + t * w.z));
-    }
-    return g;
 }
 // How much the simulated surface is moving at x / z (churn: wakes, splashes, waterfalls).
 fn churn_at(c: vec2<i32>) -> f32 {
@@ -921,16 +932,15 @@ fn grid_color(i: VOut) -> vec4<f32> {
                     mix(cell_thick(c0 + vec2<i32>(0, 1)), cell_thick(c0 + vec2<i32>(1, 1)), f.x), f.y);
     if (thick <= 0.0) { discard; }
     let tm = lt.water2.x;
-    // The grid's waves plus the fine ripples (fading out with distance, no shimmer).
+    // The waves and ripples; sparkles fade out with distance (no shimmer).
     let near = 1.0 - smoothstep(250.0, 1200.0, i.vz);
-    let fs = fine_slope(i.world.xz, tm) * near;
-    let n = normalize(water_n(i.world.xz) + vec3<f32>(-fs.x, 0.0, -fs.y));
+    let n = water_n(i.world.xz);
     let v = normalize(lt.eye.xyz - i.world);
     // Fresnel, lifted a little (the game's cameras look down steeply, where real water
     // reflects little).
     let fres = 0.07 + 0.93 * pow(1.0 - max(dot(n, v), 0.0), 4.0);
     // The original water texture as detail, in world space, drifting and bent by the waves.
-    let detail = textureSample(t, s, i.world.xz / 48.0 + vec2<f32>(tm * 0.012, tm * 0.007) + n.xz * 0.05).rgb;
+    let detail = textureSample(t, s, flowed(i.world.xz, tm) / 48.0 + vec2<f32>(tm * 0.012, tm * 0.007) + n.xz * 0.05).rgb;
     let body = lt.water3.rgb;
     var sh = 1.0;
     var spec = vec3<f32>(0.0);
@@ -952,13 +962,13 @@ fn grid_color(i: VOut) -> vec4<f32> {
     var refl = sky_along(r);
     let on = scene_on.x > 0.5;
     if (on) {
-        let hit = ssr(i.world, r);
+        let hit = ssr(i.world, r, fract(52.9829189 * fract(dot(i.pos.xy, vec2<f32>(0.06711056, 0.00583715)))));
         refl = mix(refl, hit.rgb, hit.a);
     }
     // Shore foam, and foam where the simulation churns (waterfalls landing, wakes).
     let edge = smoothstep(0.0, 4.0, thick);
     let shore = (1.0 - smoothstep(0.0, 5.0, thick)) * 0.35;
-    let stir = smoothstep(0.04, 0.35, churn(i.world.xz)) * 0.8;
+    let stir = smoothstep(0.12, 0.6, churn(i.world.xz)) * 0.5;
     let foam = clamp((shore + stir) * (0.4 + 0.6 * caustic_layer(i.world.xz * 0.7, tm * 1.2)), 0.0, 1.0);
     let foam_rgb = vec3<f32>(foam) * max(lit, vec3<f32>(0.6));
     var rgb: vec3<f32>;
@@ -1147,7 +1157,7 @@ struct FOut { @location(0) c: vec4<f32>, @location(1) mv: vec2<f32>, @location(2
 
 /// Size of `Cam` and `Lights`.
 const CAM_SIZE: u64 = 64 * 2 + 16 * 6;
-const LIGHTS_SIZE: u64 = 16 * 13;
+const LIGHTS_SIZE: u64 = 16 * 14;
 /// Point lights drawn at once (the nearest to the camera's target).
 pub const MAX_POINT_LIGHTS: usize = 32;
 /// Shadow map size.
@@ -2038,6 +2048,7 @@ impl Gpu {
         if let Some((_, c)) = self.grid {
             u[48..52].copy_from_slice(&[c[0], c[1], c[2], 1.0]);
         }
+        u[52..56].copy_from_slice(&[l.water_flow[0], l.water_flow[1], l.water_swell, 0.0]);
         u[36..44].copy_from_slice(&[
             wf.origin[0],
             wf.origin[1],

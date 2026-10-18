@@ -21,6 +21,8 @@ fn setup(sky: [f32; 3], ground: [f32; 3], to_light: [f32; 3], sun: [f32; 3], spe
         specular,
         water: true,
         baked: 0.35,
+        water_flow: [0.0; 2],
+        water_swell: f2_engine::lighting::STILL_WATER,
     }
 }
 

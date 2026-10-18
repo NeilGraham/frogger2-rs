@@ -121,9 +121,11 @@ pub struct App {
     /// Game camera before the last tick (interpolation).
     prev_cam: Option<Camera>,
     /// Enhanced water: platforms (and the frog on them) dipping after a landing: actor,
-    /// depth now and at the last tick, speed (units per tick); and the frog's last platform.
+    /// depth now and at the last tick, speed (units per tick); the frog's last platform and
+    /// whether it was drowning at the last tick.
     water_dips: Vec<(f2_game::ids::ActorId, f32, f32, f32)>,
     last_platform: Option<f2_game::ids::PlatformId>,
+    was_drowning: bool,
     pub ticks: u64,
     /// `ticks` at the last draw: animated textures step once per game frame
     /// (`DrawCtx::tex_anim_steps`), not once per displayed frame.
@@ -333,6 +335,7 @@ impl App {
             prev_cam: None,
             water_dips: Vec::new(),
             last_platform: None,
+            was_drowning: false,
             ticks: 0,
             tex_anim_ticks: 0,
             free_cam: None,
@@ -430,8 +433,9 @@ impl App {
         self.r.jitter = up.map_or([0.0; 2], |u| u.1);
     }
 
-    /// Enhanced water, once per tick: the platform dips settle (a damped spring), and a frog
-    /// landing on a platform pushes it (and itself) down and makes a wave. Render only.
+    /// Enhanced water, once per tick: the platform dips settle (a damped spring); a frog
+    /// landing on a platform pushes it (and itself) down and makes a wave, hopping off one
+    /// lets it bob up with a smaller wave, and falling in makes a big splash. Render only.
     fn water_tick(&mut self) {
         if self.display().graphics == f2_platform::Graphics::Original {
             self.water_dips.clear();
@@ -446,23 +450,52 @@ impl App {
         self.water_dips.retain(|d| d.1.abs() > 0.01 || d.2.abs() > 0.01 || d.3.abs() > 0.01);
         let cur = self.game.platform.curr_platform[0];
         if cur != self.last_platform {
+            let frog = self.game.frogger.frog[0];
+            // Hopping off: the platform left behind bobs up and pushes a smaller wave.
+            if let Some(p) = self.last_platform {
+                if let Some(a) = self.game.platform.platform_list.array.get(p.idx()).and_then(|p| p.plt_actor) {
+                    self.water_dip(a, -0.5);
+                    self.actor_splash(a, 20.0, 1.6);
+                }
+            }
+            // Landing: the platform and the frog dip and make a wave.
             if let Some(p) = cur {
                 let plt = self.game.platform.platform_list.array.get(p.idx()).and_then(|p| p.plt_actor);
-                let frog = self.game.frogger.frog[0];
                 for a in [plt, frog].into_iter().flatten() {
-                    match self.water_dips.iter_mut().find(|d| d.0 == a) {
-                        Some(d) => d.3 += 1.1,
-                        None => self.water_dips.push((a, 0.0, 0.0, 1.1)),
-                    }
+                    self.water_dip(a, 1.1);
                 }
-                if let Some(a) = plt.and_then(|a| self.game.actor2.actors.get(a)) {
-                    let q = &a.actor.position;
-                    let pos = [q.vx as f32 / 10.0, q.vy as f32 / 10.0, q.vz as f32 / 10.0];
-                    self.r.water_splash(f2_engine::water::Splash { pos, radius: 26.0, strength: 3.0, above: 0.0 });
+                if let Some(a) = plt {
+                    self.actor_splash(a, 26.0, 3.0);
                 }
             }
         }
+        // Falling in: a big splash where the frog went under.
+        let drowning = self.game.frogger.player[0].death_by as i32 == f2_game::frogmove::DEATHBY_DROWNING;
+        if drowning && !self.was_drowning {
+            if let Some(a) = self.game.frogger.frog[0] {
+                self.actor_splash(a, 24.0, 3.5);
+            }
+        }
+        self.was_drowning = drowning;
         self.last_platform = cur;
+    }
+
+    /// Gives actor `a` a downward kick of `speed` units per tick on the dip spring (negative:
+    /// up).
+    fn water_dip(&mut self, a: f2_game::ids::ActorId, speed: f32) {
+        match self.water_dips.iter_mut().find(|d| d.0 == a) {
+            Some(d) => d.3 += speed,
+            None => self.water_dips.push((a, 0.0, 0.0, speed)),
+        }
+    }
+
+    /// A wave of `radius` and `strength` where actor `a` is.
+    fn actor_splash(&mut self, a: f2_game::ids::ActorId, radius: f32, strength: f32) {
+        if let Some(a) = self.game.actor2.actors.get(a) {
+            let q = &a.actor.position;
+            let pos = [q.vx as f32 / 10.0, q.vy as f32 / 10.0, q.vz as f32 / 10.0];
+            self.r.water_splash(f2_engine::water::Splash { pos, radius, strength, above: 0.0 });
+        }
     }
 
     /// Pushes the display settings into the renderer options (fog and far clip are set

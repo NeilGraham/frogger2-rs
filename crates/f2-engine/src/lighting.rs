@@ -51,7 +51,16 @@ pub struct Lighting {
     /// lights alone shade; 1 = all, the original's look under the lights). Hue and near-black
     /// (pits, fade-outs) are always kept.
     pub baked: f32,
+    /// The enhanced water's flow (world units per second along x / z; zero: standing water):
+    /// its ripples, texture and caustics drift along it.
+    pub water_flow: [f32; 2],
+    /// How much of the generated water's slow swell to keep (1 = full; standing water is
+    /// nearly still so what moves through it shows). Fine ripples always stay.
+    pub water_swell: f32,
 }
+
+/// [`Lighting::water_swell`] of standing water.
+pub const STILL_WATER: f32 = 0.15;
 
 impl Lighting {
     /// A neutral daylight setup.
@@ -65,6 +74,8 @@ impl Lighting {
             specular: 0.12,
             water: true,
             baked: 0.35,
+            water_flow: [0.0; 2],
+            water_swell: STILL_WATER,
         }
     }
 }
