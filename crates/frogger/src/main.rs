@@ -1655,6 +1655,30 @@ mod tests {
         assert_eq!(v(&app), after);
     }
 
+    /// The GPU meshes (Enhanced) draw the slid texture coordinates too: the same game state
+    /// drawn after one more slide differs (over the ant column at the start of 4-1).
+    #[test]
+    fn sliding_textures_move_on_gpu_meshes() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let mut app = level_app(&ctx, &root, (4, 1), 30, Profile::Enhanced);
+        app.game.overlays.draw_overlays = false;
+        app.game.textover.num_entries = 0;
+        let (w, h) = (640, 480);
+        app.draw(w, h);
+        let a = app.r.render_to_image(app.clear_color()).expect("render");
+        for _ in 0..8 {
+            render::slide_object_textures(app.scene.as_mut().unwrap(), &app.game);
+        }
+        app.draw(w, h);
+        let b = app.r.render_to_image(app.clear_color()).expect("render");
+        let diff = a.pixels.chunks(4).zip(b.pixels.chunks(4)).filter(|(p, q)| p[..3].iter().zip(&q[..3]).any(|(x, y)| x.abs_diff(*y) > 8)).count();
+        assert!(diff > 200, "sliding textures did not move on the GPU meshes: {diff} px differ");
+    }
+
     /// Standing water (`wat_pond`: `OBJECT_FLAGS_WAVE | MODGE | ADDITIVE`, banks.cpp:560)
     /// wobbles its texture and waves its surface with `timeInfo.frameCount`
     /// (`PCCalcModgeValues`): the same game state drawn 10 frames later differs over the pond.

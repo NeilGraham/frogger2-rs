@@ -22,7 +22,7 @@ use crate::lighting::{is_emissive, Lighting, PointLight};
 use crate::prelude::*;
 use crate::scene::{Frame, GpuObj, View, MESH_SKIN, UV_SCALE};
 use crate::textures::{TexHandle, TextureRegistry};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// One expanded mesh corner (64 bytes).
 #[repr(C)]
@@ -99,7 +99,11 @@ pub(crate) struct Sink {
     prev: Vec<[[f32; 4]; 4]>,
     /// Meshes seen for the first time, to upload.
     pending: Vec<(Key, Vec<Vert>, Vec<Group>)>,
-    known: HashSet<Key>,
+    /// The first texture coordinate of each mesh as uploaded: sliding textures
+    /// (`slide_object_textures`) move every face's, and the mesh is uploaded again.
+    known: HashMap<Key, Option<[i16; 2]>>,
+    /// Uploaded meshes whose texture coordinates slid, to write again (same layout).
+    slid: Vec<(Key, Vec<Vert>)>,
     /// Meshes the CPU draws, for the lights of their glowing faces: key and matrix.
     light_only: Vec<(Key, [[f32; 4]; 4])>,
     /// [`Lighting::water`]: water and MODGE meshes are taken too (set per frame).
@@ -149,10 +153,18 @@ impl Sink {
     /// Takes `o` (see [`GpuObj`]); false = the CPU draws it.
     pub fn offer(&mut self, o: &GpuObj, no_clip: bool, textures: &TextureRegistry) -> bool {
         let key = (o.model.id, o.object);
-        if !self.known.contains(&key) {
-            let (verts, groups) = expand(o);
-            self.known.insert(key);
-            self.pending.push((key, verts, groups));
+        let uv0 = o.mesh.face_uv.first().copied();
+        match self.known.get_mut(&key) {
+            None => {
+                let (verts, groups) = expand(o);
+                self.known.insert(key, uv0);
+                self.pending.push((key, verts, groups));
+            }
+            Some(k) if *k != uv0 => {
+                *k = uv0;
+                self.slid.push((key, expand(o).0));
+            }
+            Some(_) => {}
         }
         let mut modge = o.modge;
         let mut bed = false;
@@ -1701,7 +1713,7 @@ impl Gpu {
             scene_copy,
             linear_s,
             sim,
-            vb_usage: if rtx.is_some() { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT } else { wgpu::BufferUsages::VERTEX },
+            vb_usage: if rtx.is_some() { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::BLAS_INPUT } else { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST },
             rtx,
             rt_on: false,
             frame: 0,
@@ -1748,6 +1760,11 @@ impl Gpu {
         }
         self.water_list.clear();
         self.sim.frame.steps = 0;
+        for (key, verts) in sink.slid.drain(..) {
+            if let Some((buf, _)) = self.meshes.get(&key).filter(|(b, _)| b.size() == std::mem::size_of_val(verts.as_slice()) as u64) {
+                queue.write_buffer(buf, 0, bytemuck::cast_slice(&verts));
+            }
+        }
         for (key, verts, groups) in sink.pending.drain(..) {
             if verts.is_empty() {
                 self.meshes.insert(
@@ -1854,7 +1871,7 @@ impl Gpu {
                 for (k, &f) in g.feet.iter().enumerate() {
                     let p = crate::math::mtx_xfm(m, f);
                     let h = |salt: u32| {
-                        let x = ((water_clock * 30.0) as u32).wrapping_mul(747796405).wrapping_add(k as u32 * 2891336453 + salt * 1013904223);
+                        let x = ((water_clock * 30.0) as u32).wrapping_mul(747796405).wrapping_add((k as u32).wrapping_mul(2891336453).wrapping_add(salt.wrapping_mul(1013904223)));
                         let x = (x ^ (x >> 16)).wrapping_mul(2246822519);
                         (x ^ (x >> 13)) as f32 / u32::MAX as f32 - 0.5
                     };
