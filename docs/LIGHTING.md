@@ -59,6 +59,27 @@ colour = base × light + sun_color × spec × (n·h)^48 × shadow × mean(vertex
   (`Renderer::light_sprite`, from `print_sprites`). Lights closer than 40 units merge; the 32
   nearest the camera's target are used.
 
+## Modded materials (PBR)
+
+Modded models' glTF materials (`docs/modding.md` §6) draw in their own pipeline
+(`crate::pbr`, kind `PBR_KIND`; its WGSL is appended to the mesh shader only for that pipeline,
+made the first time a frame has one, so the other pipelines and the startup compile are
+unchanged). Same inputs as above, physically based:
+
+```
+n      = normal map in the frame (∂P/∂u, ∂P/∂v from screen derivatives; green = −v)
+diffuse = albedo × (1 − metal) × (ambient × ao + sun × n·L × shadow + points)    no 1/π, as above
+spec    = π × GGX(n, v, l, roughness², F0 = mix(0.04, albedo, metal)) × n·l × light
+env     = sky / ground (+ some sun) along reflect(−v, n), blurred to the ambient when rough,
+          × split-sum BRDF (Karis) × ao                                    metals never go black
+colour  = diffuse + (spec + env) × mix(1, mean vertex colour, ½) + emissive
+```
+
+Parallax occlusion (a height map): 8 (head on) to 32 (grazing) linear steps and a secant step
+offset the texture coordinates before every map is sampled; the sun is shadowed by the height
+field (8 steps); depth is not corrected. Vertex colours are delit like every mesh's. Tests:
+`pbr_materials_bump_and_parallax`, `smooth_skin_blends_bones` (`headless.rs`).
+
 ## Per-world setups
 
 | World | Light |

@@ -1026,7 +1026,13 @@ impl WindowApp for Host {
         let now = Instant::now();
         let dt = now - self.last;
         {
-            let what = if app.video.is_some() { "video" } else if app.scene.is_some() { "level" } else { "other" };
+            let what = if app.video.is_some() {
+                "video"
+            } else if app.scene.is_some() {
+                "level"
+            } else {
+                "other"
+            };
             if dt > Duration::from_millis(150) {
                 startup_mark(&format!("slow frame before a {what} frame: {:.0} ms", dt.as_secs_f64() * 1000.0));
             }

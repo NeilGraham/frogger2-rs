@@ -290,6 +290,9 @@ pub struct ObjectBank {
     /// `animNum == numAnimations` (BUG(original)). `None` when the bytes are outside
     /// the image or hold a relocated pointer (load-address dependent).
     pub anim_past_end: Vec<(u32, Option<Animation>)>,
+    /// Modded models' images and materials (glTF overrides, `f2-modkit`; retail: none).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub materials: Vec<alloc::sync::Arc<crate::material::ModelMaterials>>,
 }
 
 const MAX_KEYS: usize = 100_000;
@@ -493,7 +496,7 @@ impl ObjectBank {
             models.push(Model { id, radius, object_size, root, root_siblings, animations, loc_mesh, is_skinned, num_vtx });
             desc += 8;
         }
-        Ok(ObjectBank { models, anim_past_end })
+        Ok(ObjectBank { models, anim_past_end, materials: vec![] })
     }
 
     pub fn find(&self, id: u32) -> Option<&Model> {

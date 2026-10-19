@@ -4,11 +4,35 @@
 //! bank's animation table: the *base* entry's displayed image changes over
 //! time (`UpdateAnimatingTextures`, mdxTexture.cpp:768), so faces that
 //! reference the base CRC animate automatically.
+//!
+//! Modded models' extras arrive with their textures ([`TextureRegistry::add_model_materials`]):
+//! their own images become entries like bank textures, and their physically based materials
+//! and smooth skin weights are kept here for the GPU mesh pass (keyed by model id).
 
 use crate::prelude::*;
 
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use f2_formats::material::{ModelMaterials, SkinWeights};
 use f2_formats::texture::{TexBank, TexType, Texture};
+
+/// A modded model's physically based material ([`f2_formats::material::PbrMaterial`]) with its
+/// maps registered as images.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pbr {
+    pub base_color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
+    pub normal_scale: f32,
+    pub occlusion_strength: f32,
+    pub emissive: [f32; 3],
+    pub parallax_scale: f32,
+    pub normal: Option<TexHandle>,
+    pub metal_rough: Option<TexHandle>,
+    pub occlusion: Option<TexHandle>,
+    pub emissive_map: Option<TexHandle>,
+    pub height: Option<TexHandle>,
+}
 
 /// Index of an uploaded GPU image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -51,6 +75,11 @@ pub struct TextureRegistry {
     /// Console fast path: the last `by_crc` lookups (an entry keeps its index once added).
     #[cfg(feature = "lean")]
     memo: CrcMemo,
+    /// Modded models' materials, and (model id, face texture CRC) → material.
+    pbr: Vec<Pbr>,
+    pbr_by: BTreeMap<(u32, u32), u32>,
+    /// Modded skins' smooth weights by model id.
+    skins: BTreeMap<u32, Arc<SkinWeights>>,
 }
 
 /// [`TextureRegistry::entry`]'s memo of `by_crc` (`lean`, single-threaded consoles): 64
@@ -187,6 +216,84 @@ impl TextureRegistry {
         }
         #[cfg(not(feature = "lean"))]
         self.by_crc.get(&crc).map(|&i| &self.entries[i])
+    }
+
+    /// Registers what a modded model brings ([`ModelMaterials`], from `f2-modkit`): its images
+    /// as texture entries (full colour; replacing a bank texture of that CRC, so call this
+    /// after loading the banks), aliases, materials and skin weights.
+    pub fn add_model_materials(&mut self, m: &ModelMaterials) {
+        let mut handles: BTreeMap<u32, TexHandle> = BTreeMap::new();
+        for &(crc, i) in &m.textures {
+            let Some(img) = m.images.get(i as usize) else { continue };
+            let name = if img.name.is_empty() { format!("{crc:08x}.bmp") } else { format!("{}.bmp", img.name) };
+            let h = match handles.get(&i) {
+                Some(&h) => {
+                    self.add_entry(crc, &name, TexType::Normal, h);
+                    h
+                }
+                None => self.add_rgba(crc, &name, TexType::Normal, img.width, img.height, img.rgba.clone()),
+            };
+            handles.insert(i, h);
+        }
+        for &(crc, of) in &m.aliases {
+            if let Some(e) = self.entry(of).cloned() {
+                self.add_entry(crc, &e.name, e.tex_type, e.image);
+            }
+        }
+        let mut map = |i: Option<u32>, reg: &mut Self| -> Option<TexHandle> {
+            let i = i?;
+            if let Some(&h) = handles.get(&i) {
+                return Some(h);
+            }
+            let img = m.images.get(i as usize)?;
+            let h = reg.add_image(img.width, img.height, img.rgba.clone());
+            handles.insert(i, h);
+            Some(h)
+        };
+        for p in &m.materials {
+            let mat = Pbr {
+                base_color: p.base_color,
+                metallic: p.metallic,
+                roughness: p.roughness,
+                normal_scale: p.normal_scale,
+                occlusion_strength: p.occlusion_strength,
+                emissive: p.emissive,
+                parallax_scale: p.parallax_scale,
+                normal: map(p.normal, self),
+                metal_rough: map(p.metal_rough, self),
+                occlusion: map(p.occlusion, self),
+                emissive_map: map(p.emissive_map, self),
+                height: map(p.height, self),
+            };
+            self.pbr_by.insert((m.model_id, p.crc), self.pbr.len() as u32);
+            self.pbr.push(mat);
+        }
+        match &m.skin {
+            Some(w) => {
+                self.skins.insert(m.model_id, Arc::new(w.clone()));
+            }
+            None => {
+                self.skins.remove(&m.model_id);
+            }
+        }
+    }
+
+    /// The material of model `model`'s faces with texture `crc` (modded models only).
+    pub fn pbr(&self, model: u32, crc: u32) -> Option<u32> {
+        if self.pbr_by.is_empty() {
+            return None;
+        }
+        self.pbr_by.get(&(model, crc)).copied()
+    }
+
+    /// Material `i` ([`pbr`](Self::pbr)).
+    pub fn pbr_material(&self, i: u32) -> Option<&Pbr> {
+        self.pbr.get(i as usize)
+    }
+
+    /// Model `model`'s smooth skin weights (modded skins only).
+    pub fn skin_weights(&self, model: u32) -> Option<&Arc<SkinWeights>> {
+        self.skins.get(&model)
     }
 
     /// `GetTexEntryFromCRC` + `tEntry->surf`: the image currently shown for `crc`.

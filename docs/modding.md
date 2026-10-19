@@ -359,6 +359,68 @@ replacement (`game/textures/garden.fla`, etc.) also still works through the VFS.
   Not carried by glTF (defaults): `faceFlags` (0, unused by MDX rendering; honoured from
   primitive/material `extras.faceFlags`), `LOCMesh` (none), `bBox` (AABB of the mesh),
   `numVtx` (skin vertex count; unused by MDX), `objectSize` (0, as in every retail model).
+- **Mesh-only skin override** (keep the retail skeleton and animations; don't redistribute
+  them): when `objects/<bank>/<model>.gltf` replaces a retail *skinned* model, its skin's joints
+  are all named like the retail model's objects (case-insensitive) and the document has **no
+  animations** (or `extras.keepAnimations: true` on the document, `asset` or scene), only the
+  meshes are taken: the retail hierarchy, keys, clips, flags and ids stay. The skin's positions
+  are the mesh as the document shows it at rest (joint rest world matrix × inverse bind matrix
+  × position, so Blender's bind-pose meshes with reoriented bones and `f2-export`'s
+  joint-space skins without inverse bind matrices both work); each vertex goes to its
+  heaviest joint's object (`effectedVerts`), moved into that object's space with the
+  **retail** rest pose (key 0, the engine's `TransformObject`). Rigid mesh nodes named like a
+  retail object (not the skin's root) replace that object's mesh. The exporter's own
+  `frog.gltf` with its animations removed reproduces the retail frog bit for bit
+  (`retail_frog_mesh_only`). Example: the frog is `objects/frogger/frog.gltf` (bank `frogger`,
+  18 joints `frog, fghip, fgrhip, fgrnee, fgrft, fglhip, fglnee, fglft, fgshld, fghed,
+  lefteye, righteye, fgfltr, fgflmr, fgflftr, fgfltl, fgflml, fgflftl`, skin node
+  `frog_skin`). In Blender: import our export, model the new mesh at rest, parent it to the
+  armature with automatic / painted weights, export glTF **without animations** (Animation
+  off) with *+Y Up* left on (the default: it undoes the import's axis change, so the raw
+  coordinates round-trip).
+- **Smooth skins**: up to 4 joints per vertex (`JOINTS_0` / `WEIGHTS_0`, the heaviest 4,
+  normalized, stored in 255ths) are kept for a mesh-only skin override with any vertex on
+  more than one joint (`ModelMaterials::skin`). Enhanced / Path-Traced draw it with linear
+  blend skinning on the GPU (the skin is uploaded at rest in model space, each bone's matrix
+  is rest⁻¹ × pose, the vertex shader blends up to 4 — also for the shadow map, the water's
+  obstacle maps and motion vectors). The Original graphics (CPU path) and the N64 keep each
+  vertex on its heaviest joint. Skins are not in the ray-traced scene (as before), so smooth
+  skins need no BLAS refit. Limits: 256 objects; one skin per model.
+- **Materials, images, PBR** (`crates/f2-modkit/src/material.rs`): the faces' texture is still
+  named by the material (rule above). When the document *has* the base-colour image (a `.glb`
+  buffer view, a `data:` URI, or a PNG next to the `.gltf` — no `..`, not absolute), it is
+  registered as that texture (full-colour RGBA8 on every path, replacing a bank texture of that
+  CRC), so a self-contained glTF needs no `textures/<bank>/` files; an image without a name
+  gets a CRC of its own. Images outside the model's directory (`f2-export`'s `../tex/`) are not
+  read: the banks' texture of that name is used, as before. PNG only (JPEG is reported). A
+  material is **physically based** (Enhanced and Path-Traced only; Original and the N64 draw
+  the base colour as before) when it has any of `normalTexture`,
+  `pbrMetallicRoughness.metallicRoughnessTexture`, `occlusionTexture`, `emissiveTexture`, a
+  height map, a non-zero `emissiveFactor`, or explicit `metallicFactor` / `roughnessFactor`
+  other than the exporter's (0, 1); `extras.pbr: true|false` forces it. Honoured fields:
+
+  | glTF | Use |
+  |---|---|
+  | `pbrMetallicRoughness.baseColorTexture` / `baseColorFactor` | texture × factor × vertex colour |
+  | `metallicFactor`, `roughnessFactor` (defaults 1, 1) | × the map's B (metal) / G (roughness) |
+  | `metallicRoughnessTexture` | G roughness, B metalness |
+  | `normalTexture` (+ `scale`) | tangent space, OpenGL (+Y up, Blender's) |
+  | `occlusionTexture` (+ `strength`) | R: ambient / environment occlusion |
+  | `emissiveTexture`, `emissiveFactor`, `KHR_materials_emissive_strength` | added, unlit |
+  | `extras.heightTexture` | `{"index": <texture>}`, a texture index, or a PNG file name next to the document (R, white = high) |
+  | `extras.parallaxScale` | parallax depth in texture units (default 0.03) |
+
+  Without `extras.heightTexture`, a PNG `<base-colour image stem>_height.png` next to the
+  document is the height map (Blender does not export height maps: save it beside the
+  `.gltf`, or set the material custom properties `heightTexture = "frog_height.png"`,
+  `parallaxScale = 0.02` with *Include → Custom Properties* on). Only `TEXCOORD_0`; no
+  `KHR_texture_transform`; samplers are the game's (wrap per actor). Two materials naming the
+  same texture but looking different: the second gets a CRC of its own. Tangents are not read:
+  the shader derives the frame from screen derivatives (see `docs/LIGHTING.md`).
+  Data path: `f2_modkit::object_bank` puts the images, materials and skin weights in
+  `ObjectBank::materials` (`f2_formats::material::ModelMaterials`, per model id); the host
+  registers them after the texture banks (`Renderer::add_model_materials`); the GPU mesh pass
+  looks materials up by (model id, face texture CRC).
 - **Text**: `text/language.tsv` has retail/exported columns `id, comment, <language>…`; columns
   match base languages by name, unknown names add a language; rows match by `STR_*` id; empty
   cells keep the base text; unknown ids are appended (existing indices never shift).
