@@ -88,12 +88,13 @@ Scaffold and validate mods ([modding.md](modding.md) section 6 for layout and fi
 
 ```sh
 f2-modkit new <id> [--dir mods]                       # create mods/<id>/ with mod.toml and folders
-f2-modkit pack <mod dir> [--rendition game-data/usa]  # validate; exit 1 on errors
+f2-modkit pack <mod dir> [--rendition game-data/usa] [--out <id>.f2mod]
+                                                      # validate; exit 1 on errors; --out packages it
 ```
 
 `pack` checks the manifest and engine compatibility, decodes every override via the engine's own
-resolver, and (given a rendition) warns about overrides identical to retail. It validates only;
-it does not build an archive yet.
+resolver, and (given a rendition) warns about overrides identical to retail. With `--out` a valid
+mod is written as a `.f2mod` package (a zip, modding.md section 6) for the launcher's Import mod.
 
 ## f2-trace (`tools/f2-trace`)
 

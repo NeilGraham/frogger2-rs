@@ -373,13 +373,45 @@ replacement (`game/textures/garden.fla`, etc.) also still works through the VFS.
 
 ```
 f2-modkit new <id> [--dir mods]                       # scaffold mods/<id>/ with mod.toml + dirs
-f2-modkit pack <mod dir> [--rendition game-data/usa]  # validate; exit 1 on errors
+f2-modkit pack <mod dir> [--rendition game-data/usa] [--out <id>.f2mod]
+                                                      # validate; exit 1 on errors; --out: package
 ```
 
 `pack` checks the manifest (parse + engine compatibility), decodes every override through the same
 resolver the engine uses (errors for unreadable files), and with a rendition warns when a file is
 byte-identical to a retail file (sha1 list in `<rendition>/manifest.json`) or an override decodes
-to exactly the retail entry it replaces. Validation only — it does not build an archive yet.
+to exactly the retail entry it replaces. With `--out` and no errors it writes the mod package.
+
+### Mod packages (`.f2mod`, `crates/f2-modkit/src/archive.rs`)
+
+A `.f2mod` is a zip of the mod folder: `mod.toml` at the zip root, or inside exactly one
+top-level folder (both are accepted; `pack --out` writes `<id>/...`, so unzipping by hand gives a
+folder to drop into `mods/`). `pack` writes files sorted, deflated, with fixed timestamps (the
+same folder gives the same bytes) and leaves out dot-files and dot-folders (`.git`, …); symbolic
+links are refused. A plain `.zip` with the same layout installs the same way.
+
+Installing (`archive::install`: the launcher's Import mod, `launcher FILE`, `frogger2
+--import-mod FILE`) refuses entry names that are absolute or contain `..`, `\` or `:`, symlink
+entries, more than 100 000 entries, a file over 1 GiB or more than 4 GiB unpacked (counted while
+unpacking, not trusted from the headers). The package is unpacked into a dot-folder in the mods
+dir, the manifest parsed and checked against the engine, and `pack`'s checks run without a
+rendition (errors refuse the install; warnings are logged). Then it becomes `mods/<id>/`; an
+installed mod with the same id (under any folder name) is moved to `mods/.backup/<id>/`
+(replacing an older backup). The launcher/`frogger2` append the id to `[mods] enabled` and save
+`config.toml`. Remove (`archive::remove`) moves a mod to the same backup place. Dot-folders in the
+mods dir are never mods.
+
+### Installing mods (players)
+
+- **Launcher**: Mods → **Import mod…**, pick the `.f2mod` (or `.zip`, or the `mod.toml` in a mod
+  folder). It is checked, installed and turned on; the result shows at the bottom right. Dropping
+  a `.f2mod` (or a mod folder) on the launcher window does the same; a `.zip` only on the Mods page
+  (elsewhere a zip is taken for a disc image).
+- **Open with**: `launcher FILE.f2mod` or `frogger2 FILE.f2mod` opens the launcher on the Mods page
+  installing it (so a `.f2mod` can be associated with either program).
+- **Command line**: `frogger2 --import-mod FILE` installs, turns on and exits (0 = installed).
+- **By hand**: copy the mod's folder into the mods folder (Mods → Open mods folder) and turn it on.
+- A mod with the id of an installed one replaces it (the old copy stays in `mods/.backup/<id>/`).
 
 ### Host wiring (done, P7-1)
 

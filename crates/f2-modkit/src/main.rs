@@ -1,7 +1,9 @@
 //! `f2-modkit`: validate and scaffold Frogger 2 mods.
 //!
 //! ```text
-//! f2-modkit pack <mod dir> [--rendition <dir>]   validate a mod (exit 1 on errors)
+//! f2-modkit pack <mod dir> [--rendition <dir>] [--out <file.f2mod>]
+//!                                               validate a mod (exit 1 on errors), then
+//!                                               write it as a package with --out
 //! f2-modkit new <id> [--dir <mods dir>]          create <mods dir>/<id>/ with mod.toml
 //! ```
 //! `--rendition` defaults to `$F2_RENDITION`, else `game-data/usa` when it exists;
@@ -10,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage:\n  f2-modkit pack <mod dir> [--rendition <dir>]\n  f2-modkit new <id> [--dir <mods dir>]";
+const USAGE: &str = "usage:\n  f2-modkit pack <mod dir> [--rendition <dir>] [--out <file.f2mod>]\n  f2-modkit new <id> [--dir <mods dir>]";
 
 fn opt(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
@@ -61,13 +63,21 @@ fn main() -> ExitCode {
             for e in &r.errors {
                 println!("  ERROR: {e}");
             }
-            if r.ok() {
-                println!("ok");
-                ExitCode::SUCCESS
-            } else {
+            if !r.ok() {
                 println!("{} error(s)", r.errors.len());
-                ExitCode::FAILURE
+                return ExitCode::FAILURE;
             }
+            println!("ok");
+            if let Some(out) = opt(rest, "--out") {
+                match f2_modkit::archive::write(Path::new(dir), Path::new(&out)) {
+                    Ok(n) => println!("wrote {out} ({n} files)"),
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            ExitCode::SUCCESS
         }
         "new" => {
             let Some(id) = positional(rest) else {

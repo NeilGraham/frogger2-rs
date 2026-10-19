@@ -51,6 +51,10 @@ use std::time::{Duration, Instant};
 
 struct Args {
     data: Option<PathBuf>,
+    /// `--import-mod FILE`: install a mod and quit.
+    import_mod: Option<PathBuf>,
+    /// A mod package given alone (opened with the game): the launcher installs it.
+    open_mod: Option<PathBuf>,
     mute: bool,
     level: Option<(u32, u32)>,
     frontend: bool,
@@ -121,6 +125,7 @@ fn usage() -> ! {
          editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
          export: --export windows|macos|linux|android|ps4|ps5|n64|all[,...] [--out DIR] [--runtime PATH] [--ps4-keys Keys.cs]  (docs/EXPORT.md)\n\
          launcher: [--game] (never hand over to the launcher)\n\
+         \x20      [--import-mod FILE.f2mod|.zip|DIR] (install a mod, turn it on, quit) | FILE.f2mod (install it in the launcher)\n\
          saves: [--save FILE] (default: config dir; headless: none) [--dev-unlock] (start with everything unlocked, not saved)\n\
          keys: F1 free camera, F2 tile overlay, F10 settings, Shift+F10 advanced (level select), F11 / Alt+Enter fullscreen, Esc quit\n\
          \x20     F5 profile, F3 persp. textures, F4 render scale, F6 MSAA, F7 filter, F8 widescreen,\n\
@@ -132,6 +137,8 @@ fn usage() -> ! {
 fn parse_args() -> Args {
     let mut a = Args {
         data: None,
+        import_mod: None,
+        open_mod: None,
         mute: false,
         level: None,
         frontend: false,
@@ -282,7 +289,9 @@ fn parse_args() -> Args {
             "--screenshot-rebind" => a.screenshot_rebind = true,
             "--pad-script" => a.pad_script = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--record" => a.record = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
+            "--import-mod" => a.import_mod = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "-h" | "--help" => usage(),
+            _ if !arg.starts_with('-') && f2_modkit::archive::is_mod_source(std::path::Path::new(&arg)) => a.open_mod = Some(PathBuf::from(arg)),
             _ => usage(),
         }
     }
@@ -291,7 +300,7 @@ fn parse_args() -> Args {
 
 /// Starts the `launcher` that sits beside this program (its folder, the `engine/` parent, or
 /// the portable install folder); false when there is none.
-fn open_launcher() -> bool {
+fn open_launcher(args: &[std::ffi::OsString]) -> bool {
     let name = f2_launcher::install::exe_name("launcher");
     let exe = std::env::current_exe().ok();
     let dir = exe.as_deref().and_then(|e| e.parent());
@@ -301,7 +310,7 @@ fn open_launcher() -> bool {
     }
     dirs.extend(f2_platform::paths::portable_root());
     let Some(l) = dirs.iter().map(|d| d.join(&name)).find(|p| p.is_file()) else { return false };
-    match std::process::Command::new(&l).current_dir(l.parent().unwrap_or(std::path::Path::new("."))).spawn() {
+    match std::process::Command::new(&l).args(args).current_dir(l.parent().unwrap_or(std::path::Path::new("."))).spawn() {
         Ok(_) => true,
         Err(e) => {
             eprintln!("frogger: starting {}: {e}", l.display());
@@ -343,6 +352,15 @@ fn main() {
         eprintln!("frogger: config: {e} (using defaults)");
         Config::desktop()
     });
+    // Mods and settings are shared by every version: installed by this one.
+    if let Some(p) = &args.import_mod {
+        std::process::exit(frogger::launcher::import_mod_cli(&mut cfg, p));
+    }
+    // A mod package opened with the game: the launcher installs it and shows how it went.
+    if let Some(p) = args.open_mod.clone() {
+        let ok = open_launcher(&["--import-mod".into(), p.clone().into_os_string()]) || frogger::launcher::run_with(Some(p));
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     // The version chosen in the launcher (`[launcher] version`) runs instead of this one.
     if !args.headless && !cfg.launcher.version.is_empty() {
         let root = frogger::setup::install_root();
@@ -368,7 +386,7 @@ fn main() {
             eprintln!("frogger: {e}");
             // No game yet: the launcher imports it (the one beside this program, else the same
             // screen in this process) and starts it.
-            if !args.headless && args.data.is_none() && (open_launcher() || frogger::launcher::run()) {
+            if !args.headless && args.data.is_none() && (open_launcher(&[]) || frogger::launcher::run()) {
                 std::process::exit(0);
             }
             std::process::exit(1);
@@ -384,7 +402,7 @@ fn main() {
         && args.multi.is_none()
         && !args.host
         && args.join.is_none();
-    if plain && cfg.launcher.start_in_launcher() && open_launcher() {
+    if plain && cfg.launcher.start_in_launcher() && open_launcher(&[]) {
         std::process::exit(0);
     }
     if !args.export.is_empty() {
@@ -1026,7 +1044,13 @@ impl WindowApp for Host {
         let now = Instant::now();
         let dt = now - self.last;
         {
-            let what = if app.video.is_some() { "video" } else if app.scene.is_some() { "level" } else { "other" };
+            let what = if app.video.is_some() {
+                "video"
+            } else if app.scene.is_some() {
+                "level"
+            } else {
+                "other"
+            };
             if dt > Duration::from_millis(150) {
                 startup_mark(&format!("slow frame before a {what} frame: {:.0} ms", dt.as_secs_f64() * 1000.0));
             }

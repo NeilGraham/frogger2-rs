@@ -141,6 +141,10 @@ pub enum Action {
     Remove(String),
     ToggleMod(String),
     OpenModsFolder,
+    /// Ask for a mod package (`.f2mod`, `.zip`) or folder to install.
+    ImportMod,
+    /// Remove the installed mod (pressed twice: the first press asks).
+    RemoveMod(String),
     OpenUpdates,
     /// Export for `state.exports[i]`.
     Export(usize),
@@ -170,6 +174,8 @@ pub struct Caps {
     pub drop_files: bool,
     /// Open folders in the system file manager.
     pub open_folders: bool,
+    /// Install mods from packages and remove them ("Import mod", "Remove").
+    pub mod_files: bool,
     /// Build the game for other platforms (desktop).
     pub export: bool,
     /// The update chip opens the releases page in the browser (Android: no in-app updates).
@@ -364,6 +370,8 @@ pub struct Launcher {
     clip: Option<[f32; 4]>,
     /// When the current message appeared.
     message_seen: Option<(String, Instant)>,
+    /// The mod whose Remove was pressed once (the next press on it removes it).
+    confirm_remove: Option<String>,
 }
 
 fn inside([x, y, w, h]: [f32; 4], px: f32, py: f32) -> bool {
@@ -400,6 +408,7 @@ impl Launcher {
             hits: Vec::new(),
             clip: None,
             message_seen: None,
+            confirm_remove: None,
         }
     }
 
@@ -461,6 +470,7 @@ impl Launcher {
     /// A press at (x, y): tab switches and page changes are handled here, everything else
     /// is returned for the host.
     pub fn press(&mut self, x: f32, y: f32) -> Action {
+        let confirm = self.confirm_remove.take();
         let Some((_, hit)) = self.hits.iter().rev().find(|(r, _)| inside(*r, x, y)).cloned() else { return Action::None };
         match hit {
             Hit::Tab(t) => {
@@ -472,9 +482,13 @@ impl Launcher {
                 Action::None
             }
             Hit::Act(a) => {
-                match a {
+                match &a {
                     Action::Import => self.show_import(true),
                     Action::CancelImport => self.show_import(false),
+                    Action::RemoveMod(id) if confirm.as_ref() != Some(id) => {
+                        self.confirm_remove = Some(id.clone());
+                        return Action::None;
+                    }
                     _ => {}
                 }
                 a
@@ -1208,13 +1222,17 @@ impl Launcher {
     fn draw_mods(&mut self, p: &mut dyn Painter, a: [f32; 4], sb: f32) {
         let tb = self.toolbar_y(a);
         let bh = self.d(BTN);
-        let y0 = if self.caps.open_folders { tb + bh + self.d(18.0) } else { tb + self.d(4.0) };
+        let y0 = if self.caps.open_folders || self.caps.mod_files { tb + bh + self.d(18.0) } else { tb + self.d(4.0) };
         let view = [a[0], y0, a[2], a[1] + a[3] - y0];
         let mut y = self.begin_scroll(view);
         let rows = self.state.mods.clone();
         if rows.is_empty() {
             let pad = self.d(PAD);
-            let text = "No mods installed yet. Put a mod's folder (with its mod.toml) into the mods folder and it shows up here.";
+            let text = if self.caps.mod_files {
+                "No mods installed yet. Import a mod (a .f2mod file, or a folder with a mod.toml), or put a mod's folder into the mods folder."
+            } else {
+                "No mods installed yet. Put a mod's folder (with its mod.toml) into the mods folder and it shows up here."
+            };
             let lines = wrap_px(text, a[2] - 2.0 * pad, |s| p.text_width(s, self.d(14.0), false)).len();
             let r = [a[0], y, a[2], self.d(44.0) + lines as f32 * self.d(21.0)];
             self.card(p, r, CARD);
@@ -1226,21 +1244,33 @@ impl Launcher {
             let r = [a[0], y, a[2], rh];
             if self.shown(r[1], r[3]) {
                 self.card(p, r, CARD);
-                let avail = r[2] - self.d(110.0);
+                let tog_x = r[0] + r[2] - self.d(PAD) - self.d(48.0);
+                let mut avail = r[2] - self.d(110.0);
+                if self.caps.mod_files {
+                    let bh = self.d(34.0);
+                    let label = if self.confirm_remove.as_ref() == Some(&m.id) { "Really remove?" } else { "Remove" };
+                    let bx =
+                        self.button_left_of(p, tog_x - self.d(16.0), r[1] + (r[3] - bh) / 2.0, bh, label, Style::Danger, None, Action::RemoveMod(m.id.clone()));
+                    avail = bx - r[0] - self.d(PAD) - self.d(12.0);
+                }
                 let name = self.fit(p, &m.name, avail, self.d(16.0), true);
                 self.text(p, r[0] + self.d(PAD), r[1] + self.d(13.0), &name, TEXT, self.d(16.0), true);
                 let sub = if m.version.is_empty() { m.id.clone() } else { format!("{}  \u{b7}  version {}", m.id, m.version) };
                 let sub = self.fit(p, &sub, avail, self.d(12.5), false);
                 self.text(p, r[0] + self.d(PAD), r[1] + self.d(38.0), &sub, DIM, self.d(12.5), false);
-                self.toggle(p, r[0] + r[2] - self.d(PAD) - self.d(48.0), r[1] + (r[3] - self.d(28.0)) / 2.0, m.enabled, Action::ToggleMod(m.id.clone()));
+                self.toggle(p, tog_x, r[1] + (r[3] - self.d(28.0)) / 2.0, m.enabled, Action::ToggleMod(m.id.clone()));
             }
             y += rh + self.d(10.0);
         }
         self.end_scroll(p, sb, y);
         let dir = self.state.mods_dir.clone();
         self.page_title(p, a, "Mods", &format!("Turned on mods load in the order you turn them on. Folder: {dir}"));
+        let mut x = a[0];
+        if self.caps.mod_files {
+            x = self.auto_button(p, x, tb, bh, "Import mod\u{2026}", Style::Primary, Some(Icon::Download), Action::ImportMod) + self.d(10.0);
+        }
         if self.caps.open_folders {
-            self.auto_button(p, a[0], tb, bh, "Open mods folder", Style::Secondary, Some(Icon::Folder), Action::OpenModsFolder);
+            self.auto_button(p, x, tb, bh, "Open mods folder", Style::Secondary, Some(Icon::Folder), Action::OpenModsFolder);
         }
     }
 
@@ -1463,6 +1493,7 @@ mod tests {
             pick_folder: true,
             drop_files: true,
             open_folders: true,
+            mod_files: true,
             export: true,
             updates_page: false,
             close_label: None,
@@ -1681,6 +1712,34 @@ mod tests {
         let _ = drawn(&mut l);
         let hit = l.hits.iter().find(|(_, h)| matches!(h, Hit::Act(Action::ToggleMod(_)))).unwrap().0;
         assert_eq!(l.press(hit[0] + hit[2] / 2.0, hit[1] + hit[3] / 2.0), Action::ToggleMod("hello-mod".into()));
+    }
+
+    #[test]
+    fn mods_import_and_remove() {
+        let mut l = desktop();
+        click_label(&mut l, "Mods");
+        assert_eq!(click_label(&mut l, "Import mod\u{2026}"), Action::ImportMod);
+        // Remove asks first; a press elsewhere forgets the question.
+        assert_eq!(click_label(&mut l, "Remove"), Action::None);
+        assert!(drawn(&mut l).texts.iter().any(|t| t.2 == "Really remove?"));
+        assert_eq!(click_label(&mut l, "Import mod\u{2026}"), Action::ImportMod);
+        assert_eq!(click_label(&mut l, "Remove"), Action::None);
+        assert_eq!(click_label(&mut l, "Really remove?"), Action::RemoveMod("hello-mod".into()));
+        assert!(drawn(&mut l).texts.iter().any(|t| t.2 == "Remove"));
+        // The host's new list shows up as rows (sorted by the host), with long names cut.
+        l.state.mods.push(ModRow { id: "zz".into(), name: "A mod with a very long name ".repeat(6), version: "2.0.0".into(), enabled: false });
+        let r = drawn(&mut l);
+        assert_eq!(r.texts.iter().filter(|t| t.2 == "Remove").count(), 2);
+        assert!(r.texts.iter().any(|t| t.2 == "zz  \u{b7}  version 2.0.0"));
+        l.state.mods.clear();
+        assert!(drawn(&mut l).texts.iter().any(|t| t.2.starts_with("No mods installed yet. Import")));
+        // Without the capability (Android): no Import, no Remove.
+        let mut a = Launcher::new(Caps { import: true, ..Default::default() }, 1280.0, 720.0, 1.0);
+        a.state = l.state.clone();
+        a.state.mods = desktop().state.mods;
+        a.show_tab(Tab::Mods);
+        let r = drawn(&mut a);
+        assert!(!r.texts.iter().any(|t| t.2 == "Remove" || t.2 == "Import mod\u{2026}"));
     }
 
     #[test]

@@ -47,6 +47,11 @@ screens and FMV flow are still being finished, so expect rough edges. Online pla
    versions*, `[launcher] check_updates`), point it at a mirror with `[launcher] releases_url` or
    `$F2_RELEASES_URL`, or set `$F2_NO_UPDATE_CHECK=1`.
 5. **Mods** lists the folders in `mods/` and switches them on and off (`[mods] enabled`).
+   **Import mod…** installs a mod you downloaded: pick its `.f2mod` (or `.zip`), or the
+   `mod.toml` inside a mod folder. It is checked, copied into `mods/<id>/` and turned on;
+   importing a newer copy of an installed mod replaces it. You can also drop a `.f2mod` on the
+   window, or open it with `launcher` / `frogger2` ("Open with"). **Remove** (press it twice)
+   takes a mod out; replaced and removed mods are kept in `mods/.backup/<id>/`.
 6. **Export** builds the game with your data for your other devices, the same as the game's own
    Settings > Export and `frogger2 --export` ([EXPORT.md](EXPORT.md)): this computer's own
    system, Android, PS4, PS5 and N64 (a Windows build only from Windows, and so on). Each row
@@ -382,7 +387,10 @@ Headless runs never write saves.
 Mods are layered over the retail data (files, scripts, extra levels). Enable them in
 `config.toml` (`[mods] enabled = ["id", ...]`) or per run with `frogger2 --mods a,b`
 (`--mods ""` = none) and `--mods-dir DIR`. See [modding.md](modding.md) for the mod format and
-`f2-modkit` in [TOOLS.md](TOOLS.md) to create and check mods.
+`f2-modkit` in [TOOLS.md](TOOLS.md) to create, check and package mods.
+Install a mod package with the launcher's **Import mod…** (above) or
+`frogger2 --import-mod FILE.f2mod` (also a `.zip` or a mod folder: installs it into the mods
+folder, turns it on and quits; exit code 1 when the mod is refused).
 `frogger2 --editor --level W L [--mod ID]` opens the level editor and saves the edited level as
 a mod (modding.md, "Level editor"); `--mod ID` is an alias of `--mods` that can be repeated.
 

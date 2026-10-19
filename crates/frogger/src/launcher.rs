@@ -25,6 +25,7 @@ use f2_launcher::releases::{self, Release};
 use f2_launcher::ui::{self, Action, Caps, ExportRow, ExportState, Launcher, ModRow, Progress, SettingGroup, SettingKind, SettingRow, SourceRow, VersionRow};
 use f2_launcher::{install, mods};
 use f2_media::cdrom::DriveInfo;
+use f2_modkit::archive::{self, Installed};
 use f2_platform::window::{self, winit, Flow, WindowApp, WindowConfig};
 use f2_platform::{Config, Profile, WindowMode};
 
@@ -42,6 +43,9 @@ enum Msg {
     /// A progress line of the export of `Target::ALL[i]`.
     ExportLog(usize, String),
     Exported(usize, Result<PathBuf, String>),
+    /// The mod file dialog closed (`None`: nothing chosen).
+    PickedMod(Option<PathBuf>),
+    ModInstalled(Result<Box<Installed>, String>),
 }
 
 struct Gfx {
@@ -57,6 +61,8 @@ type Pending = Option<(u32, u32, Vec<u8>)>;
 struct App {
     root: PathBuf,
     cfg: Config,
+    /// Where `cfg` is saved (`config.toml` in the settings folder).
+    config_file: PathBuf,
     ui: Launcher,
     gfx: Option<Gfx>,
     error: Option<String>,
@@ -70,6 +76,8 @@ struct App {
     scanning: bool,
     dialog_open: bool,
     importing: bool,
+    /// A mod is being installed.
+    installing_mod: bool,
     /// The game's pictures waiting to be given to the painter.
     hero_pending: Pending,
     logo_pending: Pending,
@@ -172,6 +180,7 @@ impl App {
             pick_folder: true,
             drop_files: true,
             open_folders: true,
+            mod_files: true,
             export: true,
             updates_page: false,
             close_label: None,
@@ -181,6 +190,7 @@ impl App {
             root,
             ui: Launcher::new(caps, 1100.0, 700.0, 1.0),
             cfg,
+            config_file: f2_platform::paths::config_file(),
             gfx: None,
             error: None,
             releases: Vec::new(),
@@ -192,6 +202,7 @@ impl App {
             scanning: false,
             dialog_open: false,
             importing: false,
+            installing_mod: false,
             hero_pending: None,
             logo_pending: None,
             icon_pending: None,
@@ -470,7 +481,7 @@ impl App {
     }
 
     fn save_config(&mut self) {
-        if let Err(e) = self.cfg.save_default() {
+        if let Err(e) = self.cfg.save(&self.config_file) {
             self.say(&format!("Saving the settings failed: {e}"), true);
         }
     }
@@ -561,6 +572,13 @@ impl App {
                     };
                     self.refresh();
                 }
+                Msg::PickedMod(p) => {
+                    self.dialog_open = false;
+                    if let Some(p) = p {
+                        self.import_mod(p);
+                    }
+                }
+                Msg::ModInstalled(r) => self.mod_installed(r.map(|i| *i)),
             }
         }
     }
@@ -586,8 +604,64 @@ impl App {
             Some(if folder { "Choose the folder in the window that opened." } else { "Choose the disc image in the window that opened." }.into());
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(Msg::Picked(native_dialog(folder)));
+            let _ = tx.send(Msg::Picked(native_dialog(if folder { Pick::Folder } else { Pick::Image })));
         });
+    }
+
+    /// "Import mod": asks for a mod package (or a folder's mod.toml) with the system's dialog.
+    fn pick_mod(&mut self) {
+        if self.dialog_open || self.installing_mod {
+            return;
+        }
+        self.dialog_open = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::PickedMod(native_dialog(Pick::Mod)));
+        });
+    }
+
+    /// Installs the mod package or folder `src` on a worker thread (`pack`'s checks decode
+    /// every file); [`App::mod_installed`] turns it on.
+    fn import_mod(&mut self, src: PathBuf) {
+        if self.installing_mod {
+            return;
+        }
+        let src = archive::source_of(&src);
+        self.installing_mod = true;
+        self.ui.show_tab(ui::Tab::Mods);
+        let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| src.display().to_string());
+        self.ui.state.busy = Some((format!("Installing the mod {name}"), 0.5));
+        let (dir, tx) = (self.cfg.mods_dir(), self.tx.clone());
+        std::thread::spawn(move || {
+            let r = archive::install(&src, &dir).map(Box::new).map_err(|e| e.to_string());
+            let _ = tx.send(Msg::ModInstalled(r));
+        });
+    }
+
+    fn mod_installed(&mut self, r: Result<Installed, String>) {
+        self.installing_mod = false;
+        self.ui.state.busy = None;
+        match r {
+            Ok(i) => {
+                let msg = enable_installed(&mut self.cfg, &i);
+                self.save_config();
+                self.refresh();
+                self.say(&msg, false);
+            }
+            Err(e) => self.say(&format!("The mod was not installed: {e}"), true),
+        }
+    }
+
+    fn remove_mod(&mut self, id: &str) {
+        match archive::remove(&self.cfg.mods_dir(), id) {
+            Ok(backup) => {
+                self.cfg.mods.enabled.retain(|m| m != id);
+                self.save_config();
+                self.refresh();
+                self.say(&format!("Removed {id} (a copy is kept in {}).", backup.display()), false);
+            }
+            Err(e) => self.say(&e.to_string(), true),
+        }
     }
 
     fn start_import(&mut self, from: ImportFrom) {
@@ -790,6 +864,8 @@ impl App {
                 self.refresh();
             }
             Action::OpenModsFolder => self.open_folder(&self.cfg.mods_dir()),
+            Action::ImportMod => self.pick_mod(),
+            Action::RemoveMod(id) => self.remove_mod(&id),
         }
     }
 
@@ -829,8 +905,81 @@ enum ImportFrom {
     Drive(DriveInfo),
 }
 
-/// Asks for a disc image (or a folder) with the system's own dialog.
-fn native_dialog(folder: bool) -> Option<PathBuf> {
+/// Turns the mod just installed on (appended to `[mods] enabled`: loads last); what to tell
+/// the player. Warnings from the checks go to the log.
+pub fn enable_installed(cfg: &mut Config, i: &Installed) -> String {
+    let m = &i.manifest;
+    for w in &i.warnings {
+        eprintln!("launcher: mod {}: warning: {w}", m.id);
+    }
+    if !cfg.mods.enabled.contains(&m.id) {
+        cfg.mods.enabled.push(m.id.clone());
+    }
+    let version = if m.version.is_empty() { String::new() } else { format!(" {}", m.version) };
+    let mut msg = match (&i.replaced, &i.backup) {
+        (Some(old), Some(b)) => {
+            let (what, was) = match old.as_str() {
+                o if o == m.version => ("Reinstalled", String::new()),
+                "" => ("Updated", String::new()),
+                o => ("Updated", format!(" (was {o})")),
+            };
+            format!("{what} {}{version}{was} and turned it on. The old copy is in {}.", m.name, b.display())
+        }
+        _ => format!("Installed {}{version} and turned it on.", m.name),
+    };
+    if !i.warnings.is_empty() {
+        msg += &format!(" {} warning(s) in the log.", i.warnings.len());
+    }
+    msg
+}
+
+/// `frogger2 --import-mod FILE`: installs a mod package or folder into the mods folder, turns
+/// it on and saves the settings; the exit code.
+pub fn import_mod_cli(cfg: &mut Config, src: &Path) -> i32 {
+    match archive::install(&archive::source_of(src), &cfg.mods_dir()) {
+        Ok(i) => {
+            let msg = enable_installed(cfg, &i);
+            if let Err(e) = cfg.save_default() {
+                eprintln!("frogger: saving the settings failed: {e}");
+                return 1;
+            }
+            println!("{msg} ({})", i.dir.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("frogger: the mod was not installed: {e}");
+            1
+        }
+    }
+}
+
+/// The mod to install from the command line: `--import-mod FILE`, or a lone mod package or
+/// folder (a `.f2mod` opened with the program).
+pub fn mod_arg(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<PathBuf> {
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if a == "--import-mod" {
+            return it.next().map(PathBuf::from);
+        }
+        let p = PathBuf::from(&a);
+        if !a.to_string_lossy().starts_with('-') && archive::is_mod_source(&p) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// What a system file dialog asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    Image,
+    Folder,
+    /// A `.f2mod`/`.zip`, or a folder's `mod.toml`.
+    Mod,
+}
+
+/// Asks for a disc image, a folder or a mod with the system's own dialog.
+fn native_dialog(what: Pick) -> Option<PathBuf> {
     let pick = |out: std::io::Result<std::process::Output>| -> Option<PathBuf> {
         let o = out.ok()?;
         let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -839,45 +988,59 @@ fn native_dialog(folder: bool) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let script = if folder {
-            "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
-             $d.Description = 'Frogger 2 disc or installed game'; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }"
-        } else {
-            "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; \
-             $d.Title = 'Frogger 2 disc image'; \
-             $d.Filter = 'Disc images|*.cue;*.bin;*.iso;*.img;*.ccd;*.mds;*.mdf;*.nrg;*.toc;*.zip|All files|*.*'; \
-             if ($d.ShowDialog() -eq 'OK') { $d.FileName }"
+        let script = match what {
+            Pick::Folder => {
+                "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
+                 $d.Description = 'Frogger 2 disc or installed game'; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }"
+            }
+            Pick::Image => {
+                "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; \
+                 $d.Title = 'Frogger 2 disc image'; \
+                 $d.Filter = 'Disc images|*.cue;*.bin;*.iso;*.img;*.ccd;*.mds;*.mdf;*.nrg;*.toc;*.zip|All files|*.*'; \
+                 if ($d.ShowDialog() -eq 'OK') { $d.FileName }"
+            }
+            Pick::Mod => {
+                "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; \
+                 $d.Title = 'Frogger 2 mod (a .f2mod or .zip, or the mod.toml in a mod folder)'; \
+                 $d.Filter = 'Frogger 2 mods|*.f2mod;*.zip;mod.toml|All files|*.*'; \
+                 if ($d.ShowDialog() -eq 'OK') { $d.FileName }"
+            }
         };
         pick(std::process::Command::new("powershell.exe").args(["-NoProfile", "-STA", "-Command", script]).creation_flags(0x0800_0000).output())
     }
     #[cfg(target_os = "macos")]
     {
-        let script = if folder {
-            "POSIX path of (choose folder with prompt \"Frogger 2 disc or installed game\")"
-        } else {
-            "POSIX path of (choose file with prompt \"Frogger 2 disc image\")"
+        let script = match what {
+            Pick::Folder => "POSIX path of (choose folder with prompt \"Frogger 2 disc or installed game\")",
+            Pick::Image => "POSIX path of (choose file with prompt \"Frogger 2 disc image\")",
+            Pick::Mod => "POSIX path of (choose file with prompt \"Frogger 2 mod (.f2mod, .zip, or a mod folder's mod.toml)\")",
         };
         pick(std::process::Command::new("osascript").args(["-e", script]).output())
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let zen = if folder {
-            vec!["--file-selection", "--directory", "--title=Frogger 2 disc or installed game"]
-        } else {
-            vec![
+        let zen = match what {
+            Pick::Folder => vec!["--file-selection", "--directory", "--title=Frogger 2 disc or installed game"],
+            Pick::Image => vec![
                 "--file-selection",
                 "--title=Frogger 2 disc image",
                 "--file-filter=Disc images | *.cue *.bin *.iso *.img *.ccd *.mds *.mdf *.nrg *.toc *.zip",
                 "--file-filter=All files | *",
-            ]
+            ],
+            Pick::Mod => vec![
+                "--file-selection",
+                "--title=Frogger 2 mod (.f2mod, .zip, or a mod folder's mod.toml)",
+                "--file-filter=Frogger 2 mods | *.f2mod *.zip mod.toml",
+                "--file-filter=All files | *",
+            ],
         };
         if let Some(p) = pick(std::process::Command::new("zenity").args(&zen).output()) {
             return Some(p);
         }
-        let kd = if folder {
-            vec!["--getexistingdirectory", "."]
-        } else {
-            vec!["--getopenfilename", ".", "*.cue *.bin *.iso *.img *.ccd *.mds *.mdf *.nrg *.toc *.zip"]
+        let kd = match what {
+            Pick::Folder => vec!["--getexistingdirectory", "."],
+            Pick::Image => vec!["--getopenfilename", ".", "*.cue *.bin *.iso *.img *.ccd *.mds *.mdf *.nrg *.toc *.zip"],
+            Pick::Mod => vec!["--getopenfilename", ".", "*.f2mod *.zip mod.toml"],
         };
         pick(std::process::Command::new("kdialog").args(&kd).output())
     }
@@ -926,6 +1089,12 @@ impl WindowApp for App {
                     MouseScrollDelta::PixelDelta(p) => -p.y as f32,
                 };
                 self.ui.scroll_by(px);
+            }
+            // A mod package or folder (a .zip only on the Mods page: it may be a disc image).
+            WindowEvent::DroppedFile(p)
+                if archive::is_mod_source(p) && (self.ui.tab == ui::Tab::Mods || !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))) =>
+            {
+                self.import_mod(p.clone());
             }
             WindowEvent::DroppedFile(p) if self.ui.state.import.running.is_none() => {
                 self.ui.show_import(true);
@@ -998,16 +1167,27 @@ impl WindowApp for App {
 }
 
 /// Runs the launcher window until it closes (or starts the game). Returns false when the
-/// window could not be opened.
+/// window could not be opened. `launcher FILE.f2mod` / `launcher --import-mod FILE` opens on
+/// the Mods page installing that mod.
 pub fn run() -> bool {
+    run_with(mod_arg(std::env::args_os().skip(1)))
+}
+
+/// [`run`], installing the mod `import` (if any) once the window is up.
+pub fn run_with(import: Option<PathBuf>) -> bool {
     crate::setup::attach_parent_console();
-    // The version chosen in the launcher brings its own launcher: start that one instead.
+    // The version chosen in the launcher brings its own launcher: start that one instead
+    // (mods and settings are shared, so a mod to install is installed here).
     let cfg = Config::load_desktop().unwrap_or_default();
     let root = install_root();
-    if crate::setup::hand_over(crate::setup::other_version(&root, &cfg.launcher.version).and_then(|d| crate::setup::launcher_exe(&d)), &[]) {
+    if import.is_none() && crate::setup::hand_over(crate::setup::other_version(&root, &cfg.launcher.version).and_then(|d| crate::setup::launcher_exe(&d)), &[])
+    {
         return true;
     }
-    let app = App::new();
+    let mut app = App::new();
+    if let Some(p) = import {
+        app.import_mod(p);
+    }
     let mut wc = WindowConfig::from_config(&app.cfg);
     wc.title = "Frogger 2: Swampy's Revenge (Rust) - Launcher".into();
     wc.mode = WindowMode::Windowed;
@@ -1046,6 +1226,7 @@ mod tests {
             pick_folder: true,
             drop_files: true,
             open_folders: true,
+            mod_files: true,
             export: true,
             updates_page: false,
             close_label: None,
@@ -1138,6 +1319,11 @@ mod tests {
             l.show_tab(tab);
             shot(&mut l, name);
         }
+        l.show_tab(ui::Tab::Mods);
+        l.state.message =
+            Some(("Updated Dusk garden 1.1.0 (was 1.0.0) and turned it on. The old copy is in C:\\Games\\frogger2-rs\\mods\\.backup\\dusk.".into(), false));
+        shot(&mut l, "mods-installed");
+        l.state.message = None;
         l.show_tab(ui::Tab::Settings);
         l.scroll_by(10_000.0);
         shot(&mut l, "settings-end");
@@ -1191,6 +1377,56 @@ mod tests {
         a.show_tab(ui::Tab::Play);
         a.state.game = None;
         phone(&mut a, "import");
+    }
+
+    /// "Import mod" without a window: a package is installed into the mods folder, turned on
+    /// (saved) and listed; importing it again updates it; Remove takes it out.
+    #[test]
+    fn imports_and_removes_mods() {
+        let t = std::env::temp_dir().join(format!("f2-launcher-mods-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let mut cfg = Config { data_root: Some(t.join("data")), ..Config::desktop() };
+        cfg.mods.dir = Some(t.join("mods"));
+        let mut app = App::with(cfg, t.clone());
+        app.config_file = t.join("config.toml");
+        app.refresh();
+        assert!(app.ui.state.mods.is_empty());
+        let src = f2_modkit::pack::scaffold(&t.join("src"), "hi").unwrap();
+        let pkg = t.join("hi.f2mod");
+        archive::write(&src, &pkg).unwrap();
+        assert_eq!(mod_arg(["--mute".into(), pkg.clone().into_os_string()]), Some(pkg.clone()));
+        assert_eq!(mod_arg(["--import-mod".into(), "x.f2mod".into()]), Some(PathBuf::from("x.f2mod")));
+        assert_eq!(mod_arg(["--level".into(), "1".into(), "2".into()]), None);
+        let wait = |app: &mut App| {
+            assert!(app.installing_mod && app.ui.state.busy.is_some());
+            while app.installing_mod {
+                app.poll();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(app.ui.state.busy.is_none());
+        };
+        app.import_mod(pkg.clone());
+        assert_eq!(app.ui.tab, ui::Tab::Mods);
+        wait(&mut app);
+        assert_eq!(app.ui.state.mods, [ModRow { id: "hi".into(), name: "hi".into(), version: "0.1.0".into(), enabled: true }]);
+        assert_eq!(app.ui.state.message, Some(("Installed hi 0.1.0 and turned it on.".into(), false)));
+        assert!(Config::load(&app.config_file).unwrap().mods.enabled == ["hi"], "saved");
+        // A folder's mod.toml (what the file dialog picks) stands for the folder: an update.
+        std::fs::write(src.join("mod.toml"), f2_modkit::pack::manifest_template("hi").replace("0.1.0", "0.2.0")).unwrap();
+        app.import_mod(src.join("mod.toml"));
+        wait(&mut app);
+        assert_eq!(app.ui.state.mods.iter().map(|m| (m.version.as_str(), m.enabled)).collect::<Vec<_>>(), [("0.2.0", true)]);
+        assert!(app.ui.state.message.as_ref().is_some_and(|(m, bad)| !bad && m.starts_with("Updated hi 0.2.0 (was 0.1.0)")), "{:?}", app.ui.state.message);
+        // A broken package: an error, nothing changes.
+        std::fs::write(t.join("bad.f2mod"), b"nope").unwrap();
+        app.import_mod(t.join("bad.f2mod"));
+        wait(&mut app);
+        assert!(app.ui.state.message.as_ref().is_some_and(|(m, bad)| *bad && m.contains("not a mod package")), "{:?}", app.ui.state.message);
+        assert_eq!(app.ui.state.mods.len(), 1);
+        app.act(Action::RemoveMod("hi".into()));
+        assert!(app.ui.state.mods.is_empty() && app.cfg.mods.enabled.is_empty());
+        assert!(t.join("mods/.backup/hi/mod.toml").is_file());
+        let _ = std::fs::remove_dir_all(&t);
     }
 
     /// Imports a disc image through the launcher (`F2_TEST_IMAGE=<your Frogger 2 image>`,

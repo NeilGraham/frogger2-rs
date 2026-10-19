@@ -22,6 +22,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod archive;
 pub mod gltf;
 pub mod levels;
 pub mod pack;
