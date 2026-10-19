@@ -1679,6 +1679,41 @@ mod tests {
         assert!(diff > 200, "sliding textures did not move on the GPU meshes: {diff} px differ");
     }
 
+    /// Subterranean 1's acid river (`slu_fmriver`: opaque, its texture sliding) keeps its own
+    /// green, flowing surface in Enhanced instead of the generated water (which took the blue
+    /// of the level's pool and stood still).
+    #[test]
+    fn flowing_acid_keeps_its_surface() {
+        let Some(root) = rendition() else {
+            eprintln!("skipping: no game data (F2_GAME_DIR)");
+            return;
+        };
+        let ctx = GpuContext::new_headless().expect("headless GPU");
+        let mut app = level_app(&ctx, &root, (4, 0), 30, Profile::Enhanced);
+        app.game.overlays.draw_overlays = false;
+        app.game.textover.num_entries = 0;
+        app.set_free_cam(Some(render::FlyCam { pos: [-866.0, 120.0, -2450.0], yaw: std::f32::consts::PI, pitch: -0.75 }));
+        let (w, h) = (640, 400);
+        app.draw(w, h);
+        let a = app.r.render_to_image(app.clear_color()).expect("render");
+        // The river runs up the middle of this view (crates on it).
+        let px = |img: &f2_engine::RgbaImage, x: u32, y: u32| img.pixels[((y * w + x) * 4) as usize..][..3].to_vec();
+        let region: Vec<(u32, u32)> = (130..390).step_by(6).flat_map(|y| (340..470).step_by(6).map(move |x| (x, y))).collect();
+        let green = region.iter().filter(|&&(x, y)| {
+            let p = px(&a, x, y);
+            p[1] > p[0] + 30 && p[1] > p[2] + 30
+        });
+        let green = green.count();
+        assert!(green * 3 > region.len(), "the acid river is not green: {green} of {} samples", region.len());
+        for _ in 0..8 {
+            render::slide_object_textures(app.scene.as_mut().unwrap(), &app.game);
+        }
+        app.draw(w, h);
+        let b = app.r.render_to_image(app.clear_color()).expect("render");
+        let moved = region.iter().filter(|&&(x, y)| px(&a, x, y) != px(&b, x, y)).count();
+        assert!(moved * 5 > region.len(), "the acid does not flow: {moved} of {} samples changed", region.len());
+    }
+
     /// Standing water (`wat_pond`: `OBJECT_FLAGS_WAVE | MODGE | ADDITIVE`, banks.cpp:560)
     /// wobbles its texture and waves its surface with `timeInfo.frameCount`
     /// (`PCCalcModgeValues`): the same game state drawn 10 frames later differs over the pond.

@@ -20,7 +20,13 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   `ai_water`, `ai_ripple`, `00wate`, `00nwat`, `aniswamp`, `aqua0`, `aquatop`, `ripple`,
   `sludge`, `swampi`, `swampyi`) goes to the **water pass**; an opaque MODGE-only mesh (river
   bed) goes to the lit **GPU mesh pass without its wobble** (the real caustics replace it).
-  Anything else stays on the CPU.
+  An opaque water-textured mesh whose texture slides (`ACTOR_SLIDYTEX` / `ACTOR_SLOWSLIDE`:
+  the Subterranean acid rivers `slu_fm*`, Halloween's sludge `slu_floh`, the frontend's
+  `slu_fall`) is a **flowing liquid**: it keeps its own surface on the GPU mesh pass, sliding
+  and wobbling as in the original, with a sheen (ripples in its texture coordinates, so they
+  flow with it, catching the sun, the point lights and a little sky; no sky in caves). The
+  generated surface has one tint and one flow per level, which would turn such a river into
+  standing water of another colour. Anything else stays on the CPU.
 - **Generated surface:** the flat parts of the water are drawn as our own surface instead of the
   original meshes: a 512² grid of quads (2×2 simulation cells, 3 units) over the simulation
   window, resting 2.5 units below the surface map's height and moved by the simulation, a slow

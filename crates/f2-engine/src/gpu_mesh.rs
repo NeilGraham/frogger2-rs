@@ -72,7 +72,7 @@ struct Rec {
     /// Bit 0: no far clip (sky); bit 1: Gouraud override; bit 2: landscape; bit 3: MODGE
     /// (texture wobble); bit 4: WAVE (swell, water alpha); bit 5: a river bed (drawn on the CPU,
     /// after the opaque meshes, by the original: pushed back in depth so the banks it runs
-    /// under win where they meet).
+    /// under win where they meet); bit 6: a flowing opaque liquid ([`Class::Flowing`]).
     flags: u32,
     /// `PCCalcModgeValues`' frame count; spare.
     modge_frame: u32,
@@ -125,13 +125,18 @@ enum Class {
     Water,
     /// An opaque MODGE surface (river beds): the GPU mesh pass, with caustics.
     Modge,
+    /// An opaque liquid whose texture slides (the Subterranean acid rivers): its own surface,
+    /// flowing and wobbling as in the original, on the GPU mesh pass with a liquid's sheen.
+    Flowing,
 }
 
 /// [`Class`] of `o` (texture names: [`crate::lighting::is_water`]).
 fn classify(o: &GpuObj, textures: &TextureRegistry) -> Class {
     let n = o.mesh.textures.len();
     let wet = o.mesh.textures.iter().filter(|&&crc| textures.entry(crc).is_some_and(|e| crate::lighting::is_water(&e.name))).count();
-    if n > 0 && wet * 2 > n {
+    if n > 0 && wet * 2 > n && o.slides && matches!(o.frame, Frame::Normal | Frame::Wrap) {
+        Class::Flowing
+    } else if n > 0 && wet * 2 > n {
         Class::Water
     } else if o.modge & 3 == 1 && matches!(o.frame, Frame::Normal | Frame::Wrap) {
         Class::Modge
@@ -167,7 +172,7 @@ impl Sink {
             Some(_) => {}
         }
         let mut modge = o.modge;
-        let mut bed = false;
+        let (mut bed, mut liquid) = (false, false);
         if o.light_only {
             if o.override_tex.is_none() {
                 self.light_only.push((key, o.mats[0]));
@@ -183,6 +188,7 @@ impl Sink {
                     modge = 0;
                     bed = true;
                 }
+                Class::Flowing => liquid = true,
                 Class::Water => {
                     if let std::collections::hash_map::Entry::Vacant(e) = self.class.entry((key.0, key.1 ^ WATER_KEY)) {
                         e.insert(Class::Water);
@@ -206,7 +212,7 @@ impl Sink {
         self.prev.extend((0..o.mats.len()).map(|i| *o.prev.get(i).unwrap_or(&o.mats[i])));
         let flags = no_clip as u32 | (o.gouraud.is_some() as u32) << 1 | (o.landscape as u32) << 2;
         let g = o.gouraud.unwrap_or([1.0; 3]);
-        let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5;
+        let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5 | (liquid as u32) << 6;
         self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0] });
         self.draws.push(Draw {
             key,
@@ -1139,12 +1145,52 @@ fn refraction_uv(i: VOut, d: mat4x2<f32>) -> vec2<f32> {
     return clamp(duv, vec2<f32>(-0.2), vec2<f32>(0.2)) * smoothstep(0.5, 4.0, depth);
 }
 
+// A flowing liquid's ripples ([`Class::Flowing`]): a height field in its texture's coordinates,
+// which slide, so the ripples flow with the texture.
+fn liquid_h(uv: vec2<f32>, t: f32) -> f32 {
+    let q = uv * 18.85;
+    return sin(q.x + q.y * 0.6 + t * 1.3) * 0.5 + sin(q.y * 1.3 - q.x * 0.7 + t * 1.7) * 0.35 + sin(q.x * 2.3 + q.y * 1.9 - t * 2.1) * 0.15;
+}
+
+// The sheen of a flowing liquid: highlights of the sun and the point lights and a little sky on
+// its rippled surface (bump-mapped from screen derivatives: Mikkelsen, "Bump Mapping
+// Unparametrized Surfaces on the GPU").
+fn liquid_sheen(i: VOut, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, hx: f32, hy: f32) -> vec3<f32> {
+    let r1 = cross(sy, face);
+    let r2 = cross(face, sx);
+    let det = dot(sx, r1);
+    let n = normalize(abs(det) * face - sign(det) * (hx * r1 + hy * r2) * LIQUID_BUMP);
+    let v = normalize(lt.eye.xyz - i.world);
+    let fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    // Under an open sky a little of it; a cave's (sunless) ambient is no sky to reflect.
+    var spec = lt.sky.rgb * fres * 0.25 * lt.sun_dir.w;
+    if (lt.sun_dir.w > 0.5) {
+        let sh = shadow(i.world + face * 2.0);
+        spec += lt.sun_color.rgb * pow(max(dot(n, normalize(lt.sun_dir.xyz + v)), 0.0), 96.0) * 1.5 * sh;
+    }
+    let np = u32(lt.ground.w);
+    for (var k = 0u; k < np; k++) {
+        let p = points[k];
+        let d = p.pos.xyz - i.world;
+        let dist = length(d);
+        let att = clamp(1.0 - dist / p.pos.w, 0.0, 1.0);
+        spec += p.color.rgb * att * att * pow(max(dot(n, normalize(d / max(dist, 0.001) + v)), 0.0), 64.0);
+    }
+    return spec;
+}
+const LIQUID_BUMP: f32 = 0.6;
+
 fn shade(i: VOut) -> vec4<f32> {
     // Derivatives first (uniform control flow).
     let dd = mat4x2<f32>(dpdx(i.world.xz), dpdy(i.world.xz), dpdx(i.uv), dpdy(i.uv));
-    var face = cross(dpdx(i.world), dpdy(i.world));
+    let sx = dpdx(i.world);
+    let sy = dpdy(i.world);
+    var face = cross(sx, sy);
     face = select(normalize(i.normal), normalize(face), dot(face, face) > 1e-12);
     if (dot(face, lt.eye.xyz - i.world) < 0.0) { face = -face; }
+    let lh = liquid_h(i.uv, lt.water2.x);
+    let lhx = dpdx(lh);
+    let lhy = dpdy(lh);
     // The far plane (`PCPrepareObject` drops faces past it; here per pixel, no popping).
     if ((i.flags & 1u) == 0u && i.vz - 10.0 >= cam.fog.w) { discard; }
     var c = textureSampleGrad(t, s, i.uv + refraction_uv(i, dd), dd[2], dd[3]) * i.color;
@@ -1154,6 +1200,9 @@ fn shade(i: VOut) -> vec4<f32> {
             c = vec4<f32>(min(c.rgb * 1.15, vec3<f32>(1.0)), c.a);
         } else if ((i.flags & 1u) == 0u) {
             c = vec4<f32>(light(i, c.rgb, face), c.a);
+            if ((i.flags & 64u) != 0u) {
+                c = vec4<f32>(c.rgb + liquid_sheen(i, face, sx, sy, lhx, lhy), c.a);
+            }
         }
     }
     if (cam.fog.x > 0.5) { c = vec4<f32>(mix(cam.fog_color.rgb, c.rgb, i.fog), c.a); }

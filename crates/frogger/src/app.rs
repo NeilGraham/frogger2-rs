@@ -416,6 +416,11 @@ impl App {
     }
 
     /// Selects the profile and the enhanced-profile settings (from `config.toml`).
+    /// Looks from a free camera (`None`: the game's camera again), as F-key free cam does.
+    pub fn set_free_cam(&mut self, cam: Option<FlyCam>) {
+        self.free_cam = cam;
+    }
+
     pub fn set_display(&mut self, profile: Profile, enhanced: DisplaySettings) {
         self.profile = profile;
         self.enhanced = enhanced;
