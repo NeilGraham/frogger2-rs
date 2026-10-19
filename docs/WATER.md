@@ -123,9 +123,13 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
     their speed through the water: their movement less the flow there, with a little slack,
     so a log or a crate drifting with a stream makes none; the sim reads the flow map);
   - creatures (`Actor::wake`, from the host: scenery `ENEMY_NEW_FLAPPYTHING`, fish by their
-    bubbles; else by model name: `bfly*`, `*fish*`): a butterfly's wings ruffle the water up
-    to 45 units under it (weaker the higher it flies) and now and then it dips (a tiny ring);
-    a fish leaves a small wake near the surface and its bubbles pop up through it;
+    bubbles; else by model name: `bfly*`, `*fish*`): a butterfly low over the water dips a
+    foot in now and then (a small ring; fading out by 50 units over it); a fish leaves a
+    small wake near the surface and its bubbles pop up through it;
+  - a floating body moving up or down (a log dipping under the frog, bobbing back as it hops
+    off) pushes the water along its whole footprint (`Splash::half` / `axis`: an oriented
+    rectangle, the model's x / z extents turned with the actor), so a log makes long waves
+    along its sides; the landing itself adds a smaller ring where the frog lands;
   - the frog landing on a platform splashes at the platform, hopping off one lets it bob up
     with a smaller wave, and falling in makes a big splash (`App::water_tick`), and
   - the platform and the frog dip by a couple of units on a damped spring (render-only
@@ -133,9 +137,12 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
 - **Floating:** platforms, and a frog standing on one (`DrawCtx::floats` → `Actor::float_at`
   → `Rec::anchor`), ride the generated surface where their anchor is (`float_lift` in `vs`):
   made to float at the original surface, they are moved to where the generated one is (2.5
-  lower) and 1.5 into it, so their bottoms are in the water, rising and falling with the waves
+  lower, and 0.4 into it: a thin lily pad stays on top), rising and falling with the waves
   and swell and tilting with their slope (gentler than the water's own). On acid only with its
   waves (half the draft); over lava, or with no water under the anchor, not at all.
+- **Calm:** gentle simulated slopes are shaded a little steeper (`WAVE_GAIN`, soft-limited)
+  and focus faint caustic rings on the bed, so small disturbances read on silky water; the
+  waves die down within a couple of seconds.
 - **Thickness:** the simulation's waves move by the liquid (the flow map's z): water rings out
   far; acid's are slower and short-lived, and the velocity's own Laplacian (a viscosity)
   smooths away the fine ripples, so a splash makes a dimple and a broad, soft ring.
@@ -154,7 +161,13 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   water is read from the copy, bent a little by the waves, and tinted along the path through
   the water (red absorbed first) into the water's own colour. Without a copy the surface is
   blended over the frame as before. The surface is premultiplied, so its reflection does not
-  depend on how clear the water is.
+  depend on how clear the water is. What shows through is tinted along the view ray's real
+  path to whatever it meets (the frame's depth, per pixel: a rock or an island's base under
+  the water darkens with depth instead of showing as a pale box, which the bed map's cells
+  cannot see), and the shore fades where that path is short, along the banks' own shape.
+- **Skirts:** the art hangs steep water faces under the surface along banks and islands (to
+  hide seams); with the generated surface they are not drawn below the lowest water about
+  them (a fall keeps what is above its pool).
 - **Waterfalls** (the steep faces) stir the water where they land: each waterfall group keeps up
   to 12 of its lowest points, which push the simulated surface every step (moving about a little,
   so the water churns), from 20 units below them (a fall may end over its pool) up to 400
@@ -205,8 +218,10 @@ what is about them) and the waves run on them.
   like the water's ripples (two copies, each carried for 4 s and put back, crossfaded keeping
   the field's contrast, so rafts melt and form rather than fade); the flow is the flow map
   smoothed over a 32-unit lattice (each face slides its own way, some 30 degrees apart: a flow
-  with steps in it tears the crust). Steep faces, fast flow, stirred lava and wakes melt the
-  crust away. Detail finer than a few pixels fades out.
+  with steps in it tears the crust; each carried copy runs 2.5 s, so rafts are not drawn out
+  into ribbons where it turns). Steep faces (by the smoothed normal or the face's own slope:
+  the lava falls), fast flow, stirred lava and wakes melt the crust away; collars and folds
+  against obstacles are on the flat only. Detail finer than a few pixels fades out.
 - **Melt:** the original texture's colours, brighter in slow rolls along the texture's slide
   (its coordinates, so they flow with it), with a slow heat pulse, a glossy skin (the light
   from above in a cave, else the sun, across the bumps) and a little Fresnel; no reflections.
