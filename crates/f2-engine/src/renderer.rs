@@ -924,11 +924,9 @@ impl Renderer {
         for i in core::mem::take(&mut self.textures.dirty) {
             let img = &self.textures.images[i as usize];
             let size = wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 };
-            let chain = if mips && img.width.max(img.height) <= MIP_MAX_SIZE && img.rgba.len() as u32 == img.width * img.height * 4 {
-                build_mips(img.width, img.height, &img.rgba)
-            } else {
-                Vec::new()
-            };
+            let big_ok = img.width.max(img.height) <= MIP_MAX_SIZE || self.textures.model_images.contains(&i);
+            let chain =
+                if mips && big_ok && img.rgba.len() as u32 == img.width * img.height * 4 { build_mips(img.width, img.height, &img.rgba) } else { Vec::new() };
             let idx = i as usize;
             // Same size and mip count (e.g. the next video frame): write the pixels into the
             // existing texture, keeping its view and bind groups.

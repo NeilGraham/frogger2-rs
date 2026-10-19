@@ -80,6 +80,9 @@ pub struct TextureRegistry {
     pbr_by: BTreeMap<(u32, u32), u32>,
     /// Modded skins' smooth weights by model id.
     skins: BTreeMap<u32, Arc<SkinWeights>>,
+    /// Images a modded model brought (its material maps): mip-mapped at any size (they are
+    /// made large and drawn small).
+    pub(crate) model_images: std::collections::BTreeSet<u32>,
 }
 
 /// [`TextureRegistry::entry`]'s memo of `by_crc` (`lean`, single-threaded consoles): 64
@@ -231,7 +234,11 @@ impl TextureRegistry {
                     self.add_entry(crc, &name, TexType::Normal, h);
                     h
                 }
-                None => self.add_rgba(crc, &name, TexType::Normal, img.width, img.height, img.rgba.clone()),
+                None => {
+                    let h = self.add_rgba(crc, &name, TexType::Normal, img.width, img.height, img.rgba.clone());
+                    self.model_images.insert(h.0);
+                    h
+                }
             };
             handles.insert(i, h);
         }
@@ -247,6 +254,7 @@ impl TextureRegistry {
             }
             let img = m.images.get(i as usize)?;
             let h = reg.add_image(img.width, img.height, img.rgba.clone());
+            reg.model_images.insert(h.0);
             handles.insert(i, h);
             Some(h)
         };

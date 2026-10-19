@@ -1,0 +1,8 @@
+id = "frogger-hd"
+name = "Frogger HD"
+version = "1.0.0"
+authors = ["Neil Graham"]
+# Semver requirement on the engine/mod API version.
+engine_version = "^1.0"
+gameplay_affecting = false
+description = "A new high-detail Frogger (about 15k triangles, smooth-skinned to the original skeleton and animations) with physically based materials: colour, normal, occlusion/roughness and a height map for parallax occlusion (Enhanced / Path-Traced graphics). Original graphics keep the retail frog's look on the new mesh."

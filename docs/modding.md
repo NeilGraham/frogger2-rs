@@ -489,3 +489,22 @@ mods dir are never mods.
 - Music: `Effect::PlayMusic` plays `f2_modkit::music_track(&vfs, n)` when a mod provides the
   track, else the retail track as before.
 - Level manifests → `LevelRegistry` (`crates/frogger/src/mods.rs`), passed to every session.
+
+## Example: `examples/mods/frogger-hd` (the first packaged mod)
+
+A new high-detail Frogger made in Blender: about 15k triangles, smooth-skinned (4 joints per
+vertex) to the retail frog's 18 joints, so it plays every retail animation (a mesh-only
+override: `objects/frogger/frog.gltf` with no animations). Its material uses the PBR fields:
+base colour, an OpenGL normal map, ORM (occlusion R, roughness G, metal B) and a height map for
+parallax occlusion (`frog_basecolor_height.png`, `extras.parallaxScale`). How it was made:
+
+1. Import the exporter's `models/frogger/frog.gltf` into Blender (for the skeleton), model the
+   new mesh around its rest pose, skin it to the same bone names (smooth weights, at most 4).
+2. Bake the maps with only the new mesh renderable (other objects occlude an AO bake), then
+   fill the texels outside the UV islands with the nearest island colour (mip levels average
+   in the empty background otherwise: dark seams far away).
+3. Export glTF with +Y Up, Animation off, Custom Properties on (the height map and scale).
+4. `f2-modkit pack examples/mods/frogger-hd --out frogger-hd.f2mod`, then Import mod in the
+   launcher.
+
+Material maps a modded model brings are mip-mapped at any size (bank textures only up to 512).
