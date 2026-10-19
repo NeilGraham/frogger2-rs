@@ -80,7 +80,8 @@ struct Rec {
     gouraud: [f32; 4],
     /// A sliding texture ([`GpuObj::slide`]): x: what to add to the uploaded `v` (meshes
     /// uploaded once: subdivided water); y: how fast it slides (`v` per second, the texture
-    /// moving to +v); z: the liquid ([`Liquid`] as a number; 0: water or none); w: spare.
+    /// moving to +v); z: the liquid ([`Liquid`] as a number; 0: water or none); w: lava: how
+    /// much of its texture is painted crust ([`painted_crust`]).
     slide: [f32; 4],
 }
 
@@ -123,6 +124,8 @@ pub(crate) struct Sink {
     water_uv0: HashMap<Key, [i16; 2]>,
     /// Where each opaque waterfall ([`Liquid::Fall`]) lands (model space; see [`Group::feet`]).
     fall_feet: HashMap<Key, Vec<[f32; 3]>>,
+    /// How much of each lava mesh's texture is painted crust ([`painted_crust`]).
+    lava_crust: HashMap<Key, f32>,
 }
 
 /// A mesh the original animates or blends ([`GpuObj::light_only`]), with the enhanced water.
@@ -185,6 +188,28 @@ fn classify(o: &GpuObj, textures: &TextureRegistry) -> Class {
         Class::Modge
     } else {
         Class::Cpu
+    }
+}
+
+/// How much of lava mesh `o`'s texture is crust already (0..1): some artists painted molten
+/// rock as dark plates between glowing cracks (`00lava04`, `anclava`: a fifth to a half of
+/// their texels dark), others as bright melt (`lavafall`: none). Painted crust keeps its
+/// plates (lit, in relief) and gets none of ours over it.
+fn painted_crust(o: &GpuObj, textures: &TextureRegistry) -> f32 {
+    let (mut dark, mut all) = (0usize, 0usize);
+    for &crc in o.mesh.textures.iter().collect::<std::collections::BTreeSet<_>>() {
+        let Some(img) = textures.entry(crc).filter(|e| e.name.to_ascii_lowercase().contains("lava")).and_then(|e| textures.images.get(e.image.0 as usize))
+        else {
+            continue;
+        };
+        let px = img.rgba.as_chunks::<4>().0;
+        dark += px.iter().filter(|p| p[0].max(p[1]).max(p[2]) < 120).count();
+        all += px.len();
+    }
+    if all == 0 {
+        0.0
+    } else {
+        (dark as f32 / all as f32 * 4.0).min(1.0)
     }
 }
 
@@ -258,6 +283,9 @@ impl Sink {
                 }
                 Class::Liquid(l) => {
                     liquid = Some(l);
+                    if l == Liquid::Lava && !self.lava_crust.contains_key(&key) {
+                        self.lava_crust.insert(key, painted_crust(o, textures));
+                    }
                     if l == Liquid::Fall && !self.fall_feet.contains_key(&key) {
                         let (verts, groups) = expand(o);
                         let feet = subdivide(&verts, &groups).1.into_iter().filter(|g| g.steep).flat_map(|g| g.feet).collect();
@@ -294,7 +322,8 @@ impl Sink {
         let flags = no_clip as u32 | (o.gouraud.is_some() as u32) << 1 | (o.landscape as u32) << 2;
         let g = o.gouraud.unwrap_or([1.0; 3]);
         let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5 | (liquid.is_some() as u32) << 6;
-        let slide = [dv, o.slide * UV_SCALE * 60.0, liquid.map_or(0.0, |l| l as u32 as f32), 0.0];
+        let crust = if liquid == Some(Liquid::Lava) { self.lava_crust.get(&key).copied().unwrap_or(0.0) } else { 0.0 };
+        let slide = [dv, o.slide * UV_SCALE * 60.0, liquid.map_or(0.0, |l| l as u32 as f32), crust];
         self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0], slide });
         self.draws.push(Draw {
             key,
@@ -542,6 +571,8 @@ struct Point { pos: vec4<f32>, color: vec4<f32> };
 @group(3) @binding(5) var surface: texture_depth_2d;
 @group(3) @binding(9) var bed: texture_depth_2d;
 @group(3) @binding(10) var flow: texture_2d<f32>;
+@group(3) @binding(11) var obstacles: texture_2d<f32>;
+@group(3) @binding(12) var obstacle_s: sampler;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -565,6 +596,8 @@ struct VOut {
     @location(9) @interpolate(flat) slide: f32,
     // The liquid (`Rec::slide` z: `Liquid`; 0: none).
     @location(10) @interpolate(flat) mat: f32,
+    // Lava: how much of its texture is painted crust (`Rec::slide` w).
+    @location(11) @interpolate(flat) crust: f32,
 };
 
 // `mtx_xfm`: row-vector affine transform.
@@ -801,6 +834,7 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
     o.normal = xfm_dir(m, i.normal.xyz);
     o.slide = r.slide.y;
     o.mat = r.slide.z;
+    o.crust = r.slide.w;
     return o;
 }
 
@@ -1181,6 +1215,34 @@ struct BedOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>
     return i.pos.z;
 }
 
+// The opaque meshes seen from above into the obstacle map: what stands in the water (from just
+// under its surface to 40 units over it; the highest counts less). The sky is left out, and
+// the liquids but where they stand out of the surface (a volcano's lava-covered cone). Where
+// the liquid stops at what stands in it, the surface beside it is taken.
+struct ObstOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>, @location(1) @interpolate(flat) flags: u32 };
+@vertex fn vs_obstacle(i: VIn, @builtin(instance_index) inst: u32) -> ObstOut {
+    let r = recs[inst];
+    let w = xfm(mats[r.mat + i.bone], i.pos);
+    let size = lt.water.z * lt.water.w;
+    var o: ObstOut;
+    o.pos = vec4<f32>((w.x - lt.water.x) / size * 2.0 - 1.0, 1.0 - (w.z - lt.water.y) / size * 2.0, 0.5, 1.0);
+    o.world = w;
+    o.flags = r.flags;
+    return o;
+}
+@fragment fn fs_obstacle(i: ObstOut) -> @location(0) vec4<f32> {
+    if ((i.flags & 1u) != 0u) { discard; }
+    var sy = surface_y(i.world.xz);
+    for (var k = 0; k < 4; k++) {
+        let a = f32(k) * 1.5707963 + 0.7853982;
+        sy = max(sy, surface_y(i.world.xz + vec2<f32>(cos(a), sin(a)) * 4.5));
+    }
+    let above = i.world.y - sy;
+    let low = select(-0.5, 1.5, (i.flags & 64u) != 0u);
+    if (sy < -1e8 || above < low || above > 40.0) { discard; }
+    return vec4<f32>(1.0 - smoothstep(24.0, 40.0, above), above / 64.0, 0.0, 0.0);
+}
+
 // The water meshes seen from above into the surface map (depth = height) and the flow map.
 struct SurfOut {
     @builtin(position) pos: vec4<f32>,
@@ -1486,10 +1548,256 @@ fn wave_slope(xz: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(wave_h(xz + vec2<f32>(e, 0.0)) - wave_h(xz - vec2<f32>(e, 0.0)), wave_h(xz + vec2<f32>(0.0, e)) - wave_h(xz - vec2<f32>(0.0, e))) / (2.0 * e);
 }
 
-// Molten rock ([`Liquid::Lava`]).
-fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec3<f32> {
-    return min(tex * 1.15, vec3<f32>(1.0));
+// Molten rock ([`Liquid::Lava`]): rafts of dark crust, cracked into plates, drifting on the
+// glowing melt (the original texture's colours). The crust is laid out in world space (the
+// art's lava faces do not all meet whole texture repeats apart: a pattern in its coordinates
+// would break at their edges) and carried along the flow map like the water's ripples: two
+// copies, each carried for a while and put back, crossfaded, the rafts' outlines morphing
+// between them (crust melting and forming). Thick: the simulated waves bulge it slowly and
+// tear its crust open; it folds against what stands in it and trails behind it.
+
+// What stands in the liquid at world x / z (the obstacle map, bilinear): solid (0..1), at
+// mip level `lod` (each one twice as smooth: 3, 6, 12, 24 units).
+fn obstacle_at(xz: vec2<f32>, lod: f32) -> f32 {
+    let uv = (xz - lt.water.xy) / (lt.water.z * lt.water.w);
+    return textureSampleLevel(obstacles, obstacle_s, uv, lod).r;
 }
+
+// A plate's centre in its cell (0..1), wandering slowly (the crust churns).
+fn plate_centre(c: vec2<i32>, t: f32, salt: u32) -> vec2<f32> {
+    let a = lhash(c, salt) * 6.2831853;
+    let w = 0.12 + 0.12 * lhash(c, salt + 1u);
+    return vec2<f32>(0.5) + 0.3 * vec2<f32>(sin(a + t * w), cos(a * 1.7 + t * w * 0.8));
+}
+// Crust plates: the cells of a Voronoi diagram. x: distance to the nearest crack (cell
+// units), yz: the direction across it (away from the plate), w: the plate's own random value.
+fn plates(p: vec2<f32>, t: f32, salt: u32) -> vec4<f32> {
+    let i = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    var best = 1e9;
+    var mo = vec2<i32>(0);
+    var mr = vec2<f32>(0.0);
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let o = vec2<i32>(x, y);
+            let r = vec2<f32>(o) + plate_centre(i + o, t, salt) - f;
+            let d = dot(r, r);
+            if (d < best) { best = d; mo = o; mr = r; }
+        }
+    }
+    var e = 1e9;
+    var n = vec2<f32>(0.0, 1.0);
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            if (x == 0 && y == 0) { continue; }
+            let o = mo + vec2<i32>(x, y);
+            let r = vec2<f32>(o) + plate_centre(i + o, t, salt) - f;
+            let k = normalize(r - mr);
+            let d = dot(0.5 * (mr + r), k);
+            if (d < e) { e = d; n = k; }
+        }
+    }
+    return vec4<f32>(e, n, lhash(i + mo, salt + 2u));
+}
+// The slope of smoothstep(a, b, x).
+fn smooth_d(a: f32, b: f32, x: f32) -> f32 {
+    let t = clamp((x - a) / (b - a), 0.0, 1.0);
+    return 6.0 * t * (1.0 - t) / (b - a);
+}
+const LAVA_NOWRAP: vec2<i32> = vec2<i32>(65536);
+
+// Where crust has formed at world x / z (one carried copy): a slow temperature field, crust
+// where it is high (rafts about 30 units across, warped so they do not line up), and its
+// gradient (per unit).
+fn crust_temp(p: vec2<f32>, t: f32) -> vec3<f32> {
+    let wq = vec2<f32>(lnoise(p * 0.02, LAVA_NOWRAP, 18u).x, lnoise(p * 0.02 + vec2<f32>(31.7, 11.3), LAVA_NOWRAP, 19u).x) * 0.7;
+    let a = lnoise(p * (1.0 / 34.0) + wq + vec2<f32>(t * 0.02, -t * 0.015), LAVA_NOWRAP, 11u);
+    let b = lnoise(p * (1.0 / 13.0) + wq * 2.0 + vec2<f32>(-t * 0.03, t * 0.02), LAVA_NOWRAP, 16u);
+    return vec3<f32>(a.x * 0.68 + b.x * 0.32, a.yz * (0.68 / 34.0) + b.yz * (0.32 / 13.0));
+}
+// The cracks across the crust at world x / z (one carried copy): plates about 16 units across
+// (their cracks wider by `edge`, near a raft's edge where it breaks up) and fine crazing,
+// fading out where a pixel (`fp` units) is too coarse for them. x: how much of a crack (0..1),
+// yz: the slope it makes (the crust dips into it), w: the plate's shade.
+fn crust_cracks(p: vec2<f32>, t: f32, edge: f32, fp: f32) -> vec4<f32> {
+    let sc = 1.0 / 16.0;
+    let fz = 1.0 - smoothstep(0.15, 0.4, fp * sc);
+    if (fz <= 0.0) { return vec4<f32>(0.0, 0.0, 0.0, 0.5); }
+    let pl = plates(p * sc, t, 21u);
+    let w = 0.06 + 0.06 * edge;
+    var o = vec4<f32>((1.0 - smoothstep(0.0, w, pl.x)) * fz, pl.yz * sc * smooth_d(0.0, w, pl.x) * 0.6 * fz, pl.w);
+    let sf = 1.0 / 4.5;
+    let fc = 1.0 - smoothstep(0.08, 0.2, fp * sf);
+    if (fc > 0.0) {
+        let pz = plates(p * sf + vec2<f32>(0.37, 0.61), t * 0.5, 31u);
+        let cz = (1.0 - smoothstep(0.0, 0.05, pz.x)) * fc;
+        o.x = max(o.x, cz * 0.35);
+        o = vec4<f32>(o.x, o.yz + pz.yz * sf * smooth_d(0.0, 0.05, pz.x) * 0.25 * fc, o.w);
+    }
+    return o;
+}
+
+// Lava's flow at world x / z, smooth: the flow map (each art face slides its own way, some
+// 30 degrees apart) averaged about points of a 32-unit lattice, blended between the four
+// around x / z. The crust is carried far along it: a flow with steps in it would tear it.
+fn lava_flow(xz: vec2<f32>) -> vec2<f32> {
+    let g = xz / 32.0 - 0.5;
+    let i = floor(g);
+    let f = smoothstep(vec2<f32>(0.0), vec2<f32>(1.0), g - i);
+    var corner: array<vec2<f32>, 4>;
+    for (var k = 0; k < 4; k++) {
+        let c = cell((i + vec2<f32>(f32(k & 1), f32(k >> 1)) + 0.5) * 32.0);
+        corner[k] = (flow_map(c + vec2<f32>(6.0, 6.0)) + flow_map(c + vec2<f32>(-6.0, 6.0)) + flow_map(c + vec2<f32>(6.0, -6.0)) + flow_map(c + vec2<f32>(-6.0, -6.0))) * 0.25;
+    }
+    return lt.water4.xy + mix(mix(corner[0], corner[1], f.x), mix(corner[2], corner[3], f.x), f.y);
+}
+
+// How much a texel of painted crust is plate (dark), not crack (0..1).
+fn lava_plate(c: vec3<f32>) -> f32 {
+    return 1.0 - smoothstep(0.35, 0.75, max(c.r, max(c.g, c.b)));
+}
+
+fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec3<f32> {
+    let tm = lt.water2.x;
+    let xz = i.world.xz;
+    // (From the smoothed normal: the faces' own would cut the crust along their edges.)
+    let steep = smoothstep(0.25, 0.7, 1.0 - abs(normalize(i.normal).y));
+    // A pixel's footprint (world units, and in the texture's coordinates).
+    let fpw = max(length(sx), length(sy));
+    let fp = max(length(duvx), length(duvy));
+    // The flow, and what disturbs the surface (splashes, wakes): it bulges and tears open
+    // (only on the surface the waves run on: not on a volcano's lava-covered cone in it).
+    let fl = lava_flow(xz);
+    let speed = length(fl);
+    let fd = select(vec2<f32>(0.0), fl / max(speed, 1e-4), speed > 0.5);
+    let fast = smoothstep(2.0, 20.0, speed);
+    let on = (1.0 - steep) * (1.0 - smoothstep(2.0, 6.0, abs(i.world.y - surface_y(xz))));
+    let wh = wave_h(xz) * on;
+    let ws = wave_slope(xz) * on;
+    let stir = clamp(abs(wh) * 0.4 + length(ws) * 4.0 + churn(xz) * 4.0 * on, 0.0, 1.0);
+    // What stands in it: touching it, how near (a field reaching about 10 units out), the way
+    // to it, and whether it lies upstream (the wake behind it, some 40 units long).
+    let touch = clamp(obstacle_at(xz, 0.5) * 2.0, 0.0, 1.0);
+    let near = clamp(obstacle_at(xz, 1.5) * 2.5, 0.0, 1.0);
+    let e = 8.0;
+    let og = vec2<f32>(obstacle_at(xz + vec2<f32>(e, 0.0), 2.5) - obstacle_at(xz - vec2<f32>(e, 0.0), 2.5),
+                       obstacle_at(xz + vec2<f32>(0.0, e), 2.5) - obstacle_at(xz - vec2<f32>(0.0, e), 2.5)) / (2.0 * e);
+    let ogn = og / max(length(og), 1e-4);
+    var pile = near * 0.3;
+    var wake = 0.0;
+    if (speed > 0.5) {
+        pile += near * smoothstep(-0.2, 0.7, dot(fd, ogn)) * fast * 0.7;
+        wake = clamp(max(obstacle_at(xz - fd * 14.0, 2.0), obstacle_at(xz - fd * 34.0, 3.0) * 0.8) * 2.0 * (1.0 - near) * fast, 0.0, 1.0);
+    }
+    // Heat: steep faces, fast flow, stirring and the wake melt the crust away.
+    let open = clamp(steep * 0.85 + fast * 0.1 + stir * 0.9 + wake * 0.4, 0.0, 1.0);
+    // The crust, carried by the flow; around what stands in it, it slips by to the side.
+    let q = xz + (fd * dot(fd, og) - og) * 50.0 * fast;
+    var pa = vec2<f32>(0.0);
+    var pb = vec2<f32>(0.0);
+    var wa = 1.0;
+    if (speed > 0.5) {
+        let ph = fract(tm / LAVA_PERIOD);
+        pa = fl * (ph * LAVA_PERIOD);
+        pb = fl * (fract(ph + 0.5) * LAVA_PERIOD) - vec2<f32>(57.0, 23.0);
+        wa = 1.0 - abs(1.0 - 2.0 * ph);
+    }
+    // (Blended keeping the field's contrast: a plain mix would thin the crust mid-way.)
+    var temp = crust_temp(q - pa, tm);
+    if (wa < 1.0) { temp = mix(crust_temp(q - pb, tm), temp, wa) / sqrt(wa * wa + (1.0 - wa) * (1.0 - wa)); }
+    let d = temp.x - mix(0.22, 0.9, open);
+    // A raft's edge is sharp, but never finer than a pixel or two; the melt glows brightest
+    // right at it (thin, hot crust just forming), a unit or two out.
+    let tl = max(length(temp.yz), 1e-4);
+    let pc = i.crust;
+    let cover = smoothstep(0.0, max(0.04, fpw * tl * 1.5), d) * (1.0 - smoothstep(0.0, 0.6, pc));
+    var crack = exp(-max(-d, 0.0) / tl / max(1.2, fpw * 2.0)) * (1.0 - cover) * smoothstep(0.9, 0.6, open) * (1.0 - pc);
+    // Rafts stand a little proud, rounded at their edges, cracked into plates.
+    var h = smoothstep(0.0, 0.18, d) * 1.2;
+    var g = temp.yz * smooth_d(0.0, 0.18, d) * 1.2;
+    var shade = 0.5;
+    var lines = 0.0;
+    if (cover > 0.0) {
+        let edge = 1.0 - smoothstep(0.0, 0.3, d);
+        var ck = crust_cracks(q - pa, tm, edge, fpw);
+        if (wa < 1.0) {
+            let cb = crust_cracks(q - pb, tm, edge, fpw);
+            ck = vec4<f32>(mix(cb.xyz, ck.xyz, wa), select(cb.w, ck.w, wa > 0.5));
+        }
+        lines = ck.x;
+        h -= lines * 0.6 * cover;
+        g -= ck.yz * cover;
+        shade = ck.w;
+    }
+    var crust = cover * (1.0 - lines);
+    crack = max(crack, lines * cover);
+    // Painted crust: the texture's dark plates stand proud of its glowing cracks (the slope
+    // from two more texels a pixel or so away in x and z); stirring melts them.
+    let gu = plane_grad(sx, sy, duvx.x, duvy.x);
+    let gv = plane_grad(sx, sy, duvx.y, duvy.y);
+    if (pc > 0.0) {
+        let dl = max(fpw * 1.5, 0.75);
+        let l0 = lava_plate(textureSampleGrad(t, s, i.uv, duvx, duvy).rgb);
+        let lx = lava_plate(textureSampleGrad(t, s, i.uv + vec2<f32>(gu.x, gv.x) * dl, duvx, duvy).rgb);
+        let lz = lava_plate(textureSampleGrad(t, s, i.uv + vec2<f32>(gu.z, gv.z) * dl, duvx, duvy).rgb);
+        let plate = l0 * pc * (1.0 - stir);
+        h += plate * 1.5;
+        g += vec2<f32>(lx - l0, lz - l0) / dl * 1.5 * pc;
+        crust = max(crust, plate);
+    }
+    // The melt's slow rolls along the flow (in the texture's coordinates, with it): brighter
+    // and dimmer bands, a gentle swell.
+    let rf = vec2<f32>(4.0, 2.0);
+    let fr = 1.0 - smoothstep(0.15, 0.4, fp * 8.0);
+    let r1 = lnoise(i.uv * rf + vec2<f32>(tm * 0.05, -tm * 0.25), vec2<i32>(4, 2), 12u);
+    let r2 = lnoise(i.uv * rf * 2.0 + vec2<f32>(-tm * 0.1, -tm * 0.4), vec2<i32>(8, 4), 13u) * fr;
+    let roll = 1.0 + r1.x * 0.16 + r2.x * 0.08;
+    let rg = (r1.yz * rf * 0.6 + r2.yz * rf * 2.0 * 0.25) * (1.0 - cover);
+    // Against what stands in it the crust piles up in folds that creep in (glowing between
+    // them) into a collar of crust under it, with a hot seam where the melt touches it;
+    // behind it the crust is torn away, leaving a glowing trail.
+    let folds = 0.5 + 0.5 * sin(near * 9.0 - tm * 0.9);
+    let fold = pile * smoothstep(0.2, 0.7, folds);
+    let under = smoothstep(0.6, 1.0, touch);
+    let seam = touch * (1.0 - touch) * 4.0;
+    crust = max(crust, max(fold * 0.9, under * 0.85));
+    h = max(h, max(fold, under) * 1.5);
+    crack = max(crack * (1.0 - pile * 0.5), max(pile * (1.0 - smoothstep(0.0, 0.25, folds)) * 0.7, seam * 0.8));
+    crust *= 1.0 - wake * 0.7;
+    crack = max(crack, wake * 0.35);
+    // The normal: bumped crust and melt on the smoothed normal, the slow bulges of the
+    // simulated surface and the folds.
+    let hw = vec3<f32>(g.x, 0.0, g.y) * LAVA_BUMP + (rg.x * gu + rg.y * gv) * LAVA_BUMP
+        + vec3<f32>(ws.x, 0.0, ws.y) * 0.8 - vec3<f32>(og.x, 0.0, og.y) * pile * 4.0;
+    var n0 = normalize(i.normal);
+    if (dot(n0, face) < 0.0) { n0 = -n0; }
+    let n = normalize(n0 - (hw - n0 * dot(hw, n0)));
+    let v = normalize(lt.eye.xyz - i.world);
+    // The melt: the original's colours, brighter in its rolls, swelling and stirred parts and
+    // its slow pulse; yellow-hot at the crust's edges and in its cracks.
+    let pulse = 1.0 + 0.06 * sin(tm * 1.7 + lnoise(xz * 0.01, LAVA_NOWRAP, 15u).x * 4.0);
+    let heat = clamp(roll * pulse + max(wh, 0.0) * 0.1 + stir * 0.4 + steep * 0.1, 0.6, 1.7);
+    let melt = min(tex * vec3<f32>(1.2, 1.05, 0.85) * heat, vec3<f32>(1.0));
+    let core = vec3<f32>(1.0, 0.86, 0.38);
+    var c = mix(melt, core, clamp(crack * 0.7 + stir * 0.45, 0.0, 0.85));
+    // A glossy skin: the light from above (in a cave), else the sun, across the bumps.
+    let key = select(normalize(vec3<f32>(0.25, 1.0, 0.3)), lt.sun_dir.xyz, lt.sun_dir.w > 0.5);
+    let gloss = pow(max(dot(n, normalize(key + v)), 0.0), 60.0) * 0.3;
+    let fres = pow(1.0 - max(dot(n, v), 0.0), 4.0);
+    c = c * clamp(1.0 + (dot(n, key) - dot(n0, key)) * 1.5, 0.75, 1.3) + core * gloss + melt * fres * 0.25;
+    // The crust: dark cooled rock, warmer where it is thin, lit by the lights about it (the
+    // lava's own among them) and from under it by the melt.
+    let thin = 1.0 - smoothstep(0.0, 0.8, h);
+    var rock = mix(vec3<f32>(0.3, 0.085, 0.06), tex * vec3<f32>(0.8, 0.3, 0.14), thin * 0.7) * (0.85 + 0.3 * shade);
+    rock = mix(rock, tex * 0.85, pc);
+    var j = i;
+    j.normal = n;
+    let rc = light(j, rock, face) * 0.7 + rock * 0.35;
+    return mix(c, rc, crust);
+}
+const LAVA_BUMP: f32 = 0.5;
+// How long each carried copy of the crust is carried before it is put back (s).
+const LAVA_PERIOD: f32 = 4.0;
 
 // Water drawn opaque whose texture slides ([`Liquid::Fall`]): a stream, and where it is steep
 // its waterfall.
@@ -1591,6 +1899,8 @@ pub(crate) struct Gpu {
     water_pipelines: HashMap<(wgpu::TextureFormat, u32, bool, bool), wgpu::RenderPipeline>,
     surface_pipeline: wgpu::RenderPipeline,
     bed_pipeline: wgpu::RenderPipeline,
+    /// The obstacle map's ([`crate::water::WaterSim::obstacle_view`]).
+    obstacle_pipeline: wgpu::RenderPipeline,
     bed_bg: wgpu::BindGroup,
     /// The generated water surface this frame: its texture (wrapping) and tint.
     grid: Option<(TexHandle, [f32; 3])>,
@@ -1604,6 +1914,7 @@ pub(crate) struct Gpu {
     scene_flag: wgpu::Buffer,
     scene_copy: (wgpu::Texture, wgpu::Texture),
     linear_s: wgpu::Sampler,
+    obstacle_s: wgpu::Sampler,
     sim: crate::water::WaterSim,
     /// Path-Traced (devices with ray queries), and whether this frame uses it.
     rtx: Option<RtParts>,
@@ -1810,6 +2121,22 @@ impl Gpu {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 12,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ];
         let lights_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh lights"), entries: &light_entries });
         let fr = wgpu::ShaderStages::FRAGMENT;
@@ -1936,6 +2263,13 @@ impl Gpu {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let obstacle_s = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("water obstacle map"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
         let scene_flag = buf("scene copy flag", 16, wgpu::BufferUsages::UNIFORM);
         let scene_copy = scene_copy_textures(device, 1, 1, wgpu::TextureFormat::Rgba8Unorm);
         let grid_cam_bg = grid_cam_bind_group(device, &grid_cam_layout, &cam, &scene_copy, &linear_s, &scene_flag);
@@ -1956,6 +2290,8 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&sim.surface_view) },
                 wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&sim.bed_view) },
                 wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&sim.flow_view) },
+                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&sim.obstacle_view) },
+                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::Sampler(&obstacle_s) },
             ],
         });
         let shadow_ubo_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2042,6 +2378,33 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
+        // What stands in the water, from above: the most solid wins.
+        let max = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Max };
+        let obstacle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("water obstacle map"),
+            layout: Some(&bed_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_obstacle"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vertex_layout())],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_obstacle"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: crate::water::OBSTACLE_FORMAT,
+                    blend: Some(wgpu::BlendState { color: max, alpha: max }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         // Top-down depth of the water: the highest surface wins.
         let surface_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water surface map"),
@@ -2096,6 +2459,7 @@ impl Gpu {
             water_pipelines: HashMap::new(),
             surface_pipeline,
             bed_pipeline,
+            obstacle_pipeline,
             bed_bg,
             grid: None,
             grid_pipelines: HashMap::new(),
@@ -2105,6 +2469,7 @@ impl Gpu {
             scene_flag,
             scene_copy,
             linear_s,
+            obstacle_s,
             sim,
             vb_usage: if rtx.is_some() {
                 wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::BLAS_INPUT
@@ -2375,6 +2740,8 @@ impl Gpu {
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.sim.surface_view) },
                     wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&self.sim.bed_view) },
                     wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.sim.flow_view) },
+                    wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&self.sim.obstacle_view) },
+                    wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::Sampler(&self.obstacle_s) },
                     wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::AccelerationStructure(&rx.rt.tlas) },
                     wgpu::BindGroupEntry { binding: 7, resource: rx.rt.albedo.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 8, resource: rx.rt.photons.as_entire_binding() },
@@ -2570,6 +2937,26 @@ impl Gpu {
             pass.set_bind_group(3, &self.bed_bg, &[]);
             draw_list(&mut pass, &self.meshes, self.list.iter().map(|d| (d.0, d.1, d.2.clone())));
             drop(pass);
+            // What stands in it: the level and rigid models (not the characters walking about).
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("water obstacle map"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.sim.obstacle_target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.obstacle_pipeline);
+            pass.set_bind_group(2, store_bg, &[]);
+            pass.set_bind_group(3, &self.bed_bg, &[]);
+            draw_list(&mut pass, &self.meshes, self.list.iter().filter(|(_, key, ..)| key.1 != MESH_SKIN).map(|d| (d.0, d.1, d.2.clone())));
+            drop(pass);
+            self.sim.obstacle_mips(encoder);
             self.sim.run(encoder);
         }
         if self.rt_on {
