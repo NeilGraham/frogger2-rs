@@ -515,7 +515,7 @@ impl WaterSim {
             w.extend(bytemuck::cast_slice::<i32, u8>(&sh));
             w.extend(bytemuck::bytes_of(&ns));
             w.extend(bytemuck::bytes_of(&N));
-            w.extend(bytemuck::cast_slice::<f32, u8>(&[origin[0], origin[1], TEXEL, self.ref_y, RANGE, 0.997, 0.0, 0.0]));
+            w.extend(bytemuck::cast_slice::<f32, u8>(&[origin[0], origin[1], TEXEL, self.ref_y, RANGE, 0.994, 0.0, 0.0]));
             let at = k * STEP_STRIDE as usize;
             u[at..at + 48].copy_from_slice(&w);
         }

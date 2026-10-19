@@ -1569,7 +1569,7 @@ impl Renderer {
                 // Bobbing (a log dipping under the frog, rising as it hops off): the whole
                 // footprint pushes the water, so a long log makes long waves along its sides.
                 let dy = p[1] - q[1];
-                if dy.abs() > 0.03 && dy.abs() < 10.0 {
+                if dy.abs() > 0.08 && dy.abs() < 10.0 {
                     let fp = *self.footprints.entry(model.id).or_insert_with(|| footprint(model));
                     if fp[1] > fp[0] {
                         let m = crate::math::quaternion_to_matrix(&actor.q_rot);
@@ -1582,7 +1582,7 @@ impl Renderer {
                         push(Splash {
                             pos: centre,
                             radius: 5.0,
-                            strength: (-dy * 0.9).clamp(-1.5, 1.5),
+                            strength: (-dy * 0.4).clamp(-0.6, 0.6),
                             half: [(fp[1] - fp[0]) * 0.5 * s[0] * 0.9, (fp[3] - fp[2]) * 0.5 * s[1] * 0.9],
                             axis: [ax[0] / l, ax[1] / l],
                             ..Default::default()
@@ -1591,26 +1591,23 @@ impl Renderer {
                 }
                 if d > 0.05 && d < 60.0 {
                     let vel = [p[0] - q[0], p[2] - q[2]];
-                    push(Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: 2.5, wake: 0.35, vel, ..Default::default() });
+                    push(Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: 1.6, wake: 0.22, vel, ..Default::default() });
                 }
             }
             Wake::Flyer => {
-                // Its wings' downdraft, a puff each beat (about 6 a second), up to 45 units over
-                // the water (fading), and now and then it dips.
-                if actor.wake_ticks % 10 == 0 {
-                    push(Splash { pos: p, radius: 6.0, strength: 0.35, below: 45.0, ..Default::default() });
-                }
-                if every(70) {
-                    push(Splash { pos: p, radius: 4.5, strength: 1.6, below: 50.0, ..Default::default() });
+                // Now and then it dips a foot in (when low over the water: fading up to 50
+                // units over it).
+                if every(90) {
+                    push(Splash { pos: p, radius: 4.0, strength: 1.0, below: 50.0, ..Default::default() });
                 }
             }
             Wake::Swimmer => {
                 if d > 0.05 && d < 60.0 {
                     let vel = [p[0] - q[0], p[2] - q[2]];
-                    push(Splash { pos: p, radius: (size * 0.4).clamp(7.0, 14.0), strength: 0.8, above: 20.0, wake: 0.3, vel, ..Default::default() });
+                    push(Splash { pos: p, radius: (size * 0.4).clamp(7.0, 14.0), strength: 0.5, above: 20.0, wake: 0.18, vel, ..Default::default() });
                 }
                 if every(80) {
-                    push(Splash { pos: p, radius: 4.5, strength: 1.2, above: 60.0, ..Default::default() });
+                    push(Splash { pos: p, radius: 4.0, strength: 0.7, above: 60.0, ..Default::default() });
                 }
             }
         }

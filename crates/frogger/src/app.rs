@@ -508,7 +508,7 @@ impl App {
                     self.water_dip(a, 1.1);
                 }
                 if let Some(f) = frog {
-                    self.actor_splash(f, 12.0, 2.2);
+                    self.actor_splash(f, 12.0, 1.5);
                 }
             }
         }
