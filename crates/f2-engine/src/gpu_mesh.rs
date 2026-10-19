@@ -2088,8 +2088,9 @@ fn lava_plate(c: vec3<f32>) -> f32 {
 fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec3<f32> {
     let tm = lt.water2.x;
     let xz = i.world.xz;
-    // (From the smoothed normal: the faces' own would cut the crust along their edges.)
-    let steep = smoothstep(0.25, 0.7, 1.0 - abs(normalize(i.normal).y));
+    // (From the smoothed normal: the faces' own would cut the crust along their edges; but a
+    // face that is itself steep, a lava fall whose normals are the flat lava's, is steep.)
+    let steep = smoothstep(0.25, 0.7, 1.0 - min(abs(normalize(i.normal).y), mix(1.0, abs(face.y), smoothstep(0.55, 0.35, abs(face.y)))));
     // A pixel's footprint (world units, and in the texture's coordinates).
     let fpw = max(length(sx), length(sy));
     let fp = max(length(duvx), length(duvy));
@@ -2186,10 +2187,12 @@ fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, 
     // Against what stands in it the crust piles up in folds that creep in (glowing between
     // them) into a collar of crust under it, with a hot seam where the melt touches it;
     // behind it the crust is torn away, leaving a glowing trail.
+    // (Only on the flat: a fall's own wall is no obstacle in it.)
+    let flat = 1.0 - steep;
     let folds = 0.5 + 0.5 * sin(near * 9.0 - tm * 0.9);
-    let fold = pile * smoothstep(0.2, 0.7, folds);
-    let under = smoothstep(0.6, 1.0, touch);
-    let seam = touch * (1.0 - touch) * 4.0;
+    let fold = pile * smoothstep(0.2, 0.7, folds) * flat;
+    let under = smoothstep(0.6, 1.0, touch) * flat;
+    let seam = touch * (1.0 - touch) * 4.0 * flat;
     crust = max(crust, max(fold * 0.9, under * 0.85));
     h = max(h, max(fold, under) * 1.5);
     crack = max(crack * (1.0 - pile * 0.5), max(pile * (1.0 - smoothstep(0.0, 0.25, folds)) * 0.7, seam * 0.8));
@@ -2230,7 +2233,7 @@ fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, 
 }
 const LAVA_BUMP: f32 = 0.5;
 // How long each carried copy of the crust is carried before it is put back (s).
-const LAVA_PERIOD: f32 = 4.0;
+const LAVA_PERIOD: f32 = 2.5;
 
 // Waterfalls and the streams feeding them: like a flowing liquid's, their surface is made in
 // the texture's coordinates (+v downstream), which slide with the original animation, every
