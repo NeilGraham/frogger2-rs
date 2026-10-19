@@ -574,7 +574,7 @@ impl App {
 
     /// Enhanced water: the platforms float (where there is water under them: the renderer
     /// decides), and so does a frog standing on one, riding its platform's water.
-    fn water_floats(&self) -> Vec<(f2_game::ids::ActorId, [f32; 3])> {
+    fn water_floats(&self) -> Vec<(f2_game::ids::ActorId, f2_engine::anim::Float)> {
         if self.display().graphics == f2_platform::Graphics::Original {
             return Vec::new();
         }
@@ -585,11 +585,20 @@ impl App {
                 [q.vx as f32 / 10.0, q.vy as f32 / 10.0, q.vz as f32 / 10.0]
             })
         };
-        let mut out: Vec<_> = g.platform.platform_list.array.iter().filter_map(|p| p.plt_actor.and_then(|a| pos(a).map(|q| (a, q)))).collect();
+        use f2_engine::anim::Float;
+        let mut out: Vec<_> = g
+            .platform
+            .platform_list
+            .array
+            .iter()
+            .filter_map(|p| p.plt_actor.and_then(|a| pos(a).map(|at| (a, Float { at, key: a.idx() as u32, body: true }))))
+            .collect();
         for (k, cur) in g.platform.curr_platform.iter().enumerate() {
-            let plt = cur.and_then(|p| g.platform.platform_list.array.get(p.idx())).and_then(|p| p.plt_actor).and_then(pos);
-            if let (Some(q), Some(Some(f))) = (plt, g.frogger.frog.get(k)) {
-                out.push((*f, q));
+            let plt = cur.and_then(|p| g.platform.platform_list.array.get(p.idx())).and_then(|p| p.plt_actor);
+            if let (Some(a), Some(Some(f))) = (plt, g.frogger.frog.get(k)) {
+                if let Some(at) = pos(a) {
+                    out.push((*f, Float { at, key: a.idx() as u32, body: false }));
+                }
             }
         }
         out

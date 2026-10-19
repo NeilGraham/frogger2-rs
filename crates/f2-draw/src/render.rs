@@ -317,7 +317,7 @@ pub struct DrawCtx<'a> {
     pub wakes: &'a [(ActorId, f2_engine::anim::Wake)],
     /// Enhanced water: actors that float and the point (world) whose water they ride
     /// ([`Actor::float_at`](f2_engine::anim::Actor::float_at)). Render only.
-    pub floats: &'a [(ActorId, [f32; 3])],
+    pub floats: &'a [(ActorId, f2_engine::anim::Float)],
 }
 
 /// Optional timing hook: called with a [`draw_phase`] id at the end of each part of

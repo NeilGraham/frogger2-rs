@@ -70,9 +70,23 @@ pub struct Actor {
     pub wake: Wake,
     /// Enhanced water: wake ticks so far (a flyer's dips, a fish's bubbles come now and then).
     pub wake_ticks: u32,
-    /// Enhanced water: the actor floats (a platform on the water, a frog standing on one):
-    /// drawn riding the water's surface where this point (world) is. Set by the host.
-    pub float_at: Option<Vec3>,
+    /// Enhanced water: the actor floats (a platform on the water, a frog standing on one).
+    /// Set by the host.
+    pub float_at: Option<Float>,
+    /// [`float_at`](Self::float_at) resolved by the renderer (the body's shape): the draw's
+    /// `Rec::anchor` and `Rec::float2` (gpu_mesh.rs).
+    pub float_rec: Option<([f32; 4], [f32; 4])>,
+}
+
+/// A floating body an actor rides ([`Actor::float_at`]; Enhanced water, render only).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Float {
+    /// Where the body rides the water (world: the platform's position).
+    pub at: Vec3,
+    /// The body (the platform's actor): a frog on it rides with it.
+    pub key: u32,
+    /// Whether this actor is the body itself (else something standing on it).
+    pub body: bool,
 }
 
 /// How an actor stirs the water it moves through or over (Enhanced water; render only).
@@ -151,6 +165,7 @@ impl Default for Actor {
             wake: Wake::Body,
             wake_ticks: 0,
             float_at: None,
+            float_rec: None,
         }
     }
 }

@@ -627,6 +627,13 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     app.draw(w, h);
     let tris = app.r.queued_tris();
     eprintln!("frogger: {} ticks, act_frame_count {}, {tris} triangles, profile {}", app.ticks, app.game.act_frame_count, app.profile.name());
+    if std::env::var_os("F2_PRINT_FROG").is_some() {
+        // Debug aid (scripted runs): where the frog is and whether it stands on a platform.
+        let g = &app.game;
+        let pos =
+            g.frogger.frog[0].and_then(|a| g.actor2.actors.get(a)).map(|a| [a.actor.position.vx / 10, a.actor.position.vy / 10, a.actor.position.vz / 10]);
+        eprintln!("frogger: frog {:?} platform {:?} death {}", pos, g.platform.curr_platform[0], g.frogger.player[0].death_by);
+    }
     if std::env::var_os("F2_PRINT_CAMERA").is_some() {
         // Debug aid (N64 renderer comparisons, tools/n64r-export): the drawn camera.
         if let Some(c) = app.r.view.camera {

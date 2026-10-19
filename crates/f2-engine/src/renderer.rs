@@ -474,10 +474,14 @@ pub struct Renderer {
     /// moving actors).
     #[cfg(feature = "gpu")]
     splashes: Vec<crate::water::Splash>,
-    /// Enhanced water: each model's footprint (model x / z extents of its meshes), for the
-    /// waves a floating body makes as it bobs.
+    /// Enhanced water: each model's extents (model x / z / y of its meshes: [`footprint`]),
+    /// for the waves a floating body makes as it bobs and how it floats.
     #[cfg(feature = "gpu")]
-    footprints: HashMap<u32, [f32; 4]>,
+    footprints: HashMap<u32, [f32; 6]>,
+    /// Enhanced water: each floating body ([`crate::anim::Float::key`]): its bottom under its
+    /// position, thickness, radius, and how much the water moves it.
+    #[cfg(feature = "gpu")]
+    float_bodies: HashMap<u32, [f32; 4]>,
     /// The clock (×60, whole) at which moving actors last made waves.
     #[cfg(feature = "gpu")]
     wake_tick: i64,
@@ -758,6 +762,8 @@ impl Renderer {
             splashes: Vec::new(),
             #[cfg(feature = "gpu")]
             footprints: HashMap::new(),
+            #[cfg(feature = "gpu")]
+            float_bodies: HashMap::new(),
             wake_tick: i64::MIN,
             wake_frame: false,
             mv_buf: None,
@@ -1349,6 +1355,7 @@ impl Renderer {
             if self.gpu_sink.water_on {
                 self.actor_wake(model, actor);
             }
+            self.float_body(model, actor);
         }
         let mut frames = core::mem::take(&mut self.frames);
         #[cfg(feature = "gpu")]
@@ -1525,6 +1532,37 @@ impl Renderer {
     pub fn water_splash(&mut self, s: crate::water::Splash) {
         if self.gpu_sink.water_on && self.splashes.len() < crate::water::MAX_SPLATS {
             self.splashes.push(s);
+        }
+    }
+
+    /// Enhanced water: how `actor` floats ([`Actor::float_at`] → [`Actor::float_rec`]). A body
+    /// floats by its shape: its bottom rests on the water (a thin pad on top of it, a thick
+    /// log a third in), and the bigger and heavier it is the less the water moves it (it feels
+    /// the water over its whole footprint: a gator barely, a lily pad most). What stands on it
+    /// rides with it (the body's shape, from its last draw).
+    #[cfg(feature = "gpu")]
+    fn float_body(&mut self, model: &Model, actor: &mut Actor) {
+        actor.float_rec = None;
+        let Some(f) = actor.float_at else { return };
+        if f.body {
+            let fp = *self.footprints.entry(model.id).or_insert_with(|| footprint(model));
+            if fp[1] < fp[0] {
+                return;
+            }
+            let s = actor.scale.map(f32::abs);
+            let radius = ((fp[1] - fp[0]) * s[0]).max((fp[3] - fp[2]) * s[2]) * 0.5;
+            let n = model.root.name.to_ascii_lowercase();
+            let heavy = if ["gat", "croc", "alli"].iter().any(|k| n.contains(k)) {
+                0.6
+            } else if n.contains("trt") || n.contains("turt") {
+                0.8
+            } else {
+                1.0
+            };
+            self.float_bodies.insert(f.key, [fp[4] * s[1], (fp[5] - fp[4]) * s[1], radius.max(1.0), heavy / (1.0 + radius / 18.0)]);
+        }
+        if let Some(b) = self.float_bodies.get(&f.key) {
+            actor.float_rec = Some(([f.at[0], f.at[1] + b[0], f.at[2], b[1]], [b[2], b[3], 0.0, 0.0]));
         }
     }
 
@@ -2715,11 +2753,11 @@ impl Renderer {
 
 /// The model-space x / z extents of `model`'s meshes (min x, max x, min z, max z).
 #[cfg(feature = "gpu")]
-fn footprint(model: &Model) -> [f32; 4] {
-    let mut f = [f32::MAX, f32::MIN, f32::MAX, f32::MIN];
+fn footprint(model: &Model) -> [f32; 6] {
+    let mut f = [f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MAX, f32::MIN];
     crate::anim::for_each_object(model, |_, o| {
         for v in o.mesh.iter().flat_map(|m| m.vertices.iter()) {
-            f = [f[0].min(v[0]), f[1].max(v[0]), f[2].min(v[2]), f[3].max(v[2])];
+            f = [f[0].min(v[0]), f[1].max(v[0]), f[2].min(v[2]), f[3].max(v[2]), f[4].min(v[1]), f[5].max(v[1])];
         }
     });
     f

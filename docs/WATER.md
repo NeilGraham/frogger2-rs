@@ -134,12 +134,15 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
     with a smaller wave, and falling in makes a big splash (`App::water_tick`), and
   - the platform and the frog dip by a couple of units on a damped spring (render-only
     `DrawCtx::dips`, interpolated between ticks).
-- **Floating:** platforms, and a frog standing on one (`DrawCtx::floats` → `Actor::float_at`
-  → `Rec::anchor`), ride the generated surface where their anchor is (`float_lift` in `vs`):
-  made to float at the original surface, they are moved to where the generated one is (2.5
-  lower, and 0.4 into it: a thin lily pad stays on top), rising and falling with the waves
-  and swell and tilting with their slope (gentler than the water's own). On acid only with its
-  waves (half the draft); over lava, or with no water under the anchor, not at all.
+- **Floating:** platforms, and a frog standing on one (`DrawCtx::floats` → `Actor::float_at`,
+  a `Float` keyed by the platform, so the frog rides its platform), ride the generated surface
+  (`Renderer::float_body` → `Rec::anchor` / `float2`, `float_lift` in `vs`). A body floats by
+  its shape (its model's extents): its bottom rests on the water (a thin lily pad on top, the
+  water never drawn over it; a thick log about a third in; never higher than the original put
+  it); it feels the water over its whole footprint (five samples: ripples smaller than it
+  cancel out, no jitter) and is moved the less the bigger it is, heavier kinds less again
+  (gators, then turtles: model names), so a gator barely rocks and a lily pad bobs. On acid
+  only with its waves; over lava, or with no water under it, not at all.
 - **Calm:** gentle simulated slopes are shaded a little steeper (`WAVE_GAIN`, soft-limited)
   and focus faint caustic rings on the bed, so small disturbances read on silky water; the
   waves die down within a couple of seconds.
