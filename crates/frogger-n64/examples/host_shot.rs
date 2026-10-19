@@ -101,6 +101,7 @@ fn main() {
         tex_anim_steps: 1,
         dips: &[],
         wakes: &[],
+        floats: &[],
     };
     render::draw_loop(&mut r, Some(s), &g, &ctx);
     if n64 {

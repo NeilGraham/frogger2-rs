@@ -662,6 +662,8 @@ pub(crate) struct GpuObj<'a> {
     pub modge_frame: u32,
     /// [`Actor::slide`](crate::anim::Actor::slide).
     pub slide: f32,
+    /// [`Actor::float_at`](crate::anim::Actor::float_at).
+    pub float_at: Option<[f32; 3]>,
 }
 
 /// [`GpuObj`] receiver.
@@ -882,6 +884,7 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
                 modge: 0,
                 modge_frame: 0,
                 slide: actor.slide,
+                float_at: actor.float_at,
             };
             if g(&o) {
                 if let Some(m) = cx.motion {
@@ -932,6 +935,7 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
                     modge: modge as u8 | (wave as u8) << 1,
                     modge_frame: fc,
                     slide: actor.slide,
+                    float_at: actor.float_at,
                 };
                 if g(&ob) {
                     return;
@@ -1263,6 +1267,7 @@ pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames, mut 
                 modge: 0,
                 modge_frame: 0,
                 slide: 0.0,
+                float_at: None,
             };
             if g(&ob) {
                 return;

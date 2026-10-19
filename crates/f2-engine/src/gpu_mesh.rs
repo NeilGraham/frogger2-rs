@@ -63,7 +63,7 @@ const SPOT_CELL: f32 = 220.0;
 /// Mesh key: model id and pre-order object index (or [`MESH_SKIN`]).
 pub(crate) type Key = (u32, u16);
 
-/// Per-draw record in the storage buffer (48 bytes).
+/// Per-draw record in the storage buffer (64 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct Rec {
@@ -82,6 +82,9 @@ struct Rec {
     /// uploaded once: subdivided water); y: how fast it slides (`v` per second, the texture
     /// moving to +v); z: the liquid ([`Liquid`] as a number; 0: water or none); w: spare.
     slide: [f32; 4],
+    /// A floating thing ([`GpuObj::float_at`]): xyz: where it rides the water; w: 1 (0: it
+    /// does not float).
+    anchor: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -281,7 +284,7 @@ impl Sink {
                     let up = self.water_uv0.get(&key).map_or(0, |u| u[1]);
                     let dv = (uv0.map_or(0, |u| u[1]) as i32 - up as i32) as f32 * UV_SCALE;
                     let slide = [dv, o.slide * UV_SCALE * 60.0, 0.0, 0.0];
-                    self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [1.0; 4], slide });
+                    self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [1.0; 4], slide, anchor: [0.0; 4] });
                     self.water.push((key, self.recs.len() as u32 - 1, o.frame == Frame::Additive));
                     return true;
                 }
@@ -295,7 +298,8 @@ impl Sink {
         let g = o.gouraud.unwrap_or([1.0; 3]);
         let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5 | (liquid.is_some() as u32) << 6;
         let slide = [dv, o.slide * UV_SCALE * 60.0, liquid.map_or(0.0, |l| l as u32 as f32), 0.0];
-        self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0], slide });
+        let anchor = o.float_at.filter(|_| liquid.is_none() && !bed).map_or([0.0; 4], |a| [a[0], a[1], a[2], 1.0]);
+        self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0], slide, anchor });
         self.draws.push(Draw {
             key,
             rec: self.recs.len() as u32 - 1,
@@ -503,7 +507,7 @@ struct Cam {
     fog_color: vec4<f32>,
     depth: vec4<f32>,    // near (upscaler depth), alpha reference, -, -
 };
-struct Rec { mat: u32, flags: u32, mframe: u32, pad1: u32, gouraud: vec4<f32>, slide: vec4<f32> };
+struct Rec { mat: u32, flags: u32, mframe: u32, pad1: u32, gouraud: vec4<f32>, slide: vec4<f32>, anchor: vec4<f32> };
 // LIGHTS-BEGIN
 struct Lights {
     sky: vec4<f32>,       // w: lighting on
@@ -781,10 +785,40 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(dot(d, lt.sh_right.xyz) / lt.sh_centre.w, dot(d, lt.sh_up.xyz) / lt.sh_centre.w, 0.5 - dot(d, lt.sh_dir.xyz) / lt.sh_right.w);
 }
 
+// How far a floating thing (`Rec::anchor`: a, riding the water there) is moved up at world
+// point p: the original made it float at the original surface; it rides the generated one
+// (which rests lower, and moves), a little sunk in (`FLOAT_DRAFT`), rising and falling with
+// the waves and tilting with their slope. On acid only with its waves; over lava (stepping
+// stones hover over it) and away from any water not at all.
+fn float_lift(a: vec3<f32>, p: vec3<f32>) -> f32 {
+    let sy = surface_y(a.xz);
+    if (sy < -1e8) { return 0.0; }
+    let m = material_at(a.xz);
+    if (m > 1.5) { return 0.0; }
+    let above = a.y - sy;
+    let w = smoothstep(-30.0, -18.0, above) * (1.0 - smoothstep(22.0, 36.0, above));
+    if (w <= 0.0) { return 0.0; }
+    let f = flow_at(a.xz);
+    let rest = select(-REST - FLOAT_DRAFT, -FLOAT_DRAFT * 0.5, m > 0.5);
+    let e = 3.0;
+    let h = wave_h(a.xz) + ripples(a.xz, lt.water2.x, f);
+    let hx = wave_h(a.xz + vec2<f32>(e, 0.0)) + ripples(a.xz + vec2<f32>(e, 0.0), lt.water2.x, f) - h;
+    let hz = wave_h(a.xz + vec2<f32>(0.0, e)) + ripples(a.xz + vec2<f32>(0.0, e), lt.water2.x, f) - h;
+    // The slope felt by something this big: gentler than the water's own.
+    let tilt = clamp(vec2<f32>(hx, hz) / e, vec2<f32>(-0.15), vec2<f32>(0.15)) * 0.6;
+    return w * (rest + h * 0.8 + dot(p.xz - a.xz, tilt));
+}
+const FLOAT_DRAFT: f32 = 1.5;
+
 @vertex fn vs(i: VIn, @builtin(instance_index) inst: u32) -> VOut {
     let r = recs[inst];
     let m = mats[r.mat + i.bone];
-    let world = xfm(m, i.pos);
+    var world = xfm(m, i.pos);
+    var lift = 0.0;
+    if (r.anchor.w > 0.5) {
+        lift = float_lift(r.anchor.xyz, world);
+        world.y += lift;
+    }
     let vp = xfm(cam.v, world);
     let c = clip(cam.proj, vp);
     var o: VOut;
@@ -811,7 +845,7 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
     o.vz = vp.z;
     o.flags = r.flags;
     o.cur = c;
-    o.prev = clip(cam.pproj, xfm(cam.pv, xfm(prevs[r.mat + i.bone], i.pos)));
+    o.prev = clip(cam.pproj, xfm(cam.pv, xfm(prevs[r.mat + i.bone], i.pos) + vec3<f32>(0.0, lift, 0.0)));
     o.world = world;
     o.normal = xfm_dir(m, i.normal.xyz);
     o.slide = r.slide.y;
@@ -2293,7 +2327,7 @@ impl Gpu {
         }
         // Records and matrices: storage buffers, grown as needed.
         let need = |n: usize, each: usize| ((n.max(1) * each) as u64).next_power_of_two().max(256);
-        let (rn, mn) = (need(sink.recs.len(), 48), need(sink.mats.len(), 64));
+        let (rn, mn) = (need(sink.recs.len(), 64), need(sink.mats.len(), 64));
         if self.store.as_ref().is_none_or(|(r, m, _, _)| r.size() < rn || m.size() < mn) {
             let mk = |label, size| {
                 device.create_buffer(&wgpu::BufferDescriptor {

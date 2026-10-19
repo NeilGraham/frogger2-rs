@@ -549,6 +549,29 @@ impl App {
         out
     }
 
+    /// Enhanced water: the platforms float (where there is water under them: the renderer
+    /// decides), and so does a frog standing on one, riding its platform's water.
+    fn water_floats(&self) -> Vec<(f2_game::ids::ActorId, [f32; 3])> {
+        if self.display().graphics == f2_platform::Graphics::Original {
+            return Vec::new();
+        }
+        let g = &self.game;
+        let pos = |a: f2_game::ids::ActorId| {
+            g.actor2.actors.get(a).map(|a| {
+                let q = &a.actor.position;
+                [q.vx as f32 / 10.0, q.vy as f32 / 10.0, q.vz as f32 / 10.0]
+            })
+        };
+        let mut out: Vec<_> = g.platform.platform_list.array.iter().filter_map(|p| p.plt_actor.and_then(|a| pos(a).map(|q| (a, q)))).collect();
+        for (k, cur) in g.platform.curr_platform.iter().enumerate() {
+            let plt = cur.and_then(|p| g.platform.platform_list.array.get(p.idx())).and_then(|p| p.plt_actor).and_then(pos);
+            if let (Some(q), Some(Some(f))) = (plt, g.frogger.frog.get(k)) {
+                out.push((*f, q));
+            }
+        }
+        out
+    }
+
     /// Gives actor `a` a downward kick of `speed` units per tick on the dip spring (negative:
     /// up).
     fn water_dip(&mut self, a: f2_game::ids::ActorId, speed: f32) {
@@ -1852,6 +1875,7 @@ impl App {
         let authentic = self.profile == Profile::Authentic;
         let dips: Vec<(f2_game::ids::ActorId, f32)> = self.water_dips.iter().map(|d| (d.0, d.2 + (d.1 - d.2) * alpha)).collect();
         let wakes = self.water_wakes();
+        let floats = self.water_floats();
         self.r.water_clock = (self.ticks as f64 + alpha as f64) / 60.0;
         let mut ctx = render::DrawCtx {
             prev: &self.prev,
@@ -1867,6 +1891,7 @@ impl App {
             tex_anim_steps,
             dips: &dips,
             wakes: &wakes,
+            floats: &floats,
         };
         if let Some(scene) = &self.scene {
             let gcam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);

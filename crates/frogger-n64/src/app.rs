@@ -1334,6 +1334,7 @@ impl App {
             tex_anim_steps: 1,
             dips: &[],
             wakes: &[],
+            floats: &[],
         };
         let mut g = lv();
         let l = g.as_mut().unwrap();
