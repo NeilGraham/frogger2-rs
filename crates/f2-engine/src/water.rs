@@ -45,6 +45,11 @@ pub struct Splash {
     /// drifting with a river makes none). 0: a plain splash.
     pub wake: f32,
     pub vel: [f32; 2],
+    /// A body's footprint: a rectangle around `pos` with these half extents (x / z units)
+    /// along `axis` (a unit x / z direction) and across it; `radius` is then how far past
+    /// its edges the push fades out. Zero: a round splash.
+    pub half: [f32; 2],
+    pub axis: [f32; 2],
 }
 
 const SIM: &str = r#"
@@ -125,12 +130,19 @@ fn step(@builtin(global_invocation_id) id: vec3<u32>) {
     let surf_y = st.ref_y + (0.5 - d) * st.range;
     let wp = st.origin + (vec2<f32>(f32(i), f32(j)) + 0.5) * st.texel;
     for (var k = 0u; k < st.nsplat; k++) {
-        let a = splats[k * 3u];
-        let b = splats[k * 3u + 1u];
-        let wk = splats[k * 3u + 2u];
+        let a = splats[k * 4u];
+        let b = splats[k * 4u + 1u];
+        let wk = splats[k * 4u + 2u];
+        let fp = splats[k * 4u + 3u];
         let up = a.y - surf_y;
         if (surf_y - a.y < a.w + 12.0 + b.y && up < a.w + 12.0 + b.z) {
-            let dist = distance(wp, a.xz);
+            var dist = distance(wp, a.xz);
+            if (fp.z > 0.0) {
+                // From the footprint's edge (inside: 0).
+                let r = wp - a.xz;
+                let q = abs(vec2<f32>(dot(r, fp.xy), dot(r, vec2<f32>(-fp.y, fp.x)))) - fp.zw;
+                dist = length(max(q, vec2<f32>(0.0)));
+            }
             if (dist < a.w) {
                 // From over the water: fading with the height.
                 let k = select(1.0, clamp(1.0 - max(up - a.w, 0.0) / (b.z + 12.0), 0.0, 1.0), b.z > 0.0);
@@ -239,7 +251,7 @@ impl WaterSim {
         });
         let splats = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("water splashes"),
-            size: (MAX_SPLATS * 48) as u64,
+            size: (MAX_SPLATS * 64) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -486,10 +498,13 @@ impl WaterSim {
         self.frame.origin = origin;
         self.frame.ref_y = self.ref_y;
         let all = splashes.iter().copied().chain(sources.iter().map(|s| Splash { strength: s.strength * pairs as f32, ..*s }));
-        let mut sp = vec![0.0f32; MAX_SPLATS * 12];
+        let mut sp = vec![0.0f32; MAX_SPLATS * 16];
         let mut n = 0;
         for (k, s) in all.take(MAX_SPLATS).enumerate() {
-            sp[k * 12..k * 12 + 11].copy_from_slice(&[s.pos[0], s.pos[1], s.pos[2], s.radius, s.strength, s.above, s.below, 0.0, s.vel[0], s.vel[1], s.wake]);
+            sp[k * 16..k * 16 + 16].copy_from_slice(&[
+                s.pos[0], s.pos[1], s.pos[2], s.radius, s.strength, s.above, s.below, 0.0, s.vel[0], s.vel[1], s.wake, 0.0, s.axis[0], s.axis[1], s.half[0],
+                s.half[1],
+            ]);
             n = k + 1;
         }
         queue.write_buffer(&self.splats, 0, bytemuck::cast_slice(&sp));

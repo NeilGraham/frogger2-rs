@@ -421,6 +421,92 @@ fn still_water_is_calm_and_a_butterfly_ruffles_it() {
     assert!(rings > 1000, "the butterfly ruffles the water ({rings} pixels differ)");
 }
 
+/// A floating log that bobs (the frog landing on it) pushes the water along its whole length:
+/// the waves it makes are long like it, not a ring around its centre.
+#[test]
+fn a_bobbing_log_makes_long_waves() {
+    use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE};
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let wat = f2_formats::crc("wat0.bmp");
+    r.textures.add_rgba(wat, "wat0.bmp", TexType::Normal, 2, 2, vec![60, 90, 160, 200].repeat(4));
+    let h = 100.0;
+    let vertices = vec![[-h, 0.0, -h], [h, 0.0, -h], [h, 0.0, h], [-h, 0.0, h]];
+    let faces = vec![[0, 2, 1], [0, 3, 2], [0, 1, 2], [0, 2, 3]];
+    let mesh = Mesh { vertices, faces, face_uv: vec![[0, 0]; 12], normals: vec![], colors: vec![[1.0; 4]; 12], face_flags: vec![0; 4], textures: vec![wat; 4] };
+    let pond = Model {
+        id: 8,
+        radius: 150.0,
+        object_size: 0,
+        root: object("pond", mesh, OBJECT_FLAGS_MODGE | OBJECT_FLAGS_ADDITIVE),
+        root_siblings: vec![],
+        animations: vec![],
+        loc_mesh: None,
+        is_skinned: false,
+        num_vtx: 0,
+    };
+    // A log 80 units long (x), 10 wide, its top 2 units over the water (untextured: unseen).
+    let (l, w) = (40.0, 5.0);
+    let lv = vec![[-l, 2.0, -w], [l, 2.0, -w], [l, 2.0, w], [-l, 2.0, w]];
+    let lm = Mesh {
+        vertices: lv,
+        faces: vec![[0, 2, 1], [0, 3, 2]],
+        face_uv: vec![[0, 0]; 6],
+        normals: vec![],
+        colors: vec![[1.0; 4]; 6],
+        face_flags: vec![0; 2],
+        textures: vec![0; 2],
+    };
+    let log = Model {
+        id: 9,
+        radius: 41.0,
+        object_size: 0,
+        root: object("plt4log", lm, 0),
+        root_siblings: vec![],
+        animations: vec![],
+        loc_mesh: None,
+        is_skinned: false,
+        num_vtx: 0,
+    };
+    let lighting = f2_engine::Lighting { water: true, ..f2_engine::Lighting::daylight() };
+    let mut run = |bob: bool| {
+        r.options.gpu_meshes = true;
+        r.lighting = Some(lighting.clone());
+        let mut img = None;
+        let mut a = Actor::default();
+        for f in 0..18 {
+            r.water_clock = f as f64 / 60.0;
+            r.begin_frame(320, 240);
+            // Looking straight down.
+            r.set_camera(&Camera { source: [0.0, 160.0, -1.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] });
+            r.draw_actor(&pond, &mut Actor::default());
+            // Landed on at frame 5: it dips 2 units and bobs back (a damped spring).
+            let t = (f as f32 - 5.0).max(0.0);
+            a.pos = [0.0, if bob { -2.0 * (-t * 0.08).exp() * (t * 0.35).sin() } else { 0.0 }, 0.0];
+            r.draw_actor(&log, &mut a);
+            img = Some(r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap());
+        }
+        img.unwrap()
+    };
+    let (calm, bobbed) = (run(false), run(true));
+    bobbed.write_png(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/f2-engine-log.png")).unwrap();
+    // Where the waves are: their extent across the screen (x: along the log) and down it.
+    let (mut xs, mut ys) = (Vec::new(), Vec::new());
+    for (i, (a, b)) in calm.pixels.chunks(4).zip(bobbed.pixels.chunks(4)).enumerate() {
+        if a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 2) {
+            xs.push((i % 320) as i32);
+            ys.push((i / 320) as i32);
+        }
+    }
+    assert!(xs.len() > 500, "the log makes waves ({} pixels differ)", xs.len());
+    let spread = |v: &mut Vec<i32>| {
+        v.sort();
+        v[v.len() * 9 / 10] - v[v.len() / 10]
+    };
+    let (sx, sy) = (spread(&mut xs), spread(&mut ys));
+    assert!(sx as f32 > sy as f32 * 1.3, "the waves are long like the log ({sx} across, {sy} down)");
+}
+
 #[test]
 fn ray_traced_lighting_casts_shadows() {
     use f2_engine::{DirLight, Lighting};

@@ -474,6 +474,10 @@ pub struct Renderer {
     /// moving actors).
     #[cfg(feature = "gpu")]
     splashes: Vec<crate::water::Splash>,
+    /// Enhanced water: each model's footprint (model x / z extents of its meshes), for the
+    /// waves a floating body makes as it bobs.
+    #[cfg(feature = "gpu")]
+    footprints: HashMap<u32, [f32; 4]>,
     /// The clock (×60, whole) at which moving actors last made waves.
     #[cfg(feature = "gpu")]
     wake_tick: i64,
@@ -752,6 +756,8 @@ impl Renderer {
             emissive_crc: alloc::collections::BTreeMap::new(),
             water_clock: 0.0,
             splashes: Vec::new(),
+            #[cfg(feature = "gpu")]
+            footprints: HashMap::new(),
             wake_tick: i64::MIN,
             wake_frame: false,
             mv_buf: None,
@@ -1560,6 +1566,29 @@ impl Renderer {
         };
         match kind {
             Wake::Body => {
+                // Bobbing (a log dipping under the frog, rising as it hops off): the whole
+                // footprint pushes the water, so a long log makes long waves along its sides.
+                let dy = p[1] - q[1];
+                if dy.abs() > 0.03 && dy.abs() < 10.0 {
+                    let fp = *self.footprints.entry(model.id).or_insert_with(|| footprint(model));
+                    if fp[1] > fp[0] {
+                        let m = crate::math::quaternion_to_matrix(&actor.q_rot);
+                        let s = [actor.scale[0].abs(), actor.scale[2].abs()];
+                        let (cx, cz) = ((fp[0] + fp[1]) * 0.5, (fp[2] + fp[3]) * 0.5);
+                        let ax = [m[0][0], m[0][2]];
+                        let az = [m[2][0], m[2][2]];
+                        let centre = [p[0] + ax[0] * cx * s[0] + az[0] * cz * s[1], p[1], p[2] + ax[1] * cx * s[0] + az[1] * cz * s[1]];
+                        let l = (ax[0] * ax[0] + ax[1] * ax[1]).sqrt().max(1e-4);
+                        push(Splash {
+                            pos: centre,
+                            radius: 5.0,
+                            strength: (-dy * 0.9).clamp(-1.5, 1.5),
+                            half: [(fp[1] - fp[0]) * 0.5 * s[0] * 0.9, (fp[3] - fp[2]) * 0.5 * s[1] * 0.9],
+                            axis: [ax[0] / l, ax[1] / l],
+                            ..Default::default()
+                        });
+                    }
+                }
                 if d > 0.05 && d < 60.0 {
                     let vel = [p[0] - q[0], p[2] - q[2]];
                     push(Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: 2.5, wake: 0.35, vel, ..Default::default() });
@@ -2685,4 +2714,16 @@ impl Renderer {
         }
         Ok(RgbaImage { width: w, height: h, pixels })
     }
+}
+
+/// The model-space x / z extents of `model`'s meshes (min x, max x, min z, max z).
+#[cfg(feature = "gpu")]
+fn footprint(model: &Model) -> [f32; 4] {
+    let mut f = [f32::MAX, f32::MIN, f32::MAX, f32::MIN];
+    crate::anim::for_each_object(model, |_, o| {
+        for v in o.mesh.iter().flat_map(|m| m.vertices.iter()) {
+            f = [f[0].min(v[0]), f[1].max(v[0]), f[2].min(v[2]), f[3].max(v[2])];
+        }
+    });
+    f
 }

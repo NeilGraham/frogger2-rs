@@ -493,21 +493,22 @@ impl App {
         let cur = self.game.platform.curr_platform[0];
         if cur != self.last_platform {
             let frog = self.game.frogger.frog[0];
-            // Hopping off: the platform left behind bobs up and pushes a smaller wave.
+            // Hopping off: the platform left behind bobs up (its footprint's waves: the
+            // renderer's wake of a bobbing body).
             if let Some(p) = self.last_platform {
                 if let Some(a) = self.game.platform.platform_list.array.get(p.idx()).and_then(|p| p.plt_actor) {
                     self.water_dip(a, -0.5);
-                    self.actor_splash(a, 20.0, 1.6);
                 }
             }
-            // Landing: the platform and the frog dip and make a wave.
+            // Landing: the platform and the frog dip (the platform's whole footprint pushes
+            // the water), with a stronger ring where the frog lands.
             if let Some(p) = cur {
                 let plt = self.game.platform.platform_list.array.get(p.idx()).and_then(|p| p.plt_actor);
                 for a in [plt, frog].into_iter().flatten() {
                     self.water_dip(a, 1.1);
                 }
-                if let Some(a) = plt {
-                    self.actor_splash(a, 26.0, 3.0);
+                if let Some(f) = frog {
+                    self.actor_splash(f, 12.0, 2.2);
                 }
             }
         }
