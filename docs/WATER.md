@@ -54,6 +54,38 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
     the bumped normal: sharp highlights of the key light (the sun, else a light from above in
     a cave) and the point lights, duller on the scum; reflections of the sky (in a cave, of
     its own glow).
+  the mesh slide as in the original (the uploaded mesh's v is moved per draw).
+- **Flowing liquids** (opaque, sliding: the Subterranean acid rivers and fall `slu_f*`,
+  Halloween's sludge `slu_floh`) keep their own surface on the GPU mesh pass, moving as in the
+  original (v moved per draw). The surface is a height field in the texture's coordinates, so
+  everything on it flows with the texture at the animation's speed, repeating with the texture
+  (the art's faces meet whole repeats apart): ridged streaks along the flow drifting against
+  it (the liquid shears), two layers of boiling ripples, and bubbles that swell, pop and leave
+  a spreading ring; on steep faces (rapids, the acid fall) the streaks are taller and their
+  crests froth, and there are no bubbles. Lit through the bumped normal (on the smoothed
+  normal): the body deeper in the troughs and paler on the crests, a light from above in a
+  cave (else the sun) across the ripples, a little glow of its own, highlights of the point
+  lights, reflections of the sky (in a cave, of its own glow). Detail finer than a few pixels
+  fades out. Its faces also light what stands in it and its banks, dimly (point lights in its
+  colour, like lava's). The generated surface has one tint per level, which would turn such
+  a river into water of another colour.
+- **Waterfalls and their streams** (opaque sliding water, `Liquid::Fall`: the frontend's fall,
+  `stream` in the shader) are made the same way, in the texture's coordinates (+v downstream).
+  The fall: sheets (ridged streaks long down it, narrow across, swaying a little) in two layers
+  slipping past each other (the inner slower than the texture, the outer faster), white water
+  torn along them faster still and coming and going in patches, more and more of it towards the
+  pool (aerated: paler, a mist at its foot). Layer speeds never depend on the slope (the faces
+  differ a little; over time any difference would tear the patterns apart at their edges), and
+  the footprint that fades the detail comes from the distance, not the face. The lip: the art's
+  edge is a sharp corner, so near the top of the fall's steep faces (`Rec::slide` w, the highest
+  steep point; 10 units each side) the normal is rolled from the stream's (up) to the fall's
+  (out, along v's gradient): a glassy band without ripples or foam, a broad highlight and the
+  sky over it, and the water stays whole for about 20-40 units down before it breaks up (the
+  height varying across the fall). The stream: streaks along the flow and ripples riding it, a
+  few flecks of foam. The fall's own pool height (`pool_y`, the surface map in front of the
+  face, water only) sets how aerated it is. Lit like the liquids. Translucent falls the
+  water pass draws (Garden's, by the water wheel) get the sheets and white water over their
+  texture (`fall_sheet`).
 - **Generated surface:** the flat parts of the water are drawn as our own surface instead of the
   original meshes: a 512² grid of quads (2×2 simulation cells, 3 units) over the simulation
   window, resting 2.5 units below the surface map's height and moved by the simulation.
@@ -125,10 +157,23 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   depend on how clear the water is.
 - **Waterfalls** (the steep faces) stir the water where they land: each waterfall group keeps up
   to 12 of its lowest points, which push the simulated surface every step (moving about a little,
-  so the water churns), reaching water up to 400 units above them (a fall's mesh may go on far
-  under its pool). Where the simulated surface moves fast (churn: under falls, wakes,
-  splashes) the water foams. Waterfalls are left out of the surface map (they would lift their
-  pool to their top).
+  so the water churns), from 20 units below them (a fall may end over its pool) up to 400
+  units above them (a fall's mesh may go on far under its pool). Where the simulated surface
+  moves fast (churn: under falls, wakes, splashes) the water foams. Waterfalls are left out of
+  the surface map (they would lift their pool to their top), and the generated surface does
+  not hang from the water at a fall's top to its pool (triangles all but upright, or lying
+  more than 20 units over their own cell's water, or touching an opaque liquid's cells).
+- **Where a fall lands** (the feet at a group's bottom, up to 32, the nearest to the camera's
+  target, with the way the fall faces there: `Falls`, beside the generated surface's camera):
+  white water churned out from under it over the generated surface (two layers of blobs
+  carried outwards, flow-mapped, 26 units round each foot, broken at the edges) with bubbles
+  that swell and pop into rings (4-unit cells, near the camera); over it **mist** rises
+  (`vs_mist`: 10 soft camera-facing puffs per foot, curling noise, rising 30-60 units, swelling,
+  drifting out over the pool, fading; thinner where feet crowd and at the water, soft where
+  they meet the scene when there is a copy of the frame) and **spray** (8 drops per foot thrown
+  out and falling back). Lit by the sky and the sun, premultiplied, after the generated surface;
+  everything from the water's clock (render-only, the same every run). The original's own
+  additive steam and light shafts are kept.
 - **Refraction:** what lies under the water wavers as the waves bend the view rays: each pixel of
   a surface under the water samples its texture where the ray refracted at the wavy surface lands,
   minus where it would land under flat water (turned into texture space with the surface's screen
