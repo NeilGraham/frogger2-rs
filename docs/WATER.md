@@ -20,8 +20,11 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   `ai_water`, `ai_ripple`, `00wate`, `00nwat`, `aniswamp`, `aqua0`, `aquatop`, `ripple`,
   `sludge`, `swampi`, `swampyi`) goes to the **water pass**; an opaque MODGE-only mesh (river
   bed) goes to the lit **GPU mesh pass without its wobble** (the real caustics replace it).
-  An opaque water-textured mesh whose texture slides is a **flowing liquid** (below). Anything
-  else stays on the CPU.
+  Opaque meshes that are another liquid are **opaque liquids** (`Class::Liquid`, below): lava
+  (texture names with `lava`), acid (toxic glop `glop` / `toxic`, sludge, and water textures
+  whose colour as seen, texture mean × vertex colours, is green: Subterranean tints its blue
+  `00nwat02` / `wat0` green, so its standing acid vats are acid, not water), and water whose
+  texture slides (a stream and its fall: the frontend's). Anything else stays on the CPU.
 - **Streams, from the animation:** an actor whose texture slides (`ACTOR_SLIDYTEX` /
   `ACTOR_SLOWSLIDE`, `CopyActorList`) shows something flowing. Its speed (`faceTC.v` units per
   game frame, `texture_slide_speed`) reaches the renderer as `Actor::slide`; the texture moves
@@ -32,29 +35,35 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   (two copies each carried for 2.5 s and put back, half a period apart, crossfaded), the flow
   smoothed over about 12 units (the art's texture density changes from face to face, and a
   stream runs into still water). Still water writes no flow. Sliding waterfalls drawn from
-  the mesh slide as in the original (the uploaded mesh's v is moved per draw).
-- **Flowing liquids** (opaque, sliding: the Subterranean acid rivers and fall `slu_f*`,
-  Halloween's sludge `slu_floh`) keep their own surface on the GPU mesh pass, moving as in the
-  original (v moved per draw). The surface is a height field in the texture's coordinates, so
-  everything on it flows with the texture at the animation's speed, repeating with the texture
-  (the art's faces meet whole repeats apart): ridged streaks along the flow drifting against
-  it (the liquid shears), two layers of boiling ripples, and bubbles that swell, pop and leave
-  a spreading ring; on steep faces (rapids, the acid fall) the streaks are taller and their
-  crests froth, and there are no bubbles. Lit through the bumped normal (on the smoothed
-  normal): the body deeper in the troughs and paler on the crests, a light from above in a
-  cave (else the sun) across the ripples, a little glow of its own, highlights of the point
-  lights, reflections of the sky (in a cave, of its own glow). Detail finer than a few pixels
-  fades out. Its faces also light what stands in it and its banks, dimly (point lights in its
-  colour, like lava's). The generated surface has one tint per level, which would turn such
-  a river into water of another colour.
+  the mesh slide as in the original (the uploaded mesh's v is moved per draw). The flow map's
+  z holds the liquid there (0 water, 1 acid, 2 lava, 3 a stream drawn opaque), w coverage.
+- **Opaque liquids** keep their own surface on the GPU mesh pass, moving as in the original
+  where their texture slides (v moved per draw), and go into the surface map too (their steep
+  faces left out per pixel), so the wave simulation runs on them, as thick as the liquid is
+  (below). Their patterns are height fields in the texture's coordinates, so everything on
+  them flows with the texture at the animation's speed, repeating with the texture (the art's
+  faces meet whole repeats apart); detail finer than a few pixels fades out. Their faces also
+  light what stands in them and their banks, dimly (point lights in their colour).
+  - **Acid** (`fn liquid`): thick and glossy, the original texture's colour kept as its
+    palette: slow, gloopy swells (no fine chop), emerald in the troughs and lime on the
+    swells, a breathing glow of its own, foamy yellowish scum clustering and drifting on it
+    (pitted with tiny bubbles), bubbles that swell slowly and pop into a spreading ring
+    (more of them in standing acid), streaks along the flow and froth on the crests where it
+    runs steep. The simulated waves bend its normal; where they move it fizzes, brightens,
+    and their crests catch the light (the rings of a frog landing on a crate). Lit through
+    the bumped normal: sharp highlights of the key light (the sun, else a light from above in
+    a cave) and the point lights, duller on the scum; reflections of the sky (in a cave, of
+    its own glow).
 - **Generated surface:** the flat parts of the water are drawn as our own surface instead of the
   original meshes: a 512² grid of quads (2×2 simulation cells, 3 units) over the simulation
-  window, resting 2.5 units below the surface map's height and moved by the simulation, a slow
-  swell (two long waves and three shorter ones, scaled per level by `Lighting::water_swell`:
-  standing water keeps 15% of it, so what moves through it shows) and fine ripples (always
-  there: they bend the light into caustics and catch the sun). `Lighting::water_flow` (world
-  units per second; zero: standing water) carries the swell, the ripples, the texture detail
-  and the caustics along, for rivers. The original meshes only say where water is and how high
+  window, resting 2.5 units below the surface map's height and moved by the simulation.
+  **Standing water** (no flow there) is silky smooth: no ripples, no swell, its texture detail
+  still and faint, so only what disturbs it shows (the simulation's waves, whose curvature also
+  focuses its caustics). **Streams** (the flow map, plus `Lighting::water_flow`) ripple as
+  they run, more the faster they flow: a slow swell (two long waves and three shorter ones,
+  `Lighting::water_swell`, at least 30%), riffles across the flow (short crests, long across
+  it) and fine ripples (they bend the light into caustics and catch the sun), all carried along
+  with the texture detail and the procedural caustics. The original meshes only say where water is and how high
   (surface map); their steep, tall faces (waterfalls, more than 24 units high) are still drawn
   from the mesh, subdivided (n² per triangle, edges ≤ 12 units) with the original wobble / swell
   / alpha per vertex. Crests reach the original surface height and troughs go below it, so the
@@ -78,12 +87,26 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   water meshes (the surface map) says where water is and how high; dry cells stay flat and
   reflect waves. Disturbances (`water::Splash`) push the surface down where there is water near
   their height:
-  - actors moving through water make a wake each 60 Hz tick (`Renderer::actor_wake`, from the
-    distance moved and the model's size);
+  - actors moving through water make a wake each 60 Hz tick (`Renderer::actor_wake`, from
+    their speed through the water: their movement less the flow there, with a little slack,
+    so a log or a crate drifting with a stream makes none; the sim reads the flow map);
+  - creatures (`Actor::wake`, from the host: scenery `ENEMY_NEW_FLAPPYTHING`, fish by their
+    bubbles; else by model name: `bfly*`, `*fish*`): a butterfly's wings ruffle the water up
+    to 45 units under it (weaker the higher it flies) and now and then it dips (a tiny ring);
+    a fish leaves a small wake near the surface and its bubbles pop up through it;
   - the frog landing on a platform splashes at the platform, hopping off one lets it bob up
     with a smaller wave, and falling in makes a big splash (`App::water_tick`), and
   - the platform and the frog dip by a couple of units on a damped spring (render-only
     `DrawCtx::dips`, interpolated between ticks).
+- **Floating:** platforms, and a frog standing on one (`DrawCtx::floats` → `Actor::float_at`
+  → `Rec::anchor`), ride the generated surface where their anchor is (`float_lift` in `vs`):
+  made to float at the original surface, they are moved to where the generated one is (2.5
+  lower) and 1.5 into it, so their bottoms are in the water, rising and falling with the waves
+  and swell and tilting with their slope (gentler than the water's own). On acid only with its
+  waves (half the draft); over lava, or with no water under the anchor, not at all.
+- **Thickness:** the simulation's waves move by the liquid (the flow map's z): water rings out
+  far; acid's are slower and short-lived, and the velocity's own Laplacian (a viscosity)
+  smooths away the fine ripples, so a splash makes a dimple and a broad, soft ring.
 - **Surface shading:** per-pixel normals from the simulated height plus the swell, and fine
   ripples (wavelengths 9 to 25 units, faded out with distance) for sparkle; the body lit by the
   waves' slopes; a sharp sun glint and sparkles (shadowed). Drawn after the opaque geometry,
@@ -123,5 +146,6 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
 
 `crates/f2-engine/tests/headless.rs`: `enhanced_water_takes_splashes` (a pond drawn by the water
 pass; a splash makes visible waves), `sliding_water_is_a_stream` (the same pond sliding is
-carried along). `lighting::tests::water_names`. `crates/frogger/src/main.rs`:
+carried along). `lighting::tests::water_names`. Debug: `F2_DRAW_EVERY=1` draws every tick of a
+headless run (the waves build up as in play), `F2_TEST_SPLASH=x,y,z,radius,strength,every`. `crates/frogger/src/main.rs`:
 `flowing_acid_keeps_its_surface` (Subterranean 1's acid river).
