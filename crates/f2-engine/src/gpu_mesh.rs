@@ -1607,13 +1607,16 @@ fn smooth_d(a: f32, b: f32, x: f32) -> f32 {
 const LAVA_NOWRAP: vec2<i32> = vec2<i32>(65536);
 
 // Where crust has formed at world x / z (one carried copy): a slow temperature field, crust
-// where it is high (rafts about 30 units across, warped so they do not line up), and its
-// gradient (per unit).
-fn crust_temp(p: vec2<f32>, t: f32) -> vec3<f32> {
-    let wq = vec2<f32>(lnoise(p * 0.02, LAVA_NOWRAP, 18u).x, lnoise(p * 0.02 + vec2<f32>(31.7, 11.3), LAVA_NOWRAP, 19u).x) * 0.7;
-    let a = lnoise(p * (1.0 / 34.0) + wq + vec2<f32>(t * 0.02, -t * 0.015), LAVA_NOWRAP, 11u);
+// where it is high, and its gradient (per unit). Mostly large rafts (about 35 units across,
+// warped a little so they do not line up); `fine` (0..1) breaks them into smaller pieces
+// (crust torn and crumpled against what stands in the lava).
+fn crust_temp(p: vec2<f32>, t: f32, fine: f32) -> vec3<f32> {
+    let wq = vec2<f32>(lnoise(p * 0.02, LAVA_NOWRAP, 18u).x, lnoise(p * 0.02 + vec2<f32>(31.7, 11.3), LAVA_NOWRAP, 19u).x) * 0.45;
+    let a = lnoise(p * (1.0 / 38.0) + wq + vec2<f32>(t * 0.02, -t * 0.015), LAVA_NOWRAP, 11u);
     let b = lnoise(p * (1.0 / 13.0) + wq * 2.0 + vec2<f32>(-t * 0.03, t * 0.02), LAVA_NOWRAP, 16u);
-    return vec3<f32>(a.x * 0.68 + b.x * 0.32, a.yz * (0.68 / 34.0) + b.yz * (0.32 / 13.0));
+    let kb = mix(0.12, 0.4, fine);
+    let ka = 1.0 - kb;
+    return vec3<f32>(a.x * ka + b.x * kb, a.yz * (ka / 38.0) + b.yz * (kb / 13.0));
 }
 // The cracks across the crust at world x / z (one carried copy): plates about 16 units across
 // (their cracks wider by `edge`, near a raft's edge where it breaks up) and fine crazing,
@@ -1624,14 +1627,14 @@ fn crust_cracks(p: vec2<f32>, t: f32, edge: f32, fp: f32) -> vec4<f32> {
     let fz = 1.0 - smoothstep(0.15, 0.4, fp * sc);
     if (fz <= 0.0) { return vec4<f32>(0.0, 0.0, 0.0, 0.5); }
     let pl = plates(p * sc, t, 21u);
-    let w = 0.06 + 0.06 * edge;
+    let w = 0.08 + 0.06 * edge;
     var o = vec4<f32>((1.0 - smoothstep(0.0, w, pl.x)) * fz, pl.yz * sc * smooth_d(0.0, w, pl.x) * 0.6 * fz, pl.w);
     let sf = 1.0 / 4.5;
-    let fc = 1.0 - smoothstep(0.08, 0.2, fp * sf);
+    let fc = 1.0 - smoothstep(0.06, 0.15, fp * sf);
     if (fc > 0.0) {
         let pz = plates(p * sf + vec2<f32>(0.37, 0.61), t * 0.5, 31u);
         let cz = (1.0 - smoothstep(0.0, 0.05, pz.x)) * fc;
-        o.x = max(o.x, cz * 0.35);
+        o.x = max(o.x, cz * 0.15);
         o = vec4<f32>(o.x, o.yz + pz.yz * sf * smooth_d(0.0, 0.05, pz.x) * 0.25 * fc, o.w);
     }
     return o;
@@ -1703,18 +1706,20 @@ fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, 
         wa = 1.0 - abs(1.0 - 2.0 * ph);
     }
     // (Blended keeping the field's contrast: a plain mix would thin the crust mid-way.)
-    var temp = crust_temp(q - pa, tm);
-    if (wa < 1.0) { temp = mix(crust_temp(q - pb, tm), temp, wa) / sqrt(wa * wa + (1.0 - wa) * (1.0 - wa)); }
-    let d = temp.x - mix(0.22, 0.9, open);
+    let fine = clamp(pile + wake, 0.0, 1.0);
+    var temp = crust_temp(q - pa, tm, fine);
+    if (wa < 1.0) { temp = mix(crust_temp(q - pb, tm, fine), temp, wa) / sqrt(wa * wa + (1.0 - wa) * (1.0 - wa)); }
+    let d = temp.x - mix(0.2, 0.9, open);
     // A raft's edge is sharp, but never finer than a pixel or two; the melt glows brightest
-    // right at it (thin, hot crust just forming), a unit or two out.
+    // right at it (thin, hot crust just forming), bleeding a few units out.
     let tl = max(length(temp.yz), 1e-4);
     let pc = i.crust;
     let cover = smoothstep(0.0, max(0.04, fpw * tl * 1.5), d) * (1.0 - smoothstep(0.0, 0.6, pc));
-    var crack = exp(-max(-d, 0.0) / tl / max(1.2, fpw * 2.0)) * (1.0 - cover) * smoothstep(0.9, 0.6, open) * (1.0 - pc);
-    // Rafts stand a little proud, rounded at their edges, cracked into plates.
+    var crack = exp(-max(-d, 0.0) / tl / max(3.5, fpw * 2.0)) * (1.0 - cover) * smoothstep(0.9, 0.6, open) * (1.0 - pc);
+    // Rafts stand a little proud, bevelled at their edges, cracked into plates.
     var h = smoothstep(0.0, 0.18, d) * 1.2;
-    var g = temp.yz * smooth_d(0.0, 0.18, d) * 1.2;
+    var g = temp.yz * smooth_d(0.0, 0.18, d) * 2.5;
+    let bevel = (1.0 - smoothstep(0.0, 0.2, d)) * cover;
     var shade = 0.5;
     var lines = 0.0;
     if (cover > 0.0) {
@@ -1778,21 +1783,24 @@ fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, 
     let pulse = 1.0 + 0.06 * sin(tm * 1.7 + lnoise(xz * 0.01, LAVA_NOWRAP, 15u).x * 4.0);
     let heat = clamp(roll * pulse + max(wh, 0.0) * 0.1 + stir * 0.4 + steep * 0.1, 0.6, 1.7);
     let melt = min(tex * vec3<f32>(1.2, 1.05, 0.85) * heat, vec3<f32>(1.0));
-    let core = vec3<f32>(1.0, 0.86, 0.38);
-    var c = mix(melt, core, clamp(crack * 0.7 + stir * 0.45, 0.0, 0.85));
+    // Incandescent: orange where it is faint, yellow at its hottest (never white).
+    let core = vec3<f32>(1.0, 0.8, 0.22);
+    let glow = clamp(crack * 0.8 + stir * 0.45, 0.0, 0.9);
+    var c = mix(melt, mix(vec3<f32>(1.0, 0.5, 0.06), core, glow), glow);
     // A glossy skin: the light from above (in a cave), else the sun, across the bumps.
     let key = select(normalize(vec3<f32>(0.25, 1.0, 0.3)), lt.sun_dir.xyz, lt.sun_dir.w > 0.5);
     let gloss = pow(max(dot(n, normalize(key + v)), 0.0), 60.0) * 0.3;
     let fres = pow(1.0 - max(dot(n, v), 0.0), 4.0);
     c = c * clamp(1.0 + (dot(n, key) - dot(n0, key)) * 1.5, 0.75, 1.3) + core * gloss + melt * fres * 0.25;
-    // The crust: dark cooled rock, warmer where it is thin, lit by the lights about it (the
-    // lava's own among them) and from under it by the melt.
+    // The crust: dark cooled rock on top, lit by the lights about it (the lava's own among
+    // them); its bevel catches the melt's glow from below, warm, not pale.
     let thin = 1.0 - smoothstep(0.0, 0.8, h);
-    var rock = mix(vec3<f32>(0.3, 0.085, 0.06), tex * vec3<f32>(0.8, 0.3, 0.14), thin * 0.7) * (0.85 + 0.3 * shade);
+    var rock = mix(vec3<f32>(0.2, 0.065, 0.05), tex * vec3<f32>(0.7, 0.26, 0.1), thin * 0.6) * (0.85 + 0.3 * shade);
     rock = mix(rock, tex * 0.85, pc);
     var j = i;
     j.normal = n;
-    let rc = light(j, rock, face) * 0.7 + rock * 0.35;
+    let under_glow = vec3<f32>(0.9, 0.32, 0.05) * (bevel * 0.8 + crack * 0.3) * (1.0 - pc);
+    let rc = light(j, rock, face) * 0.7 + rock * 0.3 + under_glow;
     return mix(c, rc, crust);
 }
 const LAVA_BUMP: f32 = 0.5;

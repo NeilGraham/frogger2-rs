@@ -126,10 +126,12 @@ mips), `app.rs` (`water_tick`: burning). Opaque lava-textured meshes (`lavafall`
 `anclava`) are a `Liquid::Lava` on the GPU mesh pass; they stay emissive (their groups light
 what is about them) and the waves run on them.
 
-- **Crust:** rafts of dark cooled crust (where a slow, warped noise field is high: about 30
-  units across), cracked into plates (a Voronoi network, 16 units, whose cracks glow; fine
-  crazing up close), standing a little proud and lit by the lights about them; the melt glows
-  yellow-hot right at a raft's edge. Laid out in world space, not the texture's coordinates:
+- **Crust:** rafts of dark cooled crust (where a slow, warped noise field is high: mostly
+  large, about 35 units across; smaller, torn pieces only against and behind what stands in
+  the lava), cracked into plates (a Voronoi network, 16 units, whose seams glow; faint crazing
+  up close), standing a little proud: dark cooled tops lit by the lights about them, a bevel
+  catching the melt's glow from below. The melt glows incandescent (orange, yellow at its
+  hottest, never white) at a raft's edge, bleeding a few units out. Laid out in world space, not the texture's coordinates:
   the art's lava faces do not all meet whole texture repeats apart, and a pattern in their
   coordinates breaks along their edges. Where the lava flows, the crust is carried along it
   like the water's ripples (two copies, each carried for 4 s and put back, crossfaded keeping
