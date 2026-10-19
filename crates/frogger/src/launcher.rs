@@ -1450,8 +1450,8 @@ mod tests {
             app.poll();
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(app.ui.state.message, Some(("Installed Frogger HD 1.0.0 and turned it on.".into(), false)));
-        assert_eq!(app.ui.state.mods, [ModRow { id: "frogger-hd".into(), name: "Frogger HD".into(), version: "1.0.0".into(), enabled: true }]);
+        assert_eq!(app.ui.state.message, Some(("Installed Frogger HD 1.1.0 and turned it on.".into(), false)));
+        assert_eq!(app.ui.state.mods, [ModRow { id: "frogger-hd".into(), name: "Frogger HD".into(), version: "1.1.0".into(), enabled: true }]);
         assert!(t.join("mods/frogger-hd/game/objects/frogger/frog.gltf").is_file());
         assert_eq!(Config::load(&app.config_file).unwrap().mods.enabled, ["frogger-hd"]);
         if let (Some(dir), Ok(ctx)) = (std::env::var_os("F2_SHOT_DIR").map(PathBuf::from), GpuContext::new_headless()) {

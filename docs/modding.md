@@ -492,7 +492,7 @@ mods dir are never mods.
 
 ## Example: `examples/mods/frogger-hd` (the first packaged mod)
 
-A new high-detail Frogger made in Blender: about 15k triangles, smooth-skinned (4 joints per
+A new high-detail Frogger made in Blender: about 18k triangles, in the original cartoon style, smooth-skinned (4 joints per
 vertex) to the retail frog's 18 joints, so it plays every retail animation (a mesh-only
 override: `objects/frogger/frog.gltf` with no animations). Its material uses the PBR fields:
 base colour, an OpenGL normal map, ORM (occlusion R, roughness G, metal B) and a height map for

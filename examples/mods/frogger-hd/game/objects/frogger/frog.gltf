@@ -486,7 +486,7 @@
  ],
  "meshes": [
   {
-   "name": "HD_skin_fused.002",
+   "name": "HD_v2_fused.001",
    "primitives": [
     {
      "attributes": {
@@ -577,47 +577,47 @@
   {
    "bufferView": 0,
    "componentType": 5126,
-   "count": 10322,
+   "count": 12878,
    "max": [
-    80.01049041748047,
-    52.38533020019531,
-    27.95170783996582
+    81.55841827392578,
+    50.08342742919922,
+    29.441509246826172
    ],
    "min": [
-    -78.89840698242188,
-    -1.5397472381591797,
-    -24.57262420654297
+    -80.617431640625,
+    -2.355703115463257,
+    -22.889404296875
    ],
    "type": "VEC3"
   },
   {
    "bufferView": 1,
    "componentType": 5126,
-   "count": 10322,
+   "count": 12878,
    "type": "VEC3"
   },
   {
    "bufferView": 2,
    "componentType": 5126,
-   "count": 10322,
+   "count": 12878,
    "type": "VEC2"
   },
   {
    "bufferView": 3,
    "componentType": 5121,
-   "count": 10322,
+   "count": 12878,
    "type": "VEC4"
   },
   {
    "bufferView": 4,
    "componentType": 5126,
-   "count": 10322,
+   "count": 12878,
    "type": "VEC4"
   },
   {
    "bufferView": 5,
    "componentType": 5123,
-   "count": 44412,
+   "count": 54303,
    "type": "SCALAR"
   },
   {
@@ -664,67 +664,67 @@
  "bufferViews": [
   {
    "buffer": 0,
-   "byteLength": 123864,
+   "byteLength": 154536,
    "byteOffset": 0,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteLength": 123864,
-   "byteOffset": 123864,
+   "byteLength": 154536,
+   "byteOffset": 154536,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteLength": 82576,
-   "byteOffset": 247728,
+   "byteLength": 103024,
+   "byteOffset": 309072,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteLength": 41288,
-   "byteOffset": 330304,
+   "byteLength": 51512,
+   "byteOffset": 412096,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteLength": 165152,
-   "byteOffset": 371592,
+   "byteLength": 206048,
+   "byteOffset": 463608,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteLength": 88824,
-   "byteOffset": 536744,
+   "byteLength": 108606,
+   "byteOffset": 669656,
    "target": 34963
   },
   {
    "buffer": 0,
    "byteLength": 1152,
-   "byteOffset": 625568
+   "byteOffset": 778264
   },
   {
    "buffer": 0,
    "byteLength": 288,
-   "byteOffset": 626720,
+   "byteOffset": 779416,
    "target": 34962
   },
   {
    "buffer": 0,
    "byteLength": 288,
-   "byteOffset": 627008,
+   "byteOffset": 779704,
    "target": 34962
   },
   {
    "buffer": 0,
    "byteLength": 192,
-   "byteOffset": 627296,
+   "byteOffset": 779992,
    "target": 34962
   },
   {
    "buffer": 0,
    "byteLength": 72,
-   "byteOffset": 627488,
+   "byteOffset": 780184,
    "target": 34963
   }
  ],
@@ -736,7 +736,7 @@
  ],
  "buffers": [
   {
-   "byteLength": 627560,
+   "byteLength": 780256,
    "uri": "frog.bin"
   }
  ]
