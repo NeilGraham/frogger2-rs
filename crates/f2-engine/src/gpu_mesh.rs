@@ -72,7 +72,7 @@ struct Rec {
     /// Bit 0: no far clip (sky); bit 1: Gouraud override; bit 2: landscape; bit 3: MODGE
     /// (texture wobble); bit 4: WAVE (swell, water alpha); bit 5: a river bed (drawn on the CPU,
     /// after the opaque meshes, by the original: pushed back in depth so the banks it runs
-    /// under win where they meet); bit 6: a flowing opaque liquid ([`Class::Flowing`]).
+    /// under win where they meet); bit 6: an opaque liquid ([`Class::Liquid`]).
     flags: u32,
     /// `PCCalcModgeValues`' frame count; spare.
     modge_frame: u32,
@@ -80,7 +80,7 @@ struct Rec {
     gouraud: [f32; 4],
     /// A sliding texture ([`GpuObj::slide`]): x: what to add to the uploaded `v` (meshes
     /// uploaded once: subdivided water); y: how fast it slides (`v` per second, the texture
-    /// moving to +v); z, w: spare.
+    /// moving to +v); z: the liquid ([`Liquid`] as a number; 0: water or none); w: spare.
     slide: [f32; 4],
 }
 
@@ -121,6 +121,8 @@ pub(crate) struct Sink {
     /// The first texture coordinate of each subdivided water mesh as uploaded: a sliding one
     /// is not uploaded again, its draws move `v` instead ([`Rec::slide`]).
     water_uv0: HashMap<Key, [i16; 2]>,
+    /// Where each opaque waterfall ([`Liquid::Fall`]) lands (model space; see [`Group::feet`]).
+    fall_feet: HashMap<Key, Vec<[f32; 3]>>,
 }
 
 /// A mesh the original animates or blends ([`GpuObj::light_only`]), with the enhanced water.
@@ -132,24 +134,78 @@ enum Class {
     Water,
     /// An opaque MODGE surface (river beds): the GPU mesh pass, with caustics.
     Modge,
-    /// An opaque liquid whose texture slides (the Subterranean acid rivers): its own surface,
-    /// flowing and wobbling as in the original, on the GPU mesh pass with a liquid's sheen.
-    Flowing,
+    /// An opaque liquid (acid, lava, a waterfall drawn opaque): its own surface on the GPU
+    /// mesh pass, flowing as in the original where its texture slides; the wave simulation
+    /// runs on it too, as thick as the liquid is.
+    Liquid(Liquid),
+}
+
+/// What an opaque liquid is ([`Class::Liquid`]; the number is [`Rec::slide`]`.z` and the flow
+/// map's material, which sets how the waves move on it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Liquid {
+    /// Acid, sludge, toxic glop: thick, glowing a little, bubbling.
+    Acid = 1,
+    /// Molten rock: very thick, crusted, glowing.
+    Lava = 2,
+    /// Water drawn opaque whose texture slides: a stream and its waterfall (the frontend's).
+    Fall = 3,
+}
+
+/// Whether colour `c` is a liquid's green (acid: the Subterranean water textures are blue,
+/// their vertex colours turn them green).
+fn is_green(c: [f32; 3]) -> bool {
+    c[1] > 0.12 && c[1] > c[0] * 1.5 && c[1] > c[2] * 1.3
 }
 
 /// [`Class`] of `o` (texture names: [`crate::lighting::is_water`]).
 fn classify(o: &GpuObj, textures: &TextureRegistry) -> Class {
     let n = o.mesh.textures.len();
-    let wet = o.mesh.textures.iter().filter(|&&crc| textures.entry(crc).is_some_and(|e| crate::lighting::is_water(&e.name))).count();
-    if n > 0 && wet * 2 > n && o.slide != 0.0 && matches!(o.frame, Frame::Normal | Frame::Wrap) {
-        Class::Flowing
-    } else if n > 0 && wet * 2 > n {
+    let named =
+        |f: fn(&str) -> bool| o.mesh.textures.iter().filter(|&&crc| textures.entry(crc).is_some_and(|e| f(&e.name.to_ascii_lowercase()))).count() * 2 > n;
+    let wet = named(crate::lighting::is_water);
+    let opaque = matches!(o.frame, Frame::Normal | Frame::Wrap);
+    if n == 0 {
+        return Class::Cpu;
+    }
+    if opaque && named(|n| n.contains("lava")) {
+        return Class::Liquid(Liquid::Lava);
+    }
+    if opaque && (named(|n| n.contains("glop") || n.contains("toxic")) || wet && is_green(seen_color(o, textures))) {
+        return Class::Liquid(Liquid::Acid);
+    }
+    if wet && opaque && o.slide != 0.0 {
+        // Sludge keeps the liquid's look; water is a stream (and its fall).
+        let sludge = named(|n| n.starts_with("sludge") || n.starts_with("slu_"));
+        return Class::Liquid(if sludge { Liquid::Acid } else { Liquid::Fall });
+    }
+    if wet {
         Class::Water
-    } else if o.modge & 3 == 1 && matches!(o.frame, Frame::Normal | Frame::Wrap) {
+    } else if o.modge & 3 == 1 && opaque {
         Class::Modge
     } else {
         Class::Cpu
     }
+}
+
+/// The colour `o` shows: its textures' mean colour times its vertex colours, over its faces.
+fn seen_color(o: &GpuObj, textures: &TextureRegistry) -> [f32; 3] {
+    let mut means: HashMap<u32, [f32; 3]> = HashMap::new();
+    let mut acc = [0.0f32; 3];
+    let mut n = 0.0;
+    for (fi, &crc) in o.mesh.textures.iter().enumerate() {
+        let m = *means
+            .entry(crc)
+            .or_insert_with(|| textures.entry(crc).and_then(|e| textures.images.get(e.image.0 as usize)).map_or([1.0; 3], |img| mean_color(&img.rgba).0));
+        for k in 0..3 {
+            let c = o.mesh.colors.get(fi * 3 + k).copied().unwrap_or([1.0; 4]);
+            for j in 0..3 {
+                acc[j] += m[j] * c[j];
+            }
+            n += 1.0;
+        }
+    }
+    acc.map(|a| a / f32::max(n, 1.0))
 }
 
 impl Sink {
@@ -168,7 +224,7 @@ impl Sink {
         let uv0 = o.mesh.face_uv.first().copied();
         // A flowing liquid is not uploaded again as it slides: its draws move `v` instead
         // (every face together: smooth, where each face's own jumps by 8192 now and then).
-        let flowing = o.light_only && self.class.get(&key) == Some(&Class::Flowing);
+        let flowing = o.light_only && matches!(self.class.get(&key), Some(Class::Liquid(_)));
         let mut dv = 0.0;
         match self.known.get_mut(&key) {
             None => {
@@ -184,7 +240,7 @@ impl Sink {
             Some(_) => {}
         }
         let mut modge = o.modge;
-        let (mut bed, mut liquid) = (false, false);
+        let (mut bed, mut liquid) = (false, None);
         if o.light_only {
             if o.override_tex.is_none() {
                 self.light_only.push((key, o.mats[0]));
@@ -200,7 +256,14 @@ impl Sink {
                     modge = 0;
                     bed = true;
                 }
-                Class::Flowing => liquid = true,
+                Class::Liquid(l) => {
+                    liquid = Some(l);
+                    if l == Liquid::Fall && !self.fall_feet.contains_key(&key) {
+                        let (verts, groups) = expand(o);
+                        let feet = subdivide(&verts, &groups).1.into_iter().filter(|g| g.steep).flat_map(|g| g.feet).collect();
+                        self.fall_feet.insert(key, feet);
+                    }
+                }
                 Class::Water => {
                     if let std::collections::hash_map::Entry::Vacant(e) = self.class.entry((key.0, key.1 ^ WATER_KEY)) {
                         e.insert(Class::Water);
@@ -230,8 +293,8 @@ impl Sink {
         self.prev.extend((0..o.mats.len()).map(|i| *o.prev.get(i).unwrap_or(&o.mats[i])));
         let flags = no_clip as u32 | (o.gouraud.is_some() as u32) << 1 | (o.landscape as u32) << 2;
         let g = o.gouraud.unwrap_or([1.0; 3]);
-        let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5 | (liquid as u32) << 6;
-        let slide = [dv, o.slide * UV_SCALE * 60.0, 0.0, 0.0];
+        let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5 | (liquid.is_some() as u32) << 6;
+        let slide = [dv, o.slide * UV_SCALE * 60.0, liquid.map_or(0.0, |l| l as u32 as f32), 0.0];
         self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0], slide });
         self.draws.push(Draw {
             key,
@@ -500,6 +563,8 @@ struct VOut {
     @location(8) normal: vec3<f32>,
     // How fast the texture slides (`v` per second; `Rec::slide`).
     @location(9) @interpolate(flat) slide: f32,
+    // The liquid (`Rec::slide` z: `Liquid`; 0: none).
+    @location(10) @interpolate(flat) mat: f32,
 };
 
 // `mtx_xfm`: row-vector affine transform.
@@ -574,6 +639,12 @@ fn flow_map(c: vec2<f32>) -> vec2<f32> {
     let a = mix(textureLoad(flow, clamp(i, z, n), 0).xy, textureLoad(flow, clamp(i + vec2<i32>(1, 0), z, n), 0).xy, f.x);
     let b = mix(textureLoad(flow, clamp(i + vec2<i32>(0, 1), z, n), 0).xy, textureLoad(flow, clamp(i + vec2<i32>(1, 1), z, n), 0).xy, f.x);
     return mix(a, b, f.y);
+}
+// The liquid at world x / z (the flow map's; 0: water, else `Liquid`).
+fn material_at(xz: vec2<f32>) -> f32 {
+    let c = vec2<i32>(floor(cell(xz) + 0.5));
+    if (!in_window(c)) { return 0.0; }
+    return textureLoad(flow, c, 0).z;
 }
 // How fast the water at world x / z flows (x / z per second): the level's flow plus a
 // stream's, smoothed over about 12 units (the art's texture density, so the speed, changes
@@ -677,7 +748,7 @@ fn caustic(p: vec2<f32>, t: f32) -> f32 {
 fn caustics(p: vec3<f32>, to_light: vec3<f32>) -> f32 {
     let sy = surface_y(p.xz);
     let depth = sy - p.y;
-    if (depth < 0.5) { return 0.0; }
+    if (depth < 0.5 || material_at(p.xz) > 0.5) { return 0.0; }
     let q = p.xz + to_light.xz / max(to_light.y, 0.3) * depth;
     let e = lt.water.z;
     let lap = wave_h(q + vec2<f32>(e, 0.0)) + wave_h(q - vec2<f32>(e, 0.0)) + wave_h(q + vec2<f32>(0.0, e)) + wave_h(q - vec2<f32>(0.0, e)) - 4.0 * wave_h(q);
@@ -729,6 +800,7 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
     o.world = world;
     o.normal = xfm_dir(m, i.normal.xyz);
     o.slide = r.slide.y;
+    o.mat = r.slide.z;
     return o;
 }
 
@@ -1008,7 +1080,8 @@ fn grid_color(i: VOut) -> vec4<f32> {
     let f = cf - floor(cf);
     let thick = mix(mix(cell_thick(c0), cell_thick(c0 + vec2<i32>(1, 0)), f.x),
                     mix(cell_thick(c0 + vec2<i32>(0, 1)), cell_thick(c0 + vec2<i32>(1, 1)), f.x), f.y);
-    if (thick <= 0.0) { discard; }
+    // Over another liquid (acid, lava: drawn by their own meshes) no water.
+    if (thick <= 0.0 || material_at(i.world.xz) > 0.5) { discard; }
     let tm = lt.water2.x;
     // The waves and ripples; sparkles fade out with distance (no shimmer).
     let near = 1.0 - smoothstep(250.0, 1200.0, i.vz);
@@ -1114,6 +1187,8 @@ struct SurfOut {
     @location(0) xz: vec2<f32>,
     @location(1) v: f32,
     @location(2) @interpolate(flat) slide: f32,
+    @location(3) y: f32,
+    @location(4) @interpolate(flat) material: f32,
 };
 @vertex fn vs_surface(i: VIn, @builtin(instance_index) inst: u32) -> SurfOut {
     let r = recs[inst];
@@ -1126,25 +1201,33 @@ struct SurfOut {
     o.xz = w.xz;
     o.v = i.uv.y;
     o.slide = r.slide.y;
+    o.y = w.y;
+    o.material = r.slide.z;
     return o;
 }
 // A sliding texture is a stream: the texture moves to +v at `slide` (v per second), so the
 // water flows along v's gradient in x / z, at slide / |gradient|.
+// The flow map's z is the liquid there (`Liquid`; 0: water), w is 1 where there is any.
 @fragment fn fs_surface(i: SurfOut) -> @location(0) vec4<f32> {
     let gx = dpdx(i.xz);
     let gy = dpdy(i.xz);
     let vx = dpdx(i.v);
     let vy = dpdy(i.v);
     let det = gx.x * gy.y - gx.y * gy.x;
-    if (i.slide == 0.0 || abs(det) < 1e-9) { return vec4<f32>(0.0); }
+    if (abs(det) < 1e-9) { return vec4<f32>(0.0, 0.0, i.material, 1.0); }
     // [gx; gy] · g = [vx; vy]
     let g = vec2<f32>(vx * gy.y - vy * gx.y, vy * gx.x - vx * gy.x) / det;
+    // A liquid's steep faces (its falls) are no surface: they would lift the pool they land in.
+    let yx = dpdx(i.y);
+    let yy = dpdy(i.y);
+    let gh = vec2<f32>(yx * gy.y - yy * gx.y, yy * gx.x - yx * gy.x) / det;
+    if (i.material > 0.5 && dot(gh, gh) > 1.0) { discard; }
     let gg = dot(g, g);
-    if (gg < 1e-12) { return vec4<f32>(0.0); }
+    if (i.slide == 0.0 || gg < 1e-12) { return vec4<f32>(0.0, 0.0, i.material, 1.0); }
     var f = g * (i.slide / gg);
     let sp = length(f);
     if (sp > 150.0) { f *= 150.0 / sp; }
-    return vec4<f32>(f, 0.0, 0.0);
+    return vec4<f32>(f, i.material, 1.0);
 }
 
 fn shadow(p: vec3<f32>) -> f32 {
@@ -1220,7 +1303,7 @@ fn light(i: VOut, base: vec3<f32>, face: vec3<f32>) -> vec3<f32> {
 // would land under flat water, turned into texture space by the surface's uv / world
 // derivatives (`d`: dpdx / dpdy of world x / z and of uv).
 fn refraction_uv(i: VOut, d: mat4x2<f32>) -> vec2<f32> {
-    if (lt.water2.y < 0.5 || (i.flags & 65u) != 0u) { return vec2<f32>(0.0); }
+    if (lt.water2.y < 0.5 || (i.flags & 65u) != 0u || material_at(i.world.xz) > 0.5) { return vec2<f32>(0.0); }
     let sy = surface_y(i.world.xz);
     let depth = sy - i.world.y;
     let eye = lt.eye.xyz;
@@ -1397,6 +1480,23 @@ fn liquid(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>
 const LIQUID_BUMP: f32 = 0.6;
 const LIQUID_GLOW: f32 = 0.08;
 
+// The simulated waves' slope at world x / z (world units of height per unit).
+fn wave_slope(xz: vec2<f32>) -> vec2<f32> {
+    let e = lt.water.z;
+    return vec2<f32>(wave_h(xz + vec2<f32>(e, 0.0)) - wave_h(xz - vec2<f32>(e, 0.0)), wave_h(xz + vec2<f32>(0.0, e)) - wave_h(xz - vec2<f32>(0.0, e))) / (2.0 * e);
+}
+
+// Molten rock ([`Liquid::Lava`]).
+fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec3<f32> {
+    return min(tex * 1.15, vec3<f32>(1.0));
+}
+
+// Water drawn opaque whose texture slides ([`Liquid::Fall`]): a stream, and where it is steep
+// its waterfall.
+fn stream(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec3<f32> {
+    return liquid(i, tex, face, sx, sy, duvx, duvy);
+}
+
 fn shade(i: VOut) -> vec4<f32> {
     // Derivatives first (uniform control flow).
     let dd = mat4x2<f32>(dpdx(i.world.xz), dpdy(i.world.xz), dpdx(i.uv), dpdy(i.uv));
@@ -1410,14 +1510,19 @@ fn shade(i: VOut) -> vec4<f32> {
     var c = textureSampleGrad(t, s, i.uv + refraction_uv(i, dd), dd[2], dd[3]) * i.color;
     if (floor(c.a * 255.0 + 0.5) <= cam.depth.y) { discard; }
     if (lt.sky.w > 0.5) {
-        if (EMISSIVE) {
+        if ((i.flags & 64u) != 0u) {
+            let m = u32(round(i.mat));
+            if (m == 2u) {
+                c = vec4<f32>(lava(i, c.rgb, face, sx, sy, dd[2], dd[3]), c.a);
+            } else if (m == 3u) {
+                c = vec4<f32>(stream(i, c.rgb, face, sx, sy, dd[2], dd[3]), c.a);
+            } else {
+                c = vec4<f32>(liquid(i, c.rgb, face, sx, sy, dd[2], dd[3]), c.a);
+            }
+        } else if (EMISSIVE) {
             c = vec4<f32>(min(c.rgb * 1.15, vec3<f32>(1.0)), c.a);
         } else if ((i.flags & 1u) == 0u) {
-            if ((i.flags & 64u) != 0u) {
-                c = vec4<f32>(liquid(i, c.rgb, face, sx, sy, dd[2], dd[3]), c.a);
-            } else {
-                c = vec4<f32>(light(i, c.rgb, face), c.a);
-            }
+            c = vec4<f32>(light(i, c.rgb, face), c.a);
         }
     }
     if (cam.fog.x > 0.5) { c = vec4<f32>(mix(cam.fog_color.rgb, c.rgb, i.fog), c.a); }
@@ -1480,6 +1585,9 @@ pub(crate) struct Gpu {
     /// texture, wrap, additive), their pipelines and the surface map's.
     water_meshes: HashMap<Key, (wgpu::Buffer, Vec<Group>)>,
     water_list: Vec<WaterDraw>,
+    /// This frame's opaque liquid draws ([`Class::Liquid`]; in [`Self::list`] too), for the
+    /// surface map: the waves run on them.
+    liquid_list: Vec<(u32, Key, core::ops::Range<u32>)>,
     water_pipelines: HashMap<(wgpu::TextureFormat, u32, bool, bool), wgpu::RenderPipeline>,
     surface_pipeline: wgpu::RenderPipeline,
     bed_pipeline: wgpu::RenderPipeline,
@@ -1984,6 +2092,7 @@ impl Gpu {
             shadows: false,
             water_meshes: HashMap::new(),
             water_list: Vec::new(),
+            liquid_list: Vec::new(),
             water_pipelines: HashMap::new(),
             surface_pipeline,
             bed_pipeline,
@@ -1997,7 +2106,11 @@ impl Gpu {
             scene_copy,
             linear_s,
             sim,
-            vb_usage: if rtx.is_some() { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::BLAS_INPUT } else { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST },
+            vb_usage: if rtx.is_some() {
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::BLAS_INPUT
+            } else {
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
+            },
             rtx,
             rt_on: false,
             frame: 0,
@@ -2043,6 +2156,7 @@ impl Gpu {
             self.water_meshes.insert(key, (buf, groups));
         }
         self.water_list.clear();
+        self.liquid_list.clear();
         self.sim.frame.steps = 0;
         for (key, verts) in sink.slid.drain(..) {
             if let Some((buf, _)) = self.meshes.get(&key).filter(|(b, _)| b.size() == std::mem::size_of_val(verts.as_slice()) as u64) {
@@ -2143,6 +2257,9 @@ impl Gpu {
                     point_lights(&sink.mats[rec.mat as usize], g, color.map(|c| c * LIQUID_LIGHT), &mut found);
                 }
                 let cut = d.override_tex.is_none() && info.is_some_and(|i| !i.opaque);
+                if rec.flags & 64 != 0 {
+                    self.liquid_list.push((d.rec, d.key, g.first..g.first + g.count));
+                }
                 self.list.push((d.rec, d.key, g.first..g.first + g.count, tex, d.wrap, emissive, cut));
                 need_bg.push((tex, d.wrap));
             }
@@ -2152,20 +2269,32 @@ impl Gpu {
         // Waterfalls stir the water where they land (a steady source, turbulent: the points
         // move about a little from step to step).
         let mut falls = Vec::new();
+        let mut stir = |k: usize, p: [f32; 3]| {
+            let h = |salt: u32| {
+                let x = ((water_clock * 30.0) as u32)
+                    .wrapping_mul(747796405)
+                    .wrapping_add((k as u32).wrapping_mul(2891336453).wrapping_add(salt.wrapping_mul(1013904223)));
+                let x = (x ^ (x >> 16)).wrapping_mul(2246822519);
+                (x ^ (x >> 13)) as f32 / u32::MAX as f32 - 0.5
+            };
+            let pos = [p[0] + h(1) * FOOT_CELL, p[1], p[2] + h(2) * FOOT_CELL];
+            // The fall's mesh may go on far under its pool's surface.
+            falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.18 + 0.12 * h(3), above: 400.0 });
+        };
+        for d in &sink.draws {
+            if let Some(feet) = sink.fall_feet.get(&d.key) {
+                let m = &sink.mats[sink.recs[d.rec as usize].mat as usize];
+                for (k, &f) in feet.iter().enumerate() {
+                    stir(k + 64, crate::math::mtx_xfm(m, f));
+                }
+            }
+        }
         for &(key, rec, additive) in &sink.water {
             let Some((_, groups)) = self.water_meshes.get(&key) else { continue };
             for g in groups {
                 let m = &sink.mats[sink.recs[rec as usize].mat as usize];
                 for (k, &f) in g.feet.iter().enumerate() {
-                    let p = crate::math::mtx_xfm(m, f);
-                    let h = |salt: u32| {
-                        let x = ((water_clock * 30.0) as u32).wrapping_mul(747796405).wrapping_add((k as u32).wrapping_mul(2891336453).wrapping_add(salt.wrapping_mul(1013904223)));
-                        let x = (x ^ (x >> 16)).wrapping_mul(2246822519);
-                        (x ^ (x >> 13)) as f32 / u32::MAX as f32 - 0.5
-                    };
-                    let pos = [p[0] + h(1) * FOOT_CELL, p[1], p[2] + h(2) * FOOT_CELL];
-                    // The fall's mesh may go on far under its pool's surface.
-                    falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.18 + 0.12 * h(3), above: 400.0 });
+                    stir(k, crate::math::mtx_xfm(m, f));
                 }
                 let Some(tex) = textures.current(g.crc) else { continue };
                 self.water_list.push((rec, key, g.first..g.first + g.count, tex, true, additive, g.steep));
@@ -2432,6 +2561,8 @@ impl Gpu {
             pass.set_bind_group(3, &self.shadow_ubo_bg, &[]);
             // Level water only: a waterfall would lift the pool it lands in to its top.
             draw_list(&mut pass, &self.water_meshes, self.water_list.iter().filter(|d| !d.6).map(|d| (d.0, d.1, d.2.clone())));
+            // ... and the opaque liquids (their steep faces left out per pixel).
+            draw_list(&mut pass, &self.meshes, self.liquid_list.iter().cloned());
             drop(pass);
             let mut pass = depth_pass(encoder, "water bed map", &self.sim.bed_view);
             pass.set_pipeline(&self.bed_pipeline);

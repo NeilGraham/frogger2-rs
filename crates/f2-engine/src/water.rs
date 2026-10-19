@@ -57,6 +57,8 @@ struct Step {
 @group(0) @binding(2) var<storage, read_write> dst: array<vec2<f32>>;
 @group(0) @binding(3) var surface: texture_depth_2d;
 @group(0) @binding(4) var<storage, read> splats: array<vec4<f32>>;
+// The flow map: z is the liquid (0: water; 1: acid; 2: lava; 3: a waterfall's stream).
+@group(0) @binding(5) var flow: texture_2d<f32>;
 
 fn wet(i: i32, j: i32) -> bool {
     let n = i32(st.n);
@@ -79,6 +81,13 @@ fn nb(i: i32, j: i32, c: f32) -> f32 {
     return at(i, j).x;
 }
 
+// A neighbour's velocity (height - last height); dry cells mirror the centre's.
+fn nbv(i: i32, j: i32, v: f32) -> f32 {
+    if (!wet(i, j)) { return v; }
+    let a = at(i, j);
+    return a.x - a.y;
+}
+
 @compute @workgroup_size(8, 8)
 fn step(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= st.n || id.y >= st.n) { return; }
@@ -92,7 +101,18 @@ fn step(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let c = at(i, j);
     let sum = nb(i + 1, j, c.x) + nb(i - 1, j, c.x) + nb(i, j + 1, c.x) + nb(i, j - 1, c.x);
-    var h = (2.0 * c.x - c.y + 0.3 * (sum - 4.0 * c.x)) * st.damping;
+    // How the liquid moves: water rings out far; acid is thick (slower, short-lived, broad
+    // rings: the velocity's own Laplacian takes out the fine ripples); lava thicker still.
+    let m = u32(round(textureLoad(flow, vec2<i32>(i, j), 0).z));
+    var k = vec3<f32>(0.3, st.damping, 0.0);
+    if (m == 1u) { k = vec3<f32>(0.16, 0.988, 0.1); }
+    if (m == 2u) { k = vec3<f32>(0.07, 0.975, 0.18); }
+    let v = c.x - c.y;
+    var h = (2.0 * c.x - c.y + k.x * (sum - 4.0 * c.x)) * k.y;
+    if (k.z > 0.0) {
+        let vsum = nbv(i + 1, j, v) + nbv(i - 1, j, v) + nbv(i, j + 1, v) + nbv(i, j - 1, v);
+        h += k.z * (vsum - 4.0 * v);
+    }
     let surf_y = st.ref_y + (0.5 - d) * st.range;
     let wp = st.origin + (vec2<f32>(f32(i), f32(j)) + 0.5) * st.texel;
     for (var k = 0u; k < st.nsplat; k++) {
@@ -123,7 +143,7 @@ pub(crate) struct WaterFrame {
 }
 
 /// [`WaterSim::flow_view`]'s format.
-pub(crate) const FLOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+pub(crate) const FLOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The simulation's GPU state.
 pub(crate) struct WaterSim {
@@ -235,6 +255,16 @@ impl WaterSim {
                     count: None,
                 },
                 storage(4, true),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: c,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let group = |a: &wgpu::Buffer, b: &wgpu::Buffer| {
@@ -250,6 +280,7 @@ impl WaterSim {
                     wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&surface_view) },
                     wgpu::BindGroupEntry { binding: 4, resource: splats.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&flow_view) },
                 ],
             })
         };
