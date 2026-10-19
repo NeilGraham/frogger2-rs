@@ -988,8 +988,30 @@ struct ShadowCut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>
     return o;
 }
 
+// The lowest water within r cells of c (none: 1e9).
+fn grid_ymin_within(c: vec2<i32>, r: i32) -> f32 {
+    var best = 1e9;
+    for (var dy = -r; dy <= r; dy++) {
+        for (var dx = -r; dx <= r; dx++) {
+            let q = c + vec2<i32>(dx, dy);
+            if (!in_window(q)) { continue; }
+            let d = textureLoad(surface, q, 0);
+            if (d < 0.99999) { best = min(best, lt.water2.z + (0.5 - d) * lt.water2.w); }
+        }
+    }
+    return best;
+}
+
 fn water_color(i: VOut, additive: bool) -> vec4<f32> {
     if (i.vz - 10.0 >= cam.fog.w) { discard; }
+    // With the generated surface the mesh draws only its steep faces: waterfalls, and the
+    // skirts the art hangs under the surface along banks and islands (hiding seams). Under
+    // the water (the lowest water about it: a fall's pool, not the stream it falls from)
+    // they are no surface: the bed and the banks seen through the water bound it.
+    if (lt.water3.w > 0.5) {
+        let c = vec2<i32>(floor(cell(i.world.xz) + 0.5));
+        if (i.world.y < grid_ymin_within(c, 3) - REST) { discard; }
+    }
     let n = water_n(i.world.xz);
     // The waves bend the texture (a cheap refraction).
     var base = textureSample(t, s, i.uv + n.xz * 0.04) * i.color;
@@ -1268,7 +1290,7 @@ fn grid_color(i: VOut) -> vec4<f32> {
         refl = mix(refl, hit.rgb, hit.a);
     }
     // Shore foam, and foam where the simulation churns (waterfalls landing, wakes).
-    let edge = smoothstep(0.0, 4.0, thick);
+    var edge = smoothstep(0.0, 4.0, thick);
     let shore = (1.0 - smoothstep(0.0, 5.0, thick)) * 0.35;
     let stir = smoothstep(0.12, 0.6, churn(i.world.xz)) * 0.5;
     let foam = max(clamp((shore + stir) * (0.4 + 0.6 * caustic_layer(i.world.xz * 0.7, tm * 1.2)), 0.0, 1.0), fall_foam(i.world, tm, near));
@@ -1282,7 +1304,13 @@ fn grid_color(i: VOut) -> vec4<f32> {
         var uv = px + n.xz * vec2<f32>(-1.0, 1.0) * (min(thick, 30.0) * 0.6 / max(i.vz, 40.0));
         if (scene_vz(uv) < i.vz) { uv = px; }
         let under = textureSampleLevel(scene_c, scene_s, uv, 0.0).rgb;
-        let path = thick / max(v.y, 0.2);
+        // How far the view ray runs through the water, to whatever it meets (the bed, a wall,
+        // a rock under the water: the frame's depth, exact per pixel, where the bed map has
+        // 1.5-unit cells and sees no walls); the shore fades where it is shallow, along the
+        // banks' own shape.
+        let ray = max(scene_vz(px) - i.vz, 0.0) * length(i.world - lt.eye.xyz) / max(i.vz, 1.0);
+        let path = min(ray, thick / max(v.y, 0.2) + 40.0);
+        edge = smoothstep(0.0, 2.5, ray * max(v.y, 0.1));
         let tr = exp(-path * vec3<f32>(0.024, 0.010, 0.007));
         let water = under * tr + scatter * (vec3<f32>(1.0) - tr);
         rgb = mix(water, refl, fres) + spec + foam_rgb;
