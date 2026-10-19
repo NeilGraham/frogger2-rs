@@ -80,7 +80,8 @@ struct Rec {
     gouraud: [f32; 4],
     /// A sliding texture ([`GpuObj::slide`]): x: what to add to the uploaded `v` (meshes
     /// uploaded once: subdivided water); y: how fast it slides (`v` per second, the texture
-    /// moving to +v); z: the liquid ([`Liquid`] as a number; 0: water or none); w: spare.
+    /// moving to +v); z: the liquid ([`Liquid`] as a number; 0: water or none); w: a waterfall's
+    /// lip height (world y; [`Liquid::Fall`]).
     slide: [f32; 4],
 }
 
@@ -123,6 +124,10 @@ pub(crate) struct Sink {
     water_uv0: HashMap<Key, [i16; 2]>,
     /// Where each opaque waterfall ([`Liquid::Fall`]) lands (model space; see [`Group::feet`]).
     fall_feet: HashMap<Key, Vec<[f32; 3]>>,
+    /// The highest point of each opaque waterfall's steep faces (model space): its lip.
+    fall_tops: HashMap<Key, Option<[f32; 3]>>,
+    /// The way each of [`Self::fall_feet`] faces (model space, out of the drawn side).
+    fall_out: HashMap<Key, Vec<[f32; 3]>>,
 }
 
 /// A mesh the original animates or blends ([`GpuObj::light_only`]), with the enhanced water.
@@ -260,8 +265,13 @@ impl Sink {
                     liquid = Some(l);
                     if l == Liquid::Fall && !self.fall_feet.contains_key(&key) {
                         let (verts, groups) = expand(o);
-                        let feet = subdivide(&verts, &groups).1.into_iter().filter(|g| g.steep).flat_map(|g| g.feet).collect();
-                        self.fall_feet.insert(key, feet);
+                        let (sv, sg) = subdivide(&verts, &groups);
+                        let steep: Vec<Group> = sg.into_iter().filter(|g| g.steep).collect();
+                        let top =
+                            steep.iter().flat_map(|g| &sv[g.first as usize..(g.first + g.count) as usize]).map(|v| v.pos).max_by(|a, b| a[1].total_cmp(&b[1]));
+                        self.fall_tops.insert(key, top);
+                        self.fall_out.insert(key, steep.iter().flat_map(|g| foot_normals(&sv, g)).collect());
+                        self.fall_feet.insert(key, steep.into_iter().flat_map(|g| g.feet).collect());
                     }
                 }
                 Class::Water => {
@@ -294,7 +304,9 @@ impl Sink {
         let flags = no_clip as u32 | (o.gouraud.is_some() as u32) << 1 | (o.landscape as u32) << 2;
         let g = o.gouraud.unwrap_or([1.0; 3]);
         let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5 | (liquid.is_some() as u32) << 6;
-        let slide = [dv, o.slide * UV_SCALE * 60.0, liquid.map_or(0.0, |l| l as u32 as f32), 0.0];
+        // A waterfall's lip height (world y; none: -1e9).
+        let top = self.fall_tops.get(&key).copied().flatten().map_or(-1e9, |p| crate::math::mtx_xfm(&o.mats[0], p)[1]);
+        let slide = [dv, o.slide * UV_SCALE * 60.0, liquid.map_or(0.0, |l| l as u32 as f32), top];
         self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0], slide });
         self.draws.push(Draw {
             key,
@@ -383,6 +395,19 @@ fn subdivide(verts: &[Vert], groups: &[Group]) -> (Vec<Vert>, Vec<Group>) {
         }
     }
     (out, gs)
+}
+
+/// The way the face each of `g`'s feet comes from faces (out of its drawn side).
+fn foot_normals(verts: &[Vert], g: &Group) -> Vec<[f32; 3]> {
+    let tris = verts[g.first as usize..(g.first + g.count) as usize].as_chunks::<3>().0;
+    g.feet
+        .iter()
+        .map(|&f| {
+            tris.iter()
+                .find(|t| t.iter().any(|v| v.pos == f) && t.iter().all(|v| v.pos[1] >= f[1]))
+                .map_or([0.0; 3], |t| crate::lighting::normalize(cross(sub(t[1].pos, t[0].pos), sub(t[2].pos, t[0].pos))))
+        })
+        .collect()
 }
 
 /// Vertex normals: the mesh's own (turned to face the way its faces do), else averaged from the
@@ -529,6 +554,10 @@ struct Point { pos: vec4<f32>, color: vec4<f32> };
 @group(0) @binding(2) var scene_d: texture_depth_2d;
 @group(0) @binding(3) var scene_s: sampler;
 @group(0) @binding(4) var<uniform> scene_on: vec4<f32>;
+// Where the waterfalls land (`Gpu::falls`): how many (x), the points, and the way each fall
+// faces there (horizontal; zero: either way).
+struct Falls { n: vec4<f32>, p: array<vec4<f32>, 32>, o: array<vec4<f32>, 32> };
+@group(0) @binding(5) var<uniform> falls: Falls;
 @group(1) @binding(0) var t: texture_2d<f32>;
 @group(1) @binding(1) var s: sampler;
 @group(2) @binding(0) var<storage, read> recs: array<Rec>;
@@ -565,6 +594,8 @@ struct VOut {
     @location(9) @interpolate(flat) slide: f32,
     // The liquid (`Rec::slide` z: `Liquid`; 0: none).
     @location(10) @interpolate(flat) mat: f32,
+    // A waterfall's lip height (`Rec::slide` w).
+    @location(11) @interpolate(flat) top: f32,
 };
 
 // `mtx_xfm`: row-vector affine transform.
@@ -801,6 +832,7 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
     o.normal = xfm_dir(m, i.normal.xyz);
     o.slide = r.slide.y;
     o.mat = r.slide.z;
+    o.top = r.slide.w;
     return o;
 }
 
@@ -870,6 +902,7 @@ fn water_color(i: VOut, additive: bool) -> vec4<f32> {
     let n = water_n(i.world.xz);
     // The waves bend the texture (a cheap refraction).
     var base = textureSample(t, s, i.uv + n.xz * 0.04) * i.color;
+    base = fall_sheet(i, base);
     let v = normalize(lt.eye.xyz - i.world);
     let fres = 0.03 + 0.97 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
     let refl = lt.sky.rgb * 1.1;
@@ -1072,8 +1105,27 @@ fn churn(xz: vec2<f32>) -> f32 {
     return mix(mix(churn_at(i), churn_at(i + vec2<i32>(1, 0)), f.x), mix(churn_at(i + vec2<i32>(0, 1)), churn_at(i + vec2<i32>(1, 1)), f.x), f.y);
 }
 
+// Whether any of the four cells about x / z holds another liquid (an opaque stream at the top
+// of its fall: the generated water's corners there would take its height).
+fn liquid_near(xz: vec2<f32>) -> bool {
+    let c = vec2<i32>(floor(cell(xz)));
+    for (var k = 0; k < 4; k++) {
+        let q = c + vec2<i32>(k & 1, k >> 1);
+        if (in_window(q) && textureLoad(flow, q, 0).z > 0.5) { return true; }
+    }
+    return false;
+}
+
 fn grid_color(i: VOut) -> vec4<f32> {
+    // A triangle hanging from water at the top of a waterfall to its pool (all but upright:
+    // waves never are): none.
+    let tn = cross(dpdx(i.world), dpdy(i.world));
+    if (tn.y * tn.y < 0.0025 * dot(tn, tn)) { discard; }
     if (i.vz - 10.0 >= cam.fog.w) { discard; }
+    // ... or lying along its top edge over the pool (corners take the highest water near them).
+    let own = surface_y(i.world.xz);
+    if (own > -1e8 && i.world.y > own + 20.0) { discard; }
+    if (liquid_near(i.world.xz)) { discard; }
     // The water's thickness, blended between the four nearest cells (smooth shores).
     let cf = cell(i.world.xz);
     let c0 = vec2<i32>(floor(cf));
@@ -1124,7 +1176,7 @@ fn grid_color(i: VOut) -> vec4<f32> {
     let edge = smoothstep(0.0, 4.0, thick);
     let shore = (1.0 - smoothstep(0.0, 5.0, thick)) * 0.35;
     let stir = smoothstep(0.12, 0.6, churn(i.world.xz)) * 0.5;
-    let foam = clamp((shore + stir) * (0.4 + 0.6 * caustic_layer(i.world.xz * 0.7, tm * 1.2)), 0.0, 1.0);
+    let foam = max(clamp((shore + stir) * (0.4 + 0.6 * caustic_layer(i.world.xz * 0.7, tm * 1.2)), 0.0, 1.0), fall_foam(i.world, tm, near));
     let foam_rgb = vec3<f32>(foam) * max(lit, vec3<f32>(0.6));
     var rgb: vec3<f32>;
     var a: f32;
@@ -1152,12 +1204,210 @@ fn grid_color(i: VOut) -> vec4<f32> {
     if (cam.fog.x > 0.5) { rgb = mix(cam.fog_color.rgb * a, rgb, i.fog); }
     return vec4<f32>(rgb, a);
 }
+// White water where the waterfalls land (`falls`): foam churned out from under them (carried
+// outwards, flow-mapped), broken at its edges, and bubbles welling up, swelling and popping
+// (`near`: close enough for them to show).
+fn fall_foam(p: vec3<f32>, t: f32, near: f32) -> f32 {
+    var w = 0.0;
+    var away = vec2<f32>(0.0);
+    let n = u32(falls.n.x);
+    for (var k = 0u; k < n; k++) {
+        let f = falls.p[k].xyz;
+        // Feet on this water (a fall's mesh may go on far under its pool).
+        if (f.y > p.y + 30.0 || f.y < p.y - 400.0) { continue; }
+        let d = p.xz - f.xz;
+        let g = exp(-dot(d, d) / (FALL_POOL * FALL_POOL));
+        w += g;
+        away += (d / max(length(d), 0.5) + falls.o[k].xz * 0.6) * g;
+    }
+    if (w < 0.02) { return 0.0; }
+    w = min(w, 1.0);
+    // Carried outwards at up to 16 units a second.
+    let vel = away / max(length(away), 1e-3) * 16.0 * w;
+    let ph = flow_phases(t);
+    let a = fall_foam_at(p.xz - vel * ph.x, t);
+    let b = fall_foam_at(p.xz - vel * ph.y + vec2<f32>(23.0, 41.0), t);
+    let fn_ = mix(b, a, ph.z);
+    let th = 0.55 - w * 1.05;
+    var foam = smoothstep(th, th + 0.3, fn_) * smoothstep(0.02, 0.25, w);
+    // Bubbles (cells 4 units across): each swells for a moment and pops into a spreading
+    // ring; more of them nearer the fall.
+    let q = p.xz / 4.0;
+    let ci = vec2<i32>(floor(q));
+    if (lhash(ci, 41u) < w * 0.8 && near > 0.0) {
+        let life = 0.5 + lhash(ci, 42u) * 0.7;
+        let bp = fract(t / life + lhash(ci, 43u));
+        let d = length(fract(q) - (vec2<f32>(0.3) + vec2<f32>(lhash(ci, 44u), lhash(ci, 45u)) * 0.4));
+        let rmax = 0.12 + lhash(ci, 46u) * 0.14;
+        var b = 0.0;
+        if (bp < 0.8) {
+            let r = rmax * sqrt(bp / 0.8);
+            // The dome's bright rim.
+            b = smoothstep(r * 0.55, r, d) * (1.0 - smoothstep(r, r + 0.04, d));
+        } else {
+            let k = (bp - 0.8) / 0.2;
+            let rr = rmax * (1.0 + k * 1.5);
+            b = exp(-pow((d - rr) / 0.035, 2.0)) * (1.0 - k);
+        }
+        foam = max(foam, b * near * w);
+    }
+    return foam;
+}
+fn fall_foam_at(xz: vec2<f32>, t: f32) -> f32 {
+    // Churning: two layers of blobs turning over (drifting against each other).
+    let n1 = lnoise(xz * 0.13 + vec2<f32>(t * 0.35, -t * 0.25), vec2<i32>(4096), 47u).x;
+    let n2 = lnoise(xz * 0.31 + vec2<f32>(-t * 0.6, t * 0.45), vec2<i32>(4096), 48u).x;
+    return n1 * 0.65 + n2 * 0.35;
+}
+// How far a waterfall's foam reaches from where it lands (world units).
+const FALL_POOL: f32 = 26.0;
+
 @fragment fn fs_grid(i: VOut) -> @location(0) vec4<f32> {
     return grid_color(i);
 }
 @fragment fn fs_grid_mrt(i: VOut) -> FOut {
     var o: FOut;
     o.c = grid_color(i);
+    return o;
+}
+
+// Mist rising where the waterfalls land, and spray thrown up there (`falls`): camera-facing
+// quads, each foot's first `MIST_PUFFS` soft puffs that rise, swell, drift out over the pool
+// and fade, the rest drops thrown out and falling back. Made from the water's clock alone.
+struct MistOut {
+    @builtin(position) pos: vec4<f32>,
+    // The quad's corner (-1..1).
+    @location(0) q: vec2<f32>,
+    // Opacity, a seed, 1 for a drop, the pool's height.
+    @location(1) @interpolate(flat) a: vec4<f32>,
+    @location(2) vz: f32,
+    @location(3) fog: f32,
+    @location(4) y: f32,
+};
+const MIST_PUFFS: u32 = 10u;
+const MIST_PER_FOOT: u32 = 18u;
+@vertex fn vs_mist(@builtin(vertex_index) vi: u32) -> MistOut {
+    var o: MistOut;
+    o.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    let id = vi / 6u;
+    let foot = id / MIST_PER_FOOT;
+    let k = id % MIST_PER_FOOT;
+    if (foot >= u32(falls.n.x)) { return o; }
+    let f = falls.p[foot].xyz;
+    let out = falls.o[foot].xz;
+    // Along the fall (either way when it is not known).
+    let side = select(vec2<f32>(1.0, 0.0), vec2<f32>(-out.y, out.x), dot(out, out) > 0.5);
+    // The pool it lands in (the fall's mesh may go on under it).
+    var base = f.y;
+    let sy = max(surface_y(f.xz + out * 6.0), surface_y(f.xz));
+    if (sy > f.y - 30.0 && sy < f.y + 400.0) { base = sy - REST; }
+    let t = lt.water2.x;
+    let seed = vec2<i32>(i32(foot), i32(k));
+    var c: vec3<f32>;
+    var size: f32;
+    var a: f32;
+    var drop = 0.0;
+    if (k < MIST_PUFFS) {
+        let life = 3.5 + lhash(seed, 31u) * 2.5;
+        let ph0 = t / life + lhash(seed, 32u);
+        let ph = fract(ph0);
+        // A new place each time round.
+        let s = vec2<i32>(i32(foot * 64u + k), i32(floor(ph0)));
+        let h1 = lhash(s, 33u);
+        let h2 = lhash(s, 34u);
+        let h3 = lhash(s, 35u);
+        var start = f.xz + side * (h1 * 2.0 - 1.0) * 22.0 + out * (6.0 + h2 * 16.0);
+        if (dot(out, out) < 0.5) { start += vec2<f32>(h2 - 0.5, h3 - 0.5) * 24.0; }
+        let wind = vec2<f32>(lhash(s, 36u) - 0.5, lhash(s, 37u) - 0.5) * 16.0;
+        let xz = start + (out * 24.0 + wind) * ph;
+        // Rising, slowing as it goes; swelling.
+        let rise = 5.0 + (1.0 - (1.0 - ph) * (1.0 - ph)) * (26.0 + h3 * 26.0);
+        c = vec3<f32>(xz.x, base + rise, xz.y);
+        size = 10.0 + 20.0 * sqrt(ph) + h1 * 6.0;
+        // As thick wherever feet crowd together.
+        var crowd = 0.0;
+        for (var m = 0u; m < u32(falls.n.x); m++) {
+            crowd += 1.0 - smoothstep(20.0, 45.0, distance(falls.p[m].xz, f.xz));
+        }
+        a = smoothstep(0.0, 0.15, ph) * (1.0 - smoothstep(0.35, 1.0, ph)) * 0.65 / max(crowd, 1.0);
+    } else {
+        // A drop thrown out of the churn, falling back.
+        let life = 0.55 + lhash(seed, 51u) * 0.5;
+        let ph0 = t / life + lhash(seed, 52u);
+        let ph = fract(ph0);
+        let s = vec2<i32>(i32(foot * 64u + k), i32(floor(ph0)));
+        let h1 = lhash(s, 53u);
+        let h2 = lhash(s, 54u);
+        let h3 = lhash(s, 55u);
+        let tau = ph * life;
+        var v = out * (20.0 + h2 * 40.0) + side * (h3 - 0.5) * 40.0;
+        if (dot(out, out) < 0.5) { v = vec2<f32>(h2 - 0.5, h3 - 0.5) * 70.0; }
+        let start = f.xz + side * (h1 * 2.0 - 1.0) * 26.0;
+        let xz = start + v * tau;
+        let y = base + 2.0 + (30.0 + h2 * 45.0) * tau - 120.0 * tau * tau;
+        c = vec3<f32>(xz.x, y, xz.y);
+        size = 0.7 + h3 * 0.7;
+        a = (1.0 - smoothstep(0.6, 1.0, ph)) * step(base, y) * 0.8;
+        drop = 1.0;
+    }
+    let corner = vec2<f32>(CORNERS[vi % 6u]) * 2.0 - 1.0;
+    let vp = xfm(cam.v, c);
+    // Not in the camera's face.
+    a *= smoothstep(20.0, 70.0, vp.z);
+    if (a <= 0.002) { return o; }
+    let vq = vp + vec3<f32>(corner * size, 0.0);
+    let cl = clip(cam.proj, vq);
+    let zl = clamp(vq.z * 0.00025, 0.0, 1.0);
+    let j = vec2<f32>(cam.size.z * 2.0 / cam.size.x, -cam.size.w * 2.0 / cam.size.y);
+    o.pos = vec4<f32>(cl.xy + j * cl.w, zl * cl.w, cl.w);
+    o.q = corner;
+    o.a = vec4<f32>(a, lhash(seed, 38u) * 64.0, drop, base);
+    o.vz = vq.z;
+    // The quad's corner in the world, for its height over the pool.
+    o.y = c.y + corner.y * size;
+    o.fog = 1.0;
+    if (cam.fog.x > 0.5) {
+        o.fog = clamp(1.0 - (vp.z - cam.fog.y) / (cam.fog.z - cam.fog.y), 0.0, 1.0);
+    }
+    return o;
+}
+fn mist_color(i: MistOut) -> vec4<f32> {
+    let r2 = dot(i.q, i.q);
+    if (r2 >= 1.0 || i.vz - 10.0 >= cam.fog.w) { discard; }
+    let soft = (1.0 - r2) * (1.0 - r2);
+    var a: f32;
+    if (i.a.z > 0.5) {
+        a = soft * i.a.x;
+    } else {
+        // A soft puff, curling slowly (noise in the quad, its own per puff).
+        let t = lt.water2.x;
+        let o = vec2<f32>(i.a.y, i.a.y * 0.7);
+        let n = lnoise(i.q * 1.6 + o + vec2<f32>(t * 0.12, -t * 0.08), vec2<i32>(4096), 61u).x * 0.6
+              + lnoise(i.q * 3.7 + o * 1.3 + vec2<f32>(-t * 0.2, t * 0.15), vec2<i32>(4096), 62u).x * 0.4;
+        a = i.a.x * soft * smoothstep(-0.45, 0.55, n + soft * 0.4);
+        // Thin at the pool (the water is not in the depth buffer).
+        a *= smoothstep(i.a.w - 2.0, i.a.w + 10.0, i.y);
+    }
+    // Soft where it meets the scene.
+    if (scene_on.x > 0.5) {
+        let d = scene_vz(i.pos.xy / vec2<f32>(textureDimensions(scene_d))) - i.vz;
+        a *= smoothstep(0.0, 8.0, d);
+    }
+    // Lit by the sky and the sun (bright: the mist scatters it), a little of the water's hue.
+    var l = mix(lt.ground.rgb, lt.sky.rgb, 0.8);
+    if (lt.sun_dir.w > 0.5) { l += lt.sun_color.rgb * 0.6; }
+    if (lt.sky.w < 0.5) { l = vec3<f32>(0.9); }
+    var rgb = min(l, vec3<f32>(1.1)) * mix(vec3<f32>(1.0), lt.water3.rgb * 1.6 + 0.3, 0.2 * lt.water3.w);
+    if (i.a.z > 0.5) { rgb = max(rgb, vec3<f32>(0.9)) * 1.2; }
+    if (cam.fog.x > 0.5) { rgb = mix(cam.fog_color.rgb, rgb, i.fog); }
+    return vec4<f32>(rgb * a, a);
+}
+@fragment fn fs_mist(i: MistOut) -> @location(0) vec4<f32> {
+    return mist_color(i);
+}
+@fragment fn fs_mist_mrt(i: MistOut) -> FOut {
+    var o: FOut;
+    o.c = mist_color(i);
     return o;
 }
 
@@ -1491,10 +1741,193 @@ fn lava(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, 
     return min(tex * 1.15, vec3<f32>(1.0));
 }
 
+// Waterfalls and the streams feeding them: like a flowing liquid's, their surface is made in
+// the texture's coordinates (+v downstream), which slide with the original animation, every
+// pattern repeating with the texture.
+struct FallSurf {
+    // The height's gradient in uv (world units per uv) and the height (about -1..1).
+    g: vec2<f32>,
+    h: f32,
+    // White water (0..1).
+    foam: f32,
+};
+
+// Pattern offset along v (`per` repeats per v) moving a layer at `k` times the texture's speed
+// `sp` relative to it (k > 0: faster; `slide_object` takes `sp` off v every frame).
+fn fall_shift(t: f32, sp: f32, k: f32, per: f32) -> f32 {
+    return -t * sp * k * per;
+}
+// How much of a pattern repeating `f` times per uv shows at footprint `fp` (finer than a few
+// pixels: none).
+fn fall_fade(fp: f32, f: f32) -> f32 {
+    return 1.0 - smoothstep(0.08, 0.35, fp * f);
+}
+
+// The water at uv, time t (s): `steep` 0..1 (the fall), `lip` 0..1 (going over the edge:
+// glassy), `calm` 0..1 (no white water yet), `low` 0..1 (near the pool: aerated), `fp` a
+// pixel's footprint in uv, `sp` the texture's speed (v per second).
+fn fall_surface(uv: vec2<f32>, t: f32, steep: f32, lip: f32, calm: f32, low: f32, fp: f32, sp: f32) -> FallSurf {
+    var o: FallSurf;
+    // The sheets sway sideways a little as they fall.
+    let w = lnoise(vec2<f32>(uv.x * 3.0, uv.y * 2.0 + fall_shift(t, sp, -0.3, 2.0)), vec2<i32>(3, 2), 11u);
+    let q = vec2<f32>(uv.x + w.x * 0.03 * steep, uv.y);
+    // The fall: sheets, long down it and narrow across, ridged; the inner ones slower than
+    // the outer (they slip past each other).
+    let s1 = lnoise(vec2<f32>(q.x * 16.0, q.y * 2.0 + fall_shift(t, sp, -0.25, 2.0)), vec2<i32>(16, 2), 12u);
+    let s2 = lnoise(vec2<f32>(q.x * 29.0, q.y * 3.0 + fall_shift(t, sp, 0.35, 3.0)), vec2<i32>(29, 3), 13u);
+    let e1 = sqrt(s1.x * s1.x + 0.01);
+    let e2 = sqrt(s2.x * s2.x + 0.01);
+    let fd1 = fall_fade(fp, 16.0);
+    let fd2 = fall_fade(fp, 29.0);
+    let hs = (1.0 - e1) * 0.7 * fd1 + (1.0 - e2) * 0.45 * fd2;
+    let gs = -(s1.x / e1) * s1.yz * vec2<f32>(16.0, 2.0) * 0.7 * fd1 - (s2.x / e2) * s2.yz * vec2<f32>(29.0, 3.0) * 0.45 * fd2;
+    // The stream: streaks along the flow and small ripples riding it.
+    let r1 = lnoise(vec2<f32>(q.x * 9.0, q.y * 4.0 + fall_shift(t, sp, -0.15, 4.0)), vec2<i32>(9, 4), 14u);
+    let r2 = lnoise(uv * 14.0 + vec2<f32>(t * 0.4, fall_shift(t, sp, 0.1, 14.0)), vec2<i32>(14), 15u);
+    let r3 = lnoise(uv * 27.0 + vec2<f32>(-t * 0.6, fall_shift(t, sp, -0.1, 27.0) + t * 0.3), vec2<i32>(27), 16u);
+    let fr1 = fall_fade(fp, 9.0);
+    let fr2 = fall_fade(fp, 14.0);
+    let fr3 = fall_fade(fp, 27.0);
+    let hf = r1.x * 0.5 * fr1 + r2.x * 0.3 * fr2 + r3.x * 0.15 * fr3;
+    let gf = r1.yz * vec2<f32>(9.0, 4.0) * 0.5 * fr1 + r2.yz * 14.0 * 0.3 * fr2 + r3.yz * 27.0 * 0.15 * fr3;
+    // Glassy where it goes over the edge.
+    let smooth_ = 1.0 - lip * 0.85;
+    o.h = mix(hf, hs, steep) * smooth_;
+    o.g = mix(gf, gs, steep) * smooth_;
+    // White water: streaks torn along the flow, faster than the water on the fall, coming
+    // and going in patches (broken edges); flecks on the stream, a lot near the pool, none on
+    // the lip.
+    // (Speeds never depend on the slope: the faces differ a little, and over time any
+    // difference would tear the patterns apart at their edges.)
+    let fs1 = lnoise(vec2<f32>(q.x * 23.0, q.y * 4.0 + fall_shift(t, sp, 0.6, 4.0)), vec2<i32>(23, 4), 17u);
+    let fs2 = lnoise(vec2<f32>(q.x * 41.0, q.y * 6.0 + fall_shift(t, sp, 0.9, 6.0)), vec2<i32>(41, 6), 20u);
+    let fl = lnoise(vec2<f32>(q.x * 17.0, q.y * 7.0), vec2<i32>(17, 7), 23u);
+    let patches = lnoise(vec2<f32>(uv.x * 5.0, uv.y * 3.0 + fall_shift(t, sp, 0.45, 3.0)), vec2<i32>(5, 3), 18u).x;
+    let streak = mix(fl.x * fall_fade(fp, 17.0), fs1.x * 0.6 * fall_fade(fp, 23.0) + fs2.x * 0.4 * fall_fade(fp, 41.0), steep);
+    // The pool's foot boils: blobs welling up against the fall.
+    let b1 = lnoise(vec2<f32>(uv.x * 19.0 + sin(t * 0.7) * 0.3, uv.y * 9.0 + t * 0.8), vec2<i32>(19, 9), 21u).x;
+    let th = mix(0.55, 0.3, steep) - patches * 0.35 * steep - low * 0.55 + calm * 0.9;
+    o.foam = smoothstep(th, th + 0.35, streak + b1 * 0.35 * low) * fall_fade(fp, 10.0);
+    // The outer sheets' crests catch the air.
+    o.foam = max(o.foam, smoothstep(0.82, 0.97, 1.0 - e2) * steep * (1.0 - calm) * 0.5 * fd2);
+    return o;
+}
+
+// The pool's surface below a fall at p (seen in front of it: along `face`; water, not the
+// stream at its top), none: -1e9.
+fn pool_y(p: vec3<f32>, face: vec3<f32>) -> f32 {
+    var y = -1e9;
+    for (var k = 0; k < 3; k++) {
+        let q = p.xz + face.xz * (f32(k) * 6.0);
+        let s = surface_y(q);
+        if (s < p.y + 4.0 && material_at(q) < 0.5) { y = max(y, s); }
+    }
+    return y;
+}
+
 // Water drawn opaque whose texture slides ([`Liquid::Fall`]): a stream, and where it is steep
-// its waterfall.
+// its waterfall. The lip where it goes over the edge is glassy (its normal rolled round the
+// edge: a highlight rolls over it), the fall in sheets slipping past each other
+// with white water torn along them, aerated and misty near its pool; the stream rippled and
+// streaked along its flow. Lit through the bumped normal like the liquids.
 fn stream(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec3<f32> {
-    return liquid(i, tex, face, sx, sy, duvx, duvy);
+    let gu = plane_grad(sx, sy, duvx.x, duvy.x);
+    let gv = plane_grad(sx, sy, duvx.y, duvy.y);
+    let steep = smoothstep(0.25, 0.7, 1.0 - abs(face.y));
+    // A pixel's footprint in uv from its distance (its own derivatives change from face to
+    // face, and the detail they fade would show the faces).
+    let fp = max(i.vz - 10.0, 1.0) * 2.0 / (cam.proj.x * cam.size.x) * max(length(gu), length(gv));
+    // The edge it goes over (`VOut::top`): the top of the fall and the stream just before it.
+    // The art's corner there is sharp; the water's normal rounds it, rolling from the
+    // stream's up to the fall's out (downstream: along v's gradient).
+    let over = clamp((i.world.y - i.top) / 10.0, -2.5, 1.0);
+    let lip = (1.0 - smoothstep(0.0, 1.0, abs(over))) * step(-1e8, i.top);
+    var out = gv - face * dot(gv, face);
+    out = select(face, normalize(out), dot(out, out) > 1e-12);
+    // How far round the curve this is (0: the stream's, 1: the fall's).
+    let roll = smoothstep(-1.0, 1.0, -over);
+    let sky_n = normalize(vec3<f32>(face.x * 0.15, 1.0, face.z * 0.15));
+    let fall_n = select(face, normalize(vec3<f32>(out.x, 0.0, out.z) + face * 0.5), steep < 0.5);
+    // The art's smoothed normals lean up on the fall: mostly its faces'.
+    var n0 = normalize(i.normal);
+    if (dot(n0, face) < 0.0) { n0 = -n0; }
+    let level = vec3<f32>(face.x, 0.0, face.z);
+    n0 = normalize(mix(n0, select(face, normalize(level), dot(level, level) > 1e-6), 0.8 * steep));
+    n0 = normalize(mix(n0, normalize(mix(sky_n, fall_n, roll)), lip));
+    let pool = pool_y(i.world, face);
+    let above = select(1e4, i.world.y - pool, pool > -1e8);
+    let low = (1.0 - smoothstep(2.0, 45.0, above)) * steep;
+    let t = lt.water2.x;
+    // The water stays whole a little way down the fall, breaking up at different heights.
+    let breakup = lnoise(vec2<f32>(i.uv.x * 7.0, t * 0.3), vec2<i32>(7, 65536), 22u).x;
+    let calm = max(lip, (1.0 - smoothstep(0.0, 1.0, (i.top - i.world.y) / 28.0 + breakup * 0.35)) * step(-1e8, i.top) * steep);
+    let sf = fall_surface(i.uv, t, steep, lip, calm, low, fp, i.slide);
+    let hw = (sf.g.x * gu + sf.g.y * gv) * FALL_BUMP;
+    let n = normalize(n0 - (hw - n0 * dot(hw, n0)));
+    let v = normalize(lt.eye.xyz - i.world);
+    // The body: the original's colours, deeper between the sheets, clear and deep on the lip,
+    // paler where it is aerated.
+    let up = smoothstep(-0.6, 1.0, sf.h);
+    var body = tex * mix(vec3<f32>(0.62, 0.78, 0.92), vec3<f32>(1.05, 1.08, 1.1), up);
+    body = mix(body, tex * vec3<f32>(0.55, 0.8, 1.0), lip * 0.5);
+    let pale = vec3<f32>(0.86, 0.95, 1.0);
+    body = mix(body, mix(tex, pale, 0.6), low * 0.45);
+    var j = i;
+    j.normal = n;
+    var c = light(j, body, face);
+    // A little light scattered through the falling water (it is never dark).
+    c += body * 0.1 * steep;
+    // The light about it across the sheets and ripples.
+    let key = select(normalize(vec3<f32>(0.25, 1.0, 0.3)), lt.sun_dir.xyz, lt.sun_dir.w > 0.5);
+    c *= clamp(1.0 + (dot(n, key) - dot(n0, key)) * 2.0, 0.6, 1.5);
+    // Reflections: the sky, more on the glassy lip; the sun's highlight, broad and bright on
+    // the lip (rolling over its curve), sparkling on the ripples.
+    let fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    var spec = sky_along(reflect(-v, n)) * fres * (0.5 + lip * 0.6);
+    let sh = select(1.0, shadow(i.world + face * 2.0), lt.sun_dir.w > 0.5);
+    let kc = select(vec3<f32>(0.6, 0.75, 0.9) * 0.5, lt.sun_color.rgb * 1.6, lt.sun_dir.w > 0.5);
+    let nh = max(dot(n, normalize(key + v)), 0.0);
+    spec += kc * (pow(nh, 160.0) * (1.0 + lip) + pow(nh, 24.0) * lip * 0.35) * sh;
+    // A highlight along the lip from the sky above it.
+    spec += lt.sky.rgb * pow(max(n0.y, 0.0), 3.0) * lip * 0.35;
+    // White water, lit (never quite white: it keeps the water's hue in the shade).
+    var amb = mix(lt.ground.rgb, lt.sky.rgb, n.y * 0.5 + 0.5);
+    if (lt.sun_dir.w > 0.5) { amb += lt.sun_color.rgb * (max(dot(n0, key), 0.0) * 0.6 + 0.25) * sh; }
+    let froth = pale * min(amb * 1.05, vec3<f32>(1.25));
+    let fa = clamp(sf.foam * mix(0.65, 0.9, steep) + low * 0.25, 0.0, 1.0);
+    c = mix(c + spec, froth, fa);
+    // Mist about the pool, drifting up the fall's foot.
+    let mist = lnoise(vec2<f32>(i.uv.x * 6.0 + t * 0.15, i.uv.y * 3.0 + fall_shift(t, i.slide, -1.3, 3.0)), vec2<i32>(6, 3), 19u).x;
+    c = mix(c, froth, low * low * (0.35 + 0.2 * mist));
+    return c;
+}
+const FALL_BUMP: f32 = 0.35;
+
+// A waterfall the water pass draws (its steep faces, translucent: Garden's) with the falls'
+// look ([`fall_surface`]): its texture in sheets, white water torn along them, aerated near
+// its pool. Elsewhere `base` as it is.
+fn fall_sheet(i: VOut, base: vec4<f32>) -> vec4<f32> {
+    let sx = dpdx(i.world);
+    let sy = dpdy(i.world);
+    let gu = plane_grad(sx, sy, dpdx(i.uv.x), dpdy(i.uv.x));
+    let gv = plane_grad(sx, sy, dpdx(i.uv.y), dpdy(i.uv.y));
+    var face = cross(sx, sy);
+    if (dot(face, face) < 1e-12) { return base; }
+    face = normalize(face);
+    if (dot(face, lt.eye.xyz - i.world) < 0.0) { face = -face; }
+    let steep = smoothstep(0.25, 0.7, 1.0 - abs(face.y));
+    if (steep <= 0.0 || i.slide == 0.0) { return base; }
+    let fp = max(i.vz - 10.0, 1.0) * 2.0 / (cam.proj.x * cam.size.x) * max(length(gu), length(gv));
+    let pool = pool_y(i.world, face);
+    let above = select(1e4, i.world.y - pool, pool > -1e8);
+    let low = (1.0 - smoothstep(2.0, 45.0, above)) * steep;
+    let sf = fall_surface(i.uv, lt.water2.x, steep, 0.0, 0.0, low, fp, i.slide);
+    let up = smoothstep(-0.6, 1.0, sf.h);
+    let lit = mix(lt.ground.rgb, lt.sky.rgb, 0.7) + lt.sun_color.rgb * 0.5 * lt.sun_dir.w;
+    let froth = vec3<f32>(0.86, 0.95, 1.0) * min(lit * 1.1, vec3<f32>(1.2));
+    let fa = clamp(sf.foam * 0.85 + low * 0.3, 0.0, 1.0) * steep;
+    let rgb = mix(base.rgb * mix(1.0, mix(0.7, 1.25, up), steep), froth, fa);
+    return vec4<f32>(rgb, mix(base.a, max(base.a * mix(0.8, 1.3, up), 0.75), fa));
 }
 
 fn shade(i: VOut) -> vec4<f32> {
@@ -1543,6 +1976,12 @@ struct FOut { @location(0) c: vec4<f32>, @location(1) mv: vec2<f32>, @location(2
     return o;
 }
 "#;
+
+/// Waterfall landing points passed to the generated surface and the mist (`Falls`).
+const MAX_FALL_FEET: usize = 32;
+const FALLS_SIZE: u64 = 16 + 32 * MAX_FALL_FEET as u64;
+/// Mist puffs and spray drops over each landing point (`vs_mist`).
+const MIST_PER_FOOT: u32 = 18;
 
 /// Size of `Cam` and `Lights`.
 const CAM_SIZE: u64 = 64 * 2 + 16 * 6;
@@ -1604,6 +2043,11 @@ pub(crate) struct Gpu {
     scene_flag: wgpu::Buffer,
     scene_copy: (wgpu::Texture, wgpu::Texture),
     linear_s: wgpu::Sampler,
+    /// Where the waterfalls land this frame (`Falls` in the shader: the generated surface's
+    /// foam under them, the mist and spray over it) and how many.
+    falls: wgpu::Buffer,
+    fall_count: u32,
+    mist_pipelines: HashMap<(wgpu::TextureFormat, u32, bool), wgpu::RenderPipeline>,
     sim: crate::water::WaterSim,
     /// Path-Traced (devices with ray queries), and whether this frame uses it.
     rtx: Option<RtParts>,
@@ -1724,6 +2168,7 @@ fn grid_cam_bind_group(
     copy: &(wgpu::Texture, wgpu::Texture),
     sampler: &wgpu::Sampler,
     flag: &wgpu::Buffer,
+    falls: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("generated water camera"),
@@ -1734,6 +2179,7 @@ fn grid_cam_bind_group(
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&copy.1.create_view(&Default::default())) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(sampler) },
             wgpu::BindGroupEntry { binding: 4, resource: flag.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 5, resource: falls.as_entire_binding() },
         ],
     })
 }
@@ -1839,6 +2285,7 @@ impl Gpu {
                 },
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: fr, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
                 ubo(4, fr),
+                ubo(5, vf),
             ],
         });
         // The shadow pass reads only the lights' uniform block (the map is its target).
@@ -1938,7 +2385,8 @@ impl Gpu {
         });
         let scene_flag = buf("scene copy flag", 16, wgpu::BufferUsages::UNIFORM);
         let scene_copy = scene_copy_textures(device, 1, 1, wgpu::TextureFormat::Rgba8Unorm);
-        let grid_cam_bg = grid_cam_bind_group(device, &grid_cam_layout, &cam, &scene_copy, &linear_s, &scene_flag);
+        let falls = buf("waterfall feet", FALLS_SIZE, wgpu::BufferUsages::UNIFORM);
+        let grid_cam_bg = grid_cam_bind_group(device, &grid_cam_layout, &cam, &scene_copy, &linear_s, &scene_flag, &falls);
         let bed_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water bed map"),
             bind_group_layouts: &[None, None, Some(&store_layout), Some(&bed_ubo_layout)],
@@ -2105,6 +2553,9 @@ impl Gpu {
             scene_flag,
             scene_copy,
             linear_s,
+            falls,
+            fall_count: 0,
+            mist_pipelines: HashMap::new(),
             sim,
             vb_usage: if rtx.is_some() {
                 wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::BLAS_INPUT
@@ -2277,15 +2728,30 @@ impl Gpu {
                 let x = (x ^ (x >> 16)).wrapping_mul(2246822519);
                 (x ^ (x >> 13)) as f32 / u32::MAX as f32 - 0.5
             };
-            let pos = [p[0] + h(1) * FOOT_CELL, p[1], p[2] + h(2) * FOOT_CELL];
-            // The fall's mesh may go on far under its pool's surface.
-            falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.18 + 0.12 * h(3), above: 400.0 });
+            // A little below the foot: a fall may end over its pool's surface (Garden's), and its
+            // mesh may go on far under it.
+            let pos = [p[0] + h(1) * FOOT_CELL, p[1] - 20.0, p[2] + h(2) * FOOT_CELL];
+            falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.12 + 0.08 * h(3), above: 400.0 });
+        };
+        // ... and their foam, mist and spray (where each lands and the way it faces there).
+        let mut feet_seen: Vec<([f32; 3], [f32; 3])> = Vec::new();
+        // A group's feet are its faces' lowest points: those at its bottom are where it lands.
+        let landing = |feet: &[[f32; 3]]| {
+            let low = feet.iter().map(|f| f[1]).fold(f32::MAX, f32::min);
+            move |f: &[f32; 3]| f[1] < low + FOOT_CELL
         };
         for d in &sink.draws {
             if let Some(feet) = sink.fall_feet.get(&d.key) {
                 let m = &sink.mats[sink.recs[d.rec as usize].mat as usize];
+                let outs = sink.fall_out.get(&d.key);
+                let lands = landing(feet);
                 for (k, &f) in feet.iter().enumerate() {
-                    stir(k + 64, crate::math::mtx_xfm(m, f));
+                    let p = crate::math::mtx_xfm(m, f);
+                    stir(k + 64, p);
+                    if lands(&f) {
+                        let o = outs.and_then(|o| o.get(k)).map_or([0.0; 3], |&o| sub(crate::math::mtx_xfm(m, [f[0] + o[0], f[1] + o[1], f[2] + o[2]]), p));
+                        feet_seen.push((p, o));
+                    }
                 }
             }
         }
@@ -2293,8 +2759,13 @@ impl Gpu {
             let Some((_, groups)) = self.water_meshes.get(&key) else { continue };
             for g in groups {
                 let m = &sink.mats[sink.recs[rec as usize].mat as usize];
+                let lands = landing(&g.feet);
                 for (k, &f) in g.feet.iter().enumerate() {
-                    stir(k, crate::math::mtx_xfm(m, f));
+                    let p = crate::math::mtx_xfm(m, f);
+                    stir(k, p);
+                    if lands(&f) {
+                        feet_seen.push((p, [0.0; 3]));
+                    }
                 }
                 let Some(tex) = textures.current(g.crc) else { continue };
                 self.water_list.push((rec, key, g.first..g.first + g.count, tex, true, additive, g.steep));
@@ -2304,6 +2775,7 @@ impl Gpu {
                 }
             }
         }
+        self.write_falls(queue, view, if lighting.is_some_and(|l| l.water) { feet_seen } else { Vec::new() });
         self.grid = biggest.filter(|_| lighting.is_some_and(|l| l.water)).map(|(_, crc, tex)| {
             let c = tex_info(&mut self.tex_info, textures, crc).map_or([0.3, 0.5, 0.7], |i| i.color);
             (tex, c)
@@ -2396,6 +2868,25 @@ impl Gpu {
     }
 
     /// The lights' uniform block and point light list (the nearest to the camera's target).
+    /// The waterfalls' landing points (`Falls`): the nearest to the camera's target first.
+    fn write_falls(&mut self, queue: &wgpu::Queue, view: &View, mut feet: Vec<([f32; 3], [f32; 3])>) {
+        let focus = view.camera.map_or([0.0; 3], |c| c.target);
+        feet.sort_by(|a, b| dot(sub(a.0, focus), sub(a.0, focus)).total_cmp(&dot(sub(b.0, focus), sub(b.0, focus))));
+        feet.truncate(MAX_FALL_FEET);
+        let mut u = vec![0.0f32; (FALLS_SIZE / 4) as usize];
+        u[0] = feet.len() as f32;
+        for (k, (p, o)) in feet.iter().enumerate() {
+            // Horizontal: the mist drifts out over the pool.
+            let h = (o[0] * o[0] + o[2] * o[2]).sqrt();
+            let o = if h > 1e-3 { [o[0] / h, o[2] / h] } else { [0.0; 2] };
+            u[4 + k * 4..8 + k * 4].copy_from_slice(&[p[0], p[1], p[2], 0.0]);
+            let j = 4 + MAX_FALL_FEET * 4 + k * 4;
+            u[j..j + 4].copy_from_slice(&[o[0], 0.0, o[1], 0.0]);
+        }
+        self.fall_count = feet.len() as u32;
+        queue.write_buffer(&self.falls, 0, bytemuck::cast_slice(&u));
+    }
+
     fn write_lights(&mut self, queue: &wgpu::Queue, view: &View, lighting: Option<&Lighting>, mut found: Vec<PointLight>, extra: &[PointLight]) {
         let mut u = [0.0f32; (LIGHTS_SIZE / 4) as usize];
         let Some(l) = lighting else {
@@ -2622,6 +3113,10 @@ impl Gpu {
             pass.set_bind_group(0, &self.grid_cam_bg, &[]);
             pass.set_bind_group(1, bind_group(tex, true), &[]);
             pass.draw(0..GRID * GRID * 6, 0..1);
+            if let (true, Some(p)) = (self.fall_count > 0, self.mist_pipelines.get(&(format, samples, mrt))) {
+                pass.set_pipeline(p);
+                pass.draw(0..self.fall_count * MIST_PER_FOOT * 6, 0..1);
+            }
         }
     }
 
@@ -2640,7 +3135,8 @@ impl Gpu {
             let cur = &self.scene_copy.0;
             if (cur.width(), cur.height(), cur.format()) != (w, h, f) {
                 self.scene_copy = scene_copy_textures(device, w, h, f);
-                self.grid_cam_bg = grid_cam_bind_group(device, &self.grid_cam_layout, &self.cam, &self.scene_copy, &self.linear_s, &self.scene_flag);
+                self.grid_cam_bg =
+                    grid_cam_bind_group(device, &self.grid_cam_layout, &self.cam, &self.scene_copy, &self.linear_s, &self.scene_flag, &self.falls);
             }
         }
         queue.write_buffer(&self.scene_flag, 0, bytemuck::cast_slice(&[if on { 1.0f32 } else { 0.0 }, 0.0, 0.0, 0.0]));
@@ -2705,6 +3201,31 @@ impl Gpu {
                 cache: None,
             });
             self.grid_pipelines.insert((format, samples, mrt), p);
+            // The mist and spray over the waterfalls' pools: premultiplied like the surface,
+            // after it.
+            let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("waterfall mist"),
+                layout: Some(&self.grid_layout),
+                vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_mist"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.shader,
+                    entry_point: Some(if mrt { "fs_mist_mrt" } else { "fs_mist" }),
+                    compilation_options: Default::default(),
+                    targets: &targets[..if mrt { 4 } else { 1 }],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            self.mist_pipelines.insert((format, samples, mrt), p);
         }
         let constants = [("ADDITIVE", if additive { 1.0 } else { 0.0 })];
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
