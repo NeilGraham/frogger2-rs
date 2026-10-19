@@ -134,6 +134,10 @@ pub struct App {
     water_dips: Vec<(f2_game::ids::ActorId, f32, f32, f32)>,
     last_platform: Option<f2_game::ids::PlatformId>,
     was_drowning: bool,
+    /// Whether the frog was burning at the last tick, and where it fell into the lava and
+    /// for how many more ticks it pushes the surface down (a slow, heavy gloop).
+    was_burning: bool,
+    sinking: Option<([f32; 3], u32)>,
     pub ticks: u64,
     /// `ticks` at the last draw: animated textures step once per game frame
     /// (`DrawCtx::tex_anim_steps`), not once per displayed frame.
@@ -346,6 +350,8 @@ impl App {
             water_dips: Vec::new(),
             last_platform: None,
             was_drowning: false,
+            was_burning: false,
+            sinking: None,
             ticks: 0,
             tex_anim_ticks: 0,
             free_cam: None,
@@ -513,6 +519,22 @@ impl App {
             }
         }
         self.was_drowning = drowning;
+        // Burnt (a hot tile: lava, mostly): the frog sinks into it for a third of a second.
+        // The waves only move liquid near the frog's height, so a hot tile on dry land
+        // stirs nothing.
+        let by = self.game.frogger.player[0].death_by as i32;
+        let burning = by == f2_game::frogmove::DEATHBY_FIRE || by == f2_game::frogmove::DEATHBY_INCINERATE;
+        if burning && !self.was_burning {
+            self.sinking = self.game.frogger.frog[0].and_then(|a| self.game.actor2.actors.get(a)).map(|a| {
+                let q = &a.actor.position;
+                ([q.vx as f32 / 10.0, q.vy as f32 / 10.0, q.vz as f32 / 10.0], 20)
+            });
+        }
+        self.was_burning = burning;
+        if let Some((pos, n)) = self.sinking {
+            self.r.water_splash(f2_engine::water::Splash { pos, radius: 22.0, strength: 0.25 + n as f32 * 0.04, ..Default::default() });
+            self.sinking = (n > 1).then_some((pos, n - 1));
+        }
         self.last_platform = cur;
         // Debug: `F2_TEST_SPLASH=x,y,z,radius,strength,every` splashes there every so many ticks.
         if let Ok(v) = std::env::var("F2_TEST_SPLASH") {

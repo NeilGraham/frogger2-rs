@@ -1,6 +1,6 @@
 # Enhanced water (Graphics: Enhanced)
 
-`crates/f2-engine/src/water.rs` (simulation), `gpu_mesh.rs` (water pass, caustics),
+`crates/f2-engine/src/water.rs` (simulation), `gpu_mesh.rs` (water pass, caustics, lava),
 `crates/frogger/src/app.rs` (`water_tick`: landings), `crates/f2-draw/src/render.rs`
 (`DrawCtx::dips`). *Original* graphics, the authentic profile and the N64 draw the water as
 before.
@@ -141,6 +141,60 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   shifted along the sun direction by the depth, focused or spread by the simulated surface's
   curvature (its Laplacian), fading with depth (`exp(-depth/240)`), shadowed with the sun.
   Without a sun (caves) the sky light makes them. The Path-Traced preset will trace them.
+
+## Lava (Enhanced)
+
+`gpu_mesh.rs` (`fn lava`, the obstacle map), `water.rs` (lava's waves, the obstacle map's
+mips), `app.rs` (`water_tick`: burning). Opaque lava-textured meshes (`lavafall`, `00lava04`,
+`anclava`) are a `Liquid::Lava` on the GPU mesh pass; they stay emissive (their groups light
+what is about them) and the waves run on them.
+
+- **Crust:** rafts of dark cooled crust (where a slow, warped noise field is high: mostly
+  large, about 35 units across; smaller, torn pieces only against and behind what stands in
+  the lava), cracked into plates (a Voronoi network, 16 units, whose seams glow; faint crazing
+  up close), standing a little proud: dark cooled tops lit by the lights about them, a bevel
+  catching the melt's glow from below. The melt glows incandescent (orange, yellow at its
+  hottest, never white) at a raft's edge, bleeding a few units out. Laid out in world space, not the texture's coordinates:
+  the art's lava faces do not all meet whole texture repeats apart, and a pattern in their
+  coordinates breaks along their edges. Where the lava flows, the crust is carried along it
+  like the water's ripples (two copies, each carried for 4 s and put back, crossfaded keeping
+  the field's contrast, so rafts melt and form rather than fade); the flow is the flow map
+  smoothed over a 32-unit lattice (each face slides its own way, some 30 degrees apart: a flow
+  with steps in it tears the crust). Steep faces, fast flow, stirred lava and wakes melt the
+  crust away. Detail finer than a few pixels fades out.
+- **Melt:** the original texture's colours, brighter in slow rolls along the texture's slide
+  (its coordinates, so they flow with it), with a slow heat pulse, a glossy skin (the light
+  from above in a cave, else the sun, across the bumps) and a little Fresnel; no reflections.
+- **Painted crust:** some textures already are crust (`00lava04`: dark plates between glowing
+  cracks; `anclava`: dark blotches). `painted_crust` measures it once per mesh (the share of
+  dark texels, `Rec::slide` w): such lava gets none of our crust, its own dark plates stand
+  proud of its cracks (bump-mapped from the texture) and are lit as rock.
+- **Waves:** lava's simulation is thick and slow (`c² = 0.012`, damping 0.992 per step,
+  velocity viscosity 0.2: a broad swell about 40 units a second that lingers a second or so).
+  Where it moves the lava bulges (the normal), glows hotter and its crust tears open, on the
+  surface only (not on a volcano's lava-covered cone standing in it).
+- **Falling in:** a burnt frog (`DEATHBY_FIRE` / `DEATHBY_INCINERATE`: a hot tile, mostly
+  lava) sinks into it for a third of a second (`App::water_tick`: a splash each tick, heaviest
+  first). The game itself is unchanged; only liquid near the frog's height moves, so a hot
+  tile on dry land stirs nothing. Platforms landed on splash as on water, but only if the lava
+  is within the splash's radius of them.
+- **What stands in it** (the obstacle map, below): a hot seam where the melt touches it, a
+  collar of darker crust right under it; upstream the crust piles up in folds that creep in
+  (glowing between them), downstream it is torn away in a glowing trail some 40 units long,
+  and around it the crust slips by to the side.
+
+### Obstacle map
+
+`WaterSim::obstacle_view` (Rg16Float, the surface map's window at half its resolution, 4 mips:
+3, 6, 12, 24-unit cells; `Gpu::pre_passes` after the bed map): every GPU mesh draw but the
+characters (skinned meshes) and the sky, seen from above, Max-blended. r: something solid at
+the surface there (from half a unit under it to 40 units over it, the highest fading out;
+liquids count only where they stand 1.5 units out of the surface: a volcano's lava-covered
+cone), g: how high it stands (/ 64). Where the liquid stops at what stands in it, the surface
+beside it (4.5 units out) is taken. Its mips are means of what is solid (a smooth field
+reaching further at each level), sampled trilinearly (`obstacle_at` in the shader): a handful
+of taps say how near something is, the way to it and whether it lies upstream. The water can
+use it the same way (rivers bowing around rocks).
 
 ## Tests
 
