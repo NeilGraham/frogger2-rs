@@ -229,7 +229,9 @@ with a hint.
   change when next opened or at the next level).
 
 The level select (practice any story chapter or level) is on the advanced screen (Shift+F10,
-Tab to *Level select*; also `--practice WORLD LEVEL` / `--story CHAPTER`).
+Tab to *Level select*; also `--practice WORLD LEVEL` / `--story CHAPTER`). Left / Right there
+picks the baby frog the level starts at (`--baby N`): the earlier babies are already rescued and
+the frog starts where rescuing the last of them leaves it, as after a death.
 
 ### Window modes and Alt+Enter
 

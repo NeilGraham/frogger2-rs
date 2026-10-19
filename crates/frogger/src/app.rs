@@ -49,6 +49,8 @@ pub enum Step {
     Choice(LevelChoice),
     /// The level editor on a level (`--editor`).
     Editor(u32, u32),
+    /// Practice: the next level starts at this baby ([`App::set_start_baby`], `--baby`).
+    StartBaby(u32),
 }
 
 /// Host-only toggles requested by hotkeys, applied by the window layer.
@@ -101,6 +103,8 @@ pub struct App {
     /// original plays its FMVs synchronously, so `InitLevel`'s `PrepareSong` follows the story
     /// FMV; here both arrive in one frame and the video's sound would take the music stream.
     music_after_video: Option<(u32, bool)>,
+    /// Practice: the baby the next level starts at (1: from the start; [`App::set_start_baby`]).
+    start_baby: u32,
     // input
     pub mapper: InputMapper,
     /// Multi-binding table (keys + pad inputs); keys are mirrored into `mapper`.
@@ -325,6 +329,7 @@ impl App {
             video: None,
             video_queue: VecDeque::new(),
             music_after_video: None,
+            start_baby: 1,
             mapper,
             bindings: Bindings::default(),
             deadzone: f2_platform::bindings::DEFAULT_DEADZONE,
@@ -416,6 +421,27 @@ impl App {
     }
 
     /// Selects the profile and the enhanced-profile settings (from `config.toml`).
+    /// Practice: the next level played starts at baby `n` (1-based, the HUD's order), babies
+    /// 1 to `n - 1` rescued (`Game::skip_to_baby`), once it is in play.
+    pub fn set_start_baby(&mut self, n: u32) {
+        self.start_baby = n.max(1);
+    }
+
+    /// [`set_start_baby`](Self::set_start_baby) once the level plays with its babies placed.
+    fn apply_start_baby(&mut self) {
+        let g = &self.game;
+        if self.start_baby <= 1 || g.game_state.mode != mode::INGAME_MODE || g.frogger.player[0].world_num as u32 == f2_game::layout::worldid::FRONTEND {
+            return;
+        }
+        let nb = (g.map.num_babies.max(0) as usize).min(f2_game::babyfrog::NUM_BABIES);
+        if nb == 0 || g.babyfrog.baby_list[..nb].iter().any(|b| b.baby.is_none()) {
+            return;
+        }
+        let n = std::mem::replace(&mut self.start_baby, 1);
+        let saved = self.game.skip_to_baby(n);
+        eprintln!("frogger: starting at baby {n} ({saved} rescued)");
+    }
+
     /// Looks from a free camera (`None`: the game's camera again), as F-key free cam does.
     pub fn set_free_cam(&mut self, cam: Option<FlyCam>) {
         self.free_cam = cam;
@@ -668,6 +694,7 @@ impl App {
                 }
                 Step::Frontend => self.start_frontend(),
                 Step::Choice(c) => self.start_choice(c),
+                Step::StartBaby(n) => self.set_start_baby(n),
                 Step::Boot => {
                     let cfg = self.session_config();
                     self.game = Game::new_session(cfg);
@@ -1018,6 +1045,7 @@ impl App {
             GAct::Start(c) => {
                 self.toggle_controls();
                 self.start_choice(c);
+                self.set_start_baby(self.level_ui.baby);
             }
         }
     }
@@ -1210,7 +1238,9 @@ impl App {
             None => Some(ControlsUi::default()),
         };
         if self.controls.is_some() {
+            let baby = self.level_ui.baby.max(1);
             self.level_ui = LevelSelectUi::build(&self.game);
+            self.level_ui.baby = baby;
             self.gameplay_ui.msg.clear();
         }
         self.kb.pressed.clear();
@@ -1437,6 +1467,7 @@ impl App {
                                    // `actFrameCount` stays frozen, so path entities (placed from `actFrameCount`) do not run
                                    // on and jump on resume. Trace-identical to `tick` outside pause (research/n64-performance.md §3T).
         self.game.tick_frames(TickInput { pads }, 1);
+        self.apply_start_baby();
         self.water_tick();
         self.ticks += 1;
         if self.qol() && self.gameplay.speedrun_timer {

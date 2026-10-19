@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use f2_engine::{FontId, Renderer};
+use f2_game::babyfrog::NUM_BABIES;
 use f2_game::define::mode;
 use f2_game::enhance::{GameOptions, GameProfile, ENEMY_SPEED_MIN};
 use f2_game::layout::worldid;
@@ -373,6 +374,9 @@ pub enum LevelChoice {
 #[derive(Default)]
 pub struct LevelSelectUi {
     pub sel: usize,
+    /// The baby the level starts at (1: from the start; Left / Right), kept while the
+    /// screen is rebuilt.
+    pub baby: u32,
     pub entries: Vec<(String, LevelChoice)>,
 }
 
@@ -409,7 +413,7 @@ impl LevelSelectUi {
                 entries.push((format!("Practice {w}-{l}: {}", name(w, l)), LevelChoice::Arcade(w, l)));
             }
         }
-        LevelSelectUi { sel: 0, entries }
+        LevelSelectUi { sel: 0, baby: 1, entries }
     }
 
     pub fn key(&mut self, k: u8) -> GAct {
@@ -420,6 +424,8 @@ impl LevelSelectUi {
             dik::DOWN => self.sel = (self.sel + 1) % n,
             dik::PRIOR => self.sel = self.sel.saturating_sub(PAGE),
             dik::NEXT => self.sel = (self.sel + PAGE).min(n - 1),
+            dik::LEFT => self.baby = if self.baby <= 1 { NUM_BABIES as u32 } else { self.baby - 1 },
+            dik::RIGHT => self.baby = self.baby % NUM_BABIES as u32 + 1,
             dik::RETURN | dik::NUMPADENTER => {
                 if let Some(&(_, c)) = self.entries.get(self.sel) {
                     return GAct::Start(c);
@@ -441,7 +447,9 @@ impl LevelSelectUi {
             r.draw_text(font, 24.0, y, label, col, 1.0, None);
             y += 18.0;
         }
-        r.draw_text(font, 0.0, y + 12.0, "PgUp/PgDn   Enter play   Tab page   Esc close", grey, 1.0, Some(ow / 2.0));
+        let baby = if self.baby <= 1 { "Start at baby 1 (from the start)".to_string() } else { format!("Start at baby {} (babies 1-{} rescued)", self.baby, self.baby - 1) };
+        r.draw_text(font, 0.0, y + 12.0, &format!("<  {baby}  >"), if self.baby > 1 { yellow } else { grey }, 1.0, Some(ow / 2.0));
+        r.draw_text(font, 0.0, y + 30.0, "PgUp/PgDn   Left/Right baby   Enter play   Tab page   Esc close", grey, 1.0, Some(ow / 2.0));
     }
 }
 
@@ -525,5 +533,13 @@ mod tests {
         assert!(ui.entries.iter().any(|e| e.1 == LevelChoice::Arcade(worldid::GARDEN, 0)));
         assert!(!ui.entries.iter().any(|e| matches!(e.1, LevelChoice::Arcade(w, _) if w == worldid::FRONTEND)));
         assert_eq!(ui.key(dik::RETURN), GAct::Start(LevelChoice::Story(1)));
+        assert_eq!(ui.baby, 1);
+        ui.key(dik::RIGHT);
+        ui.key(dik::RIGHT);
+        assert_eq!(ui.baby, 3);
+        ui.key(dik::LEFT);
+        ui.key(dik::LEFT);
+        ui.key(dik::LEFT);
+        assert_eq!(ui.baby, NUM_BABIES as u32, "wraps");
     }
 }

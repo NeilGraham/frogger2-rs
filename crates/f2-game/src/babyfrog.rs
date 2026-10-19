@@ -243,6 +243,39 @@ impl Game {
         1
     }
 
+    /// Practice (not in the original): starts the level at baby `n` (1-based, in the HUD's
+    /// order, `baby_icon_index`): babies 1 to `n - 1` are rescued as a pickup in play does
+    /// (`PickupBabyFrog`, the enemy deactivated as `DoEnemyCollision` does), without their
+    /// sounds, and the frog respawns at the checkpoint that leaves, as after a death. Returns
+    /// the babies rescued.
+    pub fn skip_to_baby(&mut self, n: u32) -> u32 {
+        let nb = self.num_babies_clamped();
+        let mut order: Vec<usize> = (0..nb).filter(|&i| self.babyfrog.baby_list[i].baby.is_some()).collect();
+        order.sort_by_key(|&i| self.baby_icon_index(i));
+        let effects = self.effects.len();
+        let mut saved = 0;
+        for &i in order.iter().take(n.saturating_sub(1) as usize) {
+            let b = self.babyfrog.baby_list[i];
+            let tile = b.enemy.and_then(|e| self.enemies.enemy_list.array[e.idx()].in_tile);
+            if self.pickup_baby_frog(b.baby, tile) != 0 {
+                if let Some(e) = b.enemy {
+                    self.enemies.enemy_list.array[e.idx()].active = 0;
+                }
+                saved += 1;
+            }
+        }
+        self.effects.truncate(effects);
+        if saved > 0 {
+            if let Some(t) = self.map.g_t_start[0] {
+                self.set_frogger_start_pos(t, 0);
+            }
+            self.frogger.player[0].safe.init(2);
+            self.init_camera();
+            self.reset_platform_flags();
+        }
+        saved
+    }
+
     // wave E: `BabyCollectEffect` moved to specfx.rs.
 
     /// Port of `GetNearestBabyFrog` (Common/babyfrog.c:250): index of the nearest
@@ -487,6 +520,24 @@ mod tests {
         assert_eq!(g.pickup_baby_frog(Some(id), Some(TileId(7))), 0);
         assert_eq!(g.pickup_baby_frog(Some(ActorId(999)), None), 0);
         assert_eq!(g.get_nearest_baby_frog(), -1);
+    }
+
+    #[test]
+    fn skip_to_baby_rescues_the_earlier_ones_in_hud_order() {
+        let (mut g, a) = setup();
+        let b = ActorId(g.actor2.actors.slots.len() as u32);
+        g.actor2.actors.slots.push(Some(Default::default()));
+        g.babyfrog.baby_list[1].baby = Some(b);
+        // No paths: the HUD order is the list order. Baby 1 only is rescued for baby 2.
+        assert_eq!(g.skip_to_baby(2), 1);
+        assert_eq!((g.babyfrog.baby_list[0].is_saved, g.babyfrog.baby_list[1].is_saved), (1, 0));
+        assert_eq!(g.babyfrog.last_baby_saved, 0);
+        assert!(!g.effects.iter().any(|e| matches!(e, Effect::PlaySample { .. } | Effect::PlayVoice { .. })), "no rescue sounds: {:?}", g.effects);
+        let _ = a;
+        // Baby 1: nothing to skip.
+        let (mut g, _) = setup();
+        assert_eq!(g.skip_to_baby(1), 0);
+        assert_eq!(g.babyfrog.babies_saved, 0);
     }
 
     #[test]

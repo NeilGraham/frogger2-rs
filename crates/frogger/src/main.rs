@@ -58,6 +58,8 @@ struct Args {
     multi: Option<(u32, u32, i32)>,
     demo: Option<(u32, u32)>,
     choice: Option<gameplay::LevelChoice>,
+    /// `--baby N`: start the level at baby N (practice).
+    baby: Option<u32>,
     screenshot_settings: Option<gameplay::Tab>,
     /// `--screenshot-page PAGE[:ROW]` (headless): the settings screen in the screenshot.
     screenshot_page: Option<(app::SettingsPage, usize)>,
@@ -113,6 +115,7 @@ fn usage() -> ! {
          online: --host [--port N] [--host-addr IP] --multi WORLD LEVEL PLAYERS | --join CODE  [--pad-seed S (headless)]\n\
          mods: [--mods ID,ID...] [--mod ID]... (default: config [mods] enabled; \"\" = none) [--mods-dir DIR]\n\
          practice: [--practice WORLD LEVEL | --story CHAPTER] (level select through a game session)\n\
+         \x20      [--baby N]  (start at baby N, the earlier ones rescued; with --level / --practice / --story)\n\
          \x20      [--screenshot-settings controls|gameplay|levels] (headless: Shift+F10 page in the screenshot)\n\
          \x20      [--screenshot-page display|audio|controls|gameplay[:ROW]] [--screenshot-keymap normal|capture|conflict] [--show-fps]\n\
          editor: --editor [--level W L] [--editor-cmd CMDS]... (saves to the first --mods/--mod id, else level-W-L, in the mods dir)\n\
@@ -136,6 +139,7 @@ fn parse_args() -> Args {
         multi: None,
         demo: None,
         choice: None,
+        baby: None,
         screenshot_settings: None,
         screenshot_page: None,
         screenshot_keymap: None,
@@ -233,6 +237,7 @@ fn parse_args() -> Args {
                 let l = num(it.next());
                 a.choice = Some(gameplay::LevelChoice::Arcade(w, l));
             }
+            "--baby" => a.baby = Some(num(it.next())),
             "--story" => a.choice = Some(gameplay::LevelChoice::Story(num(it.next()))),
             "--screenshot-settings" => {
                 a.screenshot_settings = Some(match it.next().as_deref() {
@@ -385,7 +390,7 @@ fn main() {
         return;
     }
 
-    let steps: Vec<Step> = match args.level {
+    let mut steps: Vec<Step> = match args.level {
         _ if net.is_some() => Vec::new(),
         l if args.editor => {
             let (w, l) = l.unwrap_or((0, 0));
@@ -408,6 +413,9 @@ fn main() {
         // The game's own start-up: title, logo FMVs, frontend.
         None => vec![Step::Boot],
     };
+    if let Some(n) = args.baby {
+        steps.insert(0, Step::StartBaby(n));
+    }
     let res = if args.headless { headless(data, &cfg, &args, steps) } else { run_window(data, cfg, &args, steps, net) };
     if let Err(e) = res {
         eprintln!("frogger: {e}");

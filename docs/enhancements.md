@@ -159,7 +159,9 @@ F4 render scale, F6 MSAA, F7 filter, F8 widescreen, F9 fog, F12 draw distance.
 - [x] Level select / practice mode: Shift+F10 -> Level select lists every story chapter (`BookStart`
   from that chapter) and every single-player level (`ArcadeStart`, practice), unlocked or not;
   `--story N` / `--practice W L`. Built as a host page over `Game::start_story/start_arcade`
-  instead of porting the unused `E3_Demo.c` state machine.
+  instead of porting the unused `E3_Demo.c` state machine. Left / Right (`--baby N`) starts
+  the level at baby N: `Game::skip_to_baby` rescues babies 1..N-1 in the HUD's order as a
+  pickup does (silently) and respawns the frog at the checkpoint that leaves.
 - [x] Speedrun timer: IGT = 60 Hz ticks in `INGAME_MODE` (the `actFrameCount` advance while
   playing; pause, level complete and loading excluded), per level and per run, split at
   `LEVELCOMPLETE_MODE`; RTA wall clock from the first level of a run; shown top right;
