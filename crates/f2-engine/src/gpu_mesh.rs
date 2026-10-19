@@ -636,6 +636,9 @@ struct VOut {
     @location(11) @interpolate(flat) crust: f32,
     // A waterfall's lip height (`Rec::slide` w).
     @location(12) @interpolate(flat) top: f32,
+    // How far a floating thing was moved up (`float_lift`): its shadows are those of where the
+    // shadow map and the ray-traced scene have it (unmoved).
+    @location(13) lift: f32,
 };
 
 // `mtx_xfm`: row-vector affine transform.
@@ -930,6 +933,7 @@ fn float_h(xz: vec2<f32>, t: f32, f: vec2<f32>) -> f32 {
     o.flags = r.flags;
     o.cur = c;
     o.prev = clip(cam.pproj, xfm(cam.pv, xfm(prevs[r.mat + i.bone], i.pos) + vec3<f32>(0.0, lift, 0.0)));
+    o.lift = lift;
     o.world = world;
     o.normal = xfm_dir(m, i.normal.xyz);
     o.slide = r.slide.y;
@@ -1682,11 +1686,14 @@ fn light(i: VOut, base: vec3<f32>, face: vec3<f32>) -> vec3<f32> {
     if (behind < 0.0) { n = normalize(n - face * (2.0 * behind)); }
     let v = normalize(lt.eye.xyz - i.world);
     let seed = i.pos.xy;
-    let amb = rt_ambient(i.world, n, seed);
+    // Where the shadow casters have this point (a floating thing is drawn moved with the water;
+    // looked up from its drawn place, it would be in its own unmoved copy's shadow).
+    let q = i.world - vec3<f32>(0.0, i.lift, 0.0);
+    let amb = rt_ambient(q, n, seed);
     var l = mix(lt.ground.rgb, lt.sky.rgb, n.y * 0.5 + 0.5) * amb.a + amb.rgb;
     var spec = vec3<f32>(0.0);
     if (lt.sun_dir.w > 0.5) {
-        let sh = min(shadow(i.world + n * 2.0), rt_sun(i.world, n, seed));
+        let sh = min(shadow(q + n * 2.0), rt_sun(q, n, seed));
         let ndl = max(dot(n, lt.sun_dir.xyz), 0.0);
         l += lt.sun_color.rgb * ndl * sh;
         l += lt.sun_color.rgb * rt_caustics(i.world, ndl) * sh;
@@ -1705,7 +1712,7 @@ fn light(i: VOut, base: vec3<f32>, face: vec3<f32>) -> vec3<f32> {
         if (att <= 0.0) { continue; }
         // Half-wrapped so lights also reach surfaces seen edge-on (sprites' flames, lava).
         let w = clamp(dot(n, d / max(dist, 0.001)) * 0.75 + 0.25, 0.0, 1.0);
-        l += p.color.rgb * att * att * w * rt_point(i.world, n, p.pos.xyz, k, seed);
+        l += p.color.rgb * att * att * w * rt_point(q, n, p.pos.xyz, k, seed);
     }
     // The baked colours are the art's occlusion: dark corners get no highlight either.
     return base * l + spec * dot(i.color.rgb, vec3<f32>(1.0 / 3.0));

@@ -551,6 +551,9 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     // Debug: `F2_SHOT_UNTIL=tongue|ring|decal|lightning` stops at the first tick showing it.
     let until = std::env::var("F2_SHOT_UNTIL").ok();
     let draw_every = std::env::var_os("F2_DRAW_EVERY").is_some();
+    // Debug: `F2_UPSCALE_SIM=1` renders through the temporal upscaler's path (2/3 size,
+    // stretched): what a DLSS / FSR frame draws.
+    let upscale_sim = std::env::var_os("F2_UPSCALE_SIM").is_some();
     for _ in 0..frames {
         if app.editing() {
             // The editor pauses the simulation.
@@ -558,6 +561,9 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
         }
         let shots: Vec<PathBuf> = app.pad_script.as_ref().map_or(Vec::new(), |s| s.shots_at(app.ticks).cloned().collect());
         for out in shots {
+            if upscale_sim {
+                app.prepare_upscale(Some(((w * 2 / 3, h * 2 / 3), [0.0; 2])));
+            }
             app.draw(w, h);
             let img = app.r.render_to_image(app.clear_color()).map_err(|e| e.to_string())?;
             img.write_png(&out).map_err(|e| e.to_string())?;
@@ -582,6 +588,9 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
         // Debug: `F2_DRAW_EVERY=1` draws every tick (render-side state that builds up over
         // frames, e.g. the Enhanced water's waves, shows in the screenshot).
         if draw_every {
+            if upscale_sim {
+                app.prepare_upscale(Some(((w * 2 / 3, h * 2 / 3), [0.0; 2])));
+            }
             app.draw(w, h);
             app.r.render_to_image(app.clear_color()).map_err(|e| e.to_string())?;
         }

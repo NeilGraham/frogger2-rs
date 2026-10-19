@@ -1552,7 +1552,7 @@ impl Renderer {
             let s = actor.scale.map(f32::abs);
             let radius = ((fp[1] - fp[0]) * s[0]).max((fp[3] - fp[2]) * s[2]) * 0.5;
             let n = model.root.name.to_ascii_lowercase();
-            let heavy = if ["gat", "croc", "alli"].iter().any(|k| n.contains(k)) {
+            let heavy = if ["gat", "croc", "crk", "alli"].iter().any(|k| n.contains(k)) {
                 0.6
             } else if n.contains("trt") || n.contains("turt") {
                 0.8
@@ -2712,8 +2712,22 @@ impl Renderer {
             view_formats: &[],
         });
         let view = tex.create_view(&Default::default());
+        // An upscale size set ([`upscale_render`](Self::upscale_render)): the frame goes
+        // through the upscaler's path, the render-size image stretched (headless checks of
+        // what a DLSS / FSR frame draws).
+        if self.upscale_render.is_some() {
+            struct Stretch;
+            impl crate::upscale::Upscaler for Stretch {
+                fn upscale(&mut self, _: &wgpu::Device, _: &wgpu::Queue, _: &crate::upscale::UpscaleInputs) -> bool {
+                    false
+                }
+            }
+            self.render_upscaled(&view, w, h, clear, &mut Stretch);
+        }
         let mut enc = self.device.create_command_encoder(&Default::default());
-        self.encode(&mut enc, &view, w, h, clear);
+        if self.upscale_render.is_none() {
+            self.encode(&mut enc, &view, w, h, clear);
+        }
         let bpr = (w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
