@@ -880,7 +880,7 @@ fn float_lift(a: vec3<f32>, p: vec3<f32>) -> f32 {
     let tilt = clamp(vec2<f32>(hx, hz) / e, vec2<f32>(-0.15), vec2<f32>(0.15)) * 0.6;
     return w * (rest + h * 0.8 + dot(p.xz - a.xz, tilt));
 }
-const FLOAT_DRAFT: f32 = 1.5;
+const FLOAT_DRAFT: f32 = 0.4;
 
 @vertex fn vs(i: VIn, @builtin(instance_index) inst: u32) -> VOut {
     let r = recs[inst];
