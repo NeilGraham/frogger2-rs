@@ -63,7 +63,7 @@ const SPOT_CELL: f32 = 220.0;
 /// Mesh key: model id and pre-order object index (or [`MESH_SKIN`]).
 pub(crate) type Key = (u32, u16);
 
-/// Per-draw record in the storage buffer (32 bytes).
+/// Per-draw record in the storage buffer (48 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct Rec {
@@ -78,6 +78,10 @@ struct Rec {
     modge_frame: u32,
     _pad: u32,
     gouraud: [f32; 4],
+    /// A sliding texture ([`GpuObj::slide`]): x: what to add to the uploaded `v` (meshes
+    /// uploaded once: subdivided water); y: how fast it slides (`v` per second, the texture
+    /// moving to +v); z, w: spare.
+    slide: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -114,6 +118,9 @@ pub(crate) struct Sink {
     water: Vec<(Key, u32, bool)>,
     /// Subdivided water meshes seen for the first time, to upload.
     water_pending: Vec<(Key, Vec<Vert>, Vec<Group>)>,
+    /// The first texture coordinate of each subdivided water mesh as uploaded: a sliding one
+    /// is not uploaded again, its draws move `v` instead ([`Rec::slide`]).
+    water_uv0: HashMap<Key, [i16; 2]>,
 }
 
 /// A mesh the original animates or blends ([`GpuObj::light_only`]), with the enhanced water.
@@ -134,7 +141,7 @@ enum Class {
 fn classify(o: &GpuObj, textures: &TextureRegistry) -> Class {
     let n = o.mesh.textures.len();
     let wet = o.mesh.textures.iter().filter(|&&crc| textures.entry(crc).is_some_and(|e| crate::lighting::is_water(&e.name))).count();
-    if n > 0 && wet * 2 > n && o.slides && matches!(o.frame, Frame::Normal | Frame::Wrap) {
+    if n > 0 && wet * 2 > n && o.slide != 0.0 && matches!(o.frame, Frame::Normal | Frame::Wrap) {
         Class::Flowing
     } else if n > 0 && wet * 2 > n {
         Class::Water
@@ -159,12 +166,17 @@ impl Sink {
     pub fn offer(&mut self, o: &GpuObj, no_clip: bool, textures: &TextureRegistry) -> bool {
         let key = (o.model.id, o.object);
         let uv0 = o.mesh.face_uv.first().copied();
+        // A flowing liquid is not uploaded again as it slides: its draws move `v` instead
+        // (every face together: smooth, where each face's own jumps by 8192 now and then).
+        let flowing = o.light_only && self.class.get(&key) == Some(&Class::Flowing);
+        let mut dv = 0.0;
         match self.known.get_mut(&key) {
             None => {
                 let (verts, groups) = expand(o);
                 self.known.insert(key, uv0);
                 self.pending.push((key, verts, groups));
             }
+            Some(k) if flowing => dv = (uv0.map_or(0, |u| u[1]) as i32 - k.map_or(0, |u| u[1]) as i32) as f32 * UV_SCALE,
             Some(k) if *k != uv0 => {
                 *k = uv0;
                 self.slid.push((key, expand(o).0));
@@ -195,12 +207,18 @@ impl Sink {
                         let (verts, groups) = expand(o);
                         let (verts, groups) = subdivide(&verts, &groups);
                         self.water_pending.push((key, verts, groups));
+                        self.water_uv0.insert(key, uv0.unwrap_or([0, 0]));
                     }
                     let mat = self.mats.len() as u32;
                     self.mats.push(o.mats[0]);
                     self.prev.push(*o.prev.first().unwrap_or(&o.mats[0]));
                     let flags = (o.modge as u32 & 3) << 3;
-                    self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [1.0; 4] });
+                    // A face's `v` jumps by 8192 when it slides far (`slide_object`): the first
+                    // face's moves every face, which keeps them together.
+                    let up = self.water_uv0.get(&key).map_or(0, |u| u[1]);
+                    let dv = (uv0.map_or(0, |u| u[1]) as i32 - up as i32) as f32 * UV_SCALE;
+                    let slide = [dv, o.slide * UV_SCALE * 60.0, 0.0, 0.0];
+                    self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [1.0; 4], slide });
                     self.water.push((key, self.recs.len() as u32 - 1, o.frame == Frame::Additive));
                     return true;
                 }
@@ -213,7 +231,8 @@ impl Sink {
         let flags = no_clip as u32 | (o.gouraud.is_some() as u32) << 1 | (o.landscape as u32) << 2;
         let g = o.gouraud.unwrap_or([1.0; 3]);
         let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5 | (liquid as u32) << 6;
-        self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0] });
+        let slide = [dv, o.slide * UV_SCALE * 60.0, 0.0, 0.0];
+        self.recs.push(Rec { mat, flags, modge_frame: o.modge_frame, _pad: 0, gouraud: [g[0], g[1], g[2], 1.0], slide });
         self.draws.push(Draw {
             key,
             rec: self.recs.len() as u32 - 1,
@@ -421,7 +440,7 @@ struct Cam {
     fog_color: vec4<f32>,
     depth: vec4<f32>,    // near (upscaler depth), alpha reference, -, -
 };
-struct Rec { mat: u32, flags: u32, mframe: u32, pad1: u32, gouraud: vec4<f32> };
+struct Rec { mat: u32, flags: u32, mframe: u32, pad1: u32, gouraud: vec4<f32>, slide: vec4<f32> };
 // LIGHTS-BEGIN
 struct Lights {
     sky: vec4<f32>,       // w: lighting on
@@ -459,6 +478,7 @@ struct Point { pos: vec4<f32>, color: vec4<f32> };
 @group(3) @binding(4) var<storage, read> wave: array<vec2<f32>>;
 @group(3) @binding(5) var surface: texture_depth_2d;
 @group(3) @binding(9) var bed: texture_depth_2d;
+@group(3) @binding(10) var flow: texture_2d<f32>;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -478,6 +498,8 @@ struct VOut {
     @location(6) prev: vec4<f32>,
     @location(7) world: vec3<f32>,
     @location(8) normal: vec3<f32>,
+    // How fast the texture slides (`v` per second; `Rec::slide`).
+    @location(9) @interpolate(flat) slide: f32,
 };
 
 // `mtx_xfm`: row-vector affine transform.
@@ -543,13 +565,42 @@ fn surface_y(xz: vec2<f32>) -> f32 {
     if (d >= 0.99999) { return -1e9; }
     return lt.water2.z + (0.5 - d) * lt.water2.w;
 }
-// Small travelling ripples everywhere on the water (world units).
-// Where x / z's water was at time 0 (the flow carries the ripples along).
-fn flowed(xz: vec2<f32>, t: f32) -> vec2<f32> {
-    return xz - lt.water4.xy * t;
+// A stream's flow at simulation cell c (the flow map, bilinear).
+fn flow_map(c: vec2<f32>) -> vec2<f32> {
+    let i = vec2<i32>(floor(c));
+    let f = c - floor(c);
+    let n = vec2<i32>(i32(lt.water.w) - 1);
+    let z = vec2<i32>(0);
+    let a = mix(textureLoad(flow, clamp(i, z, n), 0).xy, textureLoad(flow, clamp(i + vec2<i32>(1, 0), z, n), 0).xy, f.x);
+    let b = mix(textureLoad(flow, clamp(i + vec2<i32>(0, 1), z, n), 0).xy, textureLoad(flow, clamp(i + vec2<i32>(1, 1), z, n), 0).xy, f.x);
+    return mix(a, b, f.y);
 }
-fn ripples(xz0: vec2<f32>, t: f32) -> f32 {
-    let xz = flowed(xz0, t);
+// How fast the water at world x / z flows (x / z per second): the level's flow plus a
+// stream's, smoothed over about 12 units (the art's texture density, so the speed, changes
+// from face to face, and a stream runs into still water: carried things would tear there).
+fn flow_at(xz: vec2<f32>) -> vec2<f32> {
+    let c = cell(xz);
+    let sum = flow_map(c) + flow_map(c + vec2<f32>(4.0, 4.0)) + flow_map(c + vec2<f32>(-4.0, 4.0))
+        + flow_map(c + vec2<f32>(4.0, -4.0)) + flow_map(c + vec2<f32>(-4.0, -4.0));
+    return lt.water4.xy + sum * 0.2;
+}
+// Something carried by the flow, seen at x / z: where it was at time 0 is x / z - flow · t,
+// which stretches it out wherever the flow changes. So two copies are kept, each carried
+// along for one period and then put back, half a period apart, crossfaded (flow mapping):
+// x: how far the first has been carried (time), y: the second's, z: the first's weight.
+fn flow_phases(t: f32) -> vec3<f32> {
+    let p0 = fract(t / FLOW_PERIOD);
+    let p1 = fract(t / FLOW_PERIOD + 0.5);
+    return vec3<f32>(p0 * FLOW_PERIOD, p1 * FLOW_PERIOD, 1.0 - abs(1.0 - 2.0 * p0));
+}
+const FLOW_PERIOD: f32 = 2.5;
+// Small travelling ripples everywhere on the water (world units), carried by the flow.
+fn ripples(xz0: vec2<f32>, t: f32, f: vec2<f32>) -> f32 {
+    if (dot(f, f) < 1e-4) { return ripples_at(xz0, t); }
+    let ph = flow_phases(t);
+    return ripples_at(xz0 - f * ph.x, t) * ph.z + ripples_at(xz0 - f * ph.y + vec2<f32>(37.0, 19.0), t) * (1.0 - ph.z);
+}
+fn ripples_at(xz: vec2<f32>, t: f32) -> f32 {
     // A slow swell (our own, in place of the original's low-poly WAVE lift; scaled by the
     // level: standing water is nearly still) and fine ripples, which always stay (they bend
     // the light into caustics and catch the sun).
@@ -567,13 +618,17 @@ fn ripples(xz0: vec2<f32>, t: f32) -> f32 {
     return swell * lt.water4.z + fine;
 }
 fn water_h(xz: vec2<f32>) -> f32 {
-    return wave_h(xz) + ripples(xz, lt.water2.x);
+    return wave_h(xz) + ripples(xz, lt.water2.x, flow_at(xz));
 }
 // The water's normal at world x / z.
 fn water_n(xz: vec2<f32>) -> vec3<f32> {
     let e = lt.water.z;
-    let hx = water_h(xz + vec2<f32>(e, 0.0)) - water_h(xz - vec2<f32>(e, 0.0));
-    let hz = water_h(xz + vec2<f32>(0.0, e)) - water_h(xz - vec2<f32>(0.0, e));
+    let f = flow_at(xz);
+    let t = lt.water2.x;
+    let dx = vec2<f32>(e, 0.0);
+    let dz = vec2<f32>(0.0, e);
+    let hx = wave_h(xz + dx) - wave_h(xz - dx) + ripples(xz + dx, t, f) - ripples(xz - dx, t, f);
+    let hz = wave_h(xz + dz) - wave_h(xz - dz) + ripples(xz + dz, t, f) - ripples(xz - dz, t, f);
     return normalize(vec3<f32>(-hx, 2.0 * e, -hz));
 }
 // WATER-END
@@ -628,7 +683,10 @@ fn caustics(p: vec3<f32>, to_light: vec3<f32>) -> f32 {
     let lap = wave_h(q + vec2<f32>(e, 0.0)) + wave_h(q - vec2<f32>(e, 0.0)) + wave_h(q + vec2<f32>(0.0, e)) + wave_h(q - vec2<f32>(0.0, e)) - 4.0 * wave_h(q);
     let focus = clamp(1.0 + lap * 1.5, 0.3, 3.0);
     let fade = exp(-depth / 240.0) * smoothstep(0.5, 6.0, depth);
-    return caustic(flowed(q, lt.water2.x), lt.water2.x) * focus * fade;
+    let f = flow_at(q);
+    let ph = flow_phases(lt.water2.x);
+    let c = caustic(q - f * ph.x, lt.water2.x) * ph.z + caustic(q - f * ph.y + vec2<f32>(37.0, 19.0), lt.water2.x) * (1.0 - ph.z);
+    return c * focus * fade;
 }
 
 // World point in the sun's shadow map: (u-ish x, y in -1..1, depth 0..1).
@@ -656,7 +714,7 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
         col = vec4<f32>(delight(col.rgb), col.a);
     }
     o.color = clamp(col, vec4<f32>(0.0), vec4<f32>(1.0));
-    o.uv = i.uv;
+    o.uv = i.uv + vec2<f32>(0.0, r.slide.x);
     if ((r.flags & 8u) != 0u) {
         o.uv += modge(i.pos, f32(r.mframe)).xy * 0.4;
     }
@@ -670,6 +728,7 @@ fn light_space(p: vec3<f32>) -> vec3<f32> {
     o.prev = clip(cam.pproj, xfm(cam.pv, xfm(prevs[r.mat + i.bone], i.pos)));
     o.world = world;
     o.normal = xfm_dir(m, i.normal.xyz);
+    o.slide = r.slide.y;
     return o;
 }
 
@@ -711,7 +770,7 @@ struct ShadowCut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>
     let j = vec2<f32>(cam.size.z * 2.0 / cam.size.x, -cam.size.w * 2.0 / cam.size.y);
     o.pos = vec4<f32>(c.xy + j * c.w, zl * c.w, c.w);
     var col = clamp(i.color, vec4<f32>(0.0), vec4<f32>(1.0));
-    o.uv = i.uv;
+    o.uv = i.uv + vec2<f32>(0.0, r.slide.x);
     if ((r.flags & 8u) != 0u) {
         o.uv += md.xy * 0.4;
         if ((r.flags & 16u) != 0u) {
@@ -730,6 +789,7 @@ struct ShadowCut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>
     o.prev = c;
     o.world = world;
     o.normal = vec3<f32>(0.0, 1.0, 0.0);
+    o.slide = r.slide.y;
     return o;
 }
 
@@ -958,7 +1018,11 @@ fn grid_color(i: VOut) -> vec4<f32> {
     // reflects little).
     let fres = 0.07 + 0.93 * pow(1.0 - max(dot(n, v), 0.0), 4.0);
     // The original water texture as detail, in world space, drifting and bent by the waves.
-    let detail = textureSample(t, s, flowed(i.world.xz, tm) / 48.0 + vec2<f32>(tm * 0.012, tm * 0.007) + n.xz * 0.05).rgb;
+    let fl = flow_at(i.world.xz);
+    let ph = flow_phases(tm);
+    let dq = vec2<f32>(tm * 0.012, tm * 0.007) + n.xz * 0.05;
+    let detail = textureSample(t, s, (i.world.xz - fl * ph.x) / 48.0 + dq).rgb * ph.z
+        + textureSample(t, s, (i.world.xz - fl * ph.y) / 48.0 + dq + vec2<f32>(0.37, 0.19)).rgb * (1.0 - ph.z);
     let body = lt.water3.rgb;
     var sh = 1.0;
     var spec = vec3<f32>(0.0);
@@ -1044,14 +1108,43 @@ struct BedOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>
     return i.pos.z;
 }
 
-// The water meshes seen from above into the surface map (depth = height).
-@vertex fn vs_surface(i: VIn, @builtin(instance_index) inst: u32) -> @builtin(position) vec4<f32> {
+// The water meshes seen from above into the surface map (depth = height) and the flow map.
+struct SurfOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) xz: vec2<f32>,
+    @location(1) v: f32,
+    @location(2) @interpolate(flat) slide: f32,
+};
+@vertex fn vs_surface(i: VIn, @builtin(instance_index) inst: u32) -> SurfOut {
     let r = recs[inst];
     let w = xfm(mats[r.mat], i.pos);
     let size = lt.water.z * lt.water.w;
     let x = (w.x - lt.water.x) / size * 2.0 - 1.0;
     let y = 1.0 - (w.z - lt.water.y) / size * 2.0;
-    return vec4<f32>(x, y, clamp(0.5 - (w.y - lt.water2.z) / lt.water2.w, 0.0, 1.0), 1.0);
+    var o: SurfOut;
+    o.pos = vec4<f32>(x, y, clamp(0.5 - (w.y - lt.water2.z) / lt.water2.w, 0.0, 1.0), 1.0);
+    o.xz = w.xz;
+    o.v = i.uv.y;
+    o.slide = r.slide.y;
+    return o;
+}
+// A sliding texture is a stream: the texture moves to +v at `slide` (v per second), so the
+// water flows along v's gradient in x / z, at slide / |gradient|.
+@fragment fn fs_surface(i: SurfOut) -> @location(0) vec4<f32> {
+    let gx = dpdx(i.xz);
+    let gy = dpdy(i.xz);
+    let vx = dpdx(i.v);
+    let vy = dpdy(i.v);
+    let det = gx.x * gy.y - gx.y * gy.x;
+    if (i.slide == 0.0 || abs(det) < 1e-9) { return vec4<f32>(0.0); }
+    // [gx; gy] · g = [vx; vy]
+    let g = vec2<f32>(vx * gy.y - vy * gx.y, vy * gx.x - vx * gy.x) / det;
+    let gg = dot(g, g);
+    if (gg < 1e-12) { return vec4<f32>(0.0); }
+    var f = g * (i.slide / gg);
+    let sp = length(f);
+    if (sp > 150.0) { f *= 150.0 / sp; }
+    return vec4<f32>(f, 0.0, 0.0);
 }
 
 fn shadow(p: vec3<f32>) -> f32 {
@@ -1127,7 +1220,7 @@ fn light(i: VOut, base: vec3<f32>, face: vec3<f32>) -> vec3<f32> {
 // would land under flat water, turned into texture space by the surface's uv / world
 // derivatives (`d`: dpdx / dpdy of world x / z and of uv).
 fn refraction_uv(i: VOut, d: mat4x2<f32>) -> vec2<f32> {
-    if (lt.water2.y < 0.5 || (i.flags & 1u) != 0u) { return vec2<f32>(0.0); }
+    if (lt.water2.y < 0.5 || (i.flags & 65u) != 0u) { return vec2<f32>(0.0); }
     let sy = surface_y(i.world.xz);
     let depth = sy - i.world.y;
     let eye = lt.eye.xyz;
@@ -1145,40 +1238,164 @@ fn refraction_uv(i: VOut, d: mat4x2<f32>) -> vec2<f32> {
     return clamp(duv, vec2<f32>(-0.2), vec2<f32>(0.2)) * smoothstep(0.5, 4.0, depth);
 }
 
-// A flowing liquid's ripples ([`Class::Flowing`]): a height field in its texture's coordinates,
-// which slide, so the ripples flow with the texture.
-fn liquid_h(uv: vec2<f32>, t: f32) -> f32 {
-    let q = uv * 18.85;
-    return sin(q.x + q.y * 0.6 + t * 1.3) * 0.5 + sin(q.y * 1.3 - q.x * 0.7 + t * 1.7) * 0.35 + sin(q.x * 2.3 + q.y * 1.9 - t * 2.1) * 0.15;
+// A flowing liquid ([`Class::Flowing`]: the acid rivers): its surface is a height field in
+// its texture's coordinates, which slide, so everything on it flows with the texture. Every
+// pattern repeats with the texture: the art's faces meet with their coordinates whole
+// repeats apart.
+
+// The in-plane world gradient of something whose screen derivatives are dx / dy.
+fn plane_grad(sx: vec3<f32>, sy: vec3<f32>, dx: f32, dy: f32) -> vec3<f32> {
+    let a = dot(sx, sx);
+    let b = dot(sx, sy);
+    let c = dot(sy, sy);
+    let det = a * c - b * b;
+    if (abs(det) < 1e-12) { return vec3<f32>(0.0); }
+    return (sx * (dx * c - dy * b) + sy * (dy * a - dx * b)) / det;
+}
+fn lhash(c: vec2<i32>, salt: u32) -> f32 {
+    var h = u32(c.x) * 374761393u + u32(c.y) * 668265263u + salt * 2246822519u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    return f32(h ^ (h >> 16u)) / 4294967295.0;
+}
+fn lwrap(c: vec2<i32>, per: vec2<i32>) -> vec2<i32> {
+    return ((c % per) + per) % per;
+}
+// Value noise repeating every `per` cells: value (-1..1) and its gradient.
+fn lnoise(p: vec2<f32>, per: vec2<i32>, salt: u32) -> vec3<f32> {
+    let i = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+    let a = lhash(lwrap(i, per), salt);
+    let b = lhash(lwrap(i + vec2<i32>(1, 0), per), salt);
+    let c = lhash(lwrap(i + vec2<i32>(0, 1), per), salt);
+    let d = lhash(lwrap(i + vec2<i32>(1, 1), per), salt);
+    let k = a - b - c + d;
+    return vec3<f32>(a + (b - a) * u.x + (c - a) * u.y + k * u.x * u.y, du * vec2<f32>(b - a + k * u.y, c - a + k * u.x)) * 2.0 - vec3<f32>(1.0, 0.0, 0.0);
 }
 
-// The sheen of a flowing liquid: highlights of the sun and the point lights and a little sky on
-// its rippled surface (bump-mapped from screen derivatives: Mikkelsen, "Bump Mapping
-// Unparametrized Surfaces on the GPU").
-fn liquid_sheen(i: VOut, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, hx: f32, hy: f32) -> vec3<f32> {
-    let r1 = cross(sy, face);
-    let r2 = cross(face, sx);
-    let det = dot(sx, r1);
-    let n = normalize(abs(det) * face - sign(det) * (hx * r1 + hy * r2) * LIQUID_BUMP);
-    let v = normalize(lt.eye.xyz - i.world);
-    let fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
-    // Under an open sky a little of it; a cave's (sunless) ambient is no sky to reflect.
-    var spec = lt.sky.rgb * fres * 0.25 * lt.sun_dir.w;
-    if (lt.sun_dir.w > 0.5) {
-        let sh = shadow(i.world + face * 2.0);
-        spec += lt.sun_color.rgb * pow(max(dot(n, normalize(lt.sun_dir.xyz + v)), 0.0), 96.0) * 1.5 * sh;
+// A flowing liquid's surface ([`liquid_surface`]).
+struct LiquidSurf {
+    // The height's gradient in uv (world units per uv).
+    g: vec2<f32>,
+    // Height (about -1..2: troughs to crests).
+    h: f32,
+    // The rapids' foaming crests (0..1).
+    crest: f32,
+    // Bubbles: their domes (0..1) and the rings they leave when they pop.
+    dome: f32,
+    ring: f32,
+};
+
+// The liquid's surface at texture coordinates uv, time t (s); `steep` 0..1 (rapids); `fp`: a
+// pixel's footprint in uv (detail finer than a few pixels fades out, no glitter far away).
+fn liquid_surface(uv: vec2<f32>, t: f32, steep: f32, fp: f32) -> LiquidSurf {
+    var o: LiquidSurf;
+    // Streaks along the flow (+v): narrow across, long along it, drifting a little against
+    // the flow so the liquid shears; ridged, higher on the rapids.
+    let sf1 = vec2<f32>(7.0, 2.0);
+    let sf2 = vec2<f32>(13.0, 3.0);
+    let s1 = lnoise(uv * sf1 + vec2<f32>(0.0, -t * 0.45), vec2<i32>(7, 2), 1u);
+    let s2 = lnoise(uv * sf2 + vec2<f32>(0.0, -t * 0.8), vec2<i32>(13, 3), 5u);
+    let sn = s1.x * 0.65 + s2.x * 0.35;
+    let sg = s1.yz * sf1 * 0.65 + s2.yz * sf2 * 0.35;
+    // Ridged with a softened crease.
+    let sq = sqrt(sn * sn + 0.004);
+    let ridge = 1.0 - sq;
+    let sa = mix(0.8, 1.6, steep);
+    o.g = sa * 2.0 * ridge * (-sn / sq) * sg;
+    o.h = (ridge * ridge - 0.45) * sa;
+    // Ripples, boiling: two layers drifting across each other.
+    let r1 = lnoise(uv * 12.0 + vec2<f32>(t * 0.35, t * 0.6), vec2<i32>(12), 2u);
+    let r2 = lnoise(uv * 25.0 + vec2<f32>(-t * 0.7, t * 0.2), vec2<i32>(25), 3u);
+    let f1 = 1.0 - smoothstep(0.1, 0.3, fp * 12.0);
+    let f2 = 1.0 - smoothstep(0.1, 0.3, fp * 25.0);
+    o.g = o.g * (1.0 - smoothstep(0.1, 0.3, fp * 7.0)) + r1.yz * 12.0 * 0.5 * f1 + r2.yz * 25.0 * 0.15 * f2;
+    o.h += r1.x * 0.5 * f1 + r2.x * 0.15 * f2;
+    o.crest = smoothstep(0.8, 0.98, ridge) * steep;
+    // Bubbles: some cells (5.6 units across) have one, which swells and pops, leaving a ring
+    // that spreads and fades.
+    let cells = 9.0;
+    let q = uv * cells;
+    let ci = lwrap(vec2<i32>(floor(q)), vec2<i32>(9));
+    let f = q - floor(q);
+    let fb = 1.0 - smoothstep(0.15, 0.4, fp * cells);
+    if (lhash(ci, 4u) < 0.3 * (1.0 - steep) && fb > 0.0) {
+        let life = 2.4 + lhash(ci, 5u) * 1.6;
+        let ph = fract(t / life + lhash(ci, 6u));
+        let ctr = vec2<f32>(0.3, 0.3) + vec2<f32>(lhash(ci, 7u), lhash(ci, 8u)) * 0.4;
+        let rmax = 0.1 + lhash(ci, 9u) * 0.16;
+        let dv = f - ctr;
+        let d = length(dv);
+        if (ph < 0.85) {
+            let r = rmax * sqrt(ph / 0.85);
+            if (d < r) {
+                // A dome: its slope (into world units per uv, about 0.4 of a sphere's).
+                let s = sqrt(max(r * r - d * d, r * r * 0.02));
+                o.g += -dv / s * 20.0 * fb;
+                o.dome = smoothstep(r, r * 0.8, d) * fb;
+            }
+        } else {
+            let k = (ph - 0.85) / 0.15;
+            let rr = rmax * (1.0 + k * 1.8);
+            o.ring = exp(-pow((d - rr) / 0.03, 2.0)) * (1.0 - k) * fb;
+        }
     }
+    return o;
+}
+
+// The colour of a flowing liquid with texture colour `tex` (the original's, which it keeps),
+// face normal `face`, screen derivatives sx / sy of the world position and duvx / duvy of
+// the texture coordinates: deeper in its troughs and paler on its crests, lit through its
+// rippled surface (bump-mapped: the height's gradient in uv turned into world space), glowing
+// a little, with bubbles, and highlights of the lights about it.
+fn liquid(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec3<f32> {
+    let gu = plane_grad(sx, sy, duvx.x, duvy.x);
+    let gv = plane_grad(sx, sy, duvx.y, duvy.y);
+    let steep = smoothstep(0.25, 0.7, 1.0 - abs(face.y));
+    let fp = max(length(duvx), length(duvy));
+    let sf = liquid_surface(i.uv, lt.water2.x, steep, fp);
+    // The height's gradient in world space: uv's gradients (uv per world unit) × the slopes.
+    let hw = (sf.g.x * gu + sf.g.y * gv) * LIQUID_BUMP;
+    // On the smoothed normal (the faces of the art's coarse meshes tilt this way and that).
+    var n0 = normalize(i.normal);
+    if (dot(n0, face) < 0.0) { n0 = -n0; }
+    let n = normalize(n0 - (hw - n0 * dot(hw, n0)));
+    let v = normalize(lt.eye.xyz - i.world);
+    // The body: deeper and richer in the troughs, paler on the crests and the bubbles.
+    let up = clamp(smoothstep(-0.9, 1.3, sf.h) + sf.dome * 0.35, 0.0, 1.0);
+    let body = tex * mix(vec3<f32>(0.5, 0.62, 0.45), vec3<f32>(1.0, 1.05, 0.95), up);
+    let pale = min(tex * 1.3 + vec3<f32>(0.1, 0.14, 0.03), vec3<f32>(1.0));
+    var j = i;
+    j.normal = n;
+    var c = light(j, body, face);
+    // Its own glow.
+    c += body * LIQUID_GLOW;
+    // The light about it (the sun, else a light from above in a cave) across its ripples.
+    let key = select(normalize(vec3<f32>(0.25, 1.0, 0.3)), lt.sun_dir.xyz, lt.sun_dir.w > 0.5);
+    c *= clamp(1.0 + (dot(n, key) - dot(n0, key)) * 2.5, 0.6, 1.5);
+    let fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    // Reflections: the sky under an open sky; in a cave its own glow on the rock about it.
+    var spec = mix(tex * 0.35, lt.sky.rgb * 0.5, lt.sun_dir.w) * fres;
+    let sh = select(1.0, shadow(i.world + face * 2.0), lt.sun_dir.w > 0.5);
+    let kc = select(vec3<f32>(0.75, 0.9, 0.7) * 0.5, lt.sun_color.rgb * 2.0, lt.sun_dir.w > 0.5);
+    spec += kc * pow(max(dot(n, normalize(key + v)), 0.0), 140.0) * sh;
     let np = u32(lt.ground.w);
     for (var k = 0u; k < np; k++) {
         let p = points[k];
         let d = p.pos.xyz - i.world;
         let dist = length(d);
         let att = clamp(1.0 - dist / p.pos.w, 0.0, 1.0);
-        spec += p.color.rgb * att * att * pow(max(dot(n, normalize(d / max(dist, 0.001) + v)), 0.0), 64.0);
+        let h = pow(max(dot(n, normalize(d / max(dist, 0.001) + v)), 0.0), 90.0);
+        spec += p.color.rgb * att * att * h * 1.2;
     }
-    return spec;
+    // The rapids' crests and the rings of popped bubbles: pale froth.
+    let froth = clamp(sf.crest * 0.8 + sf.ring * 0.5, 0.0, 1.0);
+    c = mix(c, pale * 1.15, froth * 0.6);
+    return c + spec;
 }
 const LIQUID_BUMP: f32 = 0.6;
+const LIQUID_GLOW: f32 = 0.08;
 
 fn shade(i: VOut) -> vec4<f32> {
     // Derivatives first (uniform control flow).
@@ -1188,9 +1405,6 @@ fn shade(i: VOut) -> vec4<f32> {
     var face = cross(sx, sy);
     face = select(normalize(i.normal), normalize(face), dot(face, face) > 1e-12);
     if (dot(face, lt.eye.xyz - i.world) < 0.0) { face = -face; }
-    let lh = liquid_h(i.uv, lt.water2.x);
-    let lhx = dpdx(lh);
-    let lhy = dpdy(lh);
     // The far plane (`PCPrepareObject` drops faces past it; here per pixel, no popping).
     if ((i.flags & 1u) == 0u && i.vz - 10.0 >= cam.fog.w) { discard; }
     var c = textureSampleGrad(t, s, i.uv + refraction_uv(i, dd), dd[2], dd[3]) * i.color;
@@ -1199,9 +1413,10 @@ fn shade(i: VOut) -> vec4<f32> {
         if (EMISSIVE) {
             c = vec4<f32>(min(c.rgb * 1.15, vec3<f32>(1.0)), c.a);
         } else if ((i.flags & 1u) == 0u) {
-            c = vec4<f32>(light(i, c.rgb, face), c.a);
             if ((i.flags & 64u) != 0u) {
-                c = vec4<f32>(c.rgb + liquid_sheen(i, face, sx, sy, lhx, lhy), c.a);
+                c = vec4<f32>(liquid(i, c.rgb, face, sx, sy, dd[2], dd[3]), c.a);
+            } else {
+                c = vec4<f32>(light(i, c.rgb, face), c.a);
             }
         }
     }
@@ -1328,6 +1543,9 @@ fn point_lights(m: &[[f32; 4]; 4], g: &Group, color: [f32; 3], out: &mut Vec<Poi
         out.push(PointLight { pos, color: [color[0] * 1.7, color[1] * 1.4, color[2] * 1.1], radius: 140.0 + ext * 1.5 });
     }
 }
+
+/// How bright a flowing liquid's lights are against a glowing texture's ([`point_lights`]).
+const LIQUID_LIGHT: f32 = 0.3;
 
 /// What the lights need to know of a texture.
 #[derive(Clone, Copy, Debug)]
@@ -1469,6 +1687,16 @@ impl Gpu {
                 visibility: vf,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: vf,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -1619,6 +1847,7 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 4, resource: sim.heights().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&sim.surface_view) },
                 wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&sim.bed_view) },
+                wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&sim.flow_view) },
             ],
         });
         let shadow_ubo_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1724,7 +1953,13 @@ impl Gpu {
                 bias: Default::default(),
             }),
             multisample: Default::default(),
-            fragment: None,
+            // ... and how fast it flows (the flow map).
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_surface"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: crate::water::FLOW_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
             multiview_mask: None,
             cache: None,
         });
@@ -1839,7 +2074,7 @@ impl Gpu {
         }
         // Records and matrices: storage buffers, grown as needed.
         let need = |n: usize, each: usize| ((n.max(1) * each) as u64).next_power_of_two().max(256);
-        let (rn, mn) = (need(sink.recs.len(), 32), need(sink.mats.len(), 64));
+        let (rn, mn) = (need(sink.recs.len(), 48), need(sink.mats.len(), 64));
         if self.store.as_ref().is_none_or(|(r, m, _, _)| r.size() < rn || m.size() < mn) {
             let mk = |label, size| {
                 device.create_buffer(&wgpu::BufferDescriptor {
@@ -1900,8 +2135,12 @@ impl Gpu {
                 let info = tex_info(&mut self.tex_info, textures, g.crc);
                 let (emissive, color) = info.map_or((false, [1.0; 3]), |i| (i.emissive, i.color));
                 let emissive = lit && emissive && d.override_tex.is_none() && !d.sky;
+                let rec = &sink.recs[d.rec as usize];
                 if emissive && auto_lights && d.key.1 != MESH_SKIN {
-                    point_lights(&sink.mats[sink.recs[d.rec as usize].mat as usize], g, color, &mut found);
+                    point_lights(&sink.mats[rec.mat as usize], g, color, &mut found);
+                } else if lit && auto_lights && rec.flags & 64 != 0 && d.override_tex.is_none() {
+                    // A flowing liquid's glow lights what stands in it and its banks, dimly.
+                    point_lights(&sink.mats[rec.mat as usize], g, color.map(|c| c * LIQUID_LIGHT), &mut found);
                 }
                 let cut = d.override_tex.is_none() && info.is_some_and(|i| !i.opaque);
                 self.list.push((d.rec, d.key, g.first..g.first + g.count, tex, d.wrap, emissive, cut));
@@ -2006,6 +2245,7 @@ impl Gpu {
                     wgpu::BindGroupEntry { binding: 4, resource: self.sim.heights().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.sim.surface_view) },
                     wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&self.sim.bed_view) },
+                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.sim.flow_view) },
                     wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::AccelerationStructure(&rx.rt.tlas) },
                     wgpu::BindGroupEntry { binding: 7, resource: rx.rt.albedo.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 8, resource: rx.rt.photons.as_entire_binding() },
@@ -2020,6 +2260,7 @@ impl Gpu {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.sim.surface_view) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::AccelerationStructure(&rx.rt.tlas) },
                     wgpu::BindGroupEntry { binding: 4, resource: rx.rt.photons.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.sim.flow_view) },
                 ],
             }));
         }
@@ -2169,7 +2410,23 @@ impl Gpu {
     pub fn pre_passes(&mut self, encoder: &mut wgpu::CommandEncoder) {
         let Some((_, _, _, store_bg)) = &self.store else { return };
         if self.sim.frame.steps > 0 {
-            let mut pass = depth_pass(encoder, "water surface map", &self.sim.surface_view);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("water surface map"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.sim.flow_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.sim.surface_view,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
             pass.set_pipeline(&self.surface_pipeline);
             pass.set_bind_group(2, store_bg, &[]);
             pass.set_bind_group(3, &self.shadow_ubo_bg, &[]);

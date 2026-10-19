@@ -46,9 +46,11 @@ pub struct Actor {
     /// `ACTOR_WRAPTC` (`wrapCoords`, mdxActor.cpp:195): the objects go to the wrapping frame
     /// (`MA_FRAME_WRAP`), whose texture coordinates repeat (sliding textures).
     pub wrap_tc: bool,
-    /// The actor's texture slides (`ACTOR_SLIDYTEX` / `ACTOR_SLOWSLIDE`, `CopyActorList`):
-    /// what it shows flows (an opaque liquid of this kind keeps its own surface in Enhanced).
-    pub slides: bool,
+    /// How far the actor's texture slides each game frame at normal speed (`faceTC.v` units:
+    /// `ACTOR_SLIDYTEX` / `ACTOR_SLOWSLIDE`, `CopyActorList`; 0: it does not). What it shows
+    /// flows: Enhanced draws an opaque liquid of this kind as a stream of its own, and water
+    /// of this kind as a stream at this speed.
+    pub slide: f32,
     /// `timeInfo.frameCount` for `PCCalcModgeValues` (the water/sludge wobble and wave of
     /// `OBJECT_FLAGS_MODGE` / `OBJECT_FLAGS_WAVE` objects).
     pub modge_frame: u32,
@@ -120,7 +122,7 @@ impl Default for Actor {
             override_tex: None,
             gouraud: None,
             wrap_tc: false,
-            slides: false,
+            slide: 0.0,
             modge_frame: 0,
             pose: PoseCache::default(),
             mesh_draws: None,

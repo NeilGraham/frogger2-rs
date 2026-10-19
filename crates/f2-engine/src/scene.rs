@@ -660,8 +660,8 @@ pub(crate) struct GpuObj<'a> {
     /// wobble runs on (`PCCalcModgeValues`).
     pub modge: u8,
     pub modge_frame: u32,
-    /// [`Actor::slides`](crate::anim::Actor::slides).
-    pub slides: bool,
+    /// [`Actor::slide`](crate::anim::Actor::slide).
+    pub slide: f32,
 }
 
 /// [`GpuObj`] receiver.
@@ -881,7 +881,7 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
                 light_only: false,
                 modge: 0,
                 modge_frame: 0,
-                slides: actor.slides,
+                slide: actor.slide,
             };
             if g(&o) {
                 if let Some(m) = cx.motion {
@@ -931,7 +931,7 @@ pub(crate) fn draw_actor(cx: &EmitCtx, model: &Model, actor: &mut Actor, out: &m
                     light_only,
                     modge: modge as u8 | (wave as u8) << 1,
                     modge_frame: fc,
-                    slides: actor.slides,
+                    slide: actor.slide,
                 };
                 if g(&ob) {
                     return;
@@ -1262,7 +1262,7 @@ pub(crate) fn draw_landscape(cx: &EmitCtx, model: &Model, out: &mut Frames, mut 
                 light_only: false,
                 modge: 0,
                 modge_frame: 0,
-                slides: false,
+                slide: 0.0,
             };
             if g(&ob) {
                 return;

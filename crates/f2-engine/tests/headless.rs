@@ -298,6 +298,51 @@ fn enhanced_water_takes_splashes() {
     assert!(differ > 100, "the splash makes waves ({differ} pixels differ)");
 }
 
+/// Water whose texture slides (`Actor::slide`) is a stream: its generated surface's ripples
+/// and detail are carried along v (the flow map), where the same pond standing still keeps
+/// them in place.
+#[test]
+fn sliding_water_is_a_stream() {
+    use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE};
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let wat = f2_formats::crc("wat0.bmp");
+    // Stripes across the flow, so the detail shows where it is carried.
+    let tex: Vec<u8> = (0..16 * 16).flat_map(|i| if (i / 16) / 4 % 2 == 0 { [40, 70, 150, 200] } else { [120, 170, 230, 200] }).collect();
+    r.textures.add_rgba(wat, "wat0.bmp", TexType::Normal, 16, 16, tex);
+    let h = 100.0;
+    let vertices = vec![[-h, 0.0, -h], [h, 0.0, -h], [h, 0.0, h], [-h, 0.0, h]];
+    let faces = [[0, 2, 1], [0, 3, 2], [0, 1, 2], [0, 2, 3]];
+    // v runs along z: two repeats across the pond.
+    let uv = |v: [usize; 3]| v.map(|k| [0i16, if k == 2 || k == 3 { 2048 } else { 0 }]);
+    let face_uv = faces.iter().flat_map(|&f: &[usize; 3]| uv(f)).collect();
+    let faces: Vec<[i16; 3]> = faces.iter().map(|f| f.map(|k| k as i16)).collect();
+    let mesh = Mesh { vertices, faces, face_uv, normals: vec![], colors: vec![[1.0; 4]; 12], face_flags: vec![0; 4], textures: vec![wat; 4] };
+    let root = object("pond", mesh, OBJECT_FLAGS_MODGE | OBJECT_FLAGS_ADDITIVE);
+    let model = Model { id: 5, radius: 150.0, object_size: 0, root, root_siblings: vec![], animations: vec![], loc_mesh: None, is_skinned: false, num_vtx: 0 };
+    let lighting = f2_engine::Lighting { water: true, ..f2_engine::Lighting::daylight() };
+    let mut run = |slide: f32| {
+        r.options.gpu_meshes = true;
+        r.lighting = Some(lighting.clone());
+        let mut img = None;
+        for f in 0..40 {
+            r.water_clock = f as f64 / 60.0;
+            r.begin_frame(320, 240);
+            r.set_camera(&Camera { source: [0.0, 120.0, -90.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] });
+            r.draw_actor(&model, &mut Actor { slide, ..Actor::default() });
+            img = Some(r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap());
+        }
+        img.unwrap()
+    };
+    let (still, again, stream) = (run(0.0), run(0.0), run(16.0));
+    let differ = |a: &f2_engine::RgbaImage, b: &f2_engine::RgbaImage| {
+        a.pixels.chunks(4).zip(b.pixels.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 4)).count()
+    };
+    assert_eq!(differ(&still, &again), 0, "the same frame twice");
+    let moved = differ(&still, &stream);
+    assert!(moved > 320 * 240 / 20, "the stream's surface is carried along ({moved} pixels differ)");
+}
+
 #[test]
 fn ray_traced_lighting_casts_shadows() {
     use f2_engine::{DirLight, Lighting};

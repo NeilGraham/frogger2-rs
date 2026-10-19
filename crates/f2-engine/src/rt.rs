@@ -163,6 +163,7 @@ enable wgpu_ray_query;
 @group(0) @binding(2) var surface: texture_depth_2d;
 @group(0) @binding(3) var acc: acceleration_structure;
 @group(0) @binding(4) var<storage, read_write> photons: array<atomic<u32>>;
+@group(0) @binding(5) var flow: texture_2d<f32>;
 {WATER}
 
 // Where a photon from o along d lands (-1: nowhere).
@@ -268,6 +269,16 @@ impl Rt {
                 },
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: c, ty: wgpu::BindingType::AccelerationStructure { vertex_return: false }, count: None },
                 buf(4, wgpu::BufferBindingType::Storage { read_only: false }),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: c,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

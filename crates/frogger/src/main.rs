@@ -541,6 +541,13 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     if app.scene.is_none() && !app.has_session() {
         return Err("level failed to load".into());
     }
+    // Debug: `F2_FLYCAM=x,y,z,yaw,pitch` views the run from a free camera.
+    if let Ok(v) = std::env::var("F2_FLYCAM") {
+        let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if let [x, y, z, yaw, pitch] = n[..] {
+            app.set_free_cam(Some(frogger::render::FlyCam { pos: [x, y, z], yaw, pitch }));
+        }
+    }
     // Debug: `F2_SHOT_UNTIL=tongue|ring|decal|lightning` stops at the first tick showing it.
     let until = std::env::var("F2_SHOT_UNTIL").ok();
     for _ in 0..frames {

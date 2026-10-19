@@ -20,13 +20,33 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
   `ai_water`, `ai_ripple`, `00wate`, `00nwat`, `aniswamp`, `aqua0`, `aquatop`, `ripple`,
   `sludge`, `swampi`, `swampyi`) goes to the **water pass**; an opaque MODGE-only mesh (river
   bed) goes to the lit **GPU mesh pass without its wobble** (the real caustics replace it).
-  An opaque water-textured mesh whose texture slides (`ACTOR_SLIDYTEX` / `ACTOR_SLOWSLIDE`:
-  the Subterranean acid rivers `slu_fm*`, Halloween's sludge `slu_floh`, the frontend's
-  `slu_fall`) is a **flowing liquid**: it keeps its own surface on the GPU mesh pass, sliding
-  and wobbling as in the original, with a sheen (ripples in its texture coordinates, so they
-  flow with it, catching the sun, the point lights and a little sky; no sky in caves). The
-  generated surface has one tint and one flow per level, which would turn such a river into
-  standing water of another colour. Anything else stays on the CPU.
+  An opaque water-textured mesh whose texture slides is a **flowing liquid** (below). Anything
+  else stays on the CPU.
+- **Streams, from the animation:** an actor whose texture slides (`ACTOR_SLIDYTEX` /
+  `ACTOR_SLOWSLIDE`, `CopyActorList`) shows something flowing. Its speed (`faceTC.v` units per
+  game frame, `texture_slide_speed`) reaches the renderer as `Actor::slide`; the texture moves
+  to +v, so the flow is along v's gradient on the surface at slide / |gradient|. Water of this
+  kind (Garden's `wat_flo` / `wat_fstr`, Ancients' `wat_floa`, ...) writes its flow into the
+  **flow map** (beside the surface map, x / z per second, highest surface wins); the generated
+  surface's ripples, swell, texture detail and caustics are carried along it by flow mapping
+  (two copies each carried for 2.5 s and put back, half a period apart, crossfaded), the flow
+  smoothed over about 12 units (the art's texture density changes from face to face, and a
+  stream runs into still water). Still water writes no flow. Sliding waterfalls drawn from
+  the mesh slide as in the original (the uploaded mesh's v is moved per draw).
+- **Flowing liquids** (opaque, sliding: the Subterranean acid rivers and fall `slu_f*`,
+  Halloween's sludge `slu_floh`) keep their own surface on the GPU mesh pass, moving as in the
+  original (v moved per draw). The surface is a height field in the texture's coordinates, so
+  everything on it flows with the texture at the animation's speed, repeating with the texture
+  (the art's faces meet whole repeats apart): ridged streaks along the flow drifting against
+  it (the liquid shears), two layers of boiling ripples, and bubbles that swell, pop and leave
+  a spreading ring; on steep faces (rapids, the acid fall) the streaks are taller and their
+  crests froth, and there are no bubbles. Lit through the bumped normal (on the smoothed
+  normal): the body deeper in the troughs and paler on the crests, a light from above in a
+  cave (else the sun) across the ripples, a little glow of its own, highlights of the point
+  lights, reflections of the sky (in a cave, of its own glow). Detail finer than a few pixels
+  fades out. Its faces also light what stands in it and its banks, dimly (point lights in its
+  colour, like lava's). The generated surface has one tint per level, which would turn such
+  a river into water of another colour.
 - **Generated surface:** the flat parts of the water are drawn as our own surface instead of the
   original meshes: a 512² grid of quads (2×2 simulation cells, 3 units) over the simulation
   window, resting 2.5 units below the surface map's height and moved by the simulation, a slow
@@ -102,4 +122,6 @@ caustics. Garden 1-1, for example, has an additive `00wate04` surface over a `ri
 ## Tests
 
 `crates/f2-engine/tests/headless.rs`: `enhanced_water_takes_splashes` (a pond drawn by the water
-pass; a splash makes visible waves). `lighting::tests::water_names`.
+pass; a splash makes visible waves), `sliding_water_is_a_stream` (the same pond sliding is
+carried along). `lighting::tests::water_names`. `crates/frogger/src/main.rs`:
+`flowing_acid_keeps_its_surface` (Subterranean 1's acid river).

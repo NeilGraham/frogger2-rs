@@ -122,6 +122,9 @@ pub(crate) struct WaterFrame {
     pub time: f32,
 }
 
+/// [`WaterSim::flow_view`]'s format.
+pub(crate) const FLOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+
 /// The simulation's GPU state.
 pub(crate) struct WaterSim {
     bufs: [wgpu::Buffer; 2],
@@ -131,6 +134,9 @@ pub(crate) struct WaterSim {
     /// The river bed: top-down depth of the opaque meshes under the water (same frame as the
     /// surface map): how deep the water is.
     pub bed_view: wgpu::TextureView,
+    /// How fast the water flows (world x / z per second; same frame as the surface map):
+    /// streams, from their sliding textures.
+    pub flow_view: wgpu::TextureView,
     pipeline: wgpu::ComputePipeline,
     /// A→B and B→A.
     groups: [wgpu::BindGroup; 2],
@@ -185,6 +191,17 @@ impl WaterSim {
             view_formats: &[],
         });
         let bed_view = bed.create_view(&Default::default());
+        let flow = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("water flow map"),
+            size: wgpu::Extent3d { width: N, height: N, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FLOW_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let flow_view = flow.create_view(&Default::default());
         let c = wgpu::ShaderStages::COMPUTE;
         let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
             binding,
@@ -256,6 +273,7 @@ impl WaterSim {
             splats,
             surface_view,
             bed_view,
+            flow_view,
             pipeline,
             groups,
             cell: None,

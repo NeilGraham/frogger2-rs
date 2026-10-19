@@ -582,7 +582,7 @@ fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx:
     ea.anim_time = anim.map_or(0.0, |an| an.anim_time);
     ea.extra_flags = mdx.root_object_flags & (OBJECT_FLAGS_ADDITIVE | OBJECT_FLAGS_MODGE | OBJECT_FLAGS_WAVE);
     ea.wrap_tc = mdx.flags & f2_game::mdx_actor::mdx_flags::ACTOR_WRAPTC != 0;
-    ea.slides = actor_slides_texture(a2);
+    ea.slide = texture_slide_speed(a2.flags, 1 << 12) as f32;
     ea.modge_frame = pc.modge_frame;
     // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours).
     ea.override_tex = match a2.override_tex.as_deref() {
