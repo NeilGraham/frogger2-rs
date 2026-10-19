@@ -508,3 +508,14 @@ parallax occlusion (`frog_basecolor_height.png`, `extras.parallaxScale`). How it
    launcher.
 
 Material maps a modded model brings are mip-mapped at any size (bank textures only up to 512).
+
+### A faithful remaster of a retail model (local only)
+
+To remaster a retail model rather than replace it, start from its export in Blender and keep
+its shapes: weld the export's split vertices, crease edges by their angle (sharp folds stay,
+rounded ones smooth), Subdivision Surface level 3 (UVs kept at their boundaries), keep the
+retail vertex colours (export Vertex Color: Active) and skin weights (subdivision blends them
+across joints; limit to 4), redraw its textures sharp at a higher size, and export as a
+mesh-only override with new texture names (so the bank texture is not replaced for other
+models). Such a mod is built from your own game data: keep it under the gitignored
+`game-data/` and do not commit or share it; `examples/mods/frogger-hd` is the original-art one.
