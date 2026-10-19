@@ -27,3 +27,6 @@
 /.claude/
 /crates/frogger-n64/target/
 /tools/n64/export/target/
+
+# glTF buffers of the example mods (original work; *.bin above keeps disc images out)
+!/examples/mods/*/game/objects/**/*.bin
