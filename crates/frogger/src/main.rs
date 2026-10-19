@@ -310,7 +310,33 @@ fn open_launcher() -> bool {
     }
 }
 
+/// Startup timeline (`startup.log` in the logs folder): when each step was done, since the
+/// program started, and any frame that took long, until the first level (the menu) shows.
+static STARTUP: std::sync::Mutex<Option<(Instant, Vec<String>, bool)>> = std::sync::Mutex::new(None);
+
+fn startup_mark(what: &str) {
+    if let Ok(mut s) = STARTUP.lock() {
+        let s = s.get_or_insert_with(|| (Instant::now(), Vec::new(), false));
+        if !s.2 {
+            s.1.push(format!("{:7.0} ms  {what}", s.0.elapsed().as_secs_f64() * 1000.0));
+        }
+    }
+}
+
+/// Writes the timeline (once).
+fn startup_done() {
+    if let Ok(mut s) = STARTUP.lock() {
+        if let Some(s) = s.as_mut().filter(|s| !s.2) {
+            s.2 = true;
+            let logs = f2_platform::paths::config_dir().join("logs");
+            let _ = std::fs::create_dir_all(&logs);
+            let _ = std::fs::write(logs.join("startup.log"), s.1.join("\n") + "\n");
+        }
+    }
+}
+
 fn main() {
+    startup_mark("started");
     frogger::setup::attach_parent_console();
     let args = parse_args();
     let mut cfg = Config::load_desktop().unwrap_or_else(|e| {
@@ -335,6 +361,7 @@ fn main() {
     if let Some(s) = args.render_scale {
         cfg.display.render_scale = Some(s);
     }
+    startup_mark("config read");
     let mut data = match data::Data::locate(&cfg, args.data.clone()) {
         Ok(d) => d,
         Err(e) => {
@@ -703,6 +730,8 @@ impl Gfx {
 }
 
 struct Host {
+    /// The kind of the last frame (`startup_mark`).
+    startup_seen: &'static str,
     data: Option<data::Data>,
     cfg: Config,
     mute: bool,
@@ -832,6 +861,7 @@ impl WindowApp for Host {
         if self.gfx.is_some() {
             return;
         }
+        startup_mark("window open");
         let size = window.inner_size();
         let vsync = self.cfg.video.vsync;
         // DLSS / FSR: Direct3D 12 and a swapchain of their own (falls back to the normal path).
@@ -846,6 +876,7 @@ impl WindowApp for Host {
         } else {
             None
         };
+        startup_mark(if native.is_some() { "device ready (DLSS / FSR)" } else { "upscaler off" });
         let res = (|| -> Result<Gfx, String> {
             if let Some((ctx, n)) = native {
                 let size = (size.width.max(1), size.height.max(1));
@@ -932,6 +963,7 @@ impl WindowApp for Host {
                 }
                 self.app = Some(app);
                 self.gfx = Some(g);
+                startup_mark("game ready");
             }
             Err(e) => self.error = Some(e),
         }
@@ -993,6 +1025,19 @@ impl WindowApp for Host {
         let (Some(app), Some(g)) = (&mut self.app, &mut self.gfx) else { return Flow::Continue };
         let now = Instant::now();
         let dt = now - self.last;
+        {
+            let what = if app.video.is_some() { "video" } else if app.scene.is_some() { "level" } else { "other" };
+            if dt > Duration::from_millis(150) {
+                startup_mark(&format!("slow frame before a {what} frame: {:.0} ms", dt.as_secs_f64() * 1000.0));
+            }
+            if what != self.startup_seen {
+                startup_mark(&format!("first {what} frame"));
+                self.startup_seen = what;
+                if what == "level" {
+                    startup_done();
+                }
+            }
+        }
         self.last = now;
 
         let mut raw: [Option<f2_platform::RawPad>; 4] = Default::default();
@@ -1299,6 +1344,7 @@ fn run_window(data: data::Data, mut cfg: Config, args: &Args, steps: Vec<Step>, 
         gfx: None,
         gamepads: None,
         last: Instant::now(),
+        startup_seen: "",
         error: None,
     };
     let mut host = window::run(wc, host)?;
