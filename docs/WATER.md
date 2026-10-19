@@ -259,6 +259,15 @@ reaching further at each level), sampled trilinearly (`obstacle_at` in the shade
 of taps say how near something is, the way to it and whether it lies upstream. The water can
 use it the same way (rivers bowing around rocks).
 
+## Pipelines
+
+Each opaque liquid's shading compiles only into its own mesh pipeline (`override LIQUID`, the
+`kind` of `Gpu::pipelines`), made only when a frame has that liquid; the lit and emissive
+pipelines carry none of it. The missing pipelines are compiled side by side
+(`Gpu::ensure_pipeline`, scoped threads): the first launch after a new build or driver
+compiles them all (about 1.5 s to the first frame, from 11 s with everything in one shader,
+one after another); later launches find them in the driver's cache.
+
 ## Tests
 
 `crates/f2-engine/tests/headless.rs`: `enhanced_water_takes_splashes` (a pond drawn by the water

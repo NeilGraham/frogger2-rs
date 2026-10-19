@@ -552,6 +552,8 @@ fn expand(o: &GpuObj) -> (Vec<Vert>, Vec<Group>) {
 
 const SHADER: &str = r#"
 override EMISSIVE: bool = false;
+// An opaque liquid's pipeline (`Liquid`; 0: none): its shading compiles only into its own.
+override LIQUID: u32 = 0u;
 override ADDITIVE: bool = false;
 
 struct Cam {
@@ -2456,11 +2458,10 @@ fn shade(i: VOut) -> vec4<f32> {
     var c = textureSampleGrad(t, s, i.uv + refraction_uv(i, dd), dd[2], dd[3]) * i.color;
     if (floor(c.a * 255.0 + 0.5) <= cam.depth.y) { discard; }
     if (lt.sky.w > 0.5) {
-        if ((i.flags & 64u) != 0u) {
-            let m = u32(round(i.mat));
-            if (m == 2u) {
+        if (LIQUID != 0u) {
+            if (LIQUID == 2u) {
                 c = vec4<f32>(lava(i, c.rgb, face, sx, sy, dd[2], dd[3]), c.a);
-            } else if (m == 3u) {
+            } else if (LIQUID == 3u) {
                 c = vec4<f32>(stream(i, c.rgb, face, sx, sy, dd[2], dd[3]), c.a);
             } else {
                 c = vec4<f32>(liquid(i, c.rgb, face, sx, sy, dd[2], dd[3]), c.a);
@@ -2504,6 +2505,9 @@ pub const MAX_POINT_LIGHTS: usize = 32;
 /// Shadow map size.
 const SHADOW_SIZE: u32 = 2048;
 
+/// [`Gpu::build_water`]: the water pipeline, and the generated surface's and the mist's.
+type WaterPipes = (wgpu::RenderPipeline, Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>);
+
 /// A water draw: record, mesh, vertex range, texture, wrap, additive, steep (a waterfall).
 type WaterDraw = (u32, Key, core::ops::Range<u32>, TexHandle, bool, bool, bool);
 
@@ -2525,10 +2529,11 @@ pub(crate) struct Gpu {
     shadow_cut_pipeline: wgpu::RenderPipeline,
     /// recs, mats, prev, and the bind group over them.
     store: Option<(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup)>,
-    pipelines: HashMap<(wgpu::TextureFormat, u32, bool, bool, bool), wgpu::RenderPipeline>,
+    /// Mesh pipelines: format, samples, MRT, kind (0 lit, 1 emissive, 1 + `Liquid`), ray traced.
+    pipelines: HashMap<(wgpu::TextureFormat, u32, bool, u8, bool), wgpu::RenderPipeline>,
     /// This frame's draw list: (record, mesh key, vertex range, texture, wrap, emissive,
     /// cut-out: the texture has see-through pixels).
-    list: Vec<(u32, Key, core::ops::Range<u32>, TexHandle, bool, bool, bool)>,
+    list: Vec<(u32, Key, core::ops::Range<u32>, TexHandle, bool, u8, bool)>,
     /// Emissive and mean colour per texture CRC.
     tex_info: HashMap<u32, TexInfo>,
     /// The shadow map needs drawing this frame.
@@ -3281,7 +3286,9 @@ impl Gpu {
                 if rec.flags & 64 != 0 {
                     self.liquid_list.push((d.rec, d.key, g.first..g.first + g.count));
                 }
-                self.list.push((d.rec, d.key, g.first..g.first + g.count, tex, d.wrap, emissive, cut));
+                // The pipeline: lit, emissive, or an opaque liquid's own (1 + `Liquid`).
+                let kind = if rec.flags & 64 != 0 { 1 + rec.slide[2] as u8 } else { emissive as u8 };
+                self.list.push((d.rec, d.key, g.first..g.first + g.count, tex, d.wrap, kind, cut));
                 need_bg.push((tex, d.wrap));
             }
         }
@@ -3746,10 +3753,9 @@ impl Gpu {
         encoder.copy_texture_to_texture(depth.as_image_copy(), self.scene_copy.1.as_image_copy(), depth.size());
     }
 
-    fn water_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool, additive: bool) {
-        if self.water_pipelines.contains_key(&(format, samples, mrt, additive)) {
-            return;
-        }
+    /// The water pipeline (`additive` or alpha blended) and, with `grid`, the generated
+    /// surface's and the waterfall mist's.
+    fn build_water(&self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool, additive: bool, grid: bool) -> WaterPipes {
         let comp = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
         use wgpu::BlendFactor as F;
         // The original's `Semi` / `Additive` blends.
@@ -3765,7 +3771,8 @@ impl Gpu {
             // The upscaler's reactive mask (CPU-drawn flickering textures only).
             Some(wgpu::ColorTargetState { format: crate::renderer::REACTIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::empty() }),
         ];
-        if !additive && !self.grid_pipelines.contains_key(&(format, samples, mrt)) {
+        let mut gm = None;
+        if grid {
             // Premultiplied: the reflection is added whatever the water lets through.
             let mut targets = targets.clone();
             targets[0] = Some(wgpu::ColorTargetState {
@@ -3795,7 +3802,7 @@ impl Gpu {
                 multiview_mask: None,
                 cache: None,
             });
-            self.grid_pipelines.insert((format, samples, mrt), p);
+            let g = p;
             // The mist and spray over the waterfalls' pools: premultiplied like the surface,
             // after it.
             let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -3820,7 +3827,7 @@ impl Gpu {
                 multiview_mask: None,
                 cache: None,
             });
-            self.mist_pipelines.insert((format, samples, mrt), p);
+            gm = Some((g, p));
         }
         let constants = [("ADDITIVE", if additive { 1.0 } else { 0.0 })];
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -3855,13 +3862,11 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
-        self.water_pipelines.insert((format, samples, mrt, additive), p);
+        (p, gm)
     }
 
-    fn pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool, emissive: bool, rt: bool) {
-        if self.pipelines.contains_key(&(format, samples, mrt, emissive, rt)) {
-            return;
-        }
+    /// A mesh pipeline (see [`Gpu::pipelines`]).
+    fn build_pipeline(&self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool, kind: u8, rt: bool) -> wgpu::RenderPipeline {
         let (shader, layout) = match (&self.rtx, rt) {
             (Some(r), true) => (&r.shader, &r.layout),
             _ => (&self.shader, &self.layout),
@@ -3876,7 +3881,7 @@ impl Gpu {
             // The upscaler's reactive mask (CPU-drawn flickering textures only).
             Some(wgpu::ColorTargetState { format: crate::renderer::REACTIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::empty() }),
         ];
-        let constants = [("EMISSIVE", if emissive { 1.0 } else { 0.0 })];
+        let constants = [("EMISSIVE", if kind == 1 { 1.0 } else { 0.0 }), ("LIQUID", if kind >= 2 { kind - 1 } else { 0 } as f64)];
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("gpu meshes"),
             layout: Some(layout),
@@ -3905,17 +3910,42 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
-        self.pipelines.insert((format, samples, mrt, emissive, rt), p);
+        p
     }
 
     /// Creates the pipelines [`draw`](Self::draw) will use.
+    /// The missing ones are compiled side by side (each takes the driver a while the first
+    /// time: the game would wait for them one after another).
     pub fn ensure_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool) {
-        for rt in [false, self.rt_on] {
-            self.pipeline(device, format, samples, mrt, false, rt);
-            self.pipeline(device, format, samples, mrt, true, rt);
+        let rt = self.rt_on;
+        // Lit, emissive, and the liquids' only where this frame has them.
+        let mut kinds: Vec<u8> = [0, 1].into_iter().chain(self.list.iter().map(|d| d.5).filter(|&k| k >= 2)).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        kinds.retain(|&k| !self.pipelines.contains_key(&(format, samples, mrt, k, rt)));
+        let waters: Vec<bool> = [false, true].into_iter().filter(|&a| !self.water_pipelines.contains_key(&(format, samples, mrt, a))).collect();
+        let grid = !self.grid_pipelines.contains_key(&(format, samples, mrt));
+        if kinds.is_empty() && waters.is_empty() {
+            return;
         }
-        self.water_pipeline(device, format, samples, mrt, false);
-        self.water_pipeline(device, format, samples, mrt, true);
+        let this = &*self;
+        let (meshes, water) = std::thread::scope(|sc| {
+            let m: Vec<_> = kinds.iter().map(|&k| sc.spawn(move || (k, this.build_pipeline(device, format, samples, mrt, k, rt)))).collect();
+            let w: Vec<_> = waters.iter().map(|&a| sc.spawn(move || (a, this.build_water(device, format, samples, mrt, a, !a && grid)))).collect();
+            let m: Vec<_> = m.into_iter().map(|h| h.join().expect("pipeline thread")).collect();
+            let w: Vec<_> = w.into_iter().map(|h| h.join().expect("pipeline thread")).collect();
+            (m, w)
+        });
+        for (k, p) in meshes {
+            self.pipelines.insert((format, samples, mrt, k, rt), p);
+        }
+        for (a, (p, gm)) in water {
+            self.water_pipelines.insert((format, samples, mrt, a), p);
+            if let Some((g, m)) = gm {
+                self.grid_pipelines.insert((format, samples, mrt), g);
+                self.mist_pipelines.insert((format, samples, mrt), m);
+            }
+        }
     }
 
     /// Records this frame's mesh draws into `pass` (`bind_group(tex, wrap)` = the texture's
@@ -3930,9 +3960,9 @@ impl Gpu {
     ) {
         let Some((_, _, _, store_bg)) = &self.store else { return };
         let rt = self.rt_on;
-        let (Some(lit), Some(emi)) = (self.pipelines.get(&(format, samples, mrt, false, rt)), self.pipelines.get(&(format, samples, mrt, true, rt))) else {
+        if !self.pipelines.contains_key(&(format, samples, mrt, 0, rt)) {
             return;
-        };
+        }
         let lights_bg = match (&self.rtx, rt) {
             (Some(RtParts { bg: Some(bg), .. }), true) => bg,
             _ => &self.lights_bg,
@@ -3944,11 +3974,12 @@ impl Gpu {
         pass.set_bind_group(2, store_bg, &[]);
         pass.set_bind_group(3, lights_bg, &[]);
         let mut cur: Option<Key> = None;
-        let mut cur_emissive = None;
-        for (rec, key, range, tex, wrap, emissive, _) in &self.list {
-            if cur_emissive != Some(*emissive) {
-                pass.set_pipeline(if *emissive { emi } else { lit });
-                cur_emissive = Some(*emissive);
+        let mut cur_kind = None;
+        for (rec, key, range, tex, wrap, kind, _) in &self.list {
+            if cur_kind != Some(*kind) {
+                let Some(p) = self.pipelines.get(&(format, samples, mrt, *kind, rt)) else { continue };
+                pass.set_pipeline(p);
+                cur_kind = Some(*kind);
             }
             if cur != Some(*key) {
                 let Some((buf, _)) = self.meshes.get(key) else { continue };
