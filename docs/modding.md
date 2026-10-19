@@ -306,7 +306,10 @@ other sub-state and every effect identical), `cargo test -p frogger hello_mod_sc
 
 ## 5. Compatibility rules
 
-- Mods declare the engine API version; `f2-mods` refuses incompatible ones with a clear message.
+- Mods declare the engine API version (`f2_mods::ENGINE_API_VERSION`, now 1.0: its own, not the
+  program's release version; the major moves only when an existing mod could break, the minor
+  when mods gain something new); `f2-mods` refuses incompatible ones with a clear message.
+  Declare e.g. `engine_version = "^1.0"`.
 - Mods must not contain original game assets (enforced socially + by a hash denylist warning in
   the packer tool).
 - Gameplay-affecting mods are flagged so speedrun/online modes can require vanilla.

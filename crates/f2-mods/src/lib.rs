@@ -28,8 +28,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// Version of the engine/mod API that mods declare compatibility with.
-pub const ENGINE_API_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Version of the engine/mod API that mods declare compatibility with: its own, not the
+/// program's release version (which moves every release and would lock out every mod). The
+/// major version moves only when an existing mod could break; the minor when mods gain
+/// something new (1.0: textures, sounds, models with PBR materials, text, music, levels,
+/// scripts).
+pub const ENGINE_API_VERSION: &str = "1.0.0";
 
 /// Splits a game path into lowercase-comparable components.
 ///
@@ -525,7 +529,7 @@ id = "hd-water"
 name = "HD Water"
 version = "1.2.0"
 authors = ["someone"]
-engine_version = ">=0.1, <1.0"
+engine_version = "^1.0"
 gameplay_affecting = false
 "#;
 
@@ -535,8 +539,9 @@ gameplay_affecting = false
         assert_eq!(m.id, "hd-water");
         assert_eq!(m.authors, ["someone"]);
         assert!(!m.gameplay_affecting);
-        assert!(m.accepts("0.1.0"));
-        assert!(!m.accepts("1.0.0"));
+        assert!(m.accepts("1.0.0"));
+        assert!(m.accepts("1.3.0"));
+        assert!(!m.accepts("2.0.0"));
         assert!(m.check_compatible().is_ok());
         assert!(ModManifest::parse("id='x'\nname='x'\nversion='1'\nengine_version='nonsense'").is_err());
         assert!(ModManifest::parse("id='bad id'\nname='x'\nversion='1'\nengine_version='*'").is_err());
