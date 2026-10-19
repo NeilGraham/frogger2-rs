@@ -66,6 +66,23 @@ pub struct Actor {
     pub motion_prev: Option<(u32, Vec<Mat4>)>,
     /// Enhanced water: the position of the actor's last draw (its movement makes waves).
     pub water_prev: Option<Vec3>,
+    /// Enhanced water: how the actor stirs the water ([`Wake`]); set by the host each draw.
+    pub wake: Wake,
+    /// Enhanced water: wake ticks so far (a flyer's dips, a fish's bubbles come now and then).
+    pub wake_ticks: u32,
+}
+
+/// How an actor stirs the water it moves through or over (Enhanced water; render only).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Wake {
+    /// Pushes the water aside as it moves (boats, logs, the frog, swimming enemies).
+    #[default]
+    Body,
+    /// Flies over it (butterflies, dragonflies): its wings ruffle the water just under it,
+    /// and now and then it dips a foot in.
+    Flyer,
+    /// Swims under it (fish): a small wake near the surface, and its bubbles pop up through it.
+    Swimmer,
 }
 
 /// [`Actor::mesh_draws`]: `((model id, extra_flags, xlu fade, wrap_tc), draws)`.
@@ -128,6 +145,8 @@ impl Default for Actor {
             mesh_draws: None,
             motion_prev: None,
             water_prev: None,
+            wake: Wake::Body,
+            wake_ticks: 0,
         }
     }
 }

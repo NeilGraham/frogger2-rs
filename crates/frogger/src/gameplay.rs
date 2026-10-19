@@ -447,7 +447,11 @@ impl LevelSelectUi {
             r.draw_text(font, 24.0, y, label, col, 1.0, None);
             y += 18.0;
         }
-        let baby = if self.baby <= 1 { "Start at baby 1 (from the start)".to_string() } else { format!("Start at baby {} (babies 1-{} rescued)", self.baby, self.baby - 1) };
+        let baby = if self.baby <= 1 {
+            "Start at baby 1 (from the start)".to_string()
+        } else {
+            format!("Start at baby {} (babies 1-{} rescued)", self.baby, self.baby - 1)
+        };
         r.draw_text(font, 0.0, y + 12.0, &format!("<  {baby}  >"), if self.baby > 1 { yellow } else { grey }, 1.0, Some(ow / 2.0));
         r.draw_text(font, 0.0, y + 30.0, "PgUp/PgDn   Left/Right baby   Enter play   Tab page   Esc close", grey, 1.0, Some(ow / 2.0));
     }

@@ -665,28 +665,39 @@ fn flow_phases(t: f32) -> vec3<f32> {
     return vec3<f32>(p0 * FLOW_PERIOD, p1 * FLOW_PERIOD, 1.0 - abs(1.0 - 2.0 * p0));
 }
 const FLOW_PERIOD: f32 = 2.5;
-// Small travelling ripples everywhere on the water (world units), carried by the flow.
-fn ripples(xz0: vec2<f32>, t: f32, f: vec2<f32>) -> f32 {
-    if (dot(f, f) < 1e-4) { return ripples_at(xz0, t); }
-    let ph = flow_phases(t);
-    return ripples_at(xz0 - f * ph.x, t) * ph.z + ripples_at(xz0 - f * ph.y + vec2<f32>(37.0, 19.0), t) * (1.0 - ph.z);
+// How much the water at flow f moves (0: standing, 1: a stream): standing water is silky
+// smooth, only what disturbs it shows (the simulation); a stream ripples as it runs.
+fn moving(f: vec2<f32>) -> f32 {
+    return smoothstep(1.5, 10.0, length(f));
 }
-fn ripples_at(xz: vec2<f32>, t: f32) -> f32 {
-    // A slow swell (our own, in place of the original's low-poly WAVE lift; scaled by the
-    // level: standing water is nearly still) and fine ripples, which always stay (they bend
-    // the light into caustics and catch the sun).
+// The ripples of running water (world units), carried by the flow; none on standing water.
+fn ripples(xz0: vec2<f32>, t: f32, f: vec2<f32>) -> f32 {
+    let m = moving(f);
+    if (m <= 0.0) { return 0.0; }
+    let ph = flow_phases(t);
+    let d = f / max(length(f), 1e-3);
+    return (ripples_at(xz0 - f * ph.x, t, d) * ph.z + ripples_at(xz0 - f * ph.y + vec2<f32>(37.0, 19.0), t, d) * (1.0 - ph.z)) * m;
+}
+// A stream's surface at time t (d: the way it runs): a slow swell, riffles across the flow
+// (the current tumbling over its bed: short crests, long along the flow's width) and fine
+// ripples (they bend the light into caustics and catch the sun).
+fn ripples_at(xz: vec2<f32>, t: f32, d: vec2<f32>) -> f32 {
     let swell = 0.9 * sin(dot(xz, vec2<f32>(0.031, 0.017)) + t * 1.1)
          + 0.6 * sin(dot(xz, vec2<f32>(-0.022, 0.035)) + t * 0.9)
          + 0.35 * sin(dot(xz, vec2<f32>(0.11, 0.05)) + t * 1.9)
          + 0.25 * sin(dot(xz, vec2<f32>(-0.06, 0.13)) + t * 2.3)
          + 0.15 * sin(dot(xz, vec2<f32>(0.19, -0.16)) + t * 3.1);
+    // In the stream's own frame: a along the flow, b across it.
+    let q = vec2<f32>(dot(xz, d), dot(xz, vec2<f32>(-d.y, d.x)));
+    let riffle = 0.12 * sin(q.x * 0.42 + sin(q.y * 0.07) * 2.0 + t * 1.7) * (0.6 + 0.4 * sin(q.y * 0.05 + q.x * 0.03))
+         + 0.07 * sin(q.x * 0.71 - q.y * 0.18 + sin(q.y * 0.11 + t) * 1.5 + t * 2.3);
     var fine = 0.0;
     let ks = array<vec3<f32>, 5>(vec3<f32>(0.27, 0.11, 2.1), vec3<f32>(-0.18, 0.31, 2.6), vec3<f32>(0.41, -0.29, 3.3), vec3<f32>(-0.52, -0.37, 3.9), vec3<f32>(0.08, 0.66, 4.4));
     for (var k = 0; k < 5; k++) {
         let w = ks[k];
         fine += (0.035 / length(w.xy)) * sin(dot(w.xy, xz) + t * w.z);
     }
-    return swell * lt.water4.z + fine;
+    return swell * max(lt.water4.z, 0.3) + riffle + fine;
 }
 fn water_h(xz: vec2<f32>) -> f32 {
     return wave_h(xz) + ripples(xz, lt.water2.x, flow_at(xz));
@@ -755,9 +766,13 @@ fn caustics(p: vec3<f32>, to_light: vec3<f32>) -> f32 {
     let focus = clamp(1.0 + lap * 1.5, 0.3, 3.0);
     let fade = exp(-depth / 240.0) * smoothstep(0.5, 6.0, depth);
     let f = flow_at(q);
+    let m = moving(f);
+    // Standing water: only its waves focus the light (rings of light under a ripple).
+    let still = clamp(lap * 2.5, 0.0, 2.0);
+    if (m <= 0.0) { return still * fade; }
     let ph = flow_phases(lt.water2.x);
     let c = caustic(q - f * ph.x, lt.water2.x) * ph.z + caustic(q - f * ph.y + vec2<f32>(37.0, 19.0), lt.water2.x) * (1.0 - ph.z);
-    return c * focus * fade;
+    return mix(still, c * focus, m) * fade;
 }
 
 // World point in the sun's shadow map: (u-ish x, y in -1..1, depth 0..1).
@@ -1092,10 +1107,14 @@ fn grid_color(i: VOut) -> vec4<f32> {
     let fres = 0.07 + 0.93 * pow(1.0 - max(dot(n, v), 0.0), 4.0);
     // The original water texture as detail, in world space, drifting and bent by the waves.
     let fl = flow_at(i.world.xz);
+    let mv = moving(fl);
     let ph = flow_phases(tm);
-    let dq = vec2<f32>(tm * 0.012, tm * 0.007) + n.xz * 0.05;
-    let detail = textureSample(t, s, (i.world.xz - fl * ph.x) / 48.0 + dq).rgb * ph.z
+    let dq = vec2<f32>(tm * 0.012, tm * 0.007) * mv + n.xz * 0.05;
+    let streamed = textureSample(t, s, (i.world.xz - fl * ph.x) / 48.0 + dq).rgb * ph.z
         + textureSample(t, s, (i.world.xz - fl * ph.y) / 48.0 + dq + vec2<f32>(0.37, 0.19)).rgb * (1.0 - ph.z);
+    // Standing water: its texture lies still, softened (larger, fainter): a calm, deep body.
+    let calm = mix(vec3<f32>(0.5), textureSample(t, s, i.world.xz / 160.0 + n.xz * 0.05).rgb, 0.35);
+    let detail = mix(calm, streamed, mv);
     let body = lt.water3.rgb;
     var sh = 1.0;
     var spec = vec3<f32>(0.0);
@@ -1427,56 +1446,142 @@ fn liquid_surface(uv: vec2<f32>, t: f32, steep: f32, fp: f32) -> LiquidSurf {
     return o;
 }
 
-// The colour of a flowing liquid with texture colour `tex` (the original's, which it keeps),
-// face normal `face`, screen derivatives sx / sy of the world position and duvx / duvy of
-// the texture coordinates: deeper in its troughs and paler on its crests, lit through its
-// rippled surface (bump-mapped: the height's gradient in uv turned into world space), glowing
-// a little, with bubbles, and highlights of the lights about it.
+// Cell noise repeating every `per` cells: distances to the nearest and the second nearest of
+// the cells' points, which wander about with time t.
+fn lcells(p: vec2<f32>, per: i32, t: f32, salt: u32) -> vec2<f32> {
+    let i = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    var d1 = 9.0;
+    var d2 = 9.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let w = lwrap(i + vec2<i32>(x, y), vec2<i32>(per));
+            let a = lhash(w, salt) * 6.2831853;
+            let r = lhash(w, salt + 1u);
+            let o = vec2<f32>(0.5) + vec2<f32>(cos(a + t * (0.2 + r * 0.3)), sin(a * 1.3 + t * (0.15 + r * 0.25))) * 0.32;
+            let d = length(vec2<f32>(f32(x), f32(y)) + o - f);
+            if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+        }
+    }
+    return vec2<f32>(d1, d2);
+}
+
+// An acid's bubble in the cell of uv (9 cells a repeat): its dome's height (0..1, while it
+// swells) and the ring it leaves when it pops (0..1).
+fn acid_bubble(uv: vec2<f32>, t: f32, calm: f32) -> vec2<f32> {
+    let q = uv * 9.0;
+    let ci = lwrap(vec2<i32>(floor(q)), vec2<i32>(9));
+    if (lhash(ci, 4u) > 0.12 + 0.18 * calm) { return vec2<f32>(0.0); }
+    let life = 3.2 + lhash(ci, 5u) * 2.4;
+    let ph = fract(t / life + lhash(ci, 6u));
+    let ctr = vec2<f32>(0.3) + vec2<f32>(lhash(ci, 7u), lhash(ci, 8u)) * 0.4;
+    let rmax = 0.16 + lhash(ci, 9u) * 0.14;
+    let d = length(q - floor(q) - ctr);
+    if (ph < 0.88) {
+        // Slow to swell (the acid is thick), then it pops.
+        let r = rmax * pow(ph / 0.88, 0.6);
+        return vec2<f32>(sqrt(max(1.0 - d * d / max(r * r, 1e-5), 0.0)) * r / rmax, 0.0);
+    }
+    let k = (ph - 0.88) / 0.12;
+    return vec2<f32>(0.0, exp(-pow((d - rmax * (1.0 + k * 1.6)) / 0.035, 2.0)) * (1.0 - k));
+}
+
+// An acid's height (world units, about -1.5..1.5) at texture coordinates uv: slow, gloopy
+// swells (thick: no fine chop), streaks along the flow where it runs steep, bubbles' domes.
+// Periodic in uv with the texture (its faces meet whole repeats apart).
+fn acid_height(uv: vec2<f32>, t: f32, steep: f32, calm: f32, fp: f32) -> f32 {
+    let w = vec2<f32>(t * 0.05, -t * 0.035);
+    var h = lnoise(uv * 3.0 + w, vec2<i32>(3), 11u).x * 1.0 + lnoise(uv * 6.0 - w * 1.7, vec2<i32>(6), 12u).x * 0.4;
+    h += lnoise(uv * 12.0 + vec2<f32>(-w.y, w.x) * 3.0, vec2<i32>(12), 13u).x * 0.12 * (1.0 - smoothstep(0.1, 0.3, fp * 12.0));
+    if (steep > 0.0) {
+        let s = lnoise(uv * vec2<f32>(9.0, 2.0) + vec2<f32>(0.0, -t * 0.6), vec2<i32>(9, 2), 14u).x;
+        h += (0.6 - abs(s)) * 1.6 * steep;
+    }
+    let b = acid_bubble(uv, t, calm);
+    return h + b.x * 1.4 * (1.0 - steep) * (1.0 - smoothstep(0.15, 0.4, fp * 9.0));
+}
+
+// An acid ([`Liquid::Acid`]: Subterranean's rivers, falls and vats, sludge, toxic glop) with
+// texture colour `tex` (the original's, kept as its palette), face normal `face`, screen
+// derivatives sx / sy of the world position and duvx / duvy of the texture coordinates:
+// a thick, glossy, faintly glowing liquid, emerald in its troughs and lime on its swells,
+// a skin of scum drifting on it (with the texture: where the original's slides, it flows),
+// bubbles that swell slowly and pop, the simulated waves (the frog's landings, things moving
+// through it: slow, short-lived), and fizzing froth where they stir it.
 fn liquid(i: VOut, tex: vec3<f32>, face: vec3<f32>, sx: vec3<f32>, sy: vec3<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec3<f32> {
     let gu = plane_grad(sx, sy, duvx.x, duvy.x);
     let gv = plane_grad(sx, sy, duvx.y, duvy.y);
     let steep = smoothstep(0.25, 0.7, 1.0 - abs(face.y));
+    // Standing acid (its texture does not slide) bubbles more.
+    let calm = select(0.0, 1.0, i.slide == 0.0);
     let fp = max(length(duvx), length(duvy));
-    let sf = liquid_surface(i.uv, lt.water2.x, steep, fp);
-    // The height's gradient in world space: uv's gradients (uv per world unit) × the slopes.
-    let hw = (sf.g.x * gu + sf.g.y * gv) * LIQUID_BUMP;
+    let t = lt.water2.x;
+    let uv = i.uv;
+    let e = 1.0 / 256.0;
+    let h = acid_height(uv, t, steep, calm, fp);
+    let g = vec2<f32>(acid_height(uv + vec2<f32>(e, 0.0), t, steep, calm, fp) - h, acid_height(uv + vec2<f32>(0.0, e), t, steep, calm, fp) - h) / e;
+    // The height's gradient in world space (uv's gradients × the slopes), plus the waves'.
+    let ws = wave_slope(i.world.xz);
+    var hw = (g.x * gu + g.y * gv) * ACID_BUMP + vec3<f32>(ws.x, 0.0, ws.y) * 2.5;
     // On the smoothed normal (the faces of the art's coarse meshes tilt this way and that).
     var n0 = normalize(i.normal);
     if (dot(n0, face) < 0.0) { n0 = -n0; }
     let n = normalize(n0 - (hw - n0 * dot(hw, n0)));
     let v = normalize(lt.eye.xyz - i.world);
-    // The body: deeper and richer in the troughs, paler on the crests and the bubbles.
-    let up = clamp(smoothstep(-0.9, 1.3, sf.h) + sf.dome * 0.35, 0.0, 1.0);
-    let body = tex * mix(vec3<f32>(0.5, 0.62, 0.45), vec3<f32>(1.0, 1.05, 0.95), up);
-    let pale = min(tex * 1.3 + vec3<f32>(0.1, 0.14, 0.03), vec3<f32>(1.0));
+    // How stirred it is (the simulation): it fizzes and brightens.
+    let wh = wave_h(i.world.xz);
+    let stir = clamp(abs(wh) * 0.5 + churn(i.world.xz) * 4.0, 0.0, 1.0);
+    // Its body: emerald in the troughs, lime on the swells and bubbles, brighter where stirred.
+    let b = acid_bubble(uv, t, calm);
+    let up = clamp(smoothstep(-1.4, 1.2, h - wh * 0.6) + stir * 0.25, 0.0, 1.0);
+    let deep = tex * vec3<f32>(0.16, 0.36, 0.17);
+    let bright = min(tex * vec3<f32>(1.35, 1.45, 1.1) + vec3<f32>(0.12, 0.16, 0.0), vec3<f32>(1.0));
+    let body = mix(deep, bright, up);
     var j = i;
     j.normal = n;
     var c = light(j, body, face);
-    // Its own glow.
-    c += body * LIQUID_GLOW;
-    // The light about it (the sun, else a light from above in a cave) across its ripples.
+    // Its own glow, breathing slowly through the swells.
+    c += bright * (ACID_GLOW * (0.75 + 0.25 * sin(t * 1.1 + h * 2.0)) + stir * 0.15);
+    // The light about it (the sun, else a light from above in a cave) across its swells.
     let key = select(normalize(vec3<f32>(0.25, 1.0, 0.3)), lt.sun_dir.xyz, lt.sun_dir.w > 0.5);
-    c *= clamp(1.0 + (dot(n, key) - dot(n0, key)) * 2.5, 0.6, 1.5);
+    c *= clamp(1.0 + (dot(n, key) - dot(n0, key)) * 2.0, 0.65, 1.45);
+    // Scum: foamy, yellowish clusters drifting on it (pitted with tiny bubbles), each where
+    // the cells' points gather it, some cells clear.
+    let fs = 1.0 - smoothstep(0.1, 0.3, fp * 6.0);
+    let cl = lcells(uv * 6.0, 6, t * (0.35 + calm * 0.3), 21u);
+    let clump = smoothstep(0.42, 0.12, cl.x + lnoise(uv * 18.0, vec2<i32>(18), 24u).x * 0.08) * smoothstep(-0.2, 0.3, lnoise(uv * 3.0 + vec2<f32>(t * 0.02, 0.0), vec2<i32>(3), 22u).x);
+    let pits = smoothstep(0.2, 0.6, lnoise(uv * 48.0, vec2<i32>(48), 25u).x) * (1.0 - smoothstep(0.1, 0.3, fp * 48.0));
+    let film = clump * (1.0 - pits * 0.5) * fs * (1.0 - steep);
+    let scum = min(tex * vec3<f32>(1.1, 1.0, 0.55) + vec3<f32>(0.2, 0.18, 0.02), vec3<f32>(1.0)) * max(light(i, vec3<f32>(1.0), face), vec3<f32>(0.35));
+    c = mix(c, scum, film * 0.55);
+    // The crests of the simulated waves catch the light: rings where something disturbed it.
+    c += bright * clamp(length(ws) * 4.0 - 0.1, 0.0, 1.0) * 0.45;
+    // Froth: fizz where it is stirred, the rings of popped bubbles, foam on the rapids.
+    let fz = lnoise(uv * 40.0 + vec2<f32>(t * 0.7, -t * 0.5), vec2<i32>(40), 23u).x * (1.0 - smoothstep(0.1, 0.3, fp * 40.0));
+    let froth = clamp(smoothstep(0.35, 0.75, fz) * stir + b.y * 0.6 + smoothstep(0.85, 1.4, h) * steep * 0.8, 0.0, 1.0);
+    c = mix(c, min(bright * 1.25 + vec3<f32>(0.15), vec3<f32>(1.0)), froth * 0.55);
+    // Gloss: highlights of the key light and the point lights, sharp (a wet, smooth surface;
+    // duller on the scum), and a reflection (the sky; in a cave, its own glow on the rock).
+    let gloss = 1.0 - film * 0.6;
     let fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
-    // Reflections: the sky under an open sky; in a cave its own glow on the rock about it.
-    var spec = mix(tex * 0.35, lt.sky.rgb * 0.5, lt.sun_dir.w) * fres;
+    var spec = mix(bright * 0.3, lt.sky.rgb * 0.5, lt.sun_dir.w) * fres;
     let sh = select(1.0, shadow(i.world + face * 2.0), lt.sun_dir.w > 0.5);
-    let kc = select(vec3<f32>(0.75, 0.9, 0.7) * 0.5, lt.sun_color.rgb * 2.0, lt.sun_dir.w > 0.5);
-    spec += kc * pow(max(dot(n, normalize(key + v)), 0.0), 140.0) * sh;
+    let kc = select(vec3<f32>(0.8, 0.95, 0.75) * 0.6, lt.sun_color.rgb * 2.0, lt.sun_dir.w > 0.5);
+    let nh = max(dot(n, normalize(key + v)), 0.0);
+    spec += kc * (pow(nh, 220.0) * 1.6 + pow(nh, 40.0) * 0.08) * sh;
     let np = u32(lt.ground.w);
     for (var k = 0u; k < np; k++) {
         let p = points[k];
         let d = p.pos.xyz - i.world;
         let dist = length(d);
         let att = clamp(1.0 - dist / p.pos.w, 0.0, 1.0);
-        let h = pow(max(dot(n, normalize(d / max(dist, 0.001) + v)), 0.0), 90.0);
-        spec += p.color.rgb * att * att * h * 1.2;
+        let hp = pow(max(dot(n, normalize(d / max(dist, 0.001) + v)), 0.0), 160.0);
+        spec += p.color.rgb * att * att * hp * 1.5;
     }
-    // The rapids' crests and the rings of popped bubbles: pale froth.
-    let froth = clamp(sf.crest * 0.8 + sf.ring * 0.5, 0.0, 1.0);
-    c = mix(c, pale * 1.15, froth * 0.6);
-    return c + spec;
+    return c + spec * gloss;
 }
+const ACID_BUMP: f32 = 0.5;
+const ACID_GLOW: f32 = 0.16;
 const LIQUID_BUMP: f32 = 0.6;
 const LIQUID_GLOW: f32 = 0.08;
 
@@ -2279,7 +2384,7 @@ impl Gpu {
             };
             let pos = [p[0] + h(1) * FOOT_CELL, p[1], p[2] + h(2) * FOOT_CELL];
             // The fall's mesh may go on far under its pool's surface.
-            falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.18 + 0.12 * h(3), above: 400.0 });
+            falls.push(crate::water::Splash { pos, radius: 12.0, strength: 0.18 + 0.12 * h(3), above: 400.0, ..Default::default() });
         };
         for d in &sink.draws {
             if let Some(feet) = sink.fall_feet.get(&d.key) {

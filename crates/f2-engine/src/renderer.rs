@@ -1529,12 +1529,57 @@ impl Renderer {
         if !self.wake_frame {
             return;
         }
+        use crate::anim::Wake;
+        use crate::water::Splash;
         let p = actor.pos;
-        if let Some(q) = actor.water_prev.replace(p) {
-            let d = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
-            let size = model.radius * actor.scale[0].abs().max(actor.scale[2].abs());
-            if d > 0.05 && d < 60.0 && self.splashes.len() < crate::water::MAX_SPLATS {
-                self.splashes.push(crate::water::Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: (d * 0.35).min(2.5), above: 0.0 });
+        let Some(q) = actor.water_prev.replace(p) else { return };
+        let d = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+        let size = model.radius * actor.scale[0].abs().max(actor.scale[2].abs());
+        actor.wake_ticks = actor.wake_ticks.wrapping_add(1);
+        // Now and then (every `period` ticks or so, each actor at its own times).
+        let seed = (q[0].to_bits() ^ q[2].to_bits().rotate_left(11)).wrapping_mul(2654435761);
+        let every = |period: u32| (actor.wake_ticks.wrapping_add(seed >> 8)).is_multiple_of(period + (seed >> 20) % (period / 2).max(1));
+        let mut push = |s: Splash| {
+            if self.splashes.len() < crate::water::MAX_SPLATS {
+                self.splashes.push(s);
+            }
+        };
+        // The host's word, else the model's name (the frontend's creatures are not scenery).
+        let kind = match actor.wake {
+            Wake::Body => {
+                let n = model.root.name.to_ascii_lowercase();
+                if n.starts_with("bfly") || n.starts_with("dfly") || n.contains("butterfl") || n.contains("dragonf") {
+                    Wake::Flyer
+                } else if n.contains("fish") {
+                    Wake::Swimmer
+                } else {
+                    Wake::Body
+                }
+            }
+            w => w,
+        };
+        match kind {
+            Wake::Body => {
+                if d > 0.05 && d < 60.0 {
+                    let vel = [p[0] - q[0], p[2] - q[2]];
+                    push(Splash { pos: p, radius: (size * 0.5).clamp(6.0, 40.0), strength: 2.5, wake: 0.35, vel, ..Default::default() });
+                }
+            }
+            Wake::Flyer => {
+                // Its wings' downdraft (up to 30 units over the water, fading), and a dip.
+                push(Splash { pos: p, radius: 7.0, strength: 0.02, below: 45.0, ..Default::default() });
+                if every(110) {
+                    push(Splash { pos: p, radius: 4.5, strength: 1.2, below: 50.0, ..Default::default() });
+                }
+            }
+            Wake::Swimmer => {
+                if d > 0.05 && d < 60.0 {
+                    let vel = [p[0] - q[0], p[2] - q[2]];
+                    push(Splash { pos: p, radius: (size * 0.4).clamp(7.0, 14.0), strength: 0.8, above: 20.0, wake: 0.3, vel, ..Default::default() });
+                }
+                if every(80) {
+                    push(Splash { pos: p, radius: 4.5, strength: 1.2, above: 60.0, ..Default::default() });
+                }
             }
         }
     }

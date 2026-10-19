@@ -550,6 +550,7 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
     }
     // Debug: `F2_SHOT_UNTIL=tongue|ring|decal|lightning` stops at the first tick showing it.
     let until = std::env::var("F2_SHOT_UNTIL").ok();
+    let draw_every = std::env::var_os("F2_DRAW_EVERY").is_some();
     for _ in 0..frames {
         if app.editing() {
             // The editor pauses the simulation.
@@ -578,6 +579,12 @@ fn headless(data: data::Data, cfg: &Config, args: &Args, steps: Vec<Step>) -> Re
             }
         }
         app.tick(&[]);
+        // Debug: `F2_DRAW_EVERY=1` draws every tick (render-side state that builds up over
+        // frames, e.g. the Enhanced water's waves, shows in the screenshot).
+        if draw_every {
+            app.draw(w, h);
+            app.r.render_to_image(app.clear_color()).map_err(|e| e.to_string())?;
+        }
         // Videos are skipped headless (the simulation would wait for them).
         while app.video.is_some() {
             app.end_video();

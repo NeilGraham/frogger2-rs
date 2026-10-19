@@ -514,6 +514,39 @@ impl App {
         }
         self.was_drowning = drowning;
         self.last_platform = cur;
+        // Debug: `F2_TEST_SPLASH=x,y,z,radius,strength,every` splashes there every so many ticks.
+        if let Ok(v) = std::env::var("F2_TEST_SPLASH") {
+            let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            if let [x, y, z, radius, strength, every] = n[..] {
+                if self.ticks % (every.max(1.0) as u64) == 0 {
+                    self.r.water_splash(f2_engine::water::Splash { pos: [x, y, z], radius, strength, ..Default::default() });
+                }
+            }
+        }
+    }
+
+    /// Enhanced water: the scenery creatures (`ENEMY_NEW_FLAPPYTHING`) stir the water as
+    /// flyers (butterflies, dragonflies) or, with bubbles (`EF_BUBBLES`), as swimmers (fish).
+    fn water_wakes(&self) -> Vec<(f2_game::ids::ActorId, f2_engine::anim::Wake)> {
+        use f2_engine::anim::Wake;
+        if self.display().graphics == f2_platform::Graphics::Original {
+            return Vec::new();
+        }
+        let g = &self.game;
+        let l = &g.enemies.enemy_list;
+        let mut out = Vec::new();
+        let mut c = l.head.first;
+        while let Some(id) = c {
+            let e = &l.array[id.idx()];
+            c = e.links.next;
+            if e.flags & f2_game::enemies::ENEMY_NEW_FLAPPYTHING == 0 {
+                continue;
+            }
+            let Some(a) = e.nme_actor else { continue };
+            let fish = g.actor2.actors.get(a).is_some_and(|a| a.effects & f2_game::specfx::EF_BUBBLES != 0);
+            out.push((a, if fish { Wake::Swimmer } else { Wake::Flyer }));
+        }
+        out
     }
 
     /// Gives actor `a` a downward kick of `speed` units per tick on the dip spring (negative:
@@ -530,7 +563,7 @@ impl App {
         if let Some(a) = self.game.actor2.actors.get(a) {
             let q = &a.actor.position;
             let pos = [q.vx as f32 / 10.0, q.vy as f32 / 10.0, q.vz as f32 / 10.0];
-            self.r.water_splash(f2_engine::water::Splash { pos, radius, strength, above: 0.0 });
+            self.r.water_splash(f2_engine::water::Splash { pos, radius, strength, ..Default::default() });
         }
     }
 
@@ -758,11 +791,9 @@ impl App {
     fn play_music(&mut self, track: u32, looped: bool) {
         match self.data.music_track(track).filter(|p| !self.data.mods.is_empty() && Some(p) != self.audio.music_path(track).as_ref()) {
             // A mod's track (topmost VFS layer).
-            Some(p) => self.audio.play_music_stream(
-                f2_audio::wav::WavStream::open_any(&p).map_err(|e| eprintln!("frogger: {}: {e}", p.display())).ok(),
-                track,
-                looped,
-            ),
+            Some(p) => {
+                self.audio.play_music_stream(f2_audio::wav::WavStream::open_any(&p).map_err(|e| eprintln!("frogger: {}: {e}", p.display())).ok(), track, looped)
+            }
             None => self.audio.play_music(track, looped),
         }
     }
@@ -1820,6 +1851,7 @@ impl App {
         let d = self.display();
         let authentic = self.profile == Profile::Authentic;
         let dips: Vec<(f2_game::ids::ActorId, f32)> = self.water_dips.iter().map(|d| (d.0, d.2 + (d.1 - d.2) * alpha)).collect();
+        let wakes = self.water_wakes();
         self.r.water_clock = (self.ticks as f64 + alpha as f64) / 60.0;
         let mut ctx = render::DrawCtx {
             prev: &self.prev,
@@ -1834,6 +1866,7 @@ impl App {
             tile_scroll: self.tile_scroll,
             tex_anim_steps,
             dips: &dips,
+            wakes: &wakes,
         };
         if let Some(scene) = &self.scene {
             let gcam = render::lerp_camera(self.prev_cam.as_ref(), ctx.cam, alpha);

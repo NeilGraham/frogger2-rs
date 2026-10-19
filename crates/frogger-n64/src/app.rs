@@ -1333,6 +1333,7 @@ impl App {
             // Once per draw, as before.
             tex_anim_steps: 1,
             dips: &[],
+            wakes: &[],
         };
         let mut g = lv();
         let l = g.as_mut().unwrap();

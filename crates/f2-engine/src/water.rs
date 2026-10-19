@@ -30,13 +30,21 @@ const MAX_STEPS: u32 = 8;
 
 /// Something disturbing the water at `pos` (world units): the surface within `radius` is
 /// pushed down by up to `strength` units (if the water there is within `radius` of `pos`'s
-/// height, or up to `above` units higher: a waterfall plunging into its pool).
+/// height, or up to `above` units higher: a waterfall plunging into its pool, a fish's
+/// bubble; or up to `below` units lower, weaker the higher `pos` is over it: a butterfly's
+/// wings stirring the water under it).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Splash {
     pub pos: [f32; 3],
     pub radius: f32,
     pub strength: f32,
     pub above: f32,
+    pub below: f32,
+    /// A wake: `strength` is its most, and it pushes `wake` units per unit of its speed
+    /// through the water (`vel`, x / z units per 60 Hz tick, less the flow there: a log
+    /// drifting with a river makes none). 0: a plain splash.
+    pub wake: f32,
+    pub vel: [f32; 2],
 }
 
 const SIM: &str = r#"
@@ -105,7 +113,7 @@ fn step(@builtin(global_invocation_id) id: vec3<u32>) {
     // rings: the velocity's own Laplacian takes out the fine ripples); lava thicker still.
     let m = u32(round(textureLoad(flow, vec2<i32>(i, j), 0).z));
     var k = vec3<f32>(0.3, st.damping, 0.0);
-    if (m == 1u) { k = vec3<f32>(0.16, 0.988, 0.1); }
+    if (m == 1u) { k = vec3<f32>(0.16, 0.992, 0.1); }
     if (m == 2u) { k = vec3<f32>(0.07, 0.975, 0.18); }
     let v = c.x - c.y;
     var h = (2.0 * c.x - c.y + k.x * (sum - 4.0 * c.x)) * k.y;
@@ -116,12 +124,22 @@ fn step(@builtin(global_invocation_id) id: vec3<u32>) {
     let surf_y = st.ref_y + (0.5 - d) * st.range;
     let wp = st.origin + (vec2<f32>(f32(i), f32(j)) + 0.5) * st.texel;
     for (var k = 0u; k < st.nsplat; k++) {
-        let a = splats[k * 2u];
-        let b = splats[k * 2u + 1u];
-        if (surf_y - a.y < a.w + 12.0 + b.y && a.y - surf_y < a.w + 12.0) {
+        let a = splats[k * 3u];
+        let b = splats[k * 3u + 1u];
+        let wk = splats[k * 3u + 2u];
+        let up = a.y - surf_y;
+        if (surf_y - a.y < a.w + 12.0 + b.y && up < a.w + 12.0 + b.z) {
             let dist = distance(wp, a.xz);
             if (dist < a.w) {
-                h -= b.x * (0.5 + 0.5 * cos(3.14159265 * dist / a.w));
+                // From over the water: fading with the height.
+                let k = select(1.0, clamp(1.0 - max(up - a.w, 0.0) / (b.z + 12.0), 0.0, 1.0), b.z > 0.0);
+                var s = b.x;
+                if (wk.z > 0.0) {
+                    // Drifting about as fast as the stream (the art's flows are rough): none.
+                    let rel = wk.xy - textureLoad(flow, vec2<i32>(i, j), 0).xy / 60.0;
+                    s = min(wk.z * max(length(rel) - 0.4, 0.0), b.x);
+                }
+                h -= s * k * (0.5 + 0.5 * cos(3.14159265 * dist / a.w));
             }
         }
     }
@@ -185,7 +203,7 @@ impl WaterSim {
         });
         let splats = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("water splashes"),
-            size: (MAX_SPLATS * 32) as u64,
+            size: (MAX_SPLATS * 48) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -370,10 +388,10 @@ impl WaterSim {
         self.frame.origin = origin;
         self.frame.ref_y = self.ref_y;
         let all = splashes.iter().copied().chain(sources.iter().map(|s| Splash { strength: s.strength * pairs as f32, ..*s }));
-        let mut sp = vec![0.0f32; MAX_SPLATS * 8];
+        let mut sp = vec![0.0f32; MAX_SPLATS * 12];
         let mut n = 0;
         for (k, s) in all.take(MAX_SPLATS).enumerate() {
-            sp[k * 8..k * 8 + 6].copy_from_slice(&[s.pos[0], s.pos[1], s.pos[2], s.radius, s.strength, s.above]);
+            sp[k * 12..k * 12 + 11].copy_from_slice(&[s.pos[0], s.pos[1], s.pos[2], s.radius, s.strength, s.above, s.below, 0.0, s.vel[0], s.vel[1], s.wake]);
             n = k + 1;
         }
         queue.write_buffer(&self.splats, 0, bytemuck::cast_slice(&sp));

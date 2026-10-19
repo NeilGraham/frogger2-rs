@@ -312,6 +312,9 @@ pub struct DrawCtx<'a> {
     /// Enhanced water: actors drawn lower by this many units (platforms dipping under a frog
     /// that landed on them, the frog with them). Render only; empty = the original.
     pub dips: &'a [(ActorId, f32)],
+    /// Enhanced water: how actors other than [`Wake::Body`](f2_engine::anim::Wake) stir the
+    /// water (butterflies, fish). Render only.
+    pub wakes: &'a [(ActorId, f2_engine::anim::Wake)],
 }
 
 /// Optional timing hook: called with a [`draw_phase`] id at the end of each part of
@@ -584,6 +587,7 @@ fn draw_listed_actor(r: &mut Renderer, scene: &mut LevelScene, game: &Game, ctx:
     ea.wrap_tc = mdx.flags & f2_game::mdx_actor::mdx_flags::ACTOR_WRAPTC != 0;
     ea.slide = texture_slide_speed(a2.flags, 1 << 12) as f32;
     ea.modge_frame = pc.modge_frame;
+    ea.wake = ctx.wakes.iter().find(|(a, _)| *a == id).map_or(f2_engine::anim::Wake::Body, |w| w.1);
     // `overrideTex` (e.g. `multihidden.bmp` on locked portraits, baby frog colours).
     ea.override_tex = match a2.override_tex.as_deref() {
         None => None,
