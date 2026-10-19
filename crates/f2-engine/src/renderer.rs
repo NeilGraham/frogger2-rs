@@ -1566,10 +1566,13 @@ impl Renderer {
                 }
             }
             Wake::Flyer => {
-                // Its wings' downdraft (up to 30 units over the water, fading), and a dip.
-                push(Splash { pos: p, radius: 7.0, strength: 0.02, below: 45.0, ..Default::default() });
-                if every(110) {
-                    push(Splash { pos: p, radius: 4.5, strength: 1.2, below: 50.0, ..Default::default() });
+                // Its wings' downdraft, a puff each beat (about 6 a second), up to 45 units over
+                // the water (fading), and now and then it dips.
+                if actor.wake_ticks % 10 == 0 {
+                    push(Splash { pos: p, radius: 6.0, strength: 0.35, below: 45.0, ..Default::default() });
+                }
+                if every(70) {
+                    push(Splash { pos: p, radius: 4.5, strength: 1.6, below: 50.0, ..Default::default() });
                 }
             }
             Wake::Swimmer => {

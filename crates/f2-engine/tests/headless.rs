@@ -343,6 +343,84 @@ fn sliding_water_is_a_stream() {
     assert!(moved > 320 * 240 / 20, "the stream's surface is carried along ({moved} pixels differ)");
 }
 
+/// Standing water is silky smooth: with nothing disturbing it, it looks the same from one
+/// moment to the next. A butterfly fluttering low over it ruffles it (`Wake::Flyer`).
+#[test]
+fn still_water_is_calm_and_a_butterfly_ruffles_it() {
+    use f2_engine::anim::Wake;
+    use f2_engine::scene::{OBJECT_FLAGS_ADDITIVE, OBJECT_FLAGS_MODGE};
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let wat = f2_formats::crc("wat0.bmp");
+    r.textures.add_rgba(wat, "wat0.bmp", TexType::Normal, 2, 2, vec![60, 90, 160, 200].repeat(4));
+    let h = 100.0;
+    let vertices = vec![[-h, 0.0, -h], [h, 0.0, -h], [h, 0.0, h], [-h, 0.0, h]];
+    let faces = vec![[0, 2, 1], [0, 3, 2], [0, 1, 2], [0, 2, 3]];
+    let mesh = Mesh { vertices, faces, face_uv: vec![[0, 0]; 12], normals: vec![], colors: vec![[1.0; 4]; 12], face_flags: vec![0; 4], textures: vec![wat; 4] };
+    let pond = Model {
+        id: 6,
+        radius: 150.0,
+        object_size: 0,
+        root: object("pond", mesh, OBJECT_FLAGS_MODGE | OBJECT_FLAGS_ADDITIVE),
+        root_siblings: vec![],
+        animations: vec![],
+        loc_mesh: None,
+        is_skinned: false,
+        num_vtx: 0,
+    };
+    // A tiny butterfly (a sliver, drawn off to the side of the view's centre).
+    let wing = Mesh {
+        vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        faces: vec![[0, 1, 2]],
+        face_uv: vec![[0, 0]; 3],
+        normals: vec![],
+        colors: vec![[1.0; 4]; 3],
+        face_flags: vec![0],
+        textures: vec![0],
+    };
+    let fly = Model {
+        id: 7,
+        radius: 4.0,
+        object_size: 0,
+        root: object("bflyhrt", wing, 0),
+        root_siblings: vec![],
+        animations: vec![],
+        loc_mesh: None,
+        is_skinned: false,
+        num_vtx: 0,
+    };
+    let lighting = f2_engine::Lighting { water: true, ..f2_engine::Lighting::daylight() };
+    let mut run = |frames: u32, flyer: bool| {
+        r.options.gpu_meshes = true;
+        r.lighting = Some(lighting.clone());
+        let mut img = None;
+        let mut bfly = Actor { wake: Wake::Flyer, ..Actor::default() };
+        for f in 0..frames {
+            r.water_clock = f as f64 / 60.0;
+            r.begin_frame(320, 240);
+            r.set_camera(&Camera { source: [0.0, 120.0, -90.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] });
+            r.draw_actor(&pond, &mut Actor::default());
+            if flyer {
+                // Fluttering about 15 units over the water.
+                let a = f as f32 * 0.05;
+                bfly.pos = [a.cos() * 20.0, 15.0 + (f as f32 * 0.4).sin() * 3.0, a.sin() * 20.0];
+                r.draw_actor(&fly, &mut bfly);
+            }
+            img = Some(r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap());
+        }
+        img.unwrap()
+    };
+    let (early, late, ruffled) = (run(60, false), run(160, false), run(160, true));
+    let differ = |a: &f2_engine::RgbaImage, b: &f2_engine::RgbaImage, by: u8| {
+        a.pixels.chunks(4).zip(b.pixels.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > by)).count()
+    };
+    let moved = differ(&early, &late, 2);
+    assert!(moved < 50, "standing water stays still ({moved} pixels changed in a second)");
+    ruffled.write_png(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/f2-engine-butterfly.png")).unwrap();
+    let rings = differ(&late, &ruffled, 2);
+    assert!(rings > 1000, "the butterfly ruffles the water ({rings} pixels differ)");
+}
+
 #[test]
 fn ray_traced_lighting_casts_shadows() {
     use f2_engine::{DirLight, Lighting};

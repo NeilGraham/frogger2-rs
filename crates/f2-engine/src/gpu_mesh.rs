@@ -778,10 +778,16 @@ fn water_n(xz: vec2<f32>) -> vec3<f32> {
     let t = lt.water2.x;
     let dx = vec2<f32>(e, 0.0);
     let dz = vec2<f32>(0.0, e);
-    let hx = wave_h(xz + dx) - wave_h(xz - dx) + ripples(xz + dx, t, f) - ripples(xz - dx, t, f);
-    let hz = wave_h(xz + dz) - wave_h(xz - dz) + ripples(xz + dz, t, f) - ripples(xz - dz, t, f);
+    // The simulated waves' slope, steepened where it is gentle (a soft curve: a butterfly's
+    // ripple on calm water catches the light; a splash's stays as it is).
+    var w = vec2<f32>(wave_h(xz + dx) - wave_h(xz - dx), wave_h(xz + dz) - wave_h(xz - dz)) / (2.0 * e);
+    let wl = length(w);
+    if (wl > 1e-6) { w *= WAVE_GAIN / (1.0 + wl * (WAVE_GAIN - 1.0) / 0.35) ; }
+    let hx = w.x * 2.0 * e + ripples(xz + dx, t, f) - ripples(xz - dx, t, f);
+    let hz = w.y * 2.0 * e + ripples(xz + dz, t, f) - ripples(xz - dz, t, f);
     return normalize(vec3<f32>(-hx, 2.0 * e, -hz));
 }
+const WAVE_GAIN: f32 = 4.0;
 // WATER-END
 // The river bed's height at world x / z (none: -1e9): the highest level surface below 15
 // units over the water (above the water: a bank's lip hanging over it).
@@ -837,7 +843,8 @@ fn caustics(p: vec3<f32>, to_light: vec3<f32>) -> f32 {
     let f = flow_at(q);
     let m = moving(f);
     // Standing water: only its waves focus the light (rings of light under a ripple).
-    let still = clamp(lap * 2.5, 0.0, 2.0);
+    // (Soft-limited, so a faint ripple still draws a ring of light and a splash no glare.)
+    let still = 1.6 * (1.0 - exp(-max(lap, 0.0) * 14.0));
     if (m <= 0.0) { return still * fade; }
     let ph = flow_phases(lt.water2.x);
     let c = caustic(q - f * ph.x, lt.water2.x) * ph.z + caustic(q - f * ph.y + vec2<f32>(37.0, 19.0), lt.water2.x) * (1.0 - ph.z);
