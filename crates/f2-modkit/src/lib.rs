@@ -25,6 +25,7 @@
 pub mod archive;
 pub mod gltf;
 pub mod levels;
+pub mod material;
 pub mod pack;
 pub mod sound;
 pub mod text;
@@ -274,6 +275,13 @@ pub fn load_model_file(path: &Path, id: u32) -> Result<Model, Error> {
     gltf::import_model(&doc, Some(id))
 }
 
+/// Imports one glTF/GLB file as model `id` replacing `base` (mesh-only when the document
+/// allows it), with its images and materials.
+pub fn load_model_file_over(path: &Path, id: u32, base: Option<&Model>) -> Result<gltf::Imported, Error> {
+    let doc = gltf::GltfDoc::load(path)?;
+    gltf::import(&doc, Some(id), base)
+}
+
 /// Effective object bank `objects/<bank>.dll` with glTF overrides from `objects/<bank>/`.
 ///
 /// Override name → model: the retail model with that export name (see
@@ -283,20 +291,26 @@ pub fn object_bank(vfs: &Vfs, bank: &str) -> Result<Loaded<ObjectBank>, Error> {
     let path = format!("objects/{bank}.dll");
     let base = match read_container(vfs, &path)? {
         Some(d) => ObjectBank::parse(&d).map_err(|e| Error::new(format!("{path}: {e}")))?,
-        None => ObjectBank { models: vec![], anim_past_end: vec![] },
+        None => ObjectBank { models: vec![], anim_past_end: vec![], materials: vec![] },
     };
     let names = model_names(&base);
     let mut out = Loaded::new(base);
     for f in list_overrides(vfs, "objects", bank, &["glb", "gltf"]) {
         let slot = names.iter().position(|n| *n == f.name);
         let id = slot.map(|i| out.value.models[i].id).unwrap_or_else(|| crc(&format!("{}.obe", f.name)));
-        let m = match load_model_file(&f.path, id) {
+        let imp = match load_model_file_over(&f.path, id, slot.map(|i| &out.value.models[i])) {
             Ok(m) => m,
             Err(e) => {
                 out.warnings.push(format!("{}: {e}", f.path.display()));
                 continue;
             }
         };
+        out.warnings.extend(imp.warnings.iter().map(|w| format!("{}: {w}", f.path.display())));
+        let m = imp.model;
+        out.value.materials.retain(|x| x.model_id != id);
+        if !imp.materials.is_empty() {
+            out.value.materials.push(std::sync::Arc::new(imp.materials));
+        }
         match slot.or_else(|| out.value.models.iter().position(|x| x.id == id)) {
             Some(i) => {
                 out.value.models[i] = m;

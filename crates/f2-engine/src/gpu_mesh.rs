@@ -19,9 +19,11 @@
 //! camera's target, on screen or not) and point lights; emissive surfaces are drawn unlit.
 
 use crate::lighting::{is_emissive, Lighting, PointLight};
+use crate::math::Mat4;
 use crate::prelude::*;
 use crate::scene::{Frame, GpuObj, View, MESH_SKIN, UV_SCALE};
 use crate::textures::{TexHandle, TextureRegistry};
+use f2_formats::material::SkinWeights;
 use std::collections::HashMap;
 
 /// One expanded mesh corner (64 bytes).
@@ -32,7 +34,10 @@ struct Vert {
     /// Matrix of the draw's bone list (a skin's object index; 0 for rigid meshes).
     bone: u32,
     uv: [f32; 2],
-    _pad: [f32; 2],
+    /// A smooth skin's ([`SkinWeights`]) up to 4 bones (a byte each, heaviest first) and their
+    /// weights (bytes in 255ths); weights 0: only `bone` (every retail mesh).
+    bones: u32,
+    weights: u32,
     normal: [f32; 4],
     color: [f32; 4],
 }
@@ -136,6 +141,8 @@ pub(crate) struct Sink {
     fall_tops: HashMap<Key, Option<[f32; 3]>>,
     /// The way each of [`Self::fall_feet`] faces (model space, out of the drawn side).
     fall_out: HashMap<Key, Vec<[f32; 3]>>,
+    /// Smooth skins' inverse rest matrices per model id ([`expand`]).
+    rest_inv: HashMap<u32, Vec<Mat4>>,
 }
 
 /// A mesh the original animates or blends ([`GpuObj::light_only`]), with the enhanced water.
@@ -261,16 +268,17 @@ impl Sink {
         // (every face together: smooth, where each face's own jumps by 8192 now and then).
         let flowing = o.light_only && matches!(self.class.get(&key), Some(Class::Liquid(_)));
         let mut dv = 0.0;
+        let blend = blend_of(o, textures);
         match self.known.get_mut(&key) {
             None => {
-                let (verts, groups) = expand(o);
+                let (verts, groups) = expand(o, blend);
                 self.known.insert(key, uv0);
                 self.pending.push((key, verts, groups));
             }
             Some(k) if flowing => dv = (uv0.map_or(0, |u| u[1]) as i32 - k.map_or(0, |u| u[1]) as i32) as f32 * UV_SCALE,
             Some(k) if *k != uv0 => {
                 *k = uv0;
-                self.slid.push((key, expand(o).0));
+                self.slid.push((key, expand(o, blend).0));
             }
             Some(_) => {}
         }
@@ -297,7 +305,7 @@ impl Sink {
                         self.lava_crust.insert(key, painted_crust(o, textures));
                     }
                     if l == Liquid::Fall && !self.fall_feet.contains_key(&key) {
-                        let (verts, groups) = expand(o);
+                        let (verts, groups) = expand(o, None);
                         let (sv, sg) = subdivide(&verts, &groups);
                         let steep: Vec<Group> = sg.into_iter().filter(|g| g.steep).collect();
                         let top =
@@ -310,7 +318,7 @@ impl Sink {
                 Class::Water => {
                     if let std::collections::hash_map::Entry::Vacant(e) = self.class.entry((key.0, key.1 ^ WATER_KEY)) {
                         e.insert(Class::Water);
-                        let (verts, groups) = expand(o);
+                        let (verts, groups) = expand(o, None);
                         let (verts, groups) = subdivide(&verts, &groups);
                         self.water_pending.push((key, verts, groups));
                         self.water_uv0.insert(key, uv0.unwrap_or([0, 0]));
@@ -331,9 +339,17 @@ impl Sink {
             }
         }
         let mat = self.mats.len() as u32;
-        self.mats.extend(o.mats.iter().copied());
-        // Bones without last-frame matrices (a new pose): this frame's.
-        self.prev.extend((0..o.mats.len()).map(|i| *o.prev.get(i).unwrap_or(&o.mats[i])));
+        if blend.is_some() {
+            // A smooth skin is uploaded at rest: each bone's matrix from rest to its pose.
+            let inv = self.rest_inv.entry(o.model.id).or_insert_with(|| rest_matrices(o.model).iter().map(inv_affine).collect());
+            let skin = |i: usize, m: &Mat4| inv.get(i).map_or(*m, |r| crate::math::mtx_cat(r, m));
+            self.mats.extend(o.mats.iter().enumerate().map(|(i, m)| skin(i, m)));
+            self.prev.extend((0..o.mats.len()).map(|i| skin(i, o.prev.get(i).unwrap_or(&o.mats[i]))));
+        } else {
+            self.mats.extend(o.mats.iter().copied());
+            // Bones without last-frame matrices (a new pose): this frame's.
+            self.prev.extend((0..o.mats.len()).map(|i| *o.prev.get(i).unwrap_or(&o.mats[i])));
+        }
         let flags = no_clip as u32 | (o.gouraud.is_some() as u32) << 1 | (o.landscape as u32) << 2;
         let g = o.gouraud.unwrap_or([1.0; 3]);
         let flags = flags | (modge as u32 & 3) << 3 | (bed as u32) << 5 | (liquid.is_some() as u32) << 6;
@@ -386,7 +402,8 @@ fn subdivide(verts: &[Vert], groups: &[Group]) -> (Vec<Vert>, Vec<Group>) {
             pos: mix3(a.pos, b.pos, c.pos),
             bone: a.bone,
             uv: [a.uv[0] * w + b.uv[0] * u + c.uv[0] * v, a.uv[1] * w + b.uv[1] * u + c.uv[1] * v],
-            _pad: [0.0; 2],
+            bones: a.bones,
+            weights: a.weights,
             normal: mix4(a.normal, b.normal, c.normal),
             color: mix4(a.color, b.color, c.color),
         }
@@ -477,10 +494,79 @@ fn normals(mesh: &f2_formats::objbank::Mesh) -> Vec<[f32; 3]> {
     face_normals
 }
 
+/// Inverse of a row-vector affine matrix (singular: identity).
+#[allow(clippy::needless_range_loop)] // r / c index the matrices
+fn inv_affine(m: &Mat4) -> Mat4 {
+    let a = |r: usize, c: usize| m[r][c];
+    let det = a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) - a(0, 1) * (a(1, 0) * a(2, 2) - a(1, 2) * a(2, 0))
+        + a(0, 2) * (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0));
+    if det.abs() < 1e-20 || !det.is_finite() {
+        return crate::math::IDENTITY;
+    }
+    let cof = |r: usize, c: usize| {
+        let (r0, r1, c0, c1) = ((r + 1) % 3, (r + 2) % 3, (c + 1) % 3, (c + 2) % 3);
+        a(r0, c0) * a(r1, c1) - a(r0, c1) * a(r1, c0)
+    };
+    let mut o = crate::math::IDENTITY;
+    for r in 0..3 {
+        for c in 0..3 {
+            o[r][c] = cof(c, r) / det;
+        }
+    }
+    for c in 0..3 {
+        o[3][c] = -(0..3).map(|k| m[3][k] * o[k][c]).sum::<f32>();
+    }
+    o
+}
+
+/// Every object's matrix at rest (key 0 everywhere, no actor transform): the space a smooth
+/// skin's vertices are blended in.
+fn rest_matrices(model: &f2_formats::objbank::Model) -> Vec<Mat4> {
+    crate::anim::xform_actor(model, &mut crate::anim::Actor::default())
+}
+
+/// A smooth skin's weights when they fit `o` (a modded skin mesh; see [`SkinWeights`]).
+fn blend_of<'a>(o: &GpuObj, textures: &'a TextureRegistry) -> Option<&'a SkinWeights> {
+    let w = textures.skin_weights(o.model.id).filter(|_| o.object == MESH_SKIN)?;
+    (w.joints.len() == o.mesh.vertices.len() && w.weights.len() == w.joints.len()).then_some(&**w)
+}
+
 /// The corners of `o.mesh` grouped by texture, as `PCRenderObject` would draw them (skins:
 /// the bone moving each vertex; faces with an unmoved vertex left out like the CPU path).
-fn expand(o: &GpuObj) -> (Vec<Vert>, Vec<Group>) {
-    let mesh = o.mesh;
+/// A smooth skin (`blend`) is uploaded at rest in model space with its bones and weights: its
+/// draws' matrices take vertices from rest to their pose ([`Sink::offer`]).
+fn expand(o: &GpuObj, blend: Option<&SkinWeights>) -> (Vec<Vert>, Vec<Group>) {
+    let rest_mesh;
+    let mesh = match blend {
+        Some(_) => {
+            // Each vertex from its heaviest bone's space to the rest pose.
+            let rest = rest_matrices(o.model);
+            let mut m = o.mesh.clone();
+            let mut owner = vec![0usize; m.vertices.len()];
+            crate::anim::for_each_object(o.model, |i, obj| {
+                for &j in &obj.effected_verts {
+                    if let Some(b) = owner.get_mut(j as usize) {
+                        *b = i;
+                    }
+                }
+            });
+            for (v, &b) in owner.iter().enumerate() {
+                let r = rest.get(b).copied().unwrap_or(crate::math::IDENTITY);
+                m.vertices[v] = crate::math::mtx_xfm(&r, m.vertices[v]);
+                if let Some(n) = m.normals.get_mut(v) {
+                    let d = [
+                        n[0] * r[0][0] + n[1] * r[1][0] + n[2] * r[2][0],
+                        n[0] * r[0][1] + n[1] * r[1][1] + n[2] * r[2][1],
+                        n[0] * r[0][2] + n[1] * r[1][2] + n[2] * r[2][2],
+                    ];
+                    *n = d;
+                }
+            }
+            rest_mesh = m;
+            &rest_mesh
+        }
+        None => o.mesh,
+    };
     let nv = mesh.vertices.len();
     let mut bone = vec![if o.object == MESH_SKIN { u32::MAX } else { 0 }; nv];
     if o.object == MESH_SKIN {
@@ -509,11 +595,16 @@ fn expand(o: &GpuObj) -> (Vec<Vert>, Vec<Group>) {
         for (k, &i) in idx.iter().enumerate() {
             let uv = mesh.face_uv.get(fi * 3 + k).copied().unwrap_or([0, 0]);
             let n = norm[i];
+            let (bones, weights) = match blend {
+                Some(b) if b.weights[i][1] > 0 => (u32::from_le_bytes(b.joints[i]), u32::from_le_bytes(b.weights[i])),
+                _ => (0, 0),
+            };
             verts.push(Vert {
                 pos: mesh.vertices[i],
                 bone: bone[i],
                 uv: [uv[0] as f32 * UV_SCALE, uv[1] as f32 * UV_SCALE],
-                _pad: [0.0; 2],
+                bones,
+                weights,
                 normal: [n[0], n[1], n[2], 0.0],
                 color: mesh.colors.get(fi * 3 + k).copied().unwrap_or([1.0; 4]),
             });
@@ -618,6 +709,8 @@ struct VIn {
     @location(2) uv: vec2<f32>,
     @location(3) normal: vec4<f32>,
     @location(4) color: vec4<f32>,
+    @location(5) bones: u32,
+    @location(6) weights: u32,
 };
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -649,6 +742,22 @@ fn xfm(m: mat4x4<f32>, p: vec3<f32>) -> vec3<f32> {
 }
 fn xfm_dir(m: mat4x4<f32>, d: vec3<f32>) -> vec3<f32> {
     return d.x * m[0].xyz + d.y * m[1].xyz + d.z * m[2].xyz;
+}
+
+// A vertex's matrix in the bone list at `base`: its bone's, or for a smooth skin (`Vert::weights`
+// non-zero) its up to 4 bones' blended by weight (linear blend skinning).
+fn bone_mat(base: u32, i: VIn) -> mat4x4<f32> {
+    if (i.weights == 0u) { return mats[base + i.bone]; }
+    let w = unpack4x8unorm(i.weights);
+    return mats[base + (i.bones & 255u)] * w.x + mats[base + ((i.bones >> 8u) & 255u)] * w.y
+        + mats[base + ((i.bones >> 16u) & 255u)] * w.z + mats[base + (i.bones >> 24u)] * w.w;
+}
+// The same from last frame's matrices.
+fn prev_mat(base: u32, i: VIn) -> mat4x4<f32> {
+    if (i.weights == 0u) { return prevs[base + i.bone]; }
+    let w = unpack4x8unorm(i.weights);
+    return prevs[base + (i.bones & 255u)] * w.x + prevs[base + ((i.bones >> 8u) & 255u)] * w.y
+        + prevs[base + ((i.bones >> 16u) & 255u)] * w.z + prevs[base + (i.bones >> 24u)] * w.w;
 }
 
 // View-space point to clip space without jitter (camera space X = -x, Y = y, Z = z - 10).
@@ -901,7 +1010,7 @@ fn float_h(xz: vec2<f32>, t: f32, f: vec2<f32>) -> f32 {
 
 @vertex fn vs(i: VIn, @builtin(instance_index) inst: u32) -> VOut {
     let r = recs[inst];
-    let m = mats[r.mat + i.bone];
+    let m = bone_mat(r.mat, i);
     var world = xfm(m, i.pos);
     var lift = 0.0;
     if (r.float2.x > 0.0) {
@@ -934,7 +1043,7 @@ fn float_h(xz: vec2<f32>, t: f32, f: vec2<f32>) -> f32 {
     o.vz = vp.z;
     o.flags = r.flags;
     o.cur = c;
-    o.prev = clip(cam.pproj, xfm(cam.pv, xfm(prevs[r.mat + i.bone], i.pos) + vec3<f32>(0.0, lift, 0.0)));
+    o.prev = clip(cam.pproj, xfm(cam.pv, xfm(prev_mat(r.mat, i), i.pos) + vec3<f32>(0.0, lift, 0.0)));
     o.lift = lift;
     o.world = world;
     o.normal = xfm_dir(m, i.normal.xyz);
@@ -948,7 +1057,7 @@ fn float_h(xz: vec2<f32>, t: f32, f: vec2<f32>) -> f32 {
 // Depth only, from the sun.
 fn shadow_pos(i: VIn, inst: u32) -> vec4<f32> {
     let r = recs[inst];
-    let l = light_space(xfm(mats[r.mat + i.bone], i.pos));
+    let l = light_space(xfm(bone_mat(r.mat, i), i.pos));
     return vec4<f32>(l.xy, clamp(l.z, 0.0, 1.0), 1.0);
 }
 @vertex fn vs_shadow(i: VIn, @builtin(instance_index) inst: u32) -> @builtin(position) vec4<f32> {
@@ -1556,7 +1665,7 @@ fn mist_color(i: MistOut) -> vec4<f32> {
 struct BedOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>, @location(1) @interpolate(flat) keep: u32 };
 @vertex fn vs_bed(i: VIn, @builtin(instance_index) inst: u32) -> BedOut {
     let r = recs[inst];
-    let w = xfm(mats[r.mat + i.bone], i.pos);
+    let w = xfm(bone_mat(r.mat, i), i.pos);
     let size = lt.water.z * lt.water.w;
     var o: BedOut;
     o.pos = vec4<f32>((w.x - lt.water.x) / size * 2.0 - 1.0, 1.0 - (w.z - lt.water.y) / size * 2.0, clamp(0.5 - (w.y - lt.water2.z) / lt.water2.w, 0.0, 1.0), 1.0);
@@ -1579,7 +1688,7 @@ struct BedOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>
 struct ObstOut { @builtin(position) pos: vec4<f32>, @location(0) world: vec3<f32>, @location(1) @interpolate(flat) flags: u32 };
 @vertex fn vs_obstacle(i: VIn, @builtin(instance_index) inst: u32) -> ObstOut {
     let r = recs[inst];
-    let w = xfm(mats[r.mat + i.bone], i.pos);
+    let w = xfm(bone_mat(r.mat, i), i.pos);
     let size = lt.water.z * lt.water.w;
     var o: ObstOut;
     o.pos = vec4<f32>((w.x - lt.water.x) / size * 2.0 - 1.0, 1.0 - (w.z - lt.water.y) / size * 2.0, 0.5, 1.0);
@@ -2508,6 +2617,9 @@ const SHADOW_SIZE: u32 = 2048;
 /// [`Gpu::build_water`]: the water pipeline, and the generated surface's and the mist's.
 type WaterPipes = (wgpu::RenderPipeline, Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>);
 
+/// A mesh draw ([`Gpu::list`]).
+type ListDraw = (u32, Key, core::ops::Range<u32>, TexHandle, bool, u8, bool, Option<u32>);
+
 /// A water draw: record, mesh, vertex range, texture, wrap, additive, steep (a waterfall).
 type WaterDraw = (u32, Key, core::ops::Range<u32>, TexHandle, bool, bool, bool);
 
@@ -2517,6 +2629,8 @@ pub(crate) struct Gpu {
     shader: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     store_layout: wgpu::BindGroupLayout,
+    cam_layout: wgpu::BindGroupLayout,
+    lights_layout: wgpu::BindGroupLayout,
     cam: wgpu::Buffer,
     cam_bg: wgpu::BindGroup,
     lights: wgpu::Buffer,
@@ -2531,9 +2645,15 @@ pub(crate) struct Gpu {
     store: Option<(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup)>,
     /// Mesh pipelines: format, samples, MRT, kind (0 lit, 1 emissive, 1 + `Liquid`), ray traced.
     pipelines: HashMap<(wgpu::TextureFormat, u32, bool, u8, bool), wgpu::RenderPipeline>,
-    /// This frame's draw list: (record, mesh key, vertex range, texture, wrap, emissive,
-    /// cut-out: the texture has see-through pixels).
-    list: Vec<(u32, Key, core::ops::Range<u32>, TexHandle, bool, u8, bool)>,
+    /// This frame's draw list: (record, mesh key, vertex range, texture, wrap, pipeline kind,
+    /// cut-out: the texture has see-through pixels, a modded model's material).
+    list: Vec<ListDraw>,
+    /// Group 1 of the PBR pipelines ([`crate::pbr`]): the texture, sampler, the maps and the
+    /// material's block.
+    pbr_layout: wgpu::BindGroupLayout,
+    /// The PBR pipelines' shader and layout, and the ray-traced ones' (made with the first
+    /// modded material).
+    pbr: Option<PbrParts>,
     /// Emissive and mean colour per texture CRC.
     tex_info: HashMap<u32, TexInfo>,
     /// The shadow map needs drawing this frame.
@@ -2580,6 +2700,13 @@ pub(crate) struct Gpu {
     shadow_s: wgpu::Sampler,
     /// Mesh vertex buffer usage (`BLAS_INPUT` with ray queries).
     vb_usage: wgpu::BufferUsages,
+}
+
+/// The PBR pipelines' modules and layouts ([`crate::pbr`]).
+struct PbrParts {
+    shader: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
+    rt: Option<(wgpu::ShaderModule, wgpu::PipelineLayout)>,
 }
 
 /// The ray-traced variant's state ([`crate::rt`]).
@@ -2796,6 +2923,29 @@ impl Gpu {
         ];
         let lights_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu mesh lights"), entries: &light_entries });
         let fr = wgpu::ShaderStages::FRAGMENT;
+        let tex2d = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: fr,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let pbr_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gpu mesh pbr material"),
+            entries: &[
+                tex2d(0),
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: fr, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                tex2d(2),
+                tex2d(3),
+                tex2d(4),
+                tex2d(5),
+                tex2d(6),
+                ubo(7, fr),
+            ],
+        });
         let grid_cam_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("generated water camera"),
             entries: &[
@@ -3097,6 +3247,10 @@ impl Gpu {
             shader,
             layout,
             store_layout,
+            cam_layout,
+            lights_layout,
+            pbr_layout,
+            pbr: None,
             cam,
             cam_bg,
             lights,
@@ -3286,9 +3440,17 @@ impl Gpu {
                 if rec.flags & 64 != 0 {
                     self.liquid_list.push((d.rec, d.key, g.first..g.first + g.count));
                 }
-                // The pipeline: lit, emissive, or an opaque liquid's own (1 + `Liquid`).
-                let kind = if rec.flags & 64 != 0 { 1 + rec.slide[2] as u8 } else { emissive as u8 };
-                self.list.push((d.rec, d.key, g.first..g.first + g.count, tex, d.wrap, kind, cut));
+                // A modded model's physically based material.
+                let pbr = if d.override_tex.is_none() && rec.flags & 64 == 0 { textures.pbr(d.key.0, g.crc) } else { None };
+                // The pipeline: lit, emissive, an opaque liquid's own (1 + `Liquid`), or PBR.
+                let kind = if pbr.is_some() {
+                    crate::pbr::PBR_KIND
+                } else if rec.flags & 64 != 0 {
+                    1 + rec.slide[2] as u8
+                } else {
+                    emissive as u8
+                };
+                self.list.push((d.rec, d.key, g.first..g.first + g.count, tex, d.wrap, kind, cut, pbr));
                 need_bg.push((tex, d.wrap));
             }
         }
@@ -3595,7 +3757,7 @@ impl Gpu {
         draw_list(&mut pass, &self.meshes, self.list.iter().filter(|d| !d.6).map(|d| (d.0, d.1, d.2.clone())));
         pass.set_pipeline(&self.shadow_cut_pipeline);
         let mut cur: Option<Key> = None;
-        for (rec, key, range, tex, wrap, _, cut) in &self.list {
+        for (rec, key, range, tex, wrap, _, cut, _) in &self.list {
             if !*cut {
                 continue;
             }
@@ -3867,8 +4029,11 @@ impl Gpu {
 
     /// A mesh pipeline (see [`Gpu::pipelines`]).
     fn build_pipeline(&self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32, mrt: bool, kind: u8, rt: bool) -> wgpu::RenderPipeline {
-        let (shader, layout) = match (&self.rtx, rt) {
-            (Some(r), true) => (&r.shader, &r.layout),
+        let pbr = kind == crate::pbr::PBR_KIND;
+        let (shader, layout) = match (&self.rtx, rt, &self.pbr) {
+            (_, true, Some(PbrParts { rt: Some((s, l)), .. })) if pbr => (s, l),
+            (_, _, Some(p)) if pbr => (&p.shader, &p.layout),
+            (Some(r), true, _) => (&r.shader, &r.layout),
             _ => (&self.shader, &self.layout),
         };
         let comp = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
@@ -3881,7 +4046,8 @@ impl Gpu {
             // The upscaler's reactive mask (CPU-drawn flickering textures only).
             Some(wgpu::ColorTargetState { format: crate::renderer::REACTIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::empty() }),
         ];
-        let constants = [("EMISSIVE", if kind == 1 { 1.0 } else { 0.0 }), ("LIQUID", if kind >= 2 { kind - 1 } else { 0 } as f64)];
+        let liquid = if (2..crate::pbr::PBR_KIND).contains(&kind) { kind - 1 } else { 0 };
+        let constants = [("EMISSIVE", if kind == 1 { 1.0 } else { 0.0 }), ("LIQUID", liquid as f64)];
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("gpu meshes"),
             layout: Some(layout),
@@ -3903,7 +4069,12 @@ impl Gpu {
             multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: shader,
-                entry_point: Some(if mrt { "fs_mrt" } else { "fs" }),
+                entry_point: Some(match (pbr, mrt) {
+                    (true, true) => "fs_pbr_mrt",
+                    (true, false) => "fs_pbr",
+                    (false, true) => "fs_mrt",
+                    (false, false) => "fs",
+                }),
                 compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
                 targets: &targets[..if mrt { 4 } else { 1 }],
             }),
@@ -3923,6 +4094,9 @@ impl Gpu {
         kinds.sort_unstable();
         kinds.dedup();
         kinds.retain(|&k| !self.pipelines.contains_key(&(format, samples, mrt, k, rt)));
+        if kinds.contains(&crate::pbr::PBR_KIND) {
+            self.ensure_pbr(device, rt);
+        }
         let waters: Vec<bool> = [false, true].into_iter().filter(|&a| !self.water_pipelines.contains_key(&(format, samples, mrt, a))).collect();
         let grid = !self.grid_pipelines.contains_key(&(format, samples, mrt));
         if kinds.is_empty() && waters.is_empty() {
@@ -3948,8 +4122,57 @@ impl Gpu {
         }
     }
 
+    /// The PBR pipelines' shader module (the mesh shader with [`crate::pbr::WGSL`]) and layout,
+    /// made the first time a frame has a modded material (`rt`: the ray-traced ones too).
+    fn ensure_pbr(&mut self, device: &wgpu::Device, rt: bool) {
+        if self.pbr.as_ref().is_some_and(|p| p.rt.is_some() || !rt || self.rtx.is_none()) {
+            return;
+        }
+        let parts = self.pbr.take().unwrap_or_else(|| {
+            let src = format!("{SHADER}{}", crate::pbr::WGSL);
+            let shader =
+                device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gpu meshes (pbr)"), source: wgpu::ShaderSource::Wgsl(src.into()) });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("gpu meshes (pbr)"),
+                bind_group_layouts: &[Some(&self.cam_layout), Some(&self.pbr_layout), Some(&self.store_layout), Some(&self.lights_layout)],
+                immediate_size: 0,
+            });
+            PbrParts { shader, layout, rt: None }
+        });
+        let rt_parts = parts.rt.or_else(|| {
+            let r = self.rtx.as_ref().filter(|_| rt)?;
+            let src = format!("enable wgpu_ray_query;\n{}{}", replace_block(SHADER, "// RT-BEGIN", "// RT-END", crate::rt::RT_FNS), crate::pbr::WGSL);
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("gpu meshes (pbr, ray traced)"),
+                source: wgpu::ShaderSource::Wgsl(src.into()),
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("gpu meshes (pbr, ray traced)"),
+                bind_group_layouts: &[Some(&self.cam_layout), Some(&self.pbr_layout), Some(&self.store_layout), Some(&r.lights_layout)],
+                immediate_size: 0,
+            });
+            Some((shader, layout))
+        });
+        self.pbr = Some(PbrParts { rt: rt_parts, ..parts });
+    }
+
+    /// Group 1 of the PBR pipelines (the renderer makes the materials' bind groups).
+    pub fn pbr_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.pbr_layout
+    }
+
+    /// This frame's (material, texture, wrap) triples whose bind groups [`draw`](Self::draw)
+    /// needs.
+    pub fn pbr_needs(&self) -> Vec<(u32, TexHandle, bool)> {
+        let mut v: Vec<_> = self.list.iter().filter_map(|d| d.7.map(|m| (m, d.3, d.4))).collect();
+        v.sort_unstable_by_key(|x| (x.0, x.1, x.2));
+        v.dedup();
+        v
+    }
+
     /// Records this frame's mesh draws into `pass` (`bind_group(tex, wrap)` = the texture's
-    /// bind group, prepared by the caller).
+    /// bind group, `pbr_group(material, tex, wrap)` a modded material's, prepared by the
+    /// caller).
     pub fn draw<'b>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -3957,6 +4180,7 @@ impl Gpu {
         samples: u32,
         mrt: bool,
         bind_group: impl Fn(TexHandle, bool) -> &'b wgpu::BindGroup,
+        pbr_group: impl Fn(u32, TexHandle, bool) -> &'b wgpu::BindGroup,
     ) {
         let Some((_, _, _, store_bg)) = &self.store else { return };
         let rt = self.rt_on;
@@ -3975,7 +4199,7 @@ impl Gpu {
         pass.set_bind_group(3, lights_bg, &[]);
         let mut cur: Option<Key> = None;
         let mut cur_kind = None;
-        for (rec, key, range, tex, wrap, kind, _) in &self.list {
+        for (rec, key, range, tex, wrap, kind, _, pbr) in &self.list {
             if cur_kind != Some(*kind) {
                 let Some(p) = self.pipelines.get(&(format, samples, mrt, *kind, rt)) else { continue };
                 pass.set_pipeline(p);
@@ -3986,7 +4210,10 @@ impl Gpu {
                 pass.set_vertex_buffer(0, buf.slice(..));
                 cur = Some(*key);
             }
-            pass.set_bind_group(1, bind_group(*tex, *wrap), &[]);
+            match pbr {
+                Some(m) => pass.set_bind_group(1, pbr_group(*m, *tex, *wrap), &[]),
+                None => pass.set_bind_group(1, bind_group(*tex, *wrap), &[]),
+            }
             pass.draw(range.clone(), *rec..*rec + 1);
         }
     }
@@ -4029,14 +4256,16 @@ fn draw_list(
     }
 }
 
-/// `Vert` as vertex attributes (uv at 16, normal at 32, colour at 48).
+/// `Vert` as vertex attributes (uv at 16, bones and weights at 24, normal at 32, colour at 48).
 fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 5] = [
+    const ATTRS: [wgpu::VertexAttribute; 7] = [
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 12, shader_location: 1 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 16, shader_location: 2 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 3 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 4 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 24, shader_location: 5 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 28, shader_location: 6 },
     ];
     wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
 }

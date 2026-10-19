@@ -764,6 +764,12 @@ impl App {
                 None => eprintln!("frogger: {f}: not found"),
             }
         }
+        // Modded models' own images, PBR materials and skin weights (after the banks: an image
+        // replaces the bank texture of its name). The first bank with a model wins, as models do.
+        let mats: Vec<_> = self.scene.as_ref().map(|s| s.banks.iter().rev().flat_map(|b| b.materials.iter().cloned()).collect()).unwrap_or_default();
+        for m in mats {
+            self.r.add_model_materials(&m);
+        }
     }
 
     // ------------------------------------------------------------ steps / levels

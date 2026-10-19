@@ -26,9 +26,10 @@
 //!   `sprites`) and root `extras` (`modelId`, `radius`, `objectSize`) are honoured.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use f2_formats::crc::crc;
+use f2_formats::material::{ModelMaterials, SkinWeights};
 use f2_formats::objbank::{Animation, Mesh, Model, ObjSprite, Object, QKey, VKey, Vec3};
 use serde_json::Value;
 
@@ -44,13 +45,15 @@ pub const UV_SCALE: f32 = 0.000975;
 pub struct GltfDoc {
     pub json: Value,
     pub buffers: Vec<Vec<u8>>,
+    /// Where relative image files are looked up (`None`: embedded images only).
+    pub base_dir: Option<PathBuf>,
 }
 
-fn err(m: impl Into<String>) -> Error {
+pub(crate) fn err(m: impl Into<String>) -> Error {
     Error::new(format!("gltf: {}", m.into()))
 }
 
-fn base64_decode(s: &str) -> Result<Vec<u8>, Error> {
+pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>, Error> {
     let mut out = Vec::with_capacity(s.len() * 3 / 4);
     let (mut acc, mut n) = (0u32, 0);
     for c in s.bytes() {
@@ -73,7 +76,19 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-fn percent_decode(s: &str) -> String {
+/// Host path of relative URI `u` (a buffer or image file next to the document): no `..`, not
+/// absolute.
+pub(crate) fn rel_path(base_dir: Option<&Path>, u: &str, what: &str) -> Result<PathBuf, Error> {
+    let rel = percent_decode(u);
+    let comps = f2_mods::normalize(&rel).ok_or_else(|| err(format!("{what} uri {u:?} escapes the model directory")))?;
+    if rel.starts_with('/') || rel.starts_with('\\') {
+        return Err(err(format!("{what} uri {u:?} is absolute")));
+    }
+    let dir = base_dir.ok_or_else(|| err(format!("external {what} {u:?} needs a base directory")))?;
+    Ok(comps.iter().fold(dir.to_path_buf(), |p, c| p.join(c)))
+}
+
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -126,13 +141,7 @@ impl GltfDoc {
                     base64_decode(payload)?
                 }
                 Some(u) => {
-                    let rel = percent_decode(u);
-                    let comps = f2_mods::normalize(&rel).ok_or_else(|| err(format!("buffer uri {u:?} escapes the model directory")))?;
-                    if rel.starts_with('/') || rel.starts_with('\\') {
-                        return Err(err(format!("buffer uri {u:?} is absolute")));
-                    }
-                    let dir = base_dir.ok_or_else(|| err(format!("external buffer {u:?} needs a base directory")))?;
-                    let p = comps.iter().fold(dir.to_path_buf(), |p, c| p.join(c));
+                    let p = rel_path(base_dir, u, "buffer")?;
                     std::fs::read(&p).map_err(|e| err(format!("{}: {e}", p.display())))?
                 }
             };
@@ -141,7 +150,7 @@ impl GltfDoc {
             }
             buffers.push(data);
         }
-        Ok(GltfDoc { json, buffers })
+        Ok(GltfDoc { json, buffers, base_dir: base_dir.map(Path::to_path_buf) })
     }
 
     /// Reads a file and its relative buffers.
@@ -207,15 +216,15 @@ impl GltfDoc {
     }
 }
 
-fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
+pub(crate) fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
     v[k].as_array().map(|a| a.as_slice()).unwrap_or(&[])
 }
 
-fn idx(v: &Value) -> Option<usize> {
+pub(crate) fn idx(v: &Value) -> Option<usize> {
     v.as_u64().map(|x| x as usize)
 }
 
-fn f3(v: &Value) -> Option<Vec3> {
+pub(crate) fn f3(v: &Value) -> Option<Vec3> {
     let a = v.as_array()?;
     (a.len() == 3).then(|| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32])
 }
@@ -257,7 +266,7 @@ fn node_trs(n: &Value) -> (Option<Vec3>, Option<[f32; 4]>, Option<Vec3>) {
     (f3(&n["translation"]), f4(&n["rotation"]), f3(&n["scale"]))
 }
 
-fn material_crc(doc: &GltfDoc, mat: Option<usize>) -> u32 {
+pub(crate) fn material_crc(doc: &GltfDoc, mat: Option<usize>) -> u32 {
     let Some(m) = mat.and_then(|m| doc.json["materials"].get(m)) else { return 0 };
     if let Some(c) = m["extras"]["textureCrc"].as_u64() {
         return c as u32;
@@ -312,18 +321,55 @@ fn face_normal(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     }
 }
 
-/// Skinning info for [`convert_mesh`]: joint node per joint index and its inverse bind matrix.
+/// Skinning info for [`convert_mesh`]: per joint index, the matrix moving its vertices into
+/// the joint's space (column-major; `None`: they are there already).
 struct SkinInfo {
-    ibm: Vec<Vec<f32>>,
+    ibm: Vec<Option<Vec<f32>>>,
 }
 
-/// Converts a glTF mesh. Returns the MDX mesh and the joint (skin joint
-/// index) of each MDX vertex when `skin` is given.
-fn convert_mesh(doc: &GltfDoc, mesh_idx: usize, skin: Option<&SkinInfo>) -> Result<(Mesh, Vec<u16>), Error> {
+/// A skin vertex's joints (skin joint indices) and weights, the heaviest first, up to 4,
+/// weights in 255ths summing to 255 (unused: weight 0).
+pub(crate) type Influences = ([u16; 4], [u8; 4]);
+
+/// The 4 heaviest of a vertex's joints `j` / weights `w`, normalized (see [`Influences`]).
+fn influences(j: &[f32], w: Option<&[f32]>) -> Influences {
+    let mut v: Vec<(u16, f32)> = match w {
+        Some(w) => j.iter().zip(w).map(|(&j, &w)| (j as u16, w.max(0.0))).collect(),
+        None => vec![(j.first().copied().unwrap_or(0.0) as u16, 1.0)],
+    };
+    // Heaviest first (of equal ones the last, as the single-joint import always took).
+    let best = (0..v.len()).max_by(|&a, &b| v[a].1.total_cmp(&v[b].1)).unwrap_or(0);
+    let first = v.remove(best);
+    v.sort_by(|a, b| b.1.total_cmp(&a.1));
+    v.insert(0, first);
+    v.truncate(4);
+    let sum: f32 = v.iter().map(|x| x.1).sum();
+    let (mut joints, mut q) = ([v.first().map_or(0, |x| x.0); 4], [0u8; 4]);
+    if sum <= 0.0 {
+        return (joints, [255, 0, 0, 0]);
+    }
+    for (k, &(jn, wt)) in v.iter().enumerate() {
+        joints[k] = jn;
+        q[k] = (wt / sum * 255.0).round() as u8;
+    }
+    let rest: u32 = q[1..].iter().map(|&x| u32::from(x)).sum();
+    q[0] = 255u32.saturating_sub(rest) as u8;
+    for k in 1..4 {
+        if q[k] == 0 {
+            joints[k] = joints[0];
+        }
+    }
+    (joints, q)
+}
+
+/// Converts a glTF mesh. Returns the MDX mesh and the joint influences of each MDX vertex
+/// (the first is the heaviest joint's) when `skin` is given.
+/// `mats`: the face texture CRC of each material ([`crate::material::resolve`]).
+fn convert_mesh(doc: &GltfDoc, mesh_idx: usize, skin: Option<&SkinInfo>, mats: &[u32]) -> Result<(Mesh, Vec<Influences>), Error> {
     let m = doc.json["meshes"].get(mesh_idx).ok_or_else(|| err(format!("mesh {mesh_idx} missing")))?;
     let mut mesh = Mesh { vertices: vec![], faces: vec![], face_uv: vec![], normals: vec![], colors: vec![], face_flags: vec![], textures: vec![] };
     let mut joints_out = Vec::new();
-    let mut weld: HashMap<([u32; 3], [u32; 3], u16), i16> = HashMap::new();
+    let mut weld: HashMap<([u32; 3], [u32; 3], Influences), i16> = HashMap::new();
     for (pi, p) in arr(m, "primitives").iter().enumerate() {
         let mode = p["mode"].as_u64().unwrap_or(4);
         if mode != 4 {
@@ -345,7 +391,7 @@ fn convert_mesh(doc: &GltfDoc, mesh_idx: usize, skin: Option<&SkinInfo>) -> Resu
         if indices.iter().any(|&i| i >= nv) {
             return Err(err(format!("mesh {mesh_idx} primitive {pi}: index out of range")));
         }
-        let crc = material_crc(doc, idx(&p["material"]));
+        let crc = idx(&p["material"]).and_then(|m| mats.get(m)).copied().unwrap_or(0);
         let flag = p["extras"]["faceFlags"]
             .as_u64()
             .or_else(|| idx(&p["material"]).and_then(|mi| doc.json["materials"][mi]["extras"]["faceFlags"].as_u64()))
@@ -359,19 +405,16 @@ fn convert_mesh(doc: &GltfDoc, mesh_idx: usize, skin: Option<&SkinInfo>) -> Resu
                 let mut n = nrm.as_ref().map(|(d, c)| [d[c * vi], d[c * vi + 1], d[c * vi + 2]]).unwrap_or(fnrm);
                 let joint = match (&jts, skin) {
                     (Some((j, jc)), Some(s)) => {
-                        let w = wts.as_ref().map(|(w, wc)| &w[wc * vi..wc * vi + (*wc).min(*jc)]);
-                        let best = match w {
-                            Some(w) => (0..w.len()).max_by(|&a, &b| w[a].total_cmp(&w[b])).unwrap_or(0),
-                            None => 0,
-                        };
-                        let jn = j[jc * vi + best] as u16;
-                        if let Some(m) = s.ibm.get(jn as usize) {
+                        let n_inf = wts.as_ref().map_or(1, |(_, wc)| (*wc).min(*jc));
+                        let w = wts.as_ref().map(|(w, wc)| &w[wc * vi..wc * vi + n_inf]);
+                        let inf = influences(&j[jc * vi..jc * vi + n_inf.max(1).min(*jc)], w);
+                        if let Some(Some(m)) = s.ibm.get(inf.0[0] as usize) {
                             v = xform(m, v);
                             n = xform_dir(m, n);
                         }
-                        jn
+                        inf
                     }
-                    _ => 0,
+                    _ => ([0; 4], [255, 0, 0, 0]),
                 };
                 let key = (v.map(f32::to_bits), n.map(f32::to_bits), joint);
                 let id = match weld.get(&key) {
@@ -464,16 +507,10 @@ fn bbox_of(m: &Mesh) -> Option<[Vec3; 8]> {
 
 const IDENTITY: [[f32; 4]; 4] = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
 
-/// Imports a model. `model_id` is used unless the document's root `extras.modelId`
-/// is wanted instead (pass `None`); falls back to `crc("<scene name>.obe")`.
-pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error> {
-    let j = &doc.json;
+/// The default scene's root nodes (all parentless nodes without a scene).
+fn scene_nodes(j: &Value) -> Vec<usize> {
     let nodes = arr(j, "nodes");
-    if nodes.is_empty() {
-        return Err(err("no nodes"));
-    }
-    let scene_i = idx(&j["scene"]).unwrap_or(0);
-    let scene_nodes: Vec<usize> = match j["scenes"].get(scene_i) {
+    match j["scenes"].get(idx(&j["scene"]).unwrap_or(0)) {
         Some(s) => arr(s, "nodes").iter().filter_map(idx).collect(),
         None => {
             let mut is_child = vec![false; nodes.len()];
@@ -486,7 +523,67 @@ pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error
             }
             (0..nodes.len()).filter(|&i| !is_child[i]).collect()
         }
-    };
+    }
+}
+
+fn is_skin_holder(n: &Value) -> bool {
+    n.get("skin").is_some_and(|s| !s.is_null())
+}
+
+/// The model id: `model_id`, else the root `extras.modelId`, else `crc("<scene name>.obe")`
+/// (the root object's name without a scene name).
+fn doc_model_id(doc: &GltfDoc, model_id: Option<u32>) -> u32 {
+    let j = &doc.json;
+    model_id.or_else(|| j["extras"]["modelId"].as_u64().map(|v| v as u32)).unwrap_or_else(|| {
+        let root = scene_nodes(j).into_iter().find(|&ni| j["nodes"].get(ni).is_some_and(|n| !is_skin_holder(n)));
+        let root_name = root.map(|ni| j["nodes"][ni]["name"].as_str().map(str::to_string).unwrap_or_else(|| format!("node{ni}"))).unwrap_or_default();
+        let name = j["scenes"][idx(&j["scene"]).unwrap_or(0)]["name"].as_str().unwrap_or(&root_name).to_ascii_lowercase();
+        crc(&format!("{name}.obe"))
+    })
+}
+
+/// An imported model with what it brings besides its geometry.
+pub struct Imported {
+    pub model: Model,
+    /// The document's own images and physically based materials ([`crate::material`]).
+    pub materials: ModelMaterials,
+    /// Problems that did not stop the import (unreadable images, ...).
+    pub warnings: Vec<String>,
+    /// Only the meshes replaced those of the model passed as `base` ([`import`]).
+    pub mesh_only: bool,
+}
+
+/// Imports a model. `model_id` is used unless the document's root `extras.modelId`
+/// is wanted instead (pass `None`); falls back to `crc("<scene name>.obe")`.
+pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error> {
+    import(doc, model_id, None).map(|i| i.model)
+}
+
+/// Imports a model replacing `base` (the retail model of that name, if any): a mesh-only
+/// override when the document allows it ([`import_meshes`]), else the whole model.
+pub fn import(doc: &GltfDoc, model_id: Option<u32>, base: Option<&Model>) -> Result<Imported, Error> {
+    let id = doc_model_id(doc, model_id);
+    let mut warnings = Vec::new();
+    let (mats, materials) = crate::material::resolve(doc, id, &mut warnings);
+    if let Some(b) = base {
+        if let Some((mut model, skin)) = import_meshes(doc, b, &mats)? {
+            model.id = id;
+            let mut materials = materials;
+            materials.skin = skin;
+            return Ok(Imported { model, materials, warnings, mesh_only: true });
+        }
+    }
+    let model = import_full(doc, id, &mats)?;
+    Ok(Imported { model, materials, warnings, mesh_only: false })
+}
+
+fn import_full(doc: &GltfDoc, id: u32, mats: &[u32]) -> Result<Model, Error> {
+    let j = &doc.json;
+    let nodes = arr(j, "nodes");
+    if nodes.is_empty() {
+        return Err(err("no nodes"));
+    }
+    let scene_nodes = scene_nodes(j);
     // Flat pre-order object list.
     let mut objs: Vec<Object> = Vec::new();
     let mut obj_node: Vec<usize> = Vec::new();
@@ -505,12 +602,13 @@ pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error
         kids: &mut Vec<Vec<usize>>,
         node_obj: &mut HashMap<usize, usize>,
         skin_holders: &mut Vec<usize>,
+        mats: &[u32],
     ) -> Result<Option<usize>, Error> {
         if depth > 256 {
             return Err(err("node hierarchy too deep"));
         }
         let n = doc.json["nodes"].get(ni).ok_or_else(|| err(format!("node {ni} missing")))?;
-        if n.get("skin").is_some_and(|s| !s.is_null()) {
+        if is_skin_holder(n) {
             skin_holders.push(ni);
             return Ok(None);
         }
@@ -536,7 +634,7 @@ pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error
         };
         obj_extras(&mut o, &n["extras"]);
         if let Some(mi) = idx(&n["mesh"]) {
-            let (m, _) = convert_mesh(doc, mi, None)?;
+            let (m, _) = convert_mesh(doc, mi, None, mats)?;
             if !m.faces.is_empty() {
                 o.bbox = bbox_of(&m);
                 o.mesh = Some(m);
@@ -548,7 +646,7 @@ pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error
         kids.push(vec![]);
         node_obj.insert(ni, me);
         for c in arr(n, "children").iter().filter_map(idx) {
-            if let Some(k) = visit(doc, c, depth + 1, objs, obj_node, kids, node_obj, skin_holders)? {
+            if let Some(k) = visit(doc, c, depth + 1, objs, obj_node, kids, node_obj, skin_holders, mats)? {
                 kids[me].push(k);
             }
         }
@@ -556,7 +654,7 @@ pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error
     }
 
     for &ni in &scene_nodes {
-        if let Some(o) = visit(doc, ni, 0, &mut objs, &mut obj_node, &mut kids, &mut node_obj, &mut skin_holders)? {
+        if let Some(o) = visit(doc, ni, 0, &mut objs, &mut obj_node, &mut kids, &mut node_obj, &mut skin_holders, mats)? {
             top.push(o);
         }
     }
@@ -578,13 +676,14 @@ pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error
                 if c != 16 {
                     return Err(err("inverseBindMatrices must be MAT4"));
                 }
-                d.as_chunks::<16>().0.iter().map(|m| m.to_vec()).collect()
+                d.as_chunks::<16>().0.iter().map(|m| Some(m.to_vec())).collect()
             }
             None => vec![],
         };
         let mi = idx(&hn["mesh"]).ok_or_else(|| err("skin holder without mesh"))?;
-        let (m, vj) = convert_mesh(doc, mi, Some(&SkinInfo { ibm }))?;
-        for (v, &jn) in vj.iter().enumerate() {
+        let (m, vj) = convert_mesh(doc, mi, Some(&SkinInfo { ibm }), mats)?;
+        for (v, &(js, _)) in vj.iter().enumerate() {
+            let jn = js[0];
             let node = *joints.get(jn as usize).ok_or_else(|| err(format!("joint {jn} out of range")))?;
             let o = *node_obj.get(&node).ok_or_else(|| err(format!("joint node {node} is not part of the object hierarchy")))?;
             objs[o].effected_verts.push(v as i32);
@@ -684,13 +783,266 @@ pub fn import_model(doc: &GltfDoc, model_id: Option<u32>) -> Result<Model, Error
     let root = tops.remove(0);
 
     let ex = &j["extras"];
-    let id = model_id.or_else(|| ex["modelId"].as_u64().map(|v| v as u32)).unwrap_or_else(|| {
-        let name = j["scenes"][scene_i]["name"].as_str().unwrap_or(&root.name).to_ascii_lowercase();
-        crc(&format!("{name}.obe"))
-    });
     let radius = ex["radius"].as_f64().map(|r| r as f32).unwrap_or_else(|| compute_radius(&root, &tops));
     let object_size = ex["objectSize"].as_i64().map(|v| v as i16).unwrap_or(0);
     Ok(Model { id, radius, object_size, root, root_siblings: tops, animations: clips, loc_mesh: None, is_skinned, num_vtx })
+}
+
+/// 4×4 (column vectors: `m[row][col]`), for the mesh-only override's rest poses.
+type M4 = [[f64; 4]; 4];
+
+const I4: M4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+
+fn mul4(a: &M4, b: &M4) -> M4 {
+    std::array::from_fn(|r| std::array::from_fn(|c| (0..4).map(|k| a[r][k] * b[k][c]).sum()))
+}
+
+fn transpose4(a: &M4) -> M4 {
+    std::array::from_fn(|r| std::array::from_fn(|c| a[c][r]))
+}
+
+/// Inverse of an affine matrix (`None`: singular).
+#[allow(clippy::needless_range_loop)] // r / c index the matrices
+fn inv_affine(a: &M4) -> Option<M4> {
+    let m = |r: usize, c: usize| a[r][c];
+    let det = m(0, 0) * (m(1, 1) * m(2, 2) - m(1, 2) * m(2, 1)) - m(0, 1) * (m(1, 0) * m(2, 2) - m(1, 2) * m(2, 0))
+        + m(0, 2) * (m(1, 0) * m(2, 1) - m(1, 1) * m(2, 0));
+    if det.abs() < 1e-12 || !det.is_finite() {
+        return None;
+    }
+    let cof = |r: usize, c: usize| {
+        let (r0, r1) = ((r + 1) % 3, (r + 2) % 3);
+        let (c0, c1) = ((c + 1) % 3, (c + 2) % 3);
+        m(r0, c0) * m(r1, c1) - m(r0, c1) * m(r1, c0)
+    };
+    let mut o = I4;
+    for r in 0..3 {
+        for c in 0..3 {
+            o[r][c] = cof(c, r) / det;
+        }
+    }
+    for r in 0..3 {
+        o[r][3] = -(0..3).map(|k| o[r][k] * a[k][3]).sum::<f64>();
+    }
+    Some(o)
+}
+
+/// Rotation of unit-ish quaternion `q` (x, y, z, w): the engine's `quaternion_to_matrix`
+/// (row vectors) transposed.
+fn quat4(q: [f64; 4]) -> M4 {
+    let [x, y, z, w] = q;
+    let s = 2.0 / (x * x + y * y + z * z + w * w).max(1e-30);
+    let (xs, ys, zs) = (x * s, y * s, z * s);
+    let (wx, wy, wz) = (w * xs, w * ys, w * zs);
+    let (xx, xy, xz) = (x * xs, x * ys, x * zs);
+    let (yy, yz, zz) = (y * ys, y * zs, z * zs);
+    let row =
+        [[1.0 - (yy + zz), xy + wz, xz - wy, 0.0], [xy - wz, 1.0 - (xx + zz), yz + wx, 0.0], [xz + wy, yz - wx, 1.0 - (xx + yy), 0.0], [0.0, 0.0, 0.0, 1.0]];
+    transpose4(&row)
+}
+
+/// A glTF node's local matrix.
+fn node_local(n: &Value) -> M4 {
+    if let Some(m) = n["matrix"].as_array().filter(|m| m.len() == 16) {
+        return std::array::from_fn(|r| std::array::from_fn(|c| m[c * 4 + r].as_f64().unwrap_or(0.0)));
+    }
+    let v = |k: &str, d: f64, n3: usize| -> Vec<f64> {
+        n[k].as_array().filter(|a| a.len() == n3).map_or(vec![d; n3], |a| a.iter().map(|x| x.as_f64().unwrap_or(d)).collect())
+    };
+    let (t, s) = (v("translation", 0.0, 3), v("scale", 1.0, 3));
+    let q = n["rotation"].as_array().filter(|a| a.len() == 4).map_or([0.0, 0.0, 0.0, 1.0], |a| std::array::from_fn(|i| a[i].as_f64().unwrap_or(0.0)));
+    let mut m = quat4(q);
+    for (c, sc) in s.iter().enumerate() {
+        for row in m.iter_mut().take(3) {
+            row[c] *= sc;
+        }
+    }
+    for r in 0..3 {
+        m[r][3] = t[r];
+    }
+    m
+}
+
+/// World matrix of every glTF node at its rest transform.
+fn node_worlds(j: &Value) -> Vec<M4> {
+    let nodes = arr(j, "nodes");
+    let mut parent = vec![None; nodes.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        for c in arr(n, "children").iter().filter_map(idx) {
+            if c < parent.len() {
+                parent[c] = Some(i);
+            }
+        }
+    }
+    fn world(i: usize, nodes: &[Value], parent: &[Option<usize>], memo: &mut [Option<M4>], depth: u32) -> M4 {
+        if let Some(m) = memo[i] {
+            return m;
+        }
+        let local = node_local(&nodes[i]);
+        let m = match parent[i] {
+            Some(p) if depth < 256 => mul4(&world(p, nodes, parent, memo, depth + 1), &local),
+            _ => local,
+        };
+        memo[i] = Some(m);
+        m
+    }
+    let mut memo = vec![None; nodes.len()];
+    (0..nodes.len()).map(|i| world(i, nodes, &parent, &mut memo, 0)).collect()
+}
+
+/// Every object's matrix at rest (key 0 everywhere, no actor transform), in pre-order: the
+/// engine's `transform_object` (`f2_engine::anim`; a parent's scale reaches its children's
+/// translation only), transposed to column vectors.
+fn rest_matrices(model: &Model) -> Vec<M4> {
+    fn walk(o: &Object, top: &M4, parent_scale: Vec3, out: &mut Vec<M4>) {
+        let t = o.move_keys.first().map_or([0.0; 3], |k| k.v);
+        let s = o.scale_keys.first().map_or([1.0; 3], |k| k.v);
+        let q = o.rotate_keys.first().map_or([0.0, 0.0, 0.0, 1.0], |k| k.q);
+        // Row-vector form, as the engine builds it.
+        let mut rot = transpose4(&quat4(q.map(f64::from)));
+        for c in 0..3 {
+            rot[3][c] = f64::from(t[c]) * f64::from(parent_scale[c]);
+        }
+        let m1 = mul4(&rot, top);
+        let mut sc = I4;
+        for c in 0..3 {
+            sc[c][c] = f64::from(s[c]);
+        }
+        out.push(transpose4(&mul4(&sc, &m1)));
+        for ch in &o.children {
+            walk(ch, &m1, s, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&model.root, &I4, [1.0; 3], &mut out);
+    for sib in &model.root_siblings {
+        walk(sib, &I4, [1.0; 3], &mut out);
+    }
+    out
+}
+
+fn object_mut(model: &mut Model, index: usize) -> Option<&mut Object> {
+    fn find<'a>(o: &'a mut Object, i: &mut usize) -> Option<&'a mut Object> {
+        if *i == 0 {
+            return Some(o);
+        }
+        *i -= 1;
+        o.children.iter_mut().find_map(|c| find(c, i))
+    }
+    let mut i = index;
+    std::iter::once(&mut model.root).chain(model.root_siblings.iter_mut()).find_map(|o| find(o, &mut i))
+}
+
+/// Mesh-only override: `base` keeps its hierarchy, keys, clips and ids, and only its skin
+/// (and rigid meshes of nodes named like its objects) come from the document. Applies when
+/// the document's skin joints are all named like `base`'s objects and it has no animations
+/// (or `extras.keepAnimations: true` on the asset, scene or document). Skin positions are
+/// the mesh as the document shows it at rest (each joint's rest world matrix × its inverse
+/// bind matrix: `f2-export`'s joint-space vertices with no inverse bind matrices, or a
+/// Blender export's bind-pose mesh, alike); each vertex goes to its highest-weight joint's
+/// object, moved into that object's space with `base`'s own rest pose.
+fn import_meshes(doc: &GltfDoc, base: &Model, mats: &[u32]) -> Result<Option<(Model, Option<SkinWeights>)>, Error> {
+    let j = &doc.json;
+    let keep = [&j["extras"], &j["asset"]["extras"], &j["scenes"][idx(&j["scene"]).unwrap_or(0)]["extras"]]
+        .iter()
+        .any(|e| e["keepAnimations"].as_bool() == Some(true));
+    if !arr(j, "animations").is_empty() && !keep {
+        return Ok(None);
+    }
+    let nodes = arr(j, "nodes");
+    let mut names: HashMap<String, usize> = HashMap::new();
+    let mut count = 0;
+    {
+        fn walk(o: &Object, names: &mut HashMap<String, usize>, i: &mut usize) {
+            names.entry(o.name.to_ascii_lowercase()).or_insert(*i);
+            *i += 1;
+            for c in &o.children {
+                walk(c, names, i);
+            }
+        }
+        walk(&base.root, &mut names, &mut count);
+        for s in &base.root_siblings {
+            walk(s, &mut names, &mut count);
+        }
+    }
+    let obj_of = |ni: usize| nodes.get(ni).and_then(|n| n["name"].as_str()).and_then(|n| names.get(&n.to_ascii_lowercase()).copied());
+    let holder = nodes.iter().position(is_skin_holder);
+    let mut skin = None;
+    if let Some(h) = holder {
+        let si = idx(&nodes[h]["skin"]).ok_or_else(|| err("bad skin index"))?;
+        let s = j["skins"].get(si).ok_or_else(|| err(format!("skin {si} missing")))?;
+        let joints: Vec<usize> = arr(s, "joints").iter().filter_map(idx).collect();
+        let objs: Option<Vec<usize>> = joints.iter().map(|&ni| obj_of(ni)).collect();
+        match objs {
+            Some(o) if base.is_skinned && base.root.mesh.is_some() && !o.is_empty() => skin = Some((h, s, joints, o)),
+            _ if keep => return Err(err("keepAnimations: the skin's joints are not all named like the model's objects")),
+            _ => return Ok(None),
+        }
+    } else if !keep {
+        return Ok(None);
+    }
+    let mut model = base.clone();
+    let mut weights = None;
+    if let Some((h, s, joints, objs)) = skin {
+        let worlds = node_worlds(j);
+        let rest = rest_matrices(base);
+        let ibms: Vec<M4> = match idx(&s["inverseBindMatrices"]) {
+            Some(a) => {
+                let (d, c) = doc.floats(a)?;
+                if c != 16 {
+                    return Err(err("inverseBindMatrices must be MAT4"));
+                }
+                d.as_chunks::<16>().0.iter().map(|m| std::array::from_fn(|r| std::array::from_fn(|c| f64::from(m[c * 4 + r])))).collect()
+            }
+            None => vec![],
+        };
+        let mut ibm = Vec::with_capacity(joints.len());
+        for (k, (&ni, &o)) in joints.iter().zip(&objs).enumerate() {
+            let shown = mul4(worlds.get(ni).unwrap_or(&I4), ibms.get(k).unwrap_or(&I4));
+            let inv = inv_affine(&rest[o]).ok_or_else(|| err(format!("object {o}: singular rest matrix")))?;
+            let l = mul4(&inv, &shown);
+            // Already in the object's space (the exporter's own skins): kept bit for bit.
+            let same = (0..3).all(|r| (0..3).all(|c| (l[r][c] - I4[r][c]).abs() < 1e-5) && l[r][3].abs() < 1e-3);
+            ibm.push((!same).then(|| (0..16).map(|i| l[i % 4][i / 4] as f32).collect()));
+        }
+        let mi = idx(&nodes[h]["mesh"]).ok_or_else(|| err("skin holder without mesh"))?;
+        let (mesh, vj) = convert_mesh(doc, mi, Some(&SkinInfo { ibm }), mats)?;
+        for i in 0..count {
+            if let Some(o) = object_mut(&mut model, i) {
+                o.effected_verts.clear();
+            }
+        }
+        let obj = |jn: u16| objs.get(jn as usize).copied().ok_or_else(|| err(format!("joint {jn} out of range")));
+        let mut w = SkinWeights::default();
+        for (v, &(js, ws)) in vj.iter().enumerate() {
+            object_mut(&mut model, obj(js[0])?).unwrap().effected_verts.push(v as i32);
+            let mut jo = [0u8; 4];
+            for k in 0..4 {
+                jo[k] = u8::try_from(obj(js[k])?).unwrap_or(0);
+            }
+            w.joints.push(jo);
+            w.weights.push(ws);
+        }
+        // Smooth only when some vertex has a second joint (and the objects fit in a byte).
+        if count <= 256 && w.weights.iter().any(|x| x[1] > 0) {
+            weights = Some(w);
+        }
+        model.num_vtx = mesh.vertices.len() as i16;
+        model.root.bbox = bbox_of(&mesh);
+        model.root.mesh = Some(mesh);
+    }
+    // Rigid meshes of nodes named like the model's objects (not the skin's own object).
+    for (ni, n) in nodes.iter().enumerate() {
+        let (Some(mi), Some(o)) = (idx(&n["mesh"]), obj_of(ni)) else { continue };
+        if is_skin_holder(n) || (o == 0 && model.is_skinned) {
+            continue;
+        }
+        let (mesh, _) = convert_mesh(doc, mi, None, mats)?;
+        let obj = object_mut(&mut model, o).unwrap();
+        obj.bbox = bbox_of(&mesh);
+        obj.mesh = (!mesh.faces.is_empty()).then_some(mesh);
+    }
+    Ok(Some((model, weights)))
 }
 
 /// Bounding radius around the model origin (rest pose translations, no rotation/scale).
@@ -716,6 +1068,32 @@ fn compute_radius(root: &Object, sibs: &[Object]) -> f32 {
         walk(s, [0.0; 3], &mut r);
     }
     r
+}
+
+/// Rest-pose maths for the crate's tests.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use super::*;
+
+    pub type M = M4;
+
+    pub fn rest(m: &Model) -> Vec<M> {
+        rest_matrices(m)
+    }
+    pub fn mul(a: &M, b: &M) -> M {
+        mul4(a, b)
+    }
+    pub fn inv64(a: &M) -> M {
+        inv_affine(a).unwrap()
+    }
+    /// Column-major f32.
+    pub fn inv(a: &M) -> Vec<f32> {
+        let i = inv64(a);
+        (0..16).map(|k| i[k % 4][k / 4] as f32).collect()
+    }
+    pub fn xf(m: &M, p: Vec3) -> [f32; 3] {
+        std::array::from_fn(|r| (0..3).map(|c| m[r][c] * f64::from(p[c])).sum::<f64>() as f32 + m[r][3] as f32)
+    }
 }
 
 #[cfg(test)]

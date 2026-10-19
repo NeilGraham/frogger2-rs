@@ -696,7 +696,7 @@ pub fn decode(data: &[u8]) -> RResult<ObjectBank> {
             return Err(format!("stream {i} not fully consumed"));
         }
     }
-    Ok(ObjectBank { models, anim_past_end })
+    Ok(ObjectBank { models, anim_past_end, materials: vec![] })
 }
 
 /// Bitwise equality of two banks (every float compared by bits).
@@ -806,6 +806,7 @@ mod tests {
         let bank = ObjectBank {
             models: vec![m.clone(), m],
             anim_past_end: vec![(1, None), (2, Some(Animation { start: -1, end: 3, speed: f32::from_bits(1), looped: -7 }))],
+            materials: vec![],
         };
         let (data, segs) = encode(&bank);
         assert_eq!(segs.iter().map(|s| s.len as usize).sum::<usize>(), data.len());

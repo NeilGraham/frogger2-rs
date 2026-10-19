@@ -38,6 +38,8 @@ pub mod lighting;
 #[cfg(feature = "std")]
 pub mod load;
 pub mod math;
+#[cfg(feature = "gpu")]
+mod pbr;
 pub mod renderer;
 #[cfg(feature = "gpu")]
 mod rt;
@@ -58,7 +60,7 @@ pub use renderer::{Blend, DepthMode, DrawCmd, EngineError, FontId, FrameView, Pa
 pub use renderer::{GpuContext, WindowSurface};
 pub use scene::{Camera, Fog, Frame, MeshBackend, MeshDraw, MeshSink, ObjDraw, ObjSphere, RenderOptions, TlVertex, Tri, View, XluSort, MESH_SKIN};
 pub use soft::SoftTarget;
-pub use textures::{TexHandle, TextureRegistry};
+pub use textures::{Pbr, TexHandle, TextureRegistry};
 pub use upscale::{UpscaleCamera, UpscaleMode};
 #[cfg(feature = "gpu")]
 pub use upscale::{UpscaleInputs, Upscaler};

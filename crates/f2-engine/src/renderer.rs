@@ -403,6 +403,12 @@ pub struct Renderer {
     gpu_images: Vec<GpuImage>,
     #[cfg(feature = "gpu")]
     bind_groups: HashMap<(u32, SamplerKey), wgpu::BindGroup>,
+    /// Modded materials' bind groups (material, texture, sampler; [`crate::pbr`]) and their
+    /// uniform blocks.
+    #[cfg(feature = "gpu")]
+    pbr_bind_groups: HashMap<(u32, u32, SamplerKey), wgpu::BindGroup>,
+    #[cfg(feature = "gpu")]
+    pbr_ubos: HashMap<u32, wgpu::Buffer>,
     #[cfg(feature = "gpu")]
     tex_layout: wgpu::BindGroupLayout,
     #[cfg(feature = "gpu")]
@@ -742,6 +748,8 @@ impl Renderer {
             white: TexHandle(0),
             gpu_images: Vec::new(),
             bind_groups: HashMap::new(),
+            pbr_bind_groups: HashMap::new(),
+            pbr_ubos: HashMap::new(),
             tex_layout,
             uniform_buf,
             uniform_bg,
@@ -959,6 +967,7 @@ impl Renderer {
             if idx < self.gpu_images.len() {
                 self.gpu_images[idx] = gi;
                 self.bind_groups.retain(|k, _| k.0 != i);
+                self.pbr_bind_groups.clear();
             } else {
                 // Images are appended in order, so this is the next slot.
                 debug_assert_eq!(idx, self.gpu_images.len());
@@ -1016,6 +1025,56 @@ impl Renderer {
             self.bind_groups.insert(key, bg);
         }
         &self.bind_groups[&key]
+    }
+
+    /// Bind group of modded material `m` drawn with texture `tex` ([`crate::pbr`]).
+    #[cfg(feature = "gpu")]
+    fn pbr_bind_group(&mut self, m: u32, tex: TexHandle, wrap: bool) {
+        let skey = self.sampler_key(wrap);
+        let key = (m, tex.0, skey);
+        if self.pbr_bind_groups.contains_key(&key) {
+            return;
+        }
+        self.sampler(skey);
+        let (Some(gm), Some(p)) = (self.gpu_mesh.as_ref(), self.textures.pbr_material(m)) else { return };
+        let ubo = self.pbr_ubos.entry(m).or_insert_with(|| {
+            use wgpu::util::DeviceExt;
+            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("pbr material"),
+                contents: bytemuck::cast_slice(&crate::pbr::uniform(p)),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        });
+        let view = |h: Option<TexHandle>| {
+            let h = h.filter(|h| (h.0 as usize) < self.gpu_images.len()).unwrap_or(self.white);
+            wgpu::BindingResource::TextureView(&self.gpu_images[h.0 as usize].view)
+        };
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pbr material"),
+            layout: gm.pbr_layout(),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: view(Some(tex)) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[&skey]) },
+                wgpu::BindGroupEntry { binding: 2, resource: view(p.normal) },
+                wgpu::BindGroupEntry { binding: 3, resource: view(p.metal_rough) },
+                wgpu::BindGroupEntry { binding: 4, resource: view(p.occlusion) },
+                wgpu::BindGroupEntry { binding: 5, resource: view(p.emissive_map) },
+                wgpu::BindGroupEntry { binding: 6, resource: view(p.height) },
+                wgpu::BindGroupEntry { binding: 7, resource: ubo.as_entire_binding() },
+            ],
+        });
+        self.pbr_bind_groups.insert(key, bg);
+    }
+
+    /// Registers what a modded model brings ([`TextureRegistry::add_model_materials`]; after
+    /// the texture banks).
+    pub fn add_model_materials(&mut self, m: &f2_formats::material::ModelMaterials) {
+        self.textures.add_model_materials(m);
+        #[cfg(feature = "gpu")]
+        {
+            self.pbr_ubos.clear();
+            self.pbr_bind_groups.clear();
+        }
     }
 
     #[cfg(feature = "gpu")]
@@ -2017,8 +2076,12 @@ impl Renderer {
         );
         gm.ensure_pipeline(&self.device, format, samples, mrt);
         let any = gm.has_draws() || gm.has_water();
+        let pbr = gm.pbr_needs();
         for (t, w) in need {
             self.bind_group(t, w);
+        }
+        for (m, t, w) in pbr {
+            self.pbr_bind_group(m, t, w);
         }
         any
     }
@@ -2205,7 +2268,8 @@ impl Renderer {
             if water {
                 gm.draw_water(pass, fmt, samples, false, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
             } else {
-                gm.draw(pass, fmt, samples, false, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+                let pbgs = &self.pbr_bind_groups;
+                gm.draw(pass, fmt, samples, false, |t, w| &bgs[&(t.0, self.sampler_key(w))], |m, t, w| &pbgs[&(m, t.0, self.sampler_key(w))]);
             }
             if let Some(vb) = &self.vbuf {
                 pass.set_vertex_buffer(0, vb.slice(..));
@@ -2471,7 +2535,8 @@ impl Renderer {
                 if water {
                     gm.draw_water(pass, UPSCALE_COLOR_FORMAT, 1, true, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
                 } else {
-                    gm.draw(pass, UPSCALE_COLOR_FORMAT, 1, true, |t, w| &bgs[&(t.0, self.sampler_key(w))]);
+                    let pbgs = &self.pbr_bind_groups;
+                    gm.draw(pass, UPSCALE_COLOR_FORMAT, 1, true, |t, w| &bgs[&(t.0, self.sampler_key(w))], |m, t, w| &pbgs[&(m, t.0, self.sampler_key(w))]);
                 }
                 if let (Some(vb), Some(mb)) = (&self.vbuf, &self.mv_buf) {
                     pass.set_vertex_buffer(0, vb.slice(..));

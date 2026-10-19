@@ -358,7 +358,7 @@ fn gltf_round_trip_all_retail_models() {
         let Ok(bank) = ObjectBank::parse(&data) else { continue };
         for m in &bank.models {
             let out = f2_export::gltf::model_to_gltf(m, "m.bin", &|_| None);
-            let doc = gltf::GltfDoc { json: out.json, buffers: vec![out.bin] };
+            let doc = gltf::GltfDoc { json: out.json, buffers: vec![out.bin], base_dir: None };
             match gltf::import_model(&doc, None) {
                 Ok(b) => {
                     if let Err(e) = compare_model(m, &b) {
@@ -401,4 +401,351 @@ fn retail_bank_with_file_overrides() {
     assert_eq!(l.value.models.len(), base.models.len() + 1);
     compare_model(&base.models[i], &l.value.models[i]).unwrap();
     assert_eq!(l.value.models.last().unwrap().id, crc("newthing.obe"));
+}
+
+fn b64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::new();
+    for c in bytes.chunks(3) {
+        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        for k in 0..4 {
+            s.push(if k <= c.len() { T[(n >> (18 - 6 * k)) as usize & 63] as char } else { '=' });
+        }
+    }
+    s
+}
+
+/// Accessors over one little-endian buffer (a test glTF's).
+#[derive(Default)]
+struct Bin {
+    bytes: Vec<u8>,
+    accessors: Vec<serde_json::Value>,
+}
+
+impl Bin {
+    fn f32s(&mut self, v: &[f32], ty: &str) -> usize {
+        let n = match ty {
+            "SCALAR" => 1,
+            "VEC2" => 2,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            _ => 16,
+        };
+        self.accessors.push(serde_json::json!({"bufferView": 0, "byteOffset": self.bytes.len(), "componentType": 5126, "count": v.len() / n, "type": ty}));
+        self.bytes.extend(v.iter().flat_map(|f| f.to_le_bytes()));
+        self.accessors.len() - 1
+    }
+    fn u16s(&mut self, v: &[u16]) -> usize {
+        self.accessors.push(serde_json::json!({"bufferView": 0, "byteOffset": self.bytes.len(), "componentType": 5123, "count": v.len() / 4, "type": "VEC4"}));
+        self.bytes.extend(v.iter().flat_map(|f| f.to_le_bytes()));
+        while !self.bytes.len().is_multiple_of(4) {
+            self.bytes.push(0);
+        }
+        self.accessors.len() - 1
+    }
+    fn finish(self, mut doc: serde_json::Value) -> serde_json::Value {
+        doc["buffers"] = serde_json::json!([{"byteLength": self.bytes.len(), "uri": format!("data:application/octet-stream;base64,{}", b64(&self.bytes))}]);
+        doc["bufferViews"] = serde_json::json!([{"buffer": 0, "byteOffset": 0, "byteLength": self.bytes.len()}]);
+        doc["accessors"] = serde_json::Value::Array(self.accessors);
+        doc
+    }
+}
+
+/// glTF PBR materials: factors and maps, images embedded (data URI) and next to the document,
+/// the height map from the extras and by the `_height` name, a self-contained base colour image
+/// registered as the faces' texture, and a second material on the same image made unique.
+#[test]
+fn gltf_pbr_materials_and_images() {
+    let t = tempfile::tempdir().unwrap();
+    let px = |c: [u8; 4]| png(2, 2, &c.repeat(4));
+    put(t.path(), "objects/b/skin.png", &px([200, 100, 50, 255]));
+    put(t.path(), "objects/b/skin_n.png", &px([128, 128, 255, 255]));
+    put(t.path(), "objects/b/bump.png", &px([90, 90, 90, 255]));
+    put(t.path(), "objects/b/plain_height.png", &px([20, 20, 20, 255]));
+    put(t.path(), "objects/b/plain.png", &px([1, 2, 3, 255]));
+    let mut bin = Bin::default();
+    let pos = bin.f32s(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], "VEC3");
+    let uv = bin.f32s(&[0.0, 0.0, 0.975, 0.0, 0.0, 0.975], "VEC2");
+    let embedded = format!("data:image/png;base64,{}", b64(&px([10, 20, 30, 255])));
+    let doc = serde_json::json!({
+        "asset": {"version": "2.0"},
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": "thing", "mesh": 0}],
+        "meshes": [{"primitives": [
+            {"attributes": {"POSITION": pos, "TEXCOORD_0": uv}, "material": 0},
+            {"attributes": {"POSITION": pos, "TEXCOORD_0": uv}, "material": 1},
+            {"attributes": {"POSITION": pos, "TEXCOORD_0": uv}, "material": 2},
+            {"attributes": {"POSITION": pos, "TEXCOORD_0": uv}, "material": 3},
+            {"attributes": {"POSITION": pos, "TEXCOORD_0": uv}, "material": 4}
+        ]}],
+        "materials": [
+            {"name": "frogskin", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "baseColorFactor": [1.0, 0.5, 1.0, 1.0], "metallicFactor": 0.25, "roughnessFactor": 0.5,
+                "metallicRoughnessTexture": {"index": 2}},
+             "normalTexture": {"index": 1, "scale": 0.8}, "occlusionTexture": {"index": 3, "strength": 0.5}, "emissiveTexture": {"index": 3},
+             "emissiveFactor": [1.0, 0.5, 0.0], "extensions": {"KHR_materials_emissive_strength": {"emissiveStrength": 2.0}},
+             "extras": {"heightTexture": {"index": 4}, "parallaxScale": 0.05}},
+            // The exporter's: plain.
+            {"pbrMetallicRoughness": {"baseColorTexture": {"index": 5}, "metallicFactor": 0.0, "roughnessFactor": 1.0}},
+            // Same image as the first, plain: a CRC of its own.
+            {"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 1.0}},
+            // A height map by name only (plain.png → plain_height.png).
+            {"pbrMetallicRoughness": {"baseColorTexture": {"index": 6}, "metallicFactor": 0.0, "roughnessFactor": 1.0}},
+            // A retail texture by name, outside the directory: not read, no warning.
+            {"pbrMetallicRoughness": {"baseColorTexture": {"index": 7}, "metallicFactor": 0.0, "roughnessFactor": 1.0}}
+        ],
+        "textures": [{"source": 0}, {"source": 1}, {"source": 2}, {"source": 3}, {"source": 4}, {"source": 5}, {"source": 6}, {"source": 7}],
+        "images": [{"uri": "skin.png"}, {"uri": "skin_n.png"}, {"uri": embedded}, {"uri": "bump.png"}, {"uri": "bump.png"}, {"uri": embedded, "name": "Glow"},
+            {"uri": "plain.png"}, {"uri": "../tex/00Wate04.png"}]
+    });
+    let doc = bin.finish(doc);
+    let path = t.path().join("objects/b/thing.gltf");
+    fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let imp = gltf::import(&gltf::GltfDoc::load(&path).unwrap(), Some(7), None).unwrap();
+    assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+    let mm = &imp.materials;
+    let mesh = imp.model.root.mesh.as_ref().unwrap();
+    let skin = crc("skin.bmp");
+    let own = crc(&format!("{:08x}_mat2.bmp", 7));
+    assert_eq!(mesh.textures, vec![skin, crc("glow.bmp"), own, crc("plain.bmp"), crc("00wate04.bmp")]);
+    let img = |crc: u32| mm.textures.iter().find(|t| t.0 == crc).map(|t| &mm.images[t.1 as usize]);
+    assert_eq!(img(skin).unwrap().rgba[..4], [200, 100, 50, 255]);
+    assert_eq!(img(crc("glow.bmp")).unwrap().rgba[..4], [10, 20, 30, 255], "embedded data URI");
+    assert_eq!(img(own).unwrap().rgba[..4], [200, 100, 50, 255], "a second material on the image");
+    assert!(img(crc("00wate04.bmp")).is_none(), "retail textures come from the banks");
+    assert_eq!(mm.materials.len(), 2);
+    let p = &mm.materials[0];
+    assert_eq!(p.crc, skin);
+    assert_eq!((p.metallic, p.roughness, p.normal_scale, p.occlusion_strength, p.parallax_scale), (0.25, 0.5, 0.8, 0.5, 0.05));
+    assert_eq!(p.base_color, [1.0, 0.5, 1.0, 1.0]);
+    assert_eq!(p.emissive, [2.0, 1.0, 0.0]);
+    let map = |i: Option<u32>| mm.images[i.unwrap() as usize].rgba[..4].to_vec();
+    assert_eq!(map(p.normal), [128, 128, 255, 255]);
+    assert_eq!(map(p.metal_rough), [10, 20, 30, 255]);
+    assert_eq!(map(p.occlusion), [90, 90, 90, 255]);
+    assert_eq!(p.occlusion, p.emissive_map, "one image, decoded once");
+    assert_eq!(p.occlusion, p.height);
+    let q = &mm.materials[1];
+    assert_eq!(q.crc, crc("plain.bmp"));
+    assert_eq!(map(q.height), [20, 20, 20, 255], "<stem>_height.png");
+    assert_eq!(q.parallax_scale, crate::material::PARALLAX_SCALE);
+    assert_eq!((q.metallic, q.roughness, q.normal), (0.0, 1.0, None));
+
+    // The same as a .glb with the images in the binary chunk.
+    let png_bytes = px([7, 8, 9, 255]);
+    let mut glb_doc = serde_json::json!({
+        "asset": {"version": "2.0"},
+        "nodes": [{"name": "thing", "mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
+        "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}, "normalTexture": {"index": 0}}],
+        "textures": [{"source": 0}],
+        "images": [{"bufferView": 1, "mimeType": "image/png"}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}],
+    });
+    let mut chunk: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0].iter().flat_map(|f| f.to_le_bytes()).collect();
+    let off = chunk.len();
+    chunk.extend(&png_bytes);
+    while !chunk.len().is_multiple_of(4) {
+        chunk.push(0);
+    }
+    glb_doc["buffers"] = serde_json::json!([{"byteLength": chunk.len()}]);
+    glb_doc["bufferViews"] =
+        serde_json::json!([{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": off, "byteLength": png_bytes.len()}]);
+    let mut js = serde_json::to_vec(&glb_doc).unwrap();
+    while !js.len().is_multiple_of(4) {
+        js.push(b' ');
+    }
+    let mut glb = b"glTF".to_vec();
+    glb.extend(2u32.to_le_bytes());
+    glb.extend(((12 + 8 + js.len() + 8 + chunk.len()) as u32).to_le_bytes());
+    glb.extend((js.len() as u32).to_le_bytes());
+    glb.extend(0x4E4F_534Au32.to_le_bytes());
+    glb.extend(&js);
+    glb.extend((chunk.len() as u32).to_le_bytes());
+    glb.extend(0x004E_4942u32.to_le_bytes());
+    glb.extend(&chunk);
+    let imp = gltf::import(&gltf::GltfDoc::parse(&glb, None).unwrap(), Some(9), None).unwrap();
+    let own = crc(&format!("{:08x}_mat0.bmp", 9));
+    assert_eq!(imp.model.root.mesh.as_ref().unwrap().textures, vec![own], "an unnamed image: a CRC of its own");
+    let mm = &imp.materials;
+    assert_eq!(mm.textures, vec![(own, 0)]);
+    assert_eq!(mm.images[0].rgba[..4], [7, 8, 9, 255]);
+    assert_eq!(mm.materials[0].normal, Some(0));
+    assert_eq!(mm.materials[0].metallic, 1.0, "glTF's default factors");
+}
+
+/// A synthetic skinned model like the retail frog: a root and an arm turned and moved at rest,
+/// with a clip.
+fn skinned_model() -> Model {
+    use f2_formats::objbank::{Animation, Mesh, QKey, VKey};
+    let o = |name: &str, t: Vec3, q: Quat| Object {
+        id: crc(&format!("{name}.obe")),
+        name: name.into(),
+        xlu: 0,
+        sprites: vec![],
+        mesh: None,
+        effected_verts: vec![],
+        scale_keys: vec![VKey { v: [1.0; 3], time: 0 }],
+        move_keys: vec![VKey { v: t, time: 0 }, VKey { v: [t[0], t[1] + 3.0, t[2]], time: 10 }],
+        rotate_keys: vec![QKey { q, time: 0 }, QKey { q: [0.0, 0.0, 0.0, 1.0], time: 10 }],
+        bbox: None,
+        phong: 0,
+        flags: 0,
+        matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        children: vec![],
+    };
+    let s = (0.3f32).sin();
+    let mut root = o("frog", [0.0, 5.0, 0.0], [0.0, s, 0.0, (1.0 - s * s).sqrt()]);
+    let mut arm = o("fgshld", [4.0, 2.0, 1.0], [s, 0.0, 0.0, (1.0 - s * s).sqrt()]);
+    arm.effected_verts = vec![3, 4, 5];
+    root.effected_verts = vec![0, 1, 2];
+    let vertices = vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.5], [0.0, 0.0, 0.0], [1.0, 3.0, 0.0], [0.0, 1.0, 2.0]];
+    root.mesh = Some(Mesh {
+        vertices,
+        faces: vec![[0, 1, 2], [3, 4, 5], [1, 4, 2]],
+        face_uv: (0..9).map(|i| [i * 100, 1000 - i * 50]).collect(),
+        normals: vec![[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, -1.0, 0.0], [-1.0, 0.0, 0.0]],
+        colors: (0..9).map(|i| [i as f32 / 9.0, 0.5, 1.0, 1.0]).collect(),
+        face_flags: vec![0; 3],
+        textures: vec![crc("a.bmp"), crc("b.bmp"), crc("a.bmp")],
+    });
+    root.children.push(arm);
+    Model {
+        id: crc("frog.obe"),
+        radius: 9.0,
+        object_size: 0,
+        root,
+        root_siblings: vec![],
+        animations: vec![Animation { start: 0, end: 10, speed: 1.0, looped: 1 }],
+        loc_mesh: None,
+        is_skinned: true,
+        num_vtx: 6,
+    }
+}
+
+/// Mesh-only skin override: the exporter's own skin without its animations keeps the model and
+/// reproduces its mesh exactly; a Blender-style document (bind-pose mesh in model space, inverse
+/// bind matrices, bones reoriented, smooth weights) lands in the same joint spaces.
+#[test]
+fn gltf_mesh_only_skin_override() {
+    let base = skinned_model();
+    let out = f2_export::gltf::model_to_gltf(&base, "m.bin", &|_| None);
+    // With its animations, the whole model is imported as before.
+    let full = gltf::GltfDoc { json: out.json.clone(), buffers: vec![out.bin.clone()], base_dir: None };
+    let imp = gltf::import(&full, Some(base.id), Some(&base)).unwrap();
+    assert!(!imp.mesh_only);
+    // Without: only the skin.
+    let mut json = out.json.clone();
+    json.as_object_mut().unwrap().remove("animations");
+    let doc = gltf::GltfDoc { json, buffers: vec![out.bin.clone()], base_dir: None };
+    let imp = gltf::import(&doc, Some(base.id), Some(&base)).unwrap();
+    assert!(imp.mesh_only);
+    assert!(imp.materials.skin.is_none(), "one joint per vertex: rigid");
+    compare_model(&base, &imp.model).unwrap();
+    let (a, b) = (base.root.mesh.as_ref().unwrap(), imp.model.root.mesh.as_ref().unwrap());
+    let corners = |m: &f2_formats::objbank::Mesh| {
+        let mut v: Vec<_> =
+            (0..m.faces.len()).flat_map(|f| (0..3).map(move |k| (m.vertices[m.faces[f][k] as usize].map(f32::to_bits), m.face_uv[f * 3 + k]))).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(corners(a), corners(b), "the skin's vertices bit for bit");
+    assert_eq!(imp.model.root.children[0].move_keys, base.root.children[0].move_keys);
+    assert_eq!(imp.model.animations, base.animations);
+
+    // Blender-style: the same mesh at rest in model space, every bone turned 90° about x
+    // (inverse bind matrices to match), the shoulder's vertices half on the root.
+    let rest = gltf::tests_support::rest(&base);
+    let turn = [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    // Column-vector rest matrices of the two bones, and the reoriented joints' worlds.
+    let mut bin = Bin::default();
+    let mut pos = Vec::new();
+    let mut joints = Vec::new();
+    let mut weights = Vec::new();
+    for (v, p) in a.vertices.iter().enumerate() {
+        let j = usize::from(v >= 3);
+        let w = gltf::tests_support::xf(&rest[j], *p);
+        pos.extend(w);
+        joints.extend([j as u16, 0, 0, 0]);
+        weights.extend(if v == 4 { [0.75, 0.25, 0.0, 0.0] } else { [1.0, 0.0, 0.0, 0.0] });
+    }
+    let tri: Vec<u16> = a.faces.iter().flatten().map(|&i| i as u16).collect();
+    let p_acc = bin.f32s(&pos, "VEC3");
+    let j_acc = bin.u16s(&joints);
+    let w_acc = bin.f32s(&weights, "VEC4");
+    // World of a reoriented joint: rest × turn; inverse bind: its inverse.
+    let worlds: Vec<[[f64; 4]; 4]> = rest.iter().map(|m| gltf::tests_support::mul(m, &turn)).collect();
+    let ibm: Vec<f32> = worlds.iter().flat_map(gltf::tests_support::inv).collect();
+    let ibm_acc = bin.f32s(&ibm, "MAT4");
+    // Indices: as floats-free u16 scalars.
+    bin.accessors.push(serde_json::json!({"bufferView": 0, "byteOffset": bin.bytes.len(), "componentType": 5123, "count": tri.len(), "type": "SCALAR"}));
+    bin.bytes.extend(tri.iter().flat_map(|i| i.to_le_bytes()));
+    let i_acc = bin.accessors.len() - 1;
+    let local = |w: &[[f64; 4]; 4], parent: Option<&[[f64; 4]; 4]>| {
+        let l = match parent {
+            Some(p) => gltf::tests_support::mul(&gltf::tests_support::inv64(p), w),
+            None => *w,
+        };
+        (0..16).map(|i| l[i % 4][i / 4]).collect::<Vec<f64>>()
+    };
+    let doc = serde_json::json!({
+        "asset": {"version": "2.0"},
+        "scenes": [{"nodes": [0, 2]}],
+        "nodes": [
+            {"name": "frog", "matrix": local(&worlds[0], None), "children": [1]},
+            {"name": "FGSHLD", "matrix": local(&worlds[1], Some(&worlds[0]))},
+            {"name": "frog_skin", "mesh": 0, "skin": 0}
+        ],
+        "skins": [{"joints": [0, 1], "inverseBindMatrices": ibm_acc}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": p_acc, "JOINTS_0": j_acc, "WEIGHTS_0": w_acc}, "indices": i_acc}]}],
+    });
+    let doc = gltf::GltfDoc { json: bin.finish(doc), buffers: vec![], base_dir: None };
+    let doc = gltf::GltfDoc::parse(&serde_json::to_vec(&doc.json).unwrap(), None).unwrap();
+    let imp = gltf::import(&doc, Some(base.id), Some(&base)).unwrap();
+    assert!(imp.mesh_only);
+    let m = imp.model.root.mesh.as_ref().unwrap();
+    // Every vertex back in its object's space (as the retail one), within float error.
+    for (o, obj) in [(0usize, &imp.model.root), (1, &imp.model.root.children[0])] {
+        // (Without normals in the document a corner shared by two faces is welded per face.)
+        assert!(obj.effected_verts.len() >= 3, "object {o}");
+        for &v in &obj.effected_verts {
+            let p = m.vertices[v as usize];
+            assert!(a.vertices[o * 3..o * 3 + 3].iter().any(|q| close3(*q, p)), "object {o}: {p:?}");
+        }
+    }
+    let w = imp.materials.skin.as_ref().expect("smooth weights");
+    let v4 = imp.model.root.children[0].effected_verts.iter().map(|&v| v as usize).find(|&v| close3(m.vertices[v], a.vertices[4])).unwrap();
+    assert_eq!((w.joints[v4], w.weights[v4]), ([1, 0, 1, 1], [191, 64, 0, 0]));
+}
+
+/// Real data: the retail frog's own export without its animations is a mesh-only override that
+/// keeps the frog exactly (hierarchy, keys, clips, and the skin bit for bit).
+#[test]
+fn retail_frog_mesh_only() {
+    let Some(g) = game_dir() else { return };
+    let t = tempfile::tempdir().unwrap();
+    let mut vfs = Vfs::new();
+    vfs.add_layer("base", &g);
+    let base = object_bank(&vfs, "frogger").unwrap().value;
+    let i = model_names(&base).iter().position(|n| n == "frog").expect("frog model");
+    let out = f2_export::gltf::model_to_gltf(&base.models[i], "frog.bin", &|_| None);
+    let mut json = out.json;
+    json.as_object_mut().unwrap().remove("animations");
+    put(t.path(), "objects/frogger/frog.gltf", serde_json::to_string(&json).unwrap().as_bytes());
+    put(t.path(), "objects/frogger/frog.bin", &out.bin);
+    vfs.add_layer("mod", t.path());
+    let l = object_bank(&vfs, "frogger").unwrap();
+    assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+    let (a, b) = (&base.models[i], &l.value.models[i]);
+    compare_model(a, b).unwrap();
+    assert_eq!(a.animations, b.animations);
+    let (ma, mb) = (a.root.mesh.as_ref().unwrap(), b.root.mesh.as_ref().unwrap());
+    let corners = |m: &f2_formats::objbank::Mesh| {
+        let mut v: Vec<_> = (0..m.faces.len())
+            .filter(|&f| m.faces[f].iter().all(|&i| i >= 0 && (i as usize) < m.vertices.len()))
+            .flat_map(|f| (0..3).map(move |k| (m.vertices[m.faces[f][k] as usize].map(f32::to_bits), m.face_uv[f * 3 + k], m.textures[f])))
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(corners(ma), corners(mb));
 }

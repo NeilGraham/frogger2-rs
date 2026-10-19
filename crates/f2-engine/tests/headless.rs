@@ -553,3 +553,197 @@ fn ray_traced_lighting_casts_shadows() {
     let darker = open.pixels.chunks(4).zip(traced.pixels.chunks(4)).filter(|(a, b)| a[0] > b[0] + 20).count();
     assert!((80..1500).contains(&darker), "{darker} pixels in the traced shadow");
 }
+
+/// A square (one texture across) facing the camera, its texture coordinates running
+/// over it (`u` to the right, `v` down on screen).
+fn textured_quad(half: f32, tex: u32) -> Mesh {
+    let vertices = vec![[-half, -half, 0.0], [half, -half, 0.0], [half, half, 0.0], [-half, half, 0.0]];
+    // World +x is on the screen's left: u grows with -x, v with -y.
+    let uv = |v: usize| -> [i16; 2] {
+        let p = vertices[v];
+        [((half - p[0]) / (2.0 * half) * 1024.0) as i16, ((half - p[1]) / (2.0 * half) * 1024.0) as i16]
+    };
+    let faces = vec![[0, 2, 1], [0, 3, 2]];
+    let face_uv = faces.iter().flat_map(|f: &[i16; 3]| f.map(|v| uv(v as usize))).collect();
+    Mesh { vertices, faces, face_uv, normals: vec![], colors: vec![[1.0; 4]; 6], face_flags: vec![0; 2], textures: vec![tex; 2] }
+}
+
+/// Modded materials ([`f2_engine::Pbr`], `crate::pbr`): a normal map lights a flat quad
+/// differently, a height map shifts its texture with the view (parallax occlusion), and a
+/// model without a material draws exactly as before one was registered (for another model).
+#[test]
+fn pbr_materials_bump_and_parallax() {
+    use f2_formats::material::{MatImage, ModelMaterials, PbrMaterial};
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let tex = f2_formats::crc("stripes.bmp");
+    // Vertical stripes, 8 px each.
+    let n = 64u32;
+    let stripes: Vec<u8> = (0..n * n).flat_map(|i| if ((i % n) / 8).is_multiple_of(2) { [230, 230, 230, 255] } else { [40, 90, 200, 255] }).collect();
+    r.textures.add_rgba(tex, "stripes.bmp", TexType::Normal, n, n, stripes);
+    let mesh = textured_quad(40.0, tex);
+    let model = |id| Model {
+        id,
+        radius: 60.0,
+        object_size: 0,
+        root: object("q", mesh.clone(), 0),
+        root_siblings: vec![],
+        animations: vec![],
+        loc_mesh: None,
+        is_skinned: false,
+        num_vtx: 0,
+    };
+    let (plain, bumpy) = (model(10), model(11));
+    let cam = Camera { source: [0.0, 70.0, -90.0], target: [0.0; 3], up: [0.0, 1.0, 0.0] };
+    let shot = |r: &mut Renderer, m: &Model| {
+        r.options.gpu_meshes = true;
+        r.options.perspective_correct = true;
+        r.options.anisotropy = 0;
+        let sun = f2_engine::DirLight { to_light: f2_engine::lighting::normalize([1.0, 0.5, -1.0]), color: [0.7; 3], shadows: false };
+        r.lighting = Some(f2_engine::Lighting { water: false, emissive_lights: false, sun: Some(sun), ..f2_engine::Lighting::daylight() });
+        r.begin_frame(320, 240);
+        r.set_camera(&cam);
+        r.draw_actor(m, &mut Actor::default());
+        r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap()
+    };
+    let before = shot(&mut r, &plain);
+    let flat_img = |v: [u8; 4]| MatImage { name: String::new(), width: 4, height: 4, rgba: v.repeat(16) };
+    // Normals leaning 45° towards +u; heights: the stripes' halves high and low (32 px period
+    // against the texture's 16).
+    let height = MatImage {
+        name: "h".into(),
+        width: n,
+        height: n,
+        rgba: (0..n * n).flat_map(|i| if ((i % n) / 16).is_multiple_of(2) { [255; 4] } else { [0, 0, 0, 255] }).collect(),
+    };
+    let mat = |normal: Option<u32>, h: Option<u32>, crc: u32| PbrMaterial {
+        crc,
+        base_color: [1.0; 4],
+        metallic: 0.0,
+        roughness: 0.6,
+        normal_scale: 1.0,
+        occlusion_strength: 1.0,
+        emissive: [0.0; 3],
+        parallax_scale: if h.is_some() { 0.08 } else { 0.0 },
+        normal,
+        metal_rough: None,
+        occlusion: None,
+        emissive_map: None,
+        height: h,
+    };
+    let mm = |normal, h| ModelMaterials {
+        model_id: 11,
+        images: vec![flat_img([128, 128, 255, 255]), flat_img([218, 128, 218, 255]), height.clone()],
+        materials: vec![mat(normal, h, tex)],
+        ..Default::default()
+    };
+    // A material for model 11 leaves model 10 as it was.
+    r.add_model_materials(&mm(Some(0), None));
+    let after = shot(&mut r, &plain);
+    assert!(before.pixels == after.pixels, "a model without a material draws as before");
+    let flat = shot(&mut r, &bumpy);
+    r.add_model_materials(&mm(Some(1), None));
+    let leaning = shot(&mut r, &bumpy);
+    r.add_model_materials(&mm(Some(0), Some(2)));
+    let deep = shot(&mut r, &bumpy);
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    for (name, img) in [("plain", &before), ("flat", &flat), ("leaning", &leaning), ("parallax", &deep)] {
+        img.write_png(dir.join(format!("f2-engine-pbr-{name}.png"))).unwrap();
+    }
+    let mean = |img: &f2_engine::RgbaImage| img.pixels.chunks(4).map(|p| p[0] as f64 + p[1] as f64 + p[2] as f64).sum::<f64>() / (img.pixels.len() / 4) as f64;
+    let (mf, ml) = (mean(&flat), mean(&leaning));
+    assert!(mf > 20.0, "the quad is drawn ({mf})");
+    assert!((mf - ml).abs() > 4.0, "a leaning normal map lights the quad differently: {mf} vs {ml}");
+    // Parallax: the stripes move (many pixels change colour, not just brightness).
+    let moved = flat.pixels.chunks(4).zip(deep.pixels.chunks(4)).filter(|(a, b)| (a[2] as i32 - a[0] as i32 - (b[2] as i32 - b[0] as i32)).abs() > 60).count();
+    assert!(moved > 500, "{moved} pixels changed stripe");
+    // Path-Traced (where the adapter has ray queries): its own PBR pipeline.
+    if r.ray_tracing_supported() {
+        r.options.ray_tracing = true;
+        let traced = shot(&mut r, &bumpy);
+        traced.write_png(dir.join("f2-engine-pbr-traced.png")).unwrap();
+        assert!(mean(&traced) > 20.0, "path-traced PBR draws");
+    }
+}
+
+/// Smooth skins (modded, `SkinWeights`): at rest a blended skin draws like its rigid self (the
+/// rest-pose round trip is exact enough); posed, the blended joint bends smoothly where the
+/// rigid one tears.
+#[test]
+fn smooth_skin_blends_bones() {
+    use f2_formats::material::{ModelMaterials, SkinWeights};
+    use f2_formats::objbank::Animation;
+    let ctx = GpuContext::new_headless().expect("no GPU adapter");
+    let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
+    let white = f2_formats::crc("white.bmp");
+    r.textures.add_rgba(white, "white.bmp", TexType::Normal, 2, 2, vec![255; 16]);
+    // A strip of rows at y = -20, 0, 20, 40: the lower two on the body, the upper two on the arm
+    // (its origin at y = 20, vertices in its space).
+    let rows = [-20.0f32, 0.0, 20.0, 40.0];
+    let mut vertices = Vec::new();
+    for (k, &y) in rows.iter().enumerate() {
+        let ly = if k >= 2 { y - 20.0 } else { y };
+        vertices.extend([[-10.0, ly, 0.0], [10.0, ly, 0.0]]);
+    }
+    let mut faces = Vec::new();
+    for k in 0..3i16 {
+        let (a, b, c, d) = (2 * k, 2 * k + 1, 2 * k + 3, 2 * k + 2);
+        faces.extend([[a, c, b], [a, d, c]]);
+    }
+    let nf = faces.len();
+    let mesh = Mesh {
+        vertices,
+        faces,
+        face_uv: vec![[0, 0]; nf * 3],
+        normals: vec![],
+        colors: vec![[0.9, 0.6, 0.3, 1.0]; nf * 3],
+        face_flags: vec![0; nf],
+        textures: vec![white; nf],
+    };
+    let model = |id| {
+        let mut root = object("body", mesh.clone(), 0);
+        root.effected_verts = vec![0, 1, 2, 3];
+        let mut arm =
+            object("arm", Mesh { vertices: vec![], faces: vec![], face_uv: vec![], normals: vec![], colors: vec![], face_flags: vec![], textures: vec![] }, 0);
+        arm.mesh = None;
+        arm.effected_verts = vec![4, 5, 6, 7];
+        arm.move_keys = vec![VKey { v: [0.0, 20.0, 0.0], time: 0 }, VKey { v: [0.0, 20.0, 0.0], time: 10 }];
+        let h = std::f32::consts::FRAC_PI_6;
+        arm.rotate_keys = vec![QKey { q: [0.0, 0.0, 0.0, 1.0], time: 0 }, QKey { q: [0.0, 0.0, h.sin(), h.cos()], time: 10 }];
+        root.children.push(arm);
+        let animations = vec![Animation { start: 0, end: 10, speed: 1.0, looped: 1 }];
+        Model { id, radius: 60.0, object_size: 0, root, root_siblings: vec![], animations, loc_mesh: None, is_skinned: true, num_vtx: 8 }
+    };
+    let (rigid, smooth) = (model(20), model(21));
+    // Rows 1 and 2 halfway between the bones.
+    let w = |k: usize| {
+        if k == 1 || k == 2 {
+            ([0, 1, 0, 0], [128, 127, 0, 0])
+        } else if k < 2 {
+            ([0; 4], [255, 0, 0, 0])
+        } else {
+            ([1; 4], [255, 0, 0, 0])
+        }
+    };
+    let weights = SkinWeights { joints: (0..8).map(|v| w(v / 2).0).collect(), weights: (0..8).map(|v| w(v / 2).1).collect() };
+    r.add_model_materials(&ModelMaterials { model_id: 21, skin: Some(weights), ..Default::default() });
+    let shot = |r: &mut Renderer, m: &Model, posed: bool| {
+        r.options.gpu_meshes = true;
+        r.lighting = Some(f2_engine::Lighting { water: false, emissive_lights: false, sun: None, ..f2_engine::Lighting::daylight() });
+        r.begin_frame(320, 240);
+        r.set_camera(&Camera { source: [0.0, 10.0, -120.0], target: [0.0, 10.0, 0.0], up: [0.0, 1.0, 0.0] });
+        r.draw_actor(m, &mut Actor { animated: posed, anim_time: 10.0, ..Default::default() });
+        r.render_to_image([0.0, 0.0, 0.0, 1.0]).unwrap()
+    };
+    let lit = |img: &f2_engine::RgbaImage| img.pixels.chunks(4).filter(|p| p[0] > 20).count();
+    let diff =
+        |a: &f2_engine::RgbaImage, b: &f2_engine::RgbaImage| a.pixels.chunks(4).zip(b.pixels.chunks(4)).filter(|(x, y)| (x[0] > 20) != (y[0] > 20)).count();
+    let (rest_r, rest_s) = (shot(&mut r, &rigid, false), shot(&mut r, &smooth, false));
+    assert!(lit(&rest_r) > 1000, "the strip is drawn");
+    assert!(diff(&rest_r, &rest_s) < 20, "at rest the smooth skin is the rigid one ({} pixels differ)", diff(&rest_r, &rest_s));
+    let (posed_r, posed_s) = (shot(&mut r, &rigid, true), shot(&mut r, &smooth, true));
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    posed_r.write_png(dir.join("f2-engine-skin-rigid.png")).unwrap();
+    posed_s.write_png(dir.join("f2-engine-skin-smooth.png")).unwrap();
+    assert!(diff(&posed_r, &posed_s) > 100, "posed, the joint bends ({} pixels differ)", diff(&posed_r, &posed_s));
+}

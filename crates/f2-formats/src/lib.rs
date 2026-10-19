@@ -25,6 +25,7 @@ pub mod fev;
 pub mod fla;
 pub mod lang;
 pub mod level;
+pub mod material;
 pub mod misc;
 pub mod objbank;
 pub mod read;
