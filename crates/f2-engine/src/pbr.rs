@@ -343,13 +343,19 @@ fn height_map(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
     return textureSampleGrad(t_height, s, tile_uv(uv), tc.m * dx, tc.m * dy).r;
 }
 
+// The stone's grain (0..1): rough at the sizes the game's camera sees (a slab is some 150
+// pixels across from above), finer than the art's mottling.
+fn tile_grain(p: vec2<f32>) -> f32 {
+    return tile_vnoise(p * 24.0, tc.seed ^ 0x3du) * 0.5 + tile_vnoise(p * 48.0, tc.seed ^ 0x3eu) * 0.3 + tile_vnoise(p * 96.0, tc.seed ^ 0x3fu) * 0.2;
+}
+
 // What the tile adds to the height map's height at uv.
 fn tile_extra(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
     let hm = height_map(uv, dx, dy);
     // With the stone's grain (the normals only: too fine for the parallax).
     let p = tile_p(uv);
-    let grain = tile_vnoise(p * 70.0, tc.seed ^ 0x3du) * 0.6 + tile_vnoise(p * 150.0, tc.seed ^ 0x3eu) * 0.4;
-    return tile_h(uv, hm).x - hm + (grain * 0.005 - tile_crack(p) * 0.3) * smoothstep(0.2, 0.75, hm);
+    let grain = tile_grain(p);
+    return tile_h(uv, hm).x - hm + (grain * 0.03 - tile_crack(p) * 0.3) * smoothstep(0.2, 0.75, hm);
 }
 
 // The slab's setting at uv: tilted, its face worn unevenly. Too slight to show in the
@@ -540,7 +546,7 @@ fn shade_pbr(i: VOut) -> vec4<f32> {
         dirt = th.y;
         // Grain: the stone's own fine texture where the art is a blur up close.
         let p = tile_p(uv);
-        let grain = tile_vnoise(p * 70.0, tc.seed ^ 0x3du) * 0.6 + tile_vnoise(p * 150.0, tc.seed ^ 0x3eu) * 0.4 - 0.5;
+        let grain = tile_grain(p) - 0.5;
         // Each slab blotched its own way (the texture's mottling is the same on all).
         let blotch = 1.0 + (tile_vnoise(p * 5.0, tc.seed ^ 0x5au) - 0.5) * 0.2 * pbr.tile.z;
         // Chips drawn like the art would: the broken face a shade darker, a dark line where
@@ -552,7 +558,7 @@ fn shade_pbr(i: VOut) -> vec4<f32> {
         // teal), never a grey or a brown that is not its own.
         var col = c.rgb;
         col = mix(vec3<f32>(dot(col, vec3<f32>(0.299, 0.587, 0.114))), col, tc.tint.y) * tc.tint.x;
-        col *= blotch * (1.0 - tc.lay.z * 0.5) * (1.0 + grain * 0.02);
+        col *= blotch * (1.0 - tc.lay.z * 0.5) * (1.0 + grain * 0.1);
         let deep = clamp(col * col * 1.15, vec3<f32>(0.0), vec3<f32>(1.0));
         col = mix(col, deep, max(chip * 0.5, line * 0.8));
         col = mix(col, col * col * 0.75, dirt);
