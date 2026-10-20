@@ -1429,45 +1429,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&t);
     }
 
-    /// The first packaged mod, `examples/mods/frogger-hd`, through "Import mod" (the path the
-    /// button takes once a file is picked): installed, turned on, listed. With `F2_SHOT_DIR`
-    /// the Mods page after the import is saved as `launcher-mods-frogger-hd.png`.
-    #[test]
-    fn imports_frogger_hd() {
-        let t = std::env::temp_dir().join(format!("f2-launcher-frogger-hd-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&t);
-        let mut cfg = Config { data_root: Some(t.join("data")), ..Config::desktop() };
-        cfg.mods.dir = Some(t.join("mods"));
-        let mut app = App::with(cfg, t.clone());
-        app.config_file = t.join("config.toml");
-        app.refresh();
-        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/mods/frogger-hd");
-        let pkg = t.join("frogger-hd.f2mod");
-        std::fs::create_dir_all(&t).unwrap();
-        archive::write(&src, &pkg).unwrap();
-        app.import_mod(pkg);
-        while app.installing_mod {
-            app.poll();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(app.ui.state.message, Some(("Installed Frogger HD 1.1.0 and turned it on.".into(), false)));
-        assert_eq!(app.ui.state.mods, [ModRow { id: "frogger-hd".into(), name: "Frogger HD".into(), version: "1.1.0".into(), enabled: true }]);
-        assert!(t.join("mods/frogger-hd/game/objects/frogger/frog.gltf").is_file());
-        assert_eq!(Config::load(&app.config_file).unwrap().mods.enabled, ["frogger-hd"]);
-        if let (Some(dir), Ok(ctx)) = (std::env::var_os("F2_SHOT_DIR").map(PathBuf::from), GpuContext::new_headless()) {
-            let mut r = Renderer::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8Unorm);
-            let mut kit = UiKit::new();
-            let (sw, sh) = (1375u32, 875u32);
-            r.begin_frame(sw, sh);
-            app.ui.resize(sw as f32, sh as f32, 1.25);
-            app.ui.draw(&mut kit.painter(&mut r));
-            let bg = ui::BG;
-            let img = r.render_to_image([bg[0] as f64 / 255.0, bg[1] as f64 / 255.0, bg[2] as f64 / 255.0, 1.0]).unwrap();
-            img.write_png(dir.join("launcher-mods-frogger-hd.png")).unwrap();
-        }
-        let _ = std::fs::remove_dir_all(&t);
-    }
-
     /// Imports a disc image through the launcher (`F2_TEST_IMAGE=<your Frogger 2 image>`,
     /// skipped without it) into a scratch install folder: the page shows the progress, then
     /// the game, and `frogger2` is made beside the launcher.

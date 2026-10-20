@@ -1,8 +1,0 @@
-id = "frogger-hd"
-name = "Frogger HD"
-version = "1.1.0"
-authors = ["Neil Graham"]
-# Semver requirement on the engine/mod API version.
-engine_version = "^1.0"
-gameplay_affecting = false
-description = "A new high-detail Frogger in the original cartoon style (about 18k triangles, smooth-skinned to the original skeleton, so every original animation plays): big googly eyes, lime skin, orange stripe, with physically based materials (colour, normal, occlusion/roughness, and a height map for parallax occlusion) in Enhanced / Path-Traced graphics."

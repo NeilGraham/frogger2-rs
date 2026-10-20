@@ -490,25 +490,6 @@ mods dir are never mods.
   track, else the retail track as before.
 - Level manifests → `LevelRegistry` (`crates/frogger/src/mods.rs`), passed to every session.
 
-## Example: `examples/mods/frogger-hd` (the first packaged mod)
-
-A new high-detail Frogger made in Blender: about 18k triangles, in the original cartoon style, smooth-skinned (4 joints per
-vertex) to the retail frog's 18 joints, so it plays every retail animation (a mesh-only
-override: `objects/frogger/frog.gltf` with no animations). Its material uses the PBR fields:
-base colour, an OpenGL normal map, ORM (occlusion R, roughness G, metal B) and a height map for
-parallax occlusion (`frog_basecolor_height.png`, `extras.parallaxScale`). How it was made:
-
-1. Import the exporter's `models/frogger/frog.gltf` into Blender (for the skeleton), model the
-   new mesh around its rest pose, skin it to the same bone names (smooth weights, at most 4).
-2. Bake the maps with only the new mesh renderable (other objects occlude an AO bake), then
-   fill the texels outside the UV islands with the nearest island colour (mip levels average
-   in the empty background otherwise: dark seams far away).
-3. Export glTF with +Y Up, Animation off, Custom Properties on (the height map and scale).
-4. `f2-modkit pack examples/mods/frogger-hd --out frogger-hd.f2mod`, then Import mod in the
-   launcher.
-
-Material maps a modded model brings are mip-mapped at any size (bank textures only up to 512).
-
 ### A faithful remaster of a retail model (local only)
 
 To remaster a retail model rather than replace it, start from its export in Blender and keep
@@ -518,4 +499,4 @@ retail vertex colours (export Vertex Color: Active) and skin weights (subdivisio
 across joints; limit to 4), redraw its textures sharp at a higher size, and export as a
 mesh-only override with new texture names (so the bank texture is not replaced for other
 models). Such a mod is built from your own game data: keep it under the gitignored
-`game-data/` and do not commit or share it; `examples/mods/frogger-hd` is the original-art one.
+`game-data/` and do not commit or share it.
