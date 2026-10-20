@@ -34,6 +34,12 @@ pub trait DataSource {
         })
     }
 
+    /// The materials mods give `textures\<name>.fla`'s textures (normal / height / ORM maps;
+    /// Enhanced graphics). `None`: none.
+    fn texture_materials(&self, _path: &str) -> Option<f2_formats::material::ModelMaterials> {
+        None
+    }
+
     /// `sfx\<name>.wus` (`LoadSfxSet`).
     fn sound_bank(&self, path: &str) -> Option<Result<f2_formats::wus::SoundBank, String>> {
         self.read(path).map(|b| f2_formats::wus::SoundBank::parse(&b).map_err(|e| format!("{path}: {e}")))

@@ -171,6 +171,92 @@ pub fn override_tex_crc(bank: &TexBank, name: &str) -> u32 {
     by_stem.or_else(|| hex8(name)).unwrap_or_else(|| texture::texture_crc(name))
 }
 
+/// The material maps a texture can have beside it (`<name>_normal.png`, ...): the map kind
+/// and `<name>`.
+pub(crate) fn material_map(name: &str) -> Option<(&'static str, &str)> {
+    ["_normal", "_height", "_orm"].into_iter().find_map(|k| name.strip_suffix(k).filter(|b| !b.is_empty()).map(|b| (k, b)))
+}
+
+/// The materials of bank `textures/<bank>`'s textures (Enhanced / Path-Traced graphics): for a
+/// texture `<name>` (its exported stem, as for overrides), any of `<name>_normal.png`
+/// (tangent space, OpenGL +Y), `<name>_height.png` (R, white = high: parallax occlusion),
+/// `<name>_orm.png` (R occlusion, G roughness, B metal) and `<name>.pbr.toml` (`roughness`,
+/// `metallic`, `normal_scale`, `occlusion_strength`, `parallax_scale`) in `textures/<bank>/`.
+/// The material applies wherever the texture is drawn ([`MODEL_ANY`](f2_formats::material::MODEL_ANY));
+/// the texture itself is unchanged (a `<name>.png` beside them still replaces it).
+pub fn tex_materials(vfs: &Vfs, bank: &str) -> Result<Loaded<f2_formats::material::ModelMaterials>, Error> {
+    use f2_formats::material::{ModelMaterials, PbrMaterial, MODEL_ANY};
+    let base = match read_container(vfs, &format!("textures/{bank}.fla"))? {
+        Some(d) => TexBank::parse(&d).unwrap_or(TexBank { textures: vec![], anims: vec![] }),
+        None => TexBank { textures: vec![], anims: vec![] },
+    };
+    let mut out = Loaded::new(ModelMaterials { model_id: MODEL_ANY, ..Default::default() });
+    let files = list_overrides(vfs, "textures", bank, &["png", "toml"]);
+    let mut names: Vec<String> = files.iter().filter_map(|f| material_map(&f.name).map(|(_, b)| b.to_string())).collect();
+    names.extend(files.iter().filter(|f| f.ext == "toml").filter_map(|f| f.name.strip_suffix(".pbr").map(str::to_string)));
+    names.sort();
+    names.dedup();
+    for name in names {
+        let m = &mut out.value;
+        let mut image = |kind: &str, warnings: &mut Vec<String>| -> Option<u32> {
+            let f = files.iter().find(|f| f.ext == "png" && f.name == format!("{name}{kind}"))?;
+            match fs::read(&f.path).map_err(|e| Error::new(e.to_string())).and_then(|d| material::png_image(format!("{name}{kind}"), &d)) {
+                Ok(img) => {
+                    m.images.push(img);
+                    Some(m.images.len() as u32 - 1)
+                }
+                Err(e) => {
+                    warnings.push(format!("{}: {e}", f.path.display()));
+                    None
+                }
+            }
+        };
+        let mut warnings = Vec::new();
+        let (normal, height, orm) = (image("_normal", &mut warnings), image("_height", &mut warnings), image("_orm", &mut warnings));
+        out.warnings.extend(warnings);
+        let mut p = PbrMaterial {
+            crc: override_tex_crc(&base, &name),
+            base_color: [1.0; 4],
+            metallic: if orm.is_some() { 1.0 } else { 0.0 },
+            roughness: if orm.is_some() { 1.0 } else { 0.7 },
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
+            emissive: [0.0; 3],
+            parallax_scale: 0.03,
+            normal,
+            metal_rough: orm,
+            occlusion: orm,
+            emissive_map: None,
+            height,
+        };
+        if let Some(f) = files.iter().find(|f| f.ext == "toml" && f.name == format!("{name}.pbr")) {
+            match fs::read_to_string(&f.path).map_err(|e| e.to_string()).and_then(|t| t.parse::<toml::Table>().map_err(|e| e.to_string())) {
+                Ok(t) => {
+                    let num = |k: &str| t.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).map(|v| v as f32);
+                    if let Some(v) = num("roughness") {
+                        p.roughness = v;
+                    }
+                    if let Some(v) = num("metallic") {
+                        p.metallic = v;
+                    }
+                    if let Some(v) = num("normal_scale") {
+                        p.normal_scale = v;
+                    }
+                    if let Some(v) = num("occlusion_strength") {
+                        p.occlusion_strength = v;
+                    }
+                    if let Some(v) = num("parallax_scale") {
+                        p.parallax_scale = v;
+                    }
+                }
+                Err(e) => out.warnings.push(format!("{}: {e}", f.path.display())),
+            }
+        }
+        out.value.materials.push(p);
+    }
+    Ok(out)
+}
+
 /// Effective texture bank `textures/<bank>.fla` with PNG overrides from
 /// `textures/<bank>/`. A missing base bank starts empty (new bank).
 ///
@@ -188,6 +274,10 @@ pub fn tex_bank(vfs: &Vfs, bank: &str) -> Result<Loaded<TexBank>, Error> {
     };
     let mut out = Loaded::new(base);
     for f in list_overrides(vfs, "textures", bank, &["png"]) {
+        // A texture's material maps (`tex_materials`) are not textures of their own.
+        if material_map(&f.name).is_some() {
+            continue;
+        }
         let b = &mut out.value;
         let crc = override_tex_crc(b, &f.name);
         // Replacing a retail entry keeps its special type (`ai_`/`ac_`/`prc`);

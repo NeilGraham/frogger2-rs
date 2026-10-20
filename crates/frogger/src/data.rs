@@ -95,6 +95,20 @@ impl DataSource for Data {
         v
     }
 
+    fn texture_materials(&self, path: &str) -> Option<f2_formats::material::ModelMaterials> {
+        if self.mods.is_empty() {
+            return None;
+        }
+        let bank = bank_name(path, "textures", "fla").filter(|b| !f2_modkit::is_backdrop(b))?;
+        match f2_modkit::tex_materials(&self.vfs, &bank) {
+            Ok(l) => Some(self.loaded(path, l)).filter(|m| !m.materials.is_empty()),
+            Err(e) => {
+                eprintln!("frogger: mods: {path}: {e}");
+                None
+            }
+        }
+    }
+
     fn sound_bank(&self, path: &str) -> Option<Result<SoundBank, String>> {
         if self.mods.is_empty() {
             return self.vfs.read(path).ok().map(|b| SoundBank::parse(&b).map_err(|e| format!("{path}: {e}")));

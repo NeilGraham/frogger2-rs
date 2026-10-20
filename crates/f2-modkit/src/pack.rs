@@ -118,8 +118,9 @@ pub fn validate(mod_dir: &Path, rendition: Option<&Path>) -> PackReport {
         let ext = parts.last().and_then(|f| f.rsplit_once('.')).map(|(_, e)| e).unwrap_or("");
         match parts.as_slice() {
             ["mod.toml"] => {}
-            ["game", "textures", bank, _] if ext == "png" => {
-                r.count("textures");
+            ["game", "textures", bank, f] if ext == "png" || f.ends_with(".pbr.toml") => {
+                let stem = f.rsplit_once('.').map_or(*f, |x| x.0);
+                r.count(if ext == "toml" || crate::material_map(stem).is_some() { "texture material files" } else { "textures" });
                 banks.insert(("textures", bank.to_string()));
             }
             ["game", "sfx", bank, _] if matches!(ext, "wav" | "flac" | "ogg") => {
@@ -198,7 +199,10 @@ pub fn validate(mod_dir: &Path, rendition: Option<&Path>) -> PackReport {
     }
     for (kind, bank) in &banks {
         let res = match *kind {
-            "textures" => crate::tex_bank(&vfs, bank).map(|l| (l.warnings, l.replaced.len() + l.added.len())),
+            "textures" => crate::tex_bank(&vfs, bank).and_then(|l| {
+                let m = crate::tex_materials(&vfs, bank)?;
+                Ok((l.warnings.into_iter().chain(m.warnings).collect(), l.replaced.len() + l.added.len() + m.value.materials.len()))
+            }),
             "sfx" => crate::sound_bank(&vfs, bank).map(|l| (l.warnings, l.replaced.len() + l.added.len())),
             _ => crate::object_bank(&vfs, bank).map(|l| (l.warnings, l.replaced.len() + l.added.len())),
         };

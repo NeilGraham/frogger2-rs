@@ -749,3 +749,30 @@ fn retail_frog_mesh_only() {
     };
     assert_eq!(corners(ma), corners(mb));
 }
+
+/// A mod's maps beside a bank texture (`textures/<bank>/<name>_normal.png`, `_height`, `_orm`,
+/// `<name>.pbr.toml`) make that texture's material; they are not textures of their own.
+#[test]
+fn texture_materials_from_maps() {
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path().join("usa");
+    let base = TexBank { textures: vec![tex("brick1.bmp", texture::texture_crc("brick1"), 0)], anims: vec![] };
+    put(&r, "game/textures/ancient.fla", &texture::write_texbank(&base));
+    let mods = t.path().join("mods");
+    put(&mods, "m/mod.toml", b"id = \"m\"\nname = \"m\"\nversion = \"1.0.0\"\nengine_version = \"^1.0\"\n");
+    put(&mods, "m/game/textures/ancient/brick1_normal.png", &png(2, 2, &[128, 128, 255, 255].repeat(4)));
+    put(&mods, "m/game/textures/ancient/brick1_height.png", &png(2, 2, &[255, 255, 255, 255].repeat(4)));
+    put(&mods, "m/game/textures/ancient/brick1.pbr.toml", b"parallax_scale = 0.05\nroughness = 0.4\n");
+    let (vfs, _) = f2_mods::load_enabled_mods(&r, &mods, &["m"]).unwrap();
+    let tb = tex_bank(&vfs, "ancient").unwrap();
+    assert!(tb.added.is_empty() && tb.replaced.is_empty(), "maps are not textures: {:?} {:?}", tb.added, tb.replaced);
+    let m = tex_materials(&vfs, "ancient").unwrap();
+    assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+    let mm = &m.value;
+    assert_eq!(mm.model_id, f2_formats::material::MODEL_ANY);
+    assert_eq!(mm.materials.len(), 1);
+    let p = &mm.materials[0];
+    assert_eq!(p.crc, texture::texture_crc("brick1"));
+    assert!(p.normal.is_some() && p.height.is_some() && p.metal_rough.is_none());
+    assert_eq!((p.parallax_scale, p.roughness), (0.05, 0.4));
+}

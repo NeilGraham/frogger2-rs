@@ -286,12 +286,14 @@ impl TextureRegistry {
         }
     }
 
-    /// The material of model `model`'s faces with texture `crc` (modded models only).
+    /// The material of model `model`'s faces with texture `crc` (modded models, and modded
+    /// bank textures' own materials).
     pub fn pbr(&self, model: u32, crc: u32) -> Option<u32> {
         if self.pbr_by.is_empty() {
             return None;
         }
-        self.pbr_by.get(&(model, crc)).copied()
+        // The model's own, else the texture's (a bank texture's material: any model).
+        self.pbr_by.get(&(model, crc)).or_else(|| self.pbr_by.get(&(f2_formats::material::MODEL_ANY, crc))).copied()
     }
 
     /// Material `i` ([`pbr`](Self::pbr)).

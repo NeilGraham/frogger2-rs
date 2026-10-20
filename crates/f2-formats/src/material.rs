@@ -61,8 +61,13 @@ pub struct SkinWeights {
 }
 
 /// What a modded model brings besides its geometry.
+/// [`ModelMaterials::model_id`] of a texture's own material (every model drawing it).
+pub const MODEL_ANY: u32 = u32::MAX;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelMaterials {
+    /// The model these are for ([`MODEL_ANY`]: a bank texture's material, on every model and
+    /// the landscape).
     pub model_id: u32,
     pub images: Vec<MatImage>,
     /// Face textures from the document's images: (texture CRC, image), registered like a

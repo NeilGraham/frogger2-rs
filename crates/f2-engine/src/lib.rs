@@ -29,6 +29,8 @@ mod fmath;
 use prelude::*;
 
 pub mod anim;
+#[cfg(feature = "std")]
+mod builtin_pbr;
 pub mod font;
 #[cfg(feature = "gles2")]
 pub mod gles;

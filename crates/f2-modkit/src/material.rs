@@ -35,7 +35,7 @@ struct Images {
     list: Vec<MatImage>,
 }
 
-fn png_image(name: String, bytes: &[u8]) -> Result<MatImage, Error> {
+pub(crate) fn png_image(name: String, bytes: &[u8]) -> Result<MatImage, Error> {
     if bytes.starts_with(&[0xFF, 0xD8]) {
         return Err(err("JPEG images are not supported (export PNG)"));
     }
@@ -250,4 +250,32 @@ pub(crate) fn resolve(doc: &GltfDoc, model_id: u32, warnings: &mut Vec<String>) 
     }
     out.images = images.list;
     (crcs, out)
+}
+
+/// Starting material maps for the texture in `tex` (a PNG; e.g. your own export of a retail
+/// texture), made like the port's built-in ones ([`f2_formats::pbrgen`]), written to `out` as
+/// `<name>_normal.png`, `<name>_height.png`, `<name>_orm.png` and `<name>.pbr.toml`: the files
+/// a mod puts beside a bank texture (`textures/<bank>/`). Returns `<name>`.
+pub fn write_pbr_maps(tex: &std::path::Path, out: &std::path::Path, size: u32, recipe: &f2_formats::pbrgen::Recipe) -> Result<String, Error> {
+    let data = std::fs::read(tex).map_err(|e| err(format!("{}: {e}", tex.display())))?;
+    let img = crate::texture::decode_png(&data)?;
+    let maps = f2_formats::pbrgen::generate(&img.pixels, img.width, img.height, size, recipe);
+    let name = tex.file_stem().and_then(|s| s.to_str()).unwrap_or("texture").to_ascii_lowercase();
+    std::fs::create_dir_all(out).map_err(|e| err(format!("{}: {e}", out.display())))?;
+    for (kind, px) in [("normal", &maps.normal), ("height", &maps.height), ("orm", &maps.orm)] {
+        let path = out.join(format!("{name}_{kind}.png"));
+        let f = std::fs::File::create(&path).map_err(|e| err(format!("{}: {e}", path.display())))?;
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(f), size, size);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().and_then(|mut w| w.write_image_data(px)).map_err(|e| err(format!("{}: {e}", path.display())))?;
+    }
+    let toml = format!(
+        "# Made by f2-modkit pbr-maps (edit freely). The maps: <name>_normal.png (tangent space, OpenGL +Y),\n\
+         # <name>_height.png (white = high), <name>_orm.png (R occlusion, G roughness, B metal).\n\
+         parallax_scale = {}\nroughness = 1.0\nmetallic = 1.0\nnormal_scale = 1.0\nocclusion_strength = 1.0\n",
+        recipe.depth
+    );
+    std::fs::write(out.join(format!("{name}.pbr.toml")), toml).map_err(|e| err(e.to_string()))?;
+    Ok(name)
 }

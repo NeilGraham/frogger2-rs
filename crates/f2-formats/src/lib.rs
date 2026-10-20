@@ -28,6 +28,8 @@ pub mod level;
 pub mod material;
 pub mod misc;
 pub mod objbank;
+#[cfg(feature = "std")]
+pub mod pbrgen;
 pub mod read;
 pub mod texture;
 pub mod wus;

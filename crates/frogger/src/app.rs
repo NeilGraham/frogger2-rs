@@ -756,7 +756,9 @@ impl App {
             v.forget_image();
         }
         let files = self.scene.as_ref().map(|s| s.tex_files.clone()).unwrap_or_default();
+        let mut tex_mats = Vec::new();
         for f in files {
+            tex_mats.extend(f2_game::assets::DataSource::texture_materials(&self.data, &f));
             // Through the DataSource: the effective bank when mods are enabled.
             match f2_game::assets::DataSource::texture_bank(&self.data, &f) {
                 Some(Ok(b)) => self.r.load_tex_bank(&b),
@@ -769,6 +771,16 @@ impl App {
         let mats: Vec<_> = self.scene.as_ref().map(|s| s.banks.iter().rev().flat_map(|b| b.materials.iter().cloned()).collect()).unwrap_or_default();
         for m in mats {
             self.r.add_model_materials(&m);
+        }
+        // Bank textures' own materials (normal / height / ORM maps a mod gives them).
+        for m in tex_mats {
+            self.r.add_model_materials(&m);
+        }
+        // The port's own, for textures no mod gave a material.
+        let t = std::time::Instant::now();
+        self.r.add_builtin_materials();
+        if std::env::var_os("F2_PRINT_TIMES").is_some() {
+            eprintln!("frogger: built-in materials {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
         }
     }
 

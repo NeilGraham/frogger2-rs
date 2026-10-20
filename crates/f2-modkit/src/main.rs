@@ -5,6 +5,9 @@
 //!                                               validate a mod (exit 1 on errors), then
 //!                                               write it as a package with --out
 //! f2-modkit new <id> [--dir <mods dir>]          create <mods dir>/<id>/ with mod.toml
+//! f2-modkit pbr-maps <texture.png> <out dir> [--size N] [--recipe k=v,...]
+//!                                               starting material maps for a texture
+//!                                               (<name>_normal/_height/_orm.png, .pbr.toml)
 //! ```
 //! `--rendition` defaults to `$F2_RENDITION`, else `game-data/usa` when it exists;
 //! it enables the retail-hash and unchanged-entry checks.
@@ -12,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage:\n  f2-modkit pack <mod dir> [--rendition <dir>] [--out <file.f2mod>]\n  f2-modkit new <id> [--dir <mods dir>]";
+const USAGE: &str = "usage:\n  f2-modkit pack <mod dir> [--rendition <dir>] [--out <file.f2mod>]\n  f2-modkit new <id> [--dir <mods dir>]\n  f2-modkit pbr-maps <texture.png> <out dir> [--size N] [--recipe plateau=0.75,depth=0.03,...]";
 
 fn opt(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
@@ -88,6 +91,37 @@ fn main() -> ExitCode {
             match f2_modkit::pack::scaffold(&dir, id) {
                 Ok(p) => {
                     println!("created {}", p.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "pbr-maps" => {
+            let pos: Vec<&String> = {
+                let mut v = Vec::new();
+                let mut i = 0;
+                while i < rest.len() {
+                    if rest[i].starts_with("--") {
+                        i += 2;
+                    } else {
+                        v.push(&rest[i]);
+                        i += 1;
+                    }
+                }
+                v
+            };
+            let (Some(tex), Some(out)) = (pos.first(), pos.get(1)) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let size = opt(rest, "--size").and_then(|v| v.parse().ok()).unwrap_or(256);
+            let recipe = f2_formats::pbrgen::Recipe::default().with(&opt(rest, "--recipe").unwrap_or_default());
+            match f2_modkit::material::write_pbr_maps(Path::new(tex), Path::new(out), size, &recipe) {
+                Ok(name) => {
+                    println!("wrote {name}_normal.png, {name}_height.png, {name}_orm.png, {name}.pbr.toml to {out}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {

@@ -500,3 +500,36 @@ across joints; limit to 4), redraw its textures sharp at a higher size, and expo
 mesh-only override with new texture names (so the bank texture is not replaced for other
 models). Such a mod is built from your own game data: keep it under the gitignored
 `game-data/` and do not commit or share it.
+
+### Texture materials (normal, height, roughness for the original textures)
+
+Enhanced / Path-Traced graphics shade a texture with a physically based material (normal
+mapping, parallax occlusion from a height map, roughness, occlusion) when it has one:
+
+- **Built in:** the port makes materials for some of the original textures itself when a
+  level loads (`crates/f2-engine/src/builtin_pbr.rs`: a recipe per texture name; the maps are
+  generated from the player's own textures by `f2_formats::pbrgen`, ~10 ms per level, cached,
+  side by side). Ancients' bricks and paving so far. `F2_NO_BUILTIN_PBR=1` turns them off;
+  `F2_PBR_TUNE="pave:depth=0.02,bevel=0.8;brick1:seam=0.2"` changes a recipe for one run and
+  `F2_PBR_DUMP=<dir>` writes the source and the maps as PNGs (tuning). Original graphics are
+  unchanged (pixel-identical).
+- **From a mod** (wins over the built-in one): beside a bank texture `<name>` (its exported
+  stem, as for overrides) in `game/textures/<bank>/`, any of
+  - `<name>_normal.png`: tangent space, OpenGL (+Y up in the image, Blender's default);
+  - `<name>_height.png`: R, white = high (parallax occlusion);
+  - `<name>_orm.png`: R occlusion, G roughness, B metal;
+  - `<name>.pbr.toml`: `parallax_scale` (texture units per full height, default 0.03),
+    `roughness`, `metallic` (multiply the ORM map's; without an ORM map they are the values),
+    `normal_scale`, `occlusion_strength`.
+
+  The texture itself is unchanged (a `<name>.png` beside them still replaces it), and the
+  material applies wherever the texture is drawn (landscape and models). Maps tile like the
+  texture and may be any size (they are mip-mapped).
+- **Starting maps:** `f2-modkit pbr-maps <texture.png> <out dir> [--size 256]
+  [--recipe plateau=0.75,depth=0.03,bevel=1.2,seam=0.15,min_seam=3]` writes the four files
+  from a texture (e.g. your export of the retail one) with the same generator as the built-in
+  ones, to edit or repaint. Recipe keys: `plateau` (0 smooth relief, 1 flat-topped blocks),
+  `depth`, `bevel` (texels from a seam to the face top), `seam` (how much darker than both
+  sides a line must be to be a seam), `min_seam` (shorter dark pieces are spots, not seams),
+  `rough`, `strength` (normal steepness), `ao`, `detail`, `invert` (1: light seams).
+  Maps generated from retail textures are derived from game data: keep such a mod local.

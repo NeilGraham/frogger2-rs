@@ -1064,6 +1064,15 @@ impl Renderer {
         self.pbr_bind_groups.insert(key, bg);
     }
 
+    /// The port's own materials for the loaded textures that have a recipe and no material
+    /// from a mod ([`crate::builtin_pbr`]; after the banks and the mods' materials).
+    #[cfg(feature = "std")]
+    pub fn add_builtin_materials(&mut self) {
+        if let Some(m) = crate::builtin_pbr::materials(&self.textures) {
+            self.add_model_materials(&m);
+        }
+    }
+
     /// Registers what a modded model brings ([`TextureRegistry::add_model_materials`]; after
     /// the texture banks).
     pub fn add_model_materials(&mut self, m: &f2_formats::material::ModelMaterials) {
