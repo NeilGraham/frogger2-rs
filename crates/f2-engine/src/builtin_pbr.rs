@@ -53,7 +53,7 @@ const SLAB: Recipe = Recipe {
     strength: 1.5,
     ao: 0.6,
     detail: 0.3,
-    bevel: 2.0,
+    bevel: 3.0,
     seam: 0.0,
     min_seam: 3.0,
     invert: false,

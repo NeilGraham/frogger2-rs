@@ -243,7 +243,7 @@ fn make_cell(code: u32, uv: vec2<f32>) {
     c.lay = vec4<f32>((tile_rnd(sd, 90u) - 0.5) * un * 0.3, (tile_rnd(sd, 91u) - 0.5) * un * 0.3, tile_rnd(sd, 92u) * un * 0.12, wear * 0.12);
     // Colour: lighter or darker, warmer or cooler.
     let tn = pbr.tile.z;
-    c.tint = vec2<f32>(1.0 + (tile_rnd(sd, 93u) - 0.5) * 0.24 * tn, 1.0 + (tile_rnd(sd, 94u) - 0.3) * 0.5 * tn);
+    c.tint = vec2<f32>(1.0 + (tile_rnd(sd, 93u) - 0.5) * 0.24 * tn, 1.0 + (tile_rnd(sd, 94u) - 0.5) * 0.4 * tn);
     c.shape = vec2<f32>((tile_rnd(sd, 95u) - 0.5) * 0.05 * un, (0.4 + 0.6 * tile_rnd(sd, 96u)) * 0.04 * un);
     tc = c;
 }
@@ -558,7 +558,7 @@ fn shade_pbr(i: VOut) -> vec4<f32> {
         // teal), never a grey or a brown that is not its own.
         var col = c.rgb;
         col = mix(vec3<f32>(dot(col, vec3<f32>(0.299, 0.587, 0.114))), col, tc.tint.y) * tc.tint.x;
-        col *= blotch * (1.0 - tc.lay.z * 0.5) * (1.0 + grain * 0.1);
+        col *= blotch * (1.0 - tc.lay.z * 0.5) * (1.0 + grain * 0.05);
         let deep = clamp(col * col * 1.15, vec3<f32>(0.0), vec3<f32>(1.0));
         col = mix(col, deep, max(chip * 0.5, line * 0.8));
         col = mix(col, col * col * 0.75, dirt);

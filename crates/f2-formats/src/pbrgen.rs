@@ -167,9 +167,9 @@ pub fn remaster(rgba: &[u8], w: usize, h: usize, n: usize, r: &Recipe) -> Vec<u8
         let p = &rgba[(y * w + x) * 4..];
         [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]
     };
-    let rc = r.tile + r.bevel.max(0.5);
-    // The profile: mean colours of the rings 0..1, 1..2, 2..3 texels in from each side (the
-    // art's light falls on some sides' bevels, not others), and of the face.
+    let rc = r.tile + r.bevel.clamp(0.5, 1.5); // corners rounded about as the art's, however wide the bevel
+                                               // The profile: mean colours of the rings 0..1, 1..2, 2..3 texels in from each side (the
+                                               // art's light falls on some sides' bevels, not others), and of the face.
     let mut ring = [[[0.0f32; 4]; 4]; 4];
     let ring_of = |d: f32| (d.floor() as usize).min(3);
     for y in 0..h {
@@ -491,7 +491,7 @@ pub fn generate(rgba: &[u8], w: u32, h: u32, size: u32, r: &Recipe) -> Maps {
             // bevel), then up the bevel from the rim.
             let (x, y) = ((i % n) as f32 + 0.5, (i / n) as f32 + 0.5);
             let (ex, ey) = (x.min(n as f32 - x) / k, y.min(n as f32 - y) / k);
-            let rc = r.tile + r.bevel.max(0.5);
+            let rc = r.tile + r.bevel.clamp(0.5, 1.5); // corners rounded about as the art's, however wide the bevel
             let inward = if ex < rc && ey < rc { rc - ((rc - ex).powi(2) + (rc - ey).powi(2)).sqrt() } else { ex.min(ey) };
             let s = ((inward - r.tile) / r.bevel.max(0.25)).clamp(0.0, 1.0);
             plat = plat.min(s * s * (3.0 - 2.0 * s));
