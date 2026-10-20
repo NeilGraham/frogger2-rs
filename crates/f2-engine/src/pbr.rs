@@ -711,7 +711,9 @@ pub(crate) fn cell_codes(tris: &[Tri]) -> Vec<u32> {
         let mut found = Vec::new();
         for e in 0..3 {
             let (a, b) = (e, (e + 1) % 3);
-            let others: Vec<u32> = edges[&key(q(t.pos[a]), q(t.pos[b]))].iter().map(|x| x.0).filter(|&g| root[g as usize] != root[f]).collect();
+            // (A collapsed edge has no entry: no side.)
+            let Some(across) = edges.get(&key(q(t.pos[a]), q(t.pos[b]))) else { continue };
+            let others: Vec<u32> = across.iter().map(|x| x.0).filter(|&g| root[g as usize] != root[f]).collect();
             let on = |k: usize, v: f32| (t.uv[a][k] - v).abs() < 0.02 * ext[k].max(1e-3) && (t.uv[b][k] - v).abs() < 0.02 * ext[k].max(1e-3);
             let side = if on(0, lo[0]) {
                 0
@@ -787,6 +789,8 @@ mod tests {
         let side = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         tris.extend(quad([[0.0, 0.0, 0.0], [0.0, 0.0, 50.0], [0.0, -50.0, 50.0], [0.0, -50.0, 0.0]], side, [-1.0, 0.0, 0.0], 8));
         tris.extend(quad([[150.0, 0.0, 0.0], [150.0, 50.0, 0.0], [150.0, 50.0, 50.0], [150.0, 0.0, 50.0]], side, [-1.0, 0.0, 0.0], 8));
+        // A collapsed triangle (two corners in one place, as some retail models have): no side.
+        tris.push(Tri { pos: [[0.0; 3], [0.0; 3], [9.0, 0.0, 9.0]], uv: [[0.0; 2], [0.5, 0.0], [0.5, 0.5]], normal: up, crc: 9 });
         let codes = cell_codes(&tris);
         let sides = |f: usize| [0, 1, 2, 3].map(|k| (codes[f] >> (k * 2)) & 3);
         // u-, u+, v-, v+: 0 flush, 1 drop, 2 wall, 3 nothing.
