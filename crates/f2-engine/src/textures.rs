@@ -32,6 +32,8 @@ pub struct Pbr {
     pub occlusion: Option<TexHandle>,
     pub emissive_map: Option<TexHandle>,
     pub height: Option<TexHandle>,
+    /// Drawn instead of the face texture ([`f2_formats::material::PbrMaterial::base_map`]).
+    pub base_map: Option<TexHandle>,
     pub tiling: f2_formats::material::Tiling,
 }
 
@@ -273,6 +275,7 @@ impl TextureRegistry {
                 occlusion: map(p.occlusion, self),
                 emissive_map: map(p.emissive_map, self),
                 height: map(p.height, self),
+                base_map: map(p.base_map, self),
                 tiling: p.tiling,
             };
             self.pbr_by.insert((m.model_id, p.crc), self.pbr.len() as u32);

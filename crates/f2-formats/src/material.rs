@@ -46,6 +46,9 @@ pub struct PbrMaterial {
     pub emissive_map: Option<u32>,
     /// R: height (white = high).
     pub height: Option<u32>,
+    /// The colour drawn instead of the face texture (the port's redrawn slabs; the face
+    /// texture stays what Original graphics draw). None: the face texture.
+    pub base_map: Option<u32>,
     /// Smart tiling: every repeat of the texture made a little different (none by default).
     pub tiling: Tiling,
 }

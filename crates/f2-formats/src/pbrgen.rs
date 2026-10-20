@@ -38,6 +38,10 @@ pub struct Recipe {
     /// even edges whatever the art's rim looks like). 0: no rim (seams from the art only;
     /// `seam` 0: none).
     pub tile: f32,
+    /// A slab ([`Recipe::tile`]) redrawn at the maps' size ([`remaster`]; [`Maps::albedo`]),
+    /// its face this mottled (0..1 of the art's own light and dark apart) and its relief the
+    /// same mottling. 0: not redrawn (the art's relief kept, e.g. a pattern carved in it).
+    pub paint: f32,
 }
 
 impl Recipe {
@@ -59,6 +63,7 @@ impl Recipe {
                 "min_seam" => self.min_seam = x,
                 "invert" => self.invert = x != 0.0,
                 "tile" => self.tile = x,
+                "paint" => self.paint = x,
                 _ => {}
             }
         }
@@ -68,7 +73,20 @@ impl Recipe {
 
 impl Default for Recipe {
     fn default() -> Recipe {
-        Recipe { plateau: 0.5, depth: 0.03, rough: 0.8, strength: 6.0, ao: 0.6, detail: 0.3, bevel: 1.0, seam: 0.15, min_seam: 3.0, invert: false, tile: 0.0 }
+        Recipe {
+            plateau: 0.5,
+            depth: 0.03,
+            rough: 0.8,
+            strength: 6.0,
+            ao: 0.6,
+            detail: 0.3,
+            bevel: 1.0,
+            seam: 0.15,
+            min_seam: 3.0,
+            invert: false,
+            tile: 0.0,
+            paint: 0.0,
+        }
     }
 }
 
@@ -78,6 +96,199 @@ pub struct Maps {
     pub height: Vec<u8>,
     pub normal: Vec<u8>,
     pub orm: Vec<u8>,
+    /// A slab's colour redrawn at the maps' size ([`Recipe::tile`]; none otherwise): the art's
+    /// outline, bevel and face crisp along the slab's shape, its painted light and colours
+    /// kept, its mottling painted finer (see [`remaster`]).
+    pub albedo: Option<Vec<u8>>,
+}
+
+/// A whole number hash.
+fn hash(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^ (x >> 16)
+}
+
+/// Value noise 0..1 at (x, y) in 0..1 of the texture, `period` cells across, wrapping (it
+/// tiles with the texture).
+fn tnoise(x: f32, y: f32, period: u32, seed: u32) -> f32 {
+    let (fx, fy) = (x * period as f32, y * period as f32);
+    let (ix, iy) = (fx.floor(), fy.floor());
+    let (tx, ty) = (fx - ix, fy - iy);
+    let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+    let p = period as i64;
+    let at = |i: f32, j: f32| {
+        let (a, b) = ((i as i64).rem_euclid(p) as u32, (j as i64).rem_euclid(p) as u32);
+        (hash(seed ^ hash(a.wrapping_mul(7919) ^ b.wrapping_mul(104_729))) >> 8) as f32 / 16_777_216.0
+    };
+    let (a, b, c, d) = (at(ix, iy), at(ix + 1.0, iy), at(ix, iy + 1.0), at(ix + 1.0, iy + 1.0));
+    (a + (b - a) * sx) * (1.0 - sy) + (c + (d - c) * sx) * sy
+}
+
+/// Painted blotches: noise of a few sizes (-1..1, about 0.35 standard deviation), tiling.
+fn mottle(x: f32, y: f32, seed: u32) -> f32 {
+    let v = tnoise(x, y, 6, seed) * 0.42 + tnoise(x, y, 12, seed ^ 1) * 0.35 + tnoise(x, y, 24, seed ^ 2) * 0.17 + tnoise(x, y, 64, seed ^ 3) * 0.06;
+    (v - 0.5) * 2.0
+}
+
+/// How far in from the nearest edge (texels of the art, `k` cells a texel) cell (x, y) of an
+/// `n`-cell map is, the corners rounded with radius `rc` (a slab's outline; the same for the
+/// height and the colour).
+fn inward(x: f32, y: f32, n: f32, k: f32, rc: f32) -> f32 {
+    let (ex, ey) = (x.min(n - x) / k, y.min(n - y) / k);
+    if ex < rc && ey < rc {
+        rc - ((rc - ex).powi(2) + (rc - ey).powi(2)).sqrt()
+    } else {
+        ex.min(ey)
+    }
+}
+
+/// How much each side (left, right, top, bottom) is the nearest to (x, y) of an `n`-cell map
+/// (`k` cells a texel): mostly the nearest, blending over about a texel where two meet (the
+/// diagonals).
+fn side_weights(x: f32, y: f32, n: f32, k: f32) -> [f32; 4] {
+    let e = [x / k, (n - x) / k, y / k, (n - y) / k];
+    let m = e.iter().fold(f32::MAX, |a, b| a.min(*b));
+    let w = e.map(|d| (-(d - m) * 2.5).exp());
+    let t: f32 = w.iter().sum();
+    w.map(|v| v / t)
+}
+
+/// A slab texture (`w`×`h` RGBA8, one slab with a rim `r.tile` texels wide) redrawn at
+/// `n`² in its own style: the art is split into its rim's profile (the colours of the
+/// outline, the bevel and the face by how far in they are, all round) and what is left (its
+/// painted light and colour, smooth); the profile is drawn again crisply along the slab's
+/// outline, what is left is scaled up smoothly and added back, and the face's mottling is
+/// painted at the new size with the art's own colours and contrast.
+pub fn remaster(rgba: &[u8], w: usize, h: usize, n: usize, r: &Recipe) -> Vec<u8> {
+    let px = |x: usize, y: usize| {
+        let p = &rgba[(y * w + x) * 4..];
+        [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]
+    };
+    let rc = r.tile + r.bevel.max(0.5);
+    // The profile: mean colours of the rings 0..1, 1..2, 2..3 texels in from each side (the
+    // art's light falls on some sides' bevels, not others), and of the face.
+    let mut ring = [[[0.0f32; 4]; 4]; 4];
+    let ring_of = |d: f32| (d.floor() as usize).min(3);
+    for y in 0..h {
+        for x in 0..w {
+            let d = inward(x as f32 + 0.5, y as f32 + 0.5, w as f32, 1.0, rc);
+            let c = px(x, y);
+            let sw = side_weights(x as f32 + 0.5, y as f32 + 0.5, w as f32, 1.0);
+            let bin = ring_of(d);
+            for (side, wt) in sw.iter().enumerate() {
+                // The face is one colour, whichever side is nearest.
+                let rg = &mut ring[if bin == 3 { 0 } else { side }][bin];
+                for a in 0..3 {
+                    rg[a] += c[a] * wt;
+                }
+                rg[3] += wt;
+            }
+        }
+    }
+    let face_c = ring[0][3];
+    let ring: Vec<Vec<[f32; 3]>> = ring
+        .iter()
+        .map(|side| {
+            side.iter()
+                .enumerate()
+                .map(|(bin, g)| {
+                    let g = if bin == 3 { face_c } else { *g };
+                    [g[0] / g[3].max(1e-6), g[1] / g[3].max(1e-6), g[2] / g[3].max(1e-6)]
+                })
+                .collect()
+        })
+        .collect();
+    // The profile at depth d (texels) for side weights `sw`: the outline sharp at the rim's
+    // edge, softer within.
+    let lerp = |a: [f32; 3], b: [f32; 3], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    let profile = |d: f32, sw: [f32; 4], sharp: f32| -> [f32; 3] {
+        let edge = ((d - r.tile) / sharp + 0.5).clamp(0.0, 1.0);
+        let mut out = [0.0f32; 3];
+        for (side, wt) in sw.iter().enumerate() {
+            let rg = &ring[side];
+            let inner = if d < 1.5 {
+                rg[1]
+            } else if d < 2.5 {
+                lerp(rg[1], rg[2], d - 1.5)
+            } else {
+                lerp(rg[2], rg[3], (d - 2.5).min(1.0))
+            };
+            // The joint darkest in its middle (where the two slabs' outlines meet).
+            let mid = 0.72 + 0.28 * (d / r.tile.max(0.1)).clamp(0.0, 1.0);
+            let c = lerp(rg[0].map(|x| x * mid), inner, edge * edge * (3.0 - 2.0 * edge));
+            for a in 0..3 {
+                out[a] += c[a] * wt;
+            }
+        }
+        out
+    };
+    // What is left of the art (its light and colour), per texel, then smoothed.
+    let mut rest = vec![[0.0f32; 3]; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let d = inward(x as f32 + 0.5, y as f32 + 0.5, w as f32, 1.0, rc);
+            let (c, p) = (px(x, y), profile(d, side_weights(x as f32 + 0.5, y as f32 + 0.5, w as f32, 1.0), 1.0));
+            rest[y * w + x] = [c[0] - p[0], c[1] - p[1], c[2] - p[2]];
+        }
+    }
+    // The face's blotches: how far apart its light and dark are (the colour they run along)
+    // and how strong (the art's texel-to-texel variation, which the smoothing takes away).
+    let mut face: Vec<([f32; 3], f32)> = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            if inward(x as f32 + 0.5, y as f32 + 0.5, w as f32, 1.0, rc) >= 3.0 {
+                let c = px(x, y);
+                face.push((c, 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]));
+            }
+        }
+    }
+    face.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let third = (face.len() / 3).max(1);
+    let mean = |v: &[([f32; 3], f32)]| {
+        let s = v.iter().fold([0.0f32; 3], |a, (c, _)| [a[0] + c[0], a[1] + c[1], a[2] + c[2]]);
+        s.map(|x| x / v.len().max(1) as f32)
+    };
+    let (dark, light) = (mean(&face[..third]), mean(&face[face.len() - third..]));
+    let axis = [light[0] - dark[0], light[1] - dark[1], light[2] - dark[2]];
+    let k = n as f32 / w.max(h) as f32;
+    // Smooth upscale of what is left: bilinear, then blurred over about a texel (no blocks).
+    let mut up = [vec![0.0f32; n * n], vec![0.0f32; n * n], vec![0.0f32; n * n]];
+    for y in 0..n {
+        for x in 0..n {
+            let fx = (x as f32 + 0.5) / k - 0.5;
+            let fy = (y as f32 + 0.5) / k - 0.5;
+            let (x0, y0) = (fx.floor(), fy.floor());
+            let (tx, ty) = (fx - x0, fy - y0);
+            let at = |i: f32, j: f32| rest[(j as isize).rem_euclid(h as isize) as usize * w + (i as isize).rem_euclid(w as isize) as usize];
+            for (a, ch) in up.iter_mut().enumerate() {
+                let top = at(x0, y0)[a] * (1.0 - tx) + at(x0 + 1.0, y0)[a] * tx;
+                let bot = at(x0, y0 + 1.0)[a] * (1.0 - tx) + at(x0 + 1.0, y0 + 1.0)[a] * tx;
+                ch[y * n + x] = top * (1.0 - ty) + bot * ty;
+            }
+        }
+    }
+    let up: Vec<Grid> = up.into_iter().map(|v| Grid { n, v }.blur(k * 0.9)).collect();
+    let mut out = vec![0u8; n * n * 4];
+    let sharp = 0.5; // the outline's edge (texels): soft, as the art's own
+    for y in 0..n {
+        for x in 0..n {
+            let i = y * n + x;
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let d = inward(fx, fy, n as f32, k, rc);
+            let p = profile(d, side_weights(fx, fy, n as f32, k), sharp);
+            // Blotches on the face and the bevel, fainter in the joint.
+            let m = mottle(fx / n as f32, fy / n as f32, 0x5eed) * r.paint;
+            let on_face = ((d - r.tile) / 1.5).clamp(0.0, 1.0) * 0.8 + 0.2;
+            for a in 0..3 {
+                out[i * 4 + a] = ((p[a] + up[a].v[i] + axis[a] * m * on_face).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            }
+            out[i * 4 + 3] = 255;
+        }
+    }
+    out
 }
 
 /// Square grid of floats, wrapping.
@@ -286,7 +497,12 @@ pub fn generate(rgba: &[u8], w: u32, h: u32, size: u32, r: &Recipe) -> Maps {
             plat = plat.min(s * s * (3.0 - 2.0 * s));
         }
         let relief = fine[i] / fmax * 0.08 * r.detail;
-        hv[i] = if r.tile > 0.0 {
+        hv[i] = if r.tile > 0.0 && r.paint > 0.0 {
+            // The slab, its face's relief the redrawn colour's mottling (the art's texels would
+            // show as blocks), none in the joint.
+            let m = mottle((i % n) as f32 / n as f32 + 0.5 / n as f32, (i / n) as f32 / n as f32 + 0.5 / n as f32, 0x5eed);
+            plat * (r.plateau + (1.0 - r.plateau) * (0.5 + m * r.detail).clamp(0.0, 1.0))
+        } else if r.tile > 0.0 {
             // The face's own relief on top of the slab, none in the joint.
             plat * (r.plateau + t[i] * (1.0 - r.plateau) + relief)
         } else {
@@ -300,7 +516,8 @@ pub fn generate(rgba: &[u8], w: u32, h: u32, size: u32, r: &Recipe) -> Maps {
     let hg = Grid { n, v: hv };
     let cavb = hg.blur(k * 1.5);
     let s = r.strength * n as f32 / 128.0;
-    let mut out = Maps { size, height: vec![0; n * n * 4], normal: vec![0; n * n * 4], orm: vec![0; n * n * 4] };
+    let albedo = (r.tile > 0.0 && r.paint > 0.0).then(|| remaster(rgba, w, h, n, r));
+    let mut out = Maps { size, height: vec![0; n * n * 4], normal: vec![0; n * n * 4], orm: vec![0; n * n * 4], albedo };
     let u8c = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     for y in 0..n {
         for x in 0..n {
@@ -325,6 +542,44 @@ pub fn generate(rgba: &[u8], w: u32, h: u32, size: u32, r: &Recipe) -> Maps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A slab redrawn at 8x: its rim dark all round and straight, its face the art's face
+    /// colour (mottled about it), the light painted on one side kept on that side.
+    #[test]
+    fn slab_remaster() {
+        let w = 16usize;
+        let mut img = vec![0u8; w * w * 4];
+        for y in 0..w {
+            for x in 0..w {
+                let rim = x == 0 || y == 0 || x == w - 1 || y == w - 1;
+                // A lighter bevel along the top only (the art's light).
+                let c: [u8; 3] = if rim {
+                    [90, 40, 10]
+                } else if y == 1 {
+                    [255, 230, 160]
+                } else {
+                    [240, 180, 80]
+                };
+                img[(y * w + x) * 4..][..4].copy_from_slice(&[c[0], c[1], c[2], 255]);
+            }
+        }
+        let n = 128usize;
+        let m = generate(&img, w as u32, w as u32, n as u32, &Recipe { tile: 1.0, paint: 0.5, plateau: 0.85, bevel: 1.0, seam: 0.0, ..Recipe::default() });
+        let a = m.albedo.expect("a slab is redrawn");
+        let px = |x: usize, y: usize| [a[(y * n + x) * 4] as i32, a[(y * n + x) * 4 + 1] as i32, a[(y * n + x) * 4 + 2] as i32];
+        for i in 16..n - 16 {
+            // The joint at every side: dark, and as dark as the other sides.
+            for (x, y) in [(i, 1), (1, i), (i, n - 2), (n - 2, i)] {
+                assert!(px(x, y)[1] < 70, "joint at ({x}, {y}): {:?}", px(x, y));
+            }
+        }
+        // The face about the art's face colour.
+        let f = px(n / 2, n / 2);
+        assert!((f[0] - 240).abs() < 30 && (f[1] - 180).abs() < 40 && (f[2] - 80).abs() < 40, "face {f:?}");
+        // The top bevel lighter than the bottom one (the light stays where the art put it).
+        let (top, bottom) = (px(n / 2, 12)[1], px(n / 2, n - 13)[1]);
+        assert!(top > bottom + 15, "top {top} bottom {bottom}");
+    }
 
     /// One slab with a ragged dark rim: the joint is low all round the edge, straight (the same
     /// along each side whatever the rim's art), the face high and flat, the corners rounded.

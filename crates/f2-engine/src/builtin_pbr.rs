@@ -14,24 +14,73 @@ use f2_formats::pbrgen::{generate, Maps, Recipe};
 use crate::textures::TextureRegistry;
 
 /// Size of the generated maps (the originals are 32² to 64²: the maps are drawn smooth).
-const SIZE: u32 = 256;
+const SIZE: u32 = 512;
 
-const BRICK: Recipe =
-    Recipe { plateau: 0.75, depth: 0.035, rough: 0.75, strength: 6.0, ao: 0.7, detail: 0.3, bevel: 1.2, seam: 0.15, min_seam: 3.0, invert: false, tile: 0.0 };
-const PAVING: Recipe =
-    Recipe { plateau: 0.8, depth: 0.018, rough: 0.5, strength: 4.0, ao: 0.5, detail: 0.5, bevel: 0.8, seam: 0.15, min_seam: 12.0, invert: false, tile: 0.0 };
+const BRICK: Recipe = Recipe {
+    plateau: 0.75,
+    depth: 0.035,
+    rough: 0.75,
+    strength: 6.0,
+    ao: 0.7,
+    detail: 0.3,
+    bevel: 1.2,
+    seam: 0.15,
+    min_seam: 3.0,
+    invert: false,
+    tile: 0.0,
+    paint: 0.0,
+};
+const PAVING: Recipe = Recipe {
+    plateau: 0.8,
+    depth: 0.018,
+    rough: 0.5,
+    strength: 4.0,
+    ao: 0.5,
+    detail: 0.5,
+    bevel: 0.8,
+    seam: 0.15,
+    min_seam: 12.0,
+    invert: false,
+    tile: 0.0,
+    paint: 0.0,
+};
 /// One slab of paving per texture (a dark rim all round): a straight bevel all round, the
 /// art's own mottling on the face.
-const SLAB: Recipe =
-    Recipe { plateau: 0.82, depth: 0.04, rough: 0.62, strength: 4.0, ao: 0.6, detail: 0.6, bevel: 1.4, seam: 0.0, min_seam: 3.0, invert: false, tile: 0.9 };
+const SLAB: Recipe = Recipe {
+    plateau: 0.82,
+    depth: 0.04,
+    rough: 0.85,
+    strength: 1.5,
+    ao: 0.6,
+    detail: 0.15,
+    bevel: 2.0,
+    seam: 0.0,
+    min_seam: 3.0,
+    invert: false,
+    tile: 1.0,
+    paint: 0.75,
+};
 /// A slab with a pattern cut into it (the Ancients' meander tiles): the slab's bevel, the
 /// pattern's relief from the art's light and dark (its grooves are too broken up for seams).
-const CARVED: Recipe =
-    Recipe { plateau: 0.45, depth: 0.03, rough: 0.62, strength: 6.0, ao: 0.6, detail: 0.4, bevel: 1.0, seam: 0.0, min_seam: 3.0, invert: false, tile: 0.9 };
+const CARVED: Recipe = Recipe {
+    plateau: 0.45,
+    depth: 0.03,
+    rough: 0.62,
+    strength: 6.0,
+    ao: 0.6,
+    detail: 0.4,
+    bevel: 1.0,
+    seam: 0.0,
+    min_seam: 3.0,
+    invert: false,
+    tile: 0.9,
+    paint: 0.0,
+};
 
-/// Paving laid by hand and walked on for centuries: every slab turned at random, a little
-/// tilted and off-colour, some chipped or cracked, the walkway's edges worn.
-const LAID: Tiling = Tiling { variants: 2, turn_color: true, wear: 0.6, tint: 0.5, uneven: 0.6, edges: 0.7, grime: 0.6 };
+/// Paving laid by hand and walked on for centuries: every slab its own size, shape and
+/// blotches, a little tilted and off-colour, some chipped or cracked, the walkway's edges worn.
+/// (The colour is not turned: the art's painted light stays where it is.)
+const LAID: Tiling = Tiling { variants: 0, turn_color: false, wear: 0.6, tint: 0.5, uneven: 0.6, edges: 0.7, grime: 0.6 };
 /// The same with the pattern kept the way the art has it.
 const LAID_CARVED: Tiling = Tiling { variants: 0, turn_color: false, wear: 0.4, tint: 0.3, uneven: 0.4, edges: 0.6, grime: 0.5 };
 /// Every repeat the same.
@@ -132,7 +181,7 @@ pub(crate) fn materials(reg: &TextureRegistry) -> Option<ModelMaterials> {
                 let stem = t.3.split('.').next().unwrap_or(&t.3).to_string();
                 let img = |w, h, px: &Vec<u8>| crate::RgbaImage { width: w, height: h, pixels: px.clone() };
                 let _ = img(t.2.width, t.2.height, &t.2.rgba).write_png(dir.join(format!("{stem}.png")));
-                for (k, px) in [("height", &m.height), ("normal", &m.normal), ("orm", &m.orm)] {
+                for (k, px) in [("height", &m.height), ("normal", &m.normal), ("orm", &m.orm)].into_iter().chain(m.albedo.iter().map(|a| ("albedo", a))) {
                     let _ = img(SIZE, SIZE, px).write_png(dir.join(format!("{stem}_{k}.png")));
                 }
             }
@@ -145,6 +194,11 @@ pub(crate) fn materials(reg: &TextureRegistry) -> Option<ModelMaterials> {
         for (kind, px) in [("_normal", &maps.normal), ("_height", &maps.height), ("_orm", &maps.orm)] {
             m.images.push(MatImage { name: format!("{name}{kind}"), width: SIZE, height: SIZE, rgba: px.clone() });
         }
+        // A redrawn slab's colour (the original texture stays what Original graphics draw).
+        let base_map = maps.albedo.as_ref().map(|px| {
+            m.images.push(MatImage { name: format!("{name}_albedo"), width: SIZE, height: SIZE, rgba: px.clone() });
+            m.images.len() as u32 - 1
+        });
         m.materials.push(PbrMaterial {
             crc: *crc,
             base_color: [1.0; 4],
@@ -159,6 +213,7 @@ pub(crate) fn materials(reg: &TextureRegistry) -> Option<ModelMaterials> {
             occlusion: Some(base + 2),
             emissive_map: None,
             height: Some(base + 1),
+            base_map,
             tiling: *tiling,
         });
     }

@@ -1051,7 +1051,7 @@ impl Renderer {
             label: Some("pbr material"),
             layout: gm.pbr_layout(),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: view(Some(tex)) },
+                wgpu::BindGroupEntry { binding: 0, resource: view(Some(p.base_map.unwrap_or(tex))) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samplers[&skey]) },
                 wgpu::BindGroupEntry { binding: 2, resource: view(p.normal) },
                 wgpu::BindGroupEntry { binding: 3, resource: view(p.metal_rough) },

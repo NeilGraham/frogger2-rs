@@ -19,7 +19,7 @@
 //! - Smart tiling ([`f2_formats::material::Tiling`]): each repeat of the texture (one cell of
 //!   its texture grid) is a tile with its own look from a seed: turned / mirrored maps, tint,
 //!   a tilted, sunk setting, and wear made up on the spot (chipped corners, nicks in the
-//!   edges, a crack, pits, dirt in them), all in the height field (so the parallax, its
+//!   edges, a crack, dirt in it), all in the height field (so the parallax, its
 //!   shadows and the normals show them). The mesh tells each tile what its sides meet
 //!   ([`cell_codes`]): a drop wears them more, a wall gets grime along them.
 
@@ -93,13 +93,13 @@ struct Cell {
     // A crack from xy to zw by way of `crackm.xy`, `crackm.z` wide (0: none).
     crack: vec4<f32>,
     crackm: vec4<f32>,
-    // Pits: xy, radius (0: none).
-    pit: vec4<f32>,
-    pit2: vec4<f32>,
     // Setting: tilt (x, y), sunk (z: a little darker, dirt gathers); its face worn unevenly (w).
     lay: vec4<f32>,
-    // Colour ×.
-    tint: vec3<f32>,
+    // Colour: x brightness ×, y saturation × (the texture's own colours, whatever they are).
+    tint: vec2<f32>,
+    // Shape: x a little bigger or smaller (the joints wider or narrower), y how far its edges
+    // wander.
+    shape: vec2<f32>,
 };
 
 // The tile being shaded (`make_cell`; one per fragment, read by the functions below).
@@ -185,7 +185,7 @@ fn tile_side_point(k: u32, t: f32) -> vec2<f32> {
 fn make_cell(code: u32, uv: vec2<f32>) {
     var c: Cell;
     c.m = mat2x2<f32>(1.0, 0.0, 0.0, 1.0);
-    c.tint = vec3<f32>(1.0);
+    c.tint = vec2<f32>(1.0);
     c.on = pbr.tile2.z > 0.5;
     if (!c.on) {
         tc = c;
@@ -235,27 +235,38 @@ fn make_cell(code: u32, uv: vec2<f32>) {
         let stop = select(1.0, mix(0.45, 0.8, tile_rnd(sd, 75u)), tile_rnd(sd, 76u) < 0.5);
         let mid = mix(a, e, 0.5 * stop) + vec2<f32>(tile_rnd(sd, 77u) - 0.5, tile_rnd(sd, 78u) - 0.5) * 0.18;
         c.crack = vec4<f32>(a, mix(a, e, stop));
-        c.crackm = vec4<f32>(mid, mix(0.012, 0.022, tile_rnd(sd, 79u)), 0.0);
+        c.crackm = vec4<f32>(mid, mix(0.015, 0.028, tile_rnd(sd, 79u)), 0.0);
     }
     // Pits.
-    if (tile_rnd(sd, 80u) < wear * 0.6) { c.pit = vec4<f32>(tile_rnd(sd, 81u) * 0.7 + 0.15, tile_rnd(sd, 82u) * 0.7 + 0.15, mix(0.012, 0.03, tile_rnd(sd, 83u)), 0.0); }
-    if (tile_rnd(sd, 84u) < wear * 0.35) { c.pit2 = vec4<f32>(tile_rnd(sd, 85u) * 0.7 + 0.15, tile_rnd(sd, 86u) * 0.7 + 0.15, mix(0.01, 0.022, tile_rnd(sd, 87u)), 0.0); }
     // Setting.
     let un = pbr.tile.w;
     c.lay = vec4<f32>((tile_rnd(sd, 90u) - 0.5) * un * 0.3, (tile_rnd(sd, 91u) - 0.5) * un * 0.3, tile_rnd(sd, 92u) * un * 0.12, wear * 0.12);
     // Colour: lighter or darker, warmer or cooler.
     let tn = pbr.tile.z;
-    let lum = 1.0 + (tile_rnd(sd, 93u) - 0.5) * 0.24 * tn;
-    let warm = (tile_rnd(sd, 94u) - 0.5) * 2.0 * tn;
-    c.tint = lum * vec3<f32>(1.0 + 0.05 * warm, 1.0 + 0.01 * warm, 1.0 - 0.07 * warm);
+    c.tint = vec2<f32>(1.0 + (tile_rnd(sd, 93u) - 0.5) * 0.24 * tn, 1.0 + (tile_rnd(sd, 94u) - 0.3) * 0.5 * tn);
+    c.shape = vec2<f32>((tile_rnd(sd, 95u) - 0.5) * 0.05 * un, (0.4 + 0.6 * tile_rnd(sd, 96u)) * 0.04 * un);
     tc = c;
 }
 
 // Where the maps of the tile under uv are read (turned about the tile's middle).
 fn tile_uv(uv: vec2<f32>) -> vec2<f32> {
     if (!tc.on) { return uv; }
-    let b = floor(uv);
-    return b + vec2<f32>(0.5) + tc.m * (uv - b - vec2<f32>(0.5));
+    return floor(uv) + vec2<f32>(0.5) + tc.m * (tile_p(uv) - vec2<f32>(0.5));
+}
+
+// Where in the slab (0..1 about) uv is, the slab's own shape: a little bigger or smaller,
+// its edges wandering (the maps are read here, so colour and relief keep together).
+fn tile_p(uv: vec2<f32>) -> vec2<f32> {
+    let p = fract(uv);
+    let w = vec2<f32>(tile_vnoise(p * 3.0, tc.seed ^ 0x61u), tile_vnoise(p * 3.0 + vec2<f32>(5.3, 1.7), tc.seed ^ 0x62u)) - 0.5;
+    return vec2<f32>(0.5) + (p - vec2<f32>(0.5)) * (1.0 + tc.shape.x) + w * tc.shape.y;
+}
+
+// The colour's coordinates: the slab's shape, and its turn if the colour turns too.
+fn tile_uv_color(uv: vec2<f32>) -> vec2<f32> {
+    if (!tc.on) { return uv; }
+    if ((u32(pbr.tile.x) & 4u) != 0u) { return tile_uv(uv); }
+    return floor(uv) + tile_p(uv);
 }
 
 // How much of the tile's crack is at p (its 0..1; 0 none, 1 its middle).
@@ -274,10 +285,10 @@ fn tile_crack(p: vec2<f32>) -> f32 {
 }
 
 // The tile's height at uv from the map's `hm` (0..1, white high): x the height, y dirt (0..1:
-// cracks, pits, along walls), z fresh breaks (0..1: chips, nicks).
+// cracks, along walls), z fresh breaks (0..1: chips, nicks).
 fn tile_h(uv: vec2<f32>, hm: f32) -> vec3<f32> {
     if (!tc.on) { return vec3<f32>(hm, 0.0, 0.0); }
-    let p = fract(uv);
+    let p = tile_p(uv);
     let face = smoothstep(0.2, 0.75, hm);
     var h = hm;
     var dirt = 0.0;
@@ -290,8 +301,10 @@ fn tile_h(uv: vec2<f32>, hm: f32) -> vec3<f32> {
         let a = tc.chipa[j];
         let d0 = vec2<f32>(0.5) - corner;
         let dir = normalize(vec2<f32>(d0.x * cos(a) - d0.y * sin(a), d0.x * sin(a) + d0.y * cos(a)));
-        let sd = dot(p - corner, dir) - tc.chip[j] + ragged * 0.03;
-        let lip = 0.9 + sd * 6.0;
+        // A bite: between a straight break and a round one, wobbling.
+        let wob = tile_vnoise(p * 11.0, tc.seed ^ (0x31u + j)) - 0.5;
+        let sd = mix(dot(p - corner, dir), length(p - corner) * 0.8, 0.5) - tc.chip[j] + wob * 0.06 + ragged * 0.015;
+        let lip = 0.9 + sd * 4.0;
         if (lip < h) {
             fresh = max(fresh, clamp((h - lip) * 2.5, 0.0, 1.0));
             h = min(h, max(lip, 0.03));
@@ -312,14 +325,6 @@ fn tile_h(uv: vec2<f32>, hm: f32) -> vec3<f32> {
     let g = tile_crack(p);
     h -= g * 0.15 * face;
     dirt = max(dirt, g * 0.9);
-    // Pits.
-    for (var j = 0u; j < 2u; j++) {
-        let pt = select(tc.pit2, tc.pit, j == 0u);
-        if (pt.z <= 0.0) { continue; }
-        let g = 1.0 - smoothstep(pt.z * 0.3, pt.z, length(p - pt.xy) + ragged * pt.z * 0.5);
-        h -= g * 0.35 * face;
-        dirt = max(dirt, g * 0.7);
-    }
     // The sides: worn round where they drop away, grimy along walls.
     for (var j = 0u; j < 4u; j++) {
         let kind = tile_side_kind(j);
@@ -342,12 +347,18 @@ fn height_map(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
 fn tile_extra(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
     let hm = height_map(uv, dx, dy);
     // With the stone's grain (the normals only: too fine for the parallax).
-    let p = fract(uv);
+    let p = tile_p(uv);
     let grain = tile_vnoise(p * 70.0, tc.seed ^ 0x3du) * 0.6 + tile_vnoise(p * 150.0, tc.seed ^ 0x3eu) * 0.4;
-    // The setting too: too slight to show in the parallax (and a face below the top would cost
-    // the parallax its quick way out on every flat face), it shows in the light.
-    let lay = dot(tc.lay.xy, p - vec2<f32>(0.5)) + (tile_vnoise(p * 6.0, tc.seed) - 0.5) * tc.lay.w;
-    return tile_h(uv, hm).x - hm + (lay + grain * 0.012 - tile_crack(p) * 0.3) * smoothstep(0.2, 0.75, hm);
+    return tile_h(uv, hm).x - hm + (grain * 0.005 - tile_crack(p) * 0.3) * smoothstep(0.2, 0.75, hm);
+}
+
+// The slab's setting at uv: tilted, its face worn unevenly. Too slight to show in the
+// parallax (and a face below the top would cost the parallax its quick way out on every flat
+// face), it shows in the light: its slope bends the face's normal (not its height times the
+// face, whose slope would draw a ridge round every bevel).
+fn tile_lay(uv: vec2<f32>) -> f32 {
+    let p = tile_p(uv);
+    return dot(tc.lay.xy, p - vec2<f32>(0.5)) + (tile_vnoise(p * 6.0, tc.seed) - 0.5) * tc.lay.w;
 }
 
 // How deep the height field is at uv (0: its top; the map's white is high).
@@ -518,7 +529,7 @@ fn shade_pbr(i: VOut) -> vec4<f32> {
     }
     let muv = tile_uv(uv);
     let turn_color = (u32(pbr.tile.x) & 4u) != 0u;
-    var c = textureSampleGrad(t, s, select(uv, muv, turn_color), select(dx, mdx, turn_color), select(dy, mdy, turn_color)) * i.color * pbr.base;
+    var c = textureSampleGrad(t, s, tile_uv_color(uv), select(dx, mdx, turn_color), select(dy, mdy, turn_color)) * i.color * pbr.base;
     if (floor(c.a * 255.0 + 0.5) <= cam.depth.y) { discard; }
     // The tile's own colour: its tint, the stone's grain, breaks and dirt darker.
     var dirt = 0.0;
@@ -528,10 +539,24 @@ fn shade_pbr(i: VOut) -> vec4<f32> {
         let th = tile_h(uv, hm);
         dirt = th.y;
         // Grain: the stone's own fine texture where the art is a blur up close.
-        let p = fract(uv);
+        let p = tile_p(uv);
         let grain = tile_vnoise(p * 70.0, tc.seed ^ 0x3du) * 0.6 + tile_vnoise(p * 150.0, tc.seed ^ 0x3eu) * 0.4 - 0.5;
-        let broken = th.z * (0.82 + grain * 0.5);
-        c = vec4<f32>(c.rgb * tc.tint * (1.0 - tc.lay.z) * (1.0 + grain * 0.07) * mix(1.0, 0.72, broken) * mix(vec3<f32>(1.0), vec3<f32>(0.42, 0.36, 0.3), dirt), c.a);
+        // Each slab blotched its own way (the texture's mottling is the same on all).
+        let blotch = 1.0 + (tile_vnoise(p * 5.0, tc.seed ^ 0x5au) - 0.5) * 0.2 * pbr.tile.z;
+        // Chips drawn like the art would: the broken face a shade darker, a dark line where
+        // it breaks off.
+        let chip = smoothstep(0.02, 0.1, th.z);
+        let line = chip * (1.0 - smoothstep(0.1, 0.35, th.z));
+        // In the texture's own colours: its tint a saturation and a brightness; breaks and dirt
+        // a deeper shade of it (the colour times itself: orange to deep orange, teal to deep
+        // teal), never a grey or a brown that is not its own.
+        var col = c.rgb;
+        col = mix(vec3<f32>(dot(col, vec3<f32>(0.299, 0.587, 0.114))), col, tc.tint.y) * tc.tint.x;
+        col *= blotch * (1.0 - tc.lay.z * 0.5) * (1.0 + grain * 0.02);
+        let deep = clamp(col * col * 1.15, vec3<f32>(0.0), vec3<f32>(1.0));
+        col = mix(col, deep, max(chip * 0.5, line * 0.8));
+        col = mix(col, col * col * 0.75, dirt);
+        c = vec4<f32>(clamp(col, vec3<f32>(0.0), vec3<f32>(1.0)), c.a);
         // The slope the tile adds to the map's (its turn, setting and wear), half a texel each way.
         let e = 0.6 / f32(textureDimensions(t).x);
         let ox = vec2<f32>(e, 0.0);
@@ -540,7 +565,8 @@ fn shade_pbr(i: VOut) -> vec4<f32> {
         let nx = tile_extra(uv - ox, dx, dy);
         let py = tile_extra(uv + oy, dx, dy);
         let ny = tile_extra(uv - oy, dx, dy);
-        tile_grad = vec2<f32>(px - nx, py - ny) / (2.0 * e);
+        let lay = vec2<f32>(tile_lay(uv + ox) - tile_lay(uv - ox), tile_lay(uv + oy) - tile_lay(uv - oy));
+        tile_grad = (vec2<f32>(px - nx, py - ny) + lay * smoothstep(0.2, 0.75, hm)) / (2.0 * e);
     }
     var emissive = pbr.emissive.rgb;
     if (has_map(8u)) { emissive *= textureSampleGrad(t_emit, s, muv, mdx, mdy).rgb; }

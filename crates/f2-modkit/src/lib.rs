@@ -228,6 +228,7 @@ pub fn tex_materials(vfs: &Vfs, bank: &str) -> Result<Loaded<f2_formats::materia
             occlusion: orm,
             emissive_map: None,
             height,
+            base_map: None,
             tiling: Default::default(),
         };
         if let Some(f) = files.iter().find(|f| f.ext == "toml" && f.name == format!("{name}.pbr")) {

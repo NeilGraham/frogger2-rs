@@ -630,6 +630,7 @@ fn pbr_materials_bump_and_parallax() {
         occlusion: None,
         emissive_map: None,
         height: h,
+        base_map: None,
         tiling: Default::default(),
     };
     let mm = |normal, h| ModelMaterials {

@@ -207,6 +207,7 @@ fn pbr_of(doc: &GltfDoc, m: &Value, images: &mut Images, warnings: &mut Vec<Stri
         occlusion,
         emissive_map,
         height,
+        base_map: None,
         tiling: Default::default(),
     })
 }

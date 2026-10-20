@@ -534,7 +534,11 @@ mapping, parallax occlusion from a height map, roughness, occlusion) when it has
   sides a line must be to be a seam), `min_seam` (shorter dark pieces are spots, not seams),
   `rough`, `strength` (normal steepness), `ao`, `detail`, `invert` (1: light seams).
   `tile` (the texture is one slab: its rim, this many texels in from each edge, is the joint;
-  straight bevels all round, rounded corners; `seam=0` with it for a plain slab).
+  straight bevels all round, rounded corners; `seam=0` with it for a plain slab), `paint`
+  (with `tile`: the slab's colour is redrawn at the maps' size in the art's own style, written
+  as `<name>_albedo.png`: the outline, bevel and face crisp along the slab's shape, the art's
+  painted light and colours kept, the face mottled this much, 0..1; the built-in walkway slabs
+  are drawn with it instead of the 32-pixel texture; 0: not redrawn).
   Maps generated from retail textures are derived from game data: keep such a mod local.
 - **Smart tiling** (like connected / random textures in block games): every repeat of the
   texture (a slab of paving: one cell of its texture grid) is drawn a little differently,
@@ -544,15 +548,19 @@ mapping, parallax occlusion from a height map, roughness, occlusion) when it has
 
   ```toml
   [tiling]
-  variants = "turn"   # "none", "mirror", or "turn" (also quarter turns: square slabs)
-  turn_color = true   # the turns move the colour texture too (else only the relief maps)
-  wear = 0.6          # chipped corners, nicks in the edges, cracks, pits (0..1)
-  tint = 0.5          # each slab's colour strays (lighter / darker, warmer / cooler)
-  uneven = 0.6        # each slab tilted and sunk a little
+  variants = "none"   # "none", "mirror", or "turn" (also quarter turns: square slabs)
+  turn_color = false  # the turns move the colour texture too (else only the relief maps;
+                      # leave off when the art has light painted on one side)
+  wear = 0.6          # chipped corners, nicks in the edges, a crack (0..1)
+  tint = 0.5          # each slab's colour strays (brighter / darker, more / less saturated,
+                      # in the texture's own colours) and is blotched its own way
+  uneven = 0.6        # each slab tilted, a little bigger or smaller, its edges wandering
   edges = 0.7         # more chips and nicks, worn round, where the slab's side drops away
   grime = 0.6         # dirt along walls
   ```
 
-  All of it is made up in the shader (no maps; it shows in the parallax, its shadows and the
-  normals), so it works with any material, a mod's maps or the built-in ones. Without a
+  All of it is made up in the shader (no maps; it shows in the colour, the normals, and the
+  parallax and its shadows), drawn as the art would (breaks and dirt a deeper shade of the
+  stone's own colour), so it works with any material, a mod's maps or the built-in ones, and
+  reads from straight above as well as at a slant. Without a
   `[tiling]` table nothing changes.
