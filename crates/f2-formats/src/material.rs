@@ -46,6 +46,38 @@ pub struct PbrMaterial {
     pub emissive_map: Option<u32>,
     /// R: height (white = high).
     pub height: Option<u32>,
+    /// Smart tiling: every repeat of the texture made a little different (none by default).
+    pub tiling: Tiling,
+}
+
+/// Smart tiling of a material (Enhanced graphics; like connected / random textures in block
+/// games): each repeat of the texture (a tile of paving, a cell of the mesh's texture grid) gets
+/// its own turn, tint, setting and wear from a seed, and its edges look at what they meet
+/// (another tile flush with it, a drop, a wall; found from the mesh when it is loaded). All 0:
+/// every repeat the same (the material as drawn before).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Tiling {
+    /// Random turns of each repeat: 0 none, 1 mirrored, 2 also turned by quarters (square tiles).
+    pub variants: u8,
+    /// The turns move the colour texture too (else only the relief: normal, height, ORM).
+    pub turn_color: bool,
+    /// Chips at the corners and edges, cracks and pits (0..1, how many and how big).
+    pub wear: f32,
+    /// How far each repeat's colour strays (brightness and warmth, 0..1).
+    pub tint: f32,
+    /// Uneven setting: each tile tilted and sunk a little (0..1).
+    pub uneven: f32,
+    /// Extra wear on edges that drop away (a walkway's sides; 0..1).
+    pub edges: f32,
+    /// Dirt in the damage and along walls (0..1).
+    pub grime: f32,
+}
+
+impl Tiling {
+    /// Anything to do.
+    pub fn is_on(&self) -> bool {
+        self.variants > 0 || self.wear > 0.0 || self.tint > 0.0 || self.uneven > 0.0 || self.edges > 0.0 || self.grime > 0.0
+    }
 }
 
 /// A modded skin's smooth weights (linear blend skinning on the GPU mesh path; the CPU path

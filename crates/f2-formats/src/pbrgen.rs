@@ -32,6 +32,12 @@ pub struct Recipe {
     pub min_seam: f32,
     /// The seams are light (the faces dark).
     pub invert: bool,
+    /// The texture is one tile (paving, a flagstone): its rim, this many texels in from each
+    /// edge, is the grout (half of the joint with the next tile, which the texture's wrap
+    /// gives), and the face rises from it over `bevel` texels with rounded corners (straight,
+    /// even edges whatever the art's rim looks like). 0: no rim (seams from the art only;
+    /// `seam` 0: none).
+    pub tile: f32,
 }
 
 impl Recipe {
@@ -52,6 +58,7 @@ impl Recipe {
                 "seam" => self.seam = x,
                 "min_seam" => self.min_seam = x,
                 "invert" => self.invert = x != 0.0,
+                "tile" => self.tile = x,
                 _ => {}
             }
         }
@@ -61,7 +68,7 @@ impl Recipe {
 
 impl Default for Recipe {
     fn default() -> Recipe {
-        Recipe { plateau: 0.5, depth: 0.03, rough: 0.8, strength: 6.0, ao: 0.6, detail: 0.3, bevel: 1.0, seam: 0.15, min_seam: 3.0, invert: false }
+        Recipe { plateau: 0.5, depth: 0.03, rough: 0.8, strength: 6.0, ao: 0.6, detail: 0.3, bevel: 1.0, seam: 0.15, min_seam: 3.0, invert: false, tile: 0.0 }
     }
 }
 
@@ -228,7 +235,7 @@ pub fn generate(rgba: &[u8], w: u32, h: u32, size: u32, r: &Recipe) -> Maps {
     let (tlo, thi) = (percentile(&tex, 0.03), percentile(&tex, 0.97));
     let margin = r.seam * (thi - tlo).max(1e-3);
     let mut tseam = vec![false; w * h];
-    for y in 0..h as isize {
+    for y in (0..h as isize).filter(|_| r.seam > 0.0) {
         for x in 0..w as isize {
             let c = tl(x, y);
             let valley = |dx: isize, dy: isize| {
@@ -262,13 +269,30 @@ pub fn generate(rgba: &[u8], w: u32, h: u32, size: u32, r: &Recipe) -> Maps {
     let soft = Grid { n, v: soft }.blur(k * 0.35);
     let seam: Vec<bool> = soft.v.iter().map(|v| *v > 0.4).collect();
     // Faces rise from the seams over `bevel` texels (straight, even edges), flat on top.
-    let d = chamfer(&seam, n);
+    let d = if seam.contains(&true) { chamfer(&seam, n) } else { vec![(n * 2) as f32; n * n] };
     let bw = (r.bevel * k).max(1.0);
     let mut hv = vec![0.0; n * n];
     for i in 0..n * n {
         let s = (d[i] / bw).clamp(0.0, 1.0);
-        let plat = s * s * (3.0 - 2.0 * s);
-        hv[i] = (t[i] * (1.0 - r.plateau) + plat * r.plateau + fine[i] / fmax * 0.08 * r.detail).clamp(0.0, 1.0);
+        let mut plat = s * s * (3.0 - 2.0 * s);
+        if r.tile > 0.0 {
+            // In from the nearest edge (texels), the corners rounded (radius: the rim and the
+            // bevel), then up the bevel from the rim.
+            let (x, y) = ((i % n) as f32 + 0.5, (i / n) as f32 + 0.5);
+            let (ex, ey) = (x.min(n as f32 - x) / k, y.min(n as f32 - y) / k);
+            let rc = r.tile + r.bevel.max(0.5);
+            let inward = if ex < rc && ey < rc { rc - ((rc - ex).powi(2) + (rc - ey).powi(2)).sqrt() } else { ex.min(ey) };
+            let s = ((inward - r.tile) / r.bevel.max(0.25)).clamp(0.0, 1.0);
+            plat = plat.min(s * s * (3.0 - 2.0 * s));
+        }
+        let relief = fine[i] / fmax * 0.08 * r.detail;
+        hv[i] = if r.tile > 0.0 {
+            // The face's own relief on top of the slab, none in the joint.
+            plat * (r.plateau + t[i] * (1.0 - r.plateau) + relief)
+        } else {
+            t[i] * (1.0 - r.plateau) + plat * r.plateau + relief
+        }
+        .clamp(0.0, 1.0);
     }
     let hg = Grid { n, v: hv }.blur(k * 0.25);
     let (mn, mx) = hg.v.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
@@ -301,6 +325,41 @@ pub fn generate(rgba: &[u8], w: u32, h: u32, size: u32, r: &Recipe) -> Maps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One slab with a ragged dark rim: the joint is low all round the edge, straight (the same
+    /// along each side whatever the rim's art), the face high and flat, the corners rounded.
+    #[test]
+    fn slab_relief() {
+        let w = 16u32;
+        let mut img = vec![0u8; (w * w * 4) as usize];
+        for y in 0..w {
+            for x in 0..w {
+                // A rim one texel wide on two sides and two on the others, specks in the face.
+                let rim = x == 0 || y == 0 || x >= w - 2 || y >= w - 2;
+                let v = if rim {
+                    70
+                } else if (x * 7 + y * 3) % 11 == 0 {
+                    160
+                } else {
+                    200
+                };
+                img[((y * w + x) * 4) as usize..][..4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let n = 64usize;
+        let m = generate(&img, w, w, n as u32, &Recipe { plateau: 0.9, tile: 1.0, bevel: 1.0, seam: 0.0, ..Recipe::default() });
+        let h = |x: usize, y: usize| m.height[(y * n + x) * 4] as i32;
+        for i in 8..n - 8 {
+            // Every side's joint as low as the others, at the texture's edge (both sides of the
+            // wrap), the face high.
+            for (a, b) in [(h(i, 0), h(0, i)), (h(i, n - 1), h(n - 1, i)), (h(i, 0), h(i, n - 1))] {
+                assert!(a < 40 && b < 40 && (a - b).abs() <= 8, "joint {a} {b} at {i}");
+            }
+            assert!(h(i, n / 2) > 200, "face {} at {i}", h(i, n / 2));
+        }
+        // The corner rounds off: lower at the diagonal than at the same distance in from a side.
+        assert!(h(5, 5) + 20 < h(5, n / 2), "corner {} side {}", h(5, 5), h(5, n / 2));
+    }
 
     /// Bricks: light faces with dark mortar lines. The faces come out high, the mortar low,
     /// the normal map tilts at the edges, and the maps tile.

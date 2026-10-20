@@ -579,6 +579,30 @@ fn expand(o: &GpuObj, blend: Option<&SkinWeights>) -> (Vec<Vert>, Vec<Group>) {
         });
     }
     let norm = normals(mesh);
+    // Smart tiling's tiles (`crate::pbr::cell_codes`; rigid meshes: a skin's vertices are in
+    // its bones' spaces).
+    let codes = if o.object == MESH_SKIN {
+        vec![0; mesh.faces.len()]
+    } else {
+        let tris: Vec<crate::pbr::Tri> = mesh
+            .faces
+            .iter()
+            .enumerate()
+            .map(|(fi, face)| {
+                let idx = face.map(|v| (v as usize).min(nv.saturating_sub(1)));
+                crate::pbr::Tri {
+                    pos: idx.map(|i| mesh.vertices.get(i).copied().unwrap_or_default()),
+                    uv: std::array::from_fn(|k| mesh.face_uv.get(fi * 3 + k).map_or([0.0; 2], |uv| [uv[0] as f32 * UV_SCALE, uv[1] as f32 * UV_SCALE])),
+                    normal: idx.iter().fold([0.0; 3], |a, &i| {
+                        let n = norm.get(i).copied().unwrap_or_default();
+                        [a[0] + n[0], a[1] + n[1], a[2] + n[2]]
+                    }),
+                    crc: mesh.textures.get(fi).copied().unwrap_or(0),
+                }
+            })
+            .collect();
+        crate::pbr::cell_codes(&tris)
+    };
     let mut order: Vec<usize> = (0..mesh.faces.len()).collect();
     order.sort_by_key(|&fi| mesh.textures.get(fi).copied().unwrap_or(0));
     let (mut verts, mut groups) = (Vec::with_capacity(mesh.faces.len() * 3), Vec::<Group>::new());
@@ -605,7 +629,7 @@ fn expand(o: &GpuObj, blend: Option<&SkinWeights>) -> (Vec<Vert>, Vec<Group>) {
                 uv: [uv[0] as f32 * UV_SCALE, uv[1] as f32 * UV_SCALE],
                 bones,
                 weights,
-                normal: [n[0], n[1], n[2], 0.0],
+                normal: [n[0], n[1], n[2], codes[fi] as f32],
                 color: mesh.colors.get(fi * 3 + k).copied().unwrap_or([1.0; 4]),
             });
         }
@@ -734,6 +758,8 @@ struct VOut {
     // How far a floating thing was moved up (`float_lift`): its shadows are those of where the
     // shadow map and the ray-traced scene have it (unmoved).
     @location(13) lift: f32,
+    // The tile of a smart-tiled texture (`crate::pbr::cell_codes`; the vertex normal's w).
+    @location(14) @interpolate(flat) cell: u32,
 };
 
 // `mtx_xfm`: row-vector affine transform.
@@ -1051,6 +1077,7 @@ fn float_h(xz: vec2<f32>, t: f32, f: vec2<f32>) -> f32 {
     o.mat = r.slide.z;
     o.crust = r.slide.w;
     o.top = r.slide.w;
+    o.cell = u32(i.normal.w + 0.5);
     return o;
 }
 

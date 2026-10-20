@@ -228,6 +228,7 @@ pub fn tex_materials(vfs: &Vfs, bank: &str) -> Result<Loaded<f2_formats::materia
             occlusion: orm,
             emissive_map: None,
             height,
+            tiling: Default::default(),
         };
         if let Some(f) = files.iter().find(|f| f.ext == "toml" && f.name == format!("{name}.pbr")) {
             match fs::read_to_string(&f.path).map_err(|e| e.to_string()).and_then(|t| t.parse::<toml::Table>().map_err(|e| e.to_string())) {
@@ -248,6 +249,9 @@ pub fn tex_materials(vfs: &Vfs, bank: &str) -> Result<Loaded<f2_formats::materia
                     if let Some(v) = num("parallax_scale") {
                         p.parallax_scale = v;
                     }
+                    if let Some(tl) = t.get("tiling").and_then(|v| v.as_table()) {
+                        p.tiling = tiling(tl);
+                    }
                 }
                 Err(e) => out.warnings.push(format!("{}: {e}", f.path.display())),
             }
@@ -255,6 +259,25 @@ pub fn tex_materials(vfs: &Vfs, bank: &str) -> Result<Loaded<f2_formats::materia
         out.value.materials.push(p);
     }
     Ok(out)
+}
+
+/// A `.pbr.toml`'s `[tiling]` table ([`Tiling`](f2_formats::material::Tiling): `variants`
+/// "none" / "mirror" / "turn", `turn_color`, `wear`, `tint`, `uneven`, `edges`, `grime`).
+fn tiling(t: &toml::Table) -> f2_formats::material::Tiling {
+    let num = |k: &str| t.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).map_or(0.0, |v| (v as f32).clamp(0.0, 1.0));
+    f2_formats::material::Tiling {
+        variants: match t.get("variants").and_then(|v| v.as_str()) {
+            Some("mirror") => 1,
+            Some("turn") => 2,
+            _ => 0,
+        },
+        turn_color: t.get("turn_color").and_then(|v| v.as_bool()).unwrap_or(false),
+        wear: num("wear"),
+        tint: num("tint"),
+        uneven: num("uneven"),
+        edges: num("edges"),
+        grime: num("grime"),
+    }
 }
 
 /// Effective texture bank `textures/<bank>.fla` with PNG overrides from

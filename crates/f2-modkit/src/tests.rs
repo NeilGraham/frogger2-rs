@@ -762,7 +762,11 @@ fn texture_materials_from_maps() {
     put(&mods, "m/mod.toml", b"id = \"m\"\nname = \"m\"\nversion = \"1.0.0\"\nengine_version = \"^1.0\"\n");
     put(&mods, "m/game/textures/ancient/brick1_normal.png", &png(2, 2, &[128, 128, 255, 255].repeat(4)));
     put(&mods, "m/game/textures/ancient/brick1_height.png", &png(2, 2, &[255, 255, 255, 255].repeat(4)));
-    put(&mods, "m/game/textures/ancient/brick1.pbr.toml", b"parallax_scale = 0.05\nroughness = 0.4\n");
+    put(
+        &mods,
+        "m/game/textures/ancient/brick1.pbr.toml",
+        b"parallax_scale = 0.05\nroughness = 0.4\n[tiling]\nvariants = \"turn\"\nturn_color = true\nwear = 0.5\nedges = 2.0\n",
+    );
     let (vfs, _) = f2_mods::load_enabled_mods(&r, &mods, &["m"]).unwrap();
     let tb = tex_bank(&vfs, "ancient").unwrap();
     assert!(tb.added.is_empty() && tb.replaced.is_empty(), "maps are not textures: {:?} {:?}", tb.added, tb.replaced);
@@ -775,4 +779,7 @@ fn texture_materials_from_maps() {
     assert_eq!(p.crc, texture::texture_crc("brick1"));
     assert!(p.normal.is_some() && p.height.is_some() && p.metal_rough.is_none());
     assert_eq!((p.parallax_scale, p.roughness), (0.05, 0.4));
+    // Smart tiling: the table's settings (clamped to 0..1), the rest off.
+    let t = p.tiling;
+    assert_eq!((t.variants, t.turn_color, t.wear, t.edges, t.tint, t.grime), (2, true, 0.5, 1.0, 0.0, 0.0));
 }

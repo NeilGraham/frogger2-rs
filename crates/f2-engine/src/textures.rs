@@ -32,6 +32,7 @@ pub struct Pbr {
     pub occlusion: Option<TexHandle>,
     pub emissive_map: Option<TexHandle>,
     pub height: Option<TexHandle>,
+    pub tiling: f2_formats::material::Tiling,
 }
 
 /// Index of an uploaded GPU image.
@@ -272,6 +273,7 @@ impl TextureRegistry {
                 occlusion: map(p.occlusion, self),
                 emissive_map: map(p.emissive_map, self),
                 height: map(p.height, self),
+                tiling: p.tiling,
             };
             self.pbr_by.insert((m.model_id, p.crc), self.pbr.len() as u32);
             self.pbr.push(mat);

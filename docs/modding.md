@@ -509,10 +509,11 @@ mapping, parallax occlusion from a height map, roughness, occlusion) when it has
 - **Built in:** the port makes materials for some of the original textures itself when a
   level loads (`crates/f2-engine/src/builtin_pbr.rs`: a recipe per texture name; the maps are
   generated from the player's own textures by `f2_formats::pbrgen`, ~10 ms per level, cached,
-  side by side). Ancients' bricks and paving so far. `F2_NO_BUILTIN_PBR=1` turns them off;
-  `F2_PBR_TUNE="pave:depth=0.02,bevel=0.8;brick1:seam=0.2"` changes a recipe for one run and
-  `F2_PBR_DUMP=<dir>` writes the source and the maps as PNGs (tuning). Original graphics are
-  unchanged (pixel-identical).
+  side by side). Ancients' bricks and paving so far, the walkways' slabs (`nupav*`) with smart
+  tiling (below). `F2_NO_BUILTIN_PBR=1` turns them off;
+  `F2_PBR_TUNE="pave:depth=0.02,bevel=0.8;nupav2:wear=0.9,tint=0"` changes a recipe and its
+  tiling for one run and `F2_PBR_DUMP=<dir>` writes the source and the maps as PNGs (tuning).
+  Original graphics are unchanged (pixel-identical).
 - **From a mod** (wins over the built-in one): beside a bank texture `<name>` (its exported
   stem, as for overrides) in `game/textures/<bank>/`, any of
   - `<name>_normal.png`: tangent space, OpenGL (+Y up in the image, Blender's default);
@@ -520,7 +521,7 @@ mapping, parallax occlusion from a height map, roughness, occlusion) when it has
   - `<name>_orm.png`: R occlusion, G roughness, B metal;
   - `<name>.pbr.toml`: `parallax_scale` (texture units per full height, default 0.03),
     `roughness`, `metallic` (multiply the ORM map's; without an ORM map they are the values),
-    `normal_scale`, `occlusion_strength`.
+    `normal_scale`, `occlusion_strength`, and a `[tiling]` table (smart tiling, below).
 
   The texture itself is unchanged (a `<name>.png` beside them still replaces it), and the
   material applies wherever the texture is drawn (landscape and models). Maps tile like the
@@ -532,4 +533,26 @@ mapping, parallax occlusion from a height map, roughness, occlusion) when it has
   `depth`, `bevel` (texels from a seam to the face top), `seam` (how much darker than both
   sides a line must be to be a seam), `min_seam` (shorter dark pieces are spots, not seams),
   `rough`, `strength` (normal steepness), `ao`, `detail`, `invert` (1: light seams).
+  `tile` (the texture is one slab: its rim, this many texels in from each edge, is the joint;
+  straight bevels all round, rounded corners; `seam=0` with it for a plain slab).
   Maps generated from retail textures are derived from game data: keep such a mod local.
+- **Smart tiling** (like connected / random textures in block games): every repeat of the
+  texture (a slab of paving: one cell of its texture grid) is drawn a little differently,
+  from a seed of where it is in the model (the same every run, and on moving models too).
+  When a level's mesh is loaded each slab's sides are told what they meet: another face flush
+  with it, a drop (a walkway's edge), a wall, or nothing. In `<name>.pbr.toml`:
+
+  ```toml
+  [tiling]
+  variants = "turn"   # "none", "mirror", or "turn" (also quarter turns: square slabs)
+  turn_color = true   # the turns move the colour texture too (else only the relief maps)
+  wear = 0.6          # chipped corners, nicks in the edges, cracks, pits (0..1)
+  tint = 0.5          # each slab's colour strays (lighter / darker, warmer / cooler)
+  uneven = 0.6        # each slab tilted and sunk a little
+  edges = 0.7         # more chips and nicks, worn round, where the slab's side drops away
+  grime = 0.6         # dirt along walls
+  ```
+
+  All of it is made up in the shader (no maps; it shows in the parallax, its shadows and the
+  normals), so it works with any material, a mod's maps or the built-in ones. Without a
+  `[tiling]` table nothing changes.
