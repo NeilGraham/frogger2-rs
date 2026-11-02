@@ -226,6 +226,7 @@ impl R3dLevel {
 
     #[cfg_attr(target_vendor = "nintendo64", link_section = ".text.f2hot_q")]
     fn record_inner(&mut self, cpu: &RenderCpu, d: &MeshDraw, mats: &[[[f32; 4]; 4]], slot: usize) {
+        T_ENTER.store(rt::ticks(), core::sync::atomic::Ordering::Relaxed);
         let Some(mut list) = list_of(d.frame) else { return };
         if d.no_clip && list == List::Normal {
             list = List::Background;
@@ -257,6 +258,7 @@ impl R3dLevel {
                 mesh
             }
         };
+        let tdbg0 = rt::ticks();
         let override_tex = match d.override_tex {
             Some(h) => match self.tex_for(cpu, h.0) {
                 Some(t) => Some(t),
@@ -267,10 +269,14 @@ impl R3dLevel {
         if matches!(list, List::Additive | List::LateAdditive) {
             self.r.ensure_additive(mesh);
         }
+        let tdbg1 = rt::ticks();
         rt::audio_poll_due();
+        let tdbg2 = rt::ticks();
         if d.modge != 0 {
             self.r.animate_modge(mesh, d.modge_frame, d.modge);
         }
+        let tdbg3 = rt::ticks();
+        let (h0, v0) = (self.r.cache_hits, self.r.view_hits);
         let p = crate::r3d::DrawParams { alpha_mul: d.alpha_mul, gouraud: d.gouraud, override_tex, no_clip: d.no_clip, object_fog: d.object_fog };
         if d.object == MESH_SKIN {
             self.r.draw_skinned(list, mesh, mats, &p);
@@ -279,6 +285,17 @@ impl R3dLevel {
             const IDENTITY: [[f32; 4]; 4] = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
             let m = if self.r.mesh_is_world(mesh) { &IDENTITY } else { m };
             self.r.draw_slot(list, mesh, m, &p, slot as u32, d.stamp);
+        }
+        let tdbg4 = rt::ticks();
+        {
+            use core::sync::atomic::Ordering::Relaxed;
+            let k = if d.object == MESH_SKIN { 3 } else if self.r.cache_hits != h0 { 4 } else if self.r.view_hits != v0 { 5 } else { 6 };
+            DBG[0].fetch_add(tdbg1.wrapping_sub(tdbg0), Relaxed);
+            DBG[1].fetch_add(tdbg2.wrapping_sub(tdbg1), Relaxed);
+            DBG[2].fetch_add(tdbg3.wrapping_sub(tdbg2), Relaxed);
+            DBG[k].fetch_add(tdbg4.wrapping_sub(tdbg3), Relaxed);
+            DBGN[k].fetch_add(1, Relaxed);
+            DBG[7].fetch_add(tdbg0.wrapping_sub(T_ENTER.load(Relaxed)), Relaxed);
         }
         self.rec.draws += 1;
         if option_env!("F2N64_LOG_MODELS").is_some() && self.seen.insert(d.model) {
@@ -346,6 +363,11 @@ fn view_params(r: &Renderer) -> ViewParams {
     let v = &r.view;
     ViewParams { view: v.v_matrix, fov: v.fov, viewport: v.vp(), near: v.near_clip, far: v.far_clip, bilinear: r.options.linear_filter, guard: 6, fog: None }
 }
+
+pub static DBG: [core::sync::atomic::AtomicU32; 8] = [const { core::sync::atomic::AtomicU32::new(0) }; 8];
+pub static DBGN: [core::sync::atomic::AtomicU32; 8] = [const { core::sync::atomic::AtomicU32::new(0) }; 8];
+pub static DBG2: [core::sync::atomic::AtomicU32; 8] = [const { core::sync::atomic::AtomicU32::new(0) }; 8];
+pub static T_ENTER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// The draw loop's [`MeshBackend`] on the N64: each recorded mesh goes straight to
 /// [`R3dLevel`] (matrix conversion and culling while the matrices are in the D-cache).
